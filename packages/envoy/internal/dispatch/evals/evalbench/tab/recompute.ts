@@ -37,8 +37,9 @@
 // judged write reaches each page within 2 s; a write that never reaches one fails.
 //
 //   bun recompute.ts --url <server> --database <url> --project INFRA [--rate stated|ten] \
-//     [--token evalbench-token] [--phases A,B,C,D] [lat_r16.py's phase flags]
+//     [--token-file <file holding the agent token>] [--phases A,B,C,D] [lat_r16.py's phase flags]
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   type Browser,
   type BrowserContext,
@@ -76,7 +77,10 @@ const given = flags(process.argv.slice(2));
 const base = need(given, "url").replace(/\/$/, "");
 const project = given.get("project") ?? "INFRA";
 const rate = given.get("rate") ?? "stated";
-const token = given.get("token") ?? "evalbench-token";
+// The agent token comes from a file, so it is in no process's command line; absent, the bench's
+// fixed token.
+const tokenFile = given.get("token-file");
+const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : "evalbench-token";
 const login = given.get("login") ?? "alice";
 const phases = (given.get("phases") ?? "A,B,C,D").split(",");
 const o = {

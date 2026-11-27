@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -143,6 +144,7 @@ type seedDocument struct{ name, id string }
 // dropped in turn and the sources must change. That is what says this test can see a difference
 // at all.
 func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -294,7 +296,7 @@ func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
 			if source.Kind != "comment" {
 				continue
 			}
-			scope, err := ScopeOf(ctx, tx, source.Kind, source.ID)
+			scope, err := ScopeOf(ctx, tx, model.Actor{}, source.Kind, source.ID)
 			if err != nil {
 				t.Fatalf("the scope of comment %s: %v", source.ID, err)
 			}
@@ -336,6 +338,7 @@ const (
 // comments, which is the plan this change is here to stop. A test whose control did not scan
 // would be proving nothing.
 func TestScopeSourcesSeedReadsCommentsThroughItsIndexes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

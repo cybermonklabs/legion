@@ -124,7 +124,7 @@ type phaseWorkerReading struct {
 // risk. The phase's resume task would be the wrong prompt there: it says to carry the existing
 // phase work on, and the completion it answered with would be refused as behind that entry.
 //
-// A claim level with that entry is sent the phase's resume task (ResumePhaseTask) at entry 0,
+// A claim level with that entry is sent the phase's resume task (ResumeTask) at entry 0,
 // marked resumeTask, as readyWorkerTask's and the boot's level branches send it: entry 0 hands
 // the role no number the record does not already name and moves no phases row, and resumeTask
 // is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
@@ -150,7 +150,18 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+	} else {
+		resume, err := e.ResumeTask(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if err := e.started(ctx, tx, issue, fact.Role, resume, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+			return err
+		}
+	}
+	// A held worker that stopped as its hold says is up between turns with no task, so the work
+	// goes with the hold, by the rule of every start (holdSentWorker).
+	if err := e.holdSentWorker(ctx, tx, issue, fact.Role); err != nil {
 		return err
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
@@ -164,7 +175,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 
 // workerSilentDid is what the notice says the daemon did: which work the start row sends, read
 // from the entry the phases row names (entry) and the one the claim was last given (given). It
-// names the start row and not a prompt: a suspension held over the claim refuses the start when
+// names the start row and not a prompt: a suspension held over the agent refuses the start when
 // the outbox runs it (supervise's RuleHolds), which no record this handler reads shows.
 func workerSilentDid(behind bool, entry, given int64) string {
 	var did string
@@ -176,7 +187,7 @@ func workerSilentDid(behind bool, entry, given int64) string {
 	default:
 		did = "the daemon wrote the start row that sends the phase's task again"
 	}
-	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
+	return did + ". A suspension the operator or the controller holds over the agent refuses that start when the outbox runs it"
 }
 
 // workerSilentRecord is the notice's and the log line's text: what the daemon read, then did,

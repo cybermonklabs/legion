@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The tmux runtime's private server reads no tmux configuration file: the command that starts it
+  carries `-f /dev/null`, so the server's start no longer runs, or waits for, the operator's
+  `~/.tmux.conf` and its plugins, which on a box with a plugin manager put seconds into the first
+  launch of each boot. An operator who attaches to the private server sees tmux's default keys and
+  options.

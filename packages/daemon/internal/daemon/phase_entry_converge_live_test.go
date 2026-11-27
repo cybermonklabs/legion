@@ -5,7 +5,7 @@
 // builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers, the real outbox lanes and the real
 // entry sweep. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -80,6 +80,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -151,6 +152,7 @@ type phaseEntryConvergeLive struct {
 // is sent and its completion refused, a start row deleted before any lane runs it whose work the
 // sweep sends all the same, and the state's two numbers.
 func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newPhaseEntryConvergeLive(t)
 	r.step("run1-the-testers-start-waits-for-the-launch-the-pace-holds", r.theStartWaitsForTheLaunch)
@@ -630,7 +632,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
 	// lane of this daemon can claim a lifecycle row of the issue, so the row the move writes below
 	// is a row no lane has run.
-	lock, err := r.st.Pool().Begin(ctx)
+	lock, err := r.st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("take the lane's lock: %v", err)
 	}

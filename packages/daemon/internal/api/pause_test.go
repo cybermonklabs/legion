@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
@@ -101,12 +103,13 @@ func (h *pauseHarness) pauseOptions(svc PauseService) Options {
 	}
 }
 
-// controllerSession registers ses_controller as the project's controller, as `legion controller
-// start` and the session's registration do, and answers a grant that session minted.
-func (h *pauseHarness) controllerSession() string {
+// controllerSession registers the project's controller as the session the constant
+// controllerSession names, as `legion controller start` and the session's registration do, and
+// answers a grant that session minted.
+func (h *harness) controllerSession() string {
 	h.t.Helper()
-	registration := h.registeredController(h.mintedSecret(), "ses_controller")
-	recorder := h.controllerSessionGrant("ses_controller", registration.Secret)
+	registration := h.registeredController(h.mintedSecret(), controllerSession)
+	recorder := h.controllerSessionGrant(controllerSession, registration.Secret)
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("the controller session's grant = %d; body %s", recorder.Code, recorder.Body)
 	}
@@ -626,17 +629,15 @@ func TestPauseRoutes(t *testing.T) {
 
 // A caller from a pod below pauseContract is served the state without `paused` and `lastPause`,
 // which its plugin's reader does not name; a pod at the contract, a pod whose claims record none
-// and a caller in no pod are served the key as the source answered it. populatedState carries
-// `paused`; the last pause is a state of its own.
+// and a caller in no pod are served the key as the source answered it. The paused state carries
+// `paused` (pausedState); the last pause is the state of the record its fixture composes.
 func TestTheStateRouteServesAPodItsPluginContractsPause(t *testing.T) {
-	last := pauseViewOf(goldenPause(true))
-	running := populatedState(t)
-	running.Paused, running.LastPause = nil, &last
+	running := composedFixture(t, apifixture.Path("state-last-pause.json"))
 	for _, state := range []struct {
 		name  string
 		state State
 		key   string
-	}{{"paused", populatedState(t), "paused"}, {"lastPause", running, "lastPause"}} {
+	}{{"paused", pausedState(t), "paused"}, {"lastPause", running, "lastPause"}} {
 		full := stateFrom(t, state.state, "192.0.2.1:41000", podClaims(pauseContract-1))
 		if !strings.Contains(string(full), `"`+state.key+`"`) {
 			t.Fatalf("the fixture's state carries no %s; this test proves nothing: %s", state.key, full)
@@ -683,9 +684,9 @@ func TestThePauseContractIsTheContractThatAddedTheKeys(t *testing.T) {
 		t.Fatalf("pauseContract = %d, want %d, the contract whose entry in version.go added `paused` and `lastPause`",
 			pauseContract, addedPause)
 	}
-	if pauseContract > DaemonAPIVersion {
+	if pauseContract > DaemonAPIVersion() {
 		t.Fatalf("pauseContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			pauseContract, DaemonAPIVersion)
+			pauseContract, DaemonAPIVersion())
 	}
 }
 
@@ -703,7 +704,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 		t.Helper()
 		var paused *PausedView
 		var last *PauseView
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			paused, last, err = PauseStateTx(ctx, tx, testDispatchProject, h.clock.Now())
 			return err
@@ -722,7 +723,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, start) }); err != nil {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, start) }); err != nil {
 		t.Fatalf("queue a start the pause holds: %v", err)
 	}
 	h.clock.advance(2 * time.Minute)

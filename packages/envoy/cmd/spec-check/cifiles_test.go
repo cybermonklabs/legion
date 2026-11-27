@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/.changes/unreleased/pr4183-Added-20261116-091606.yaml TestTheLimitsOfTheRuleAreOneTextInEachPlace reads that one fragment under ../..
+
 import (
 	"fmt"
 	"io/fs"
@@ -7,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -569,7 +572,7 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 		{"\\t between the two words", ".github/workflows/a.yaml", `      - run: "spec-check\tcompare --dir a"`},
 		{"\\t between the two words in execSync", "scripts/a.ts", `execSync("spec-check\tcompare --dir a");`},
 		{"\\t between the two words in an ANSI-C quote", "scripts/a.sh", `bash -c $'spec-check\tcompare --dir a'`},
-		{"Python's f prefix right after the quote that ends compare, which Python runs as spec-check compare --dir a", ".github/scripts/a.py", `subprocess.run("spec-check compare"f" --dir {d}", shell=True)`},
+		{"Python's f prefix right after the quote that ends compare, which Python runs as spec-check compare --dir a", ".github/scripts/a.py", `subprocess.run("spec-check compare"f" --dir a", shell=True)`},
 		{"Python's r prefix right after the quote that ends compare, which Python runs as spec-check compare --dir a", ".github/scripts/a.py", `subprocess.run('spec-check compare'r' --dir a', shell=True)`},
 		{"Python's r prefix right after the quote that ends compare, in a list that split() makes, behind env -u", ".github/scripts/a.py", `subprocess.run("env -u GITHUB_ACTIONS spec-check compare"r" --dir a --approved b".split(), check=True)`},
 		{"a YAML \\x63 that builds the subcommand", ".github/workflows/a.yaml", `      - run: "spec-check \x63ompare --dir .dispatch/spec --approved a.json"`},
@@ -616,8 +619,8 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 
 // limitPlaces is each text that states the limits of the guard's rule: the doc of
 // ciFilesThatCompare, the package doc, the doc of TestCIFilesThatCompareLeavesAFormOutsideTheClaim,
-// and the changelog fragment of #4183. The release that folds the fragment into the
-// changelog takes it off this list.
+// and the changelog fragment of #4183, which stays where it is: no release moves or deletes a
+// fragment (.github/scripts/release-push.sh, the notes of fold-notes and of group_commits).
 var limitPlaces = []string{
 	"cifiles.go",
 	"main.go",
@@ -683,7 +686,9 @@ func limitText(place, content string) string {
 	return strings.NewReplacer("`` ", "", " ``", "", "`", "").Replace(text)
 }
 
-// sentencesFrom is each sentence of text that starts with start, up to its full stop.
+// sentencesFrom is each sentence of text that starts with start, up to its full stop, or up to the
+// end of text for one that no full stop and blank end, such as a sentence at the end of a fragment's
+// body, before its closing quote.
 func sentencesFrom(text, start string) []string {
 	var found []string
 	for rest := text + " "; ; {
@@ -693,7 +698,31 @@ func sentencesFrom(text, start string) []string {
 		}
 		rest = rest[i:]
 		end := strings.Index(rest, ". ") + 1
+		if end == 0 {
+			end = len(rest)
+		}
 		found, rest = append(found, rest[:end]), rest[end:]
+	}
+}
+
+// sentencesFrom reads a sentence that no ". " follows: the first sentence of the limits, as #4183's
+// changelog fragment holds it, moved to the end of a fragment's body, before the quote that closes
+// the body. It reads the sentence up to the end of the text, so the test of the places names the
+// place whose sentence differs, where it read no sentence there and looped for ever.
+func TestSentencesFromReadsASentenceThatNoFullStopAndBlankEnd(t *testing.T) {
+	t.Parallel()
+	place := limitPlaces[len(limitPlaces)-1]
+	content, err := os.ReadFile(place)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := sentencesFrom(limitText(place, string(content)), limitSentences[0])
+	if len(held) != 1 {
+		t.Fatalf("%s holds %d sentences that start %q, want 1", place, len(held), limitSentences[0])
+	}
+	moved := "kind: Added\nbody: 'A guard. " + strings.ReplaceAll(held[0], "'", "''") + "'\n"
+	if got, want := sentencesFrom(limitText("a.yaml", moved), limitSentences[0]), []string{held[0] + "'  "}; !slices.Equal(got, want) {
+		t.Errorf("the sentence at the end of the body: %q, want %q", got, want)
 	}
 }
 

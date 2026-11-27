@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
+import { keepPageSession } from "./api/agent-session";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { App } from "./app";
 import {
@@ -37,6 +38,9 @@ if (root === null) {
 }
 
 installChunkFailureRecovery();
+// An agent's browser may name the session its writes are made as on the address it opens the
+// dashboard at (`?session=`), which the first move inside the app leaves behind.
+keepPageSession(window.location.search);
 
 createRoot(root).render(
   <StrictMode>

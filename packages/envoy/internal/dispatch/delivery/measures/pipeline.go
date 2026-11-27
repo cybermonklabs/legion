@@ -21,9 +21,9 @@ import (
 // its run's start). Only results that ended in success or failure are timed; a cancelled one is
 // counted beside them, and anything else (skipped, still running) is not counted at all.
 //
-// Each card is a day builder and a fold (parts.go): PRChecks, DeployJobs and LeadTimes put their
-// rows on the shown UTC days, build each day's parts (PRChecksDay, DeployJobsDay and the lead-time
-// builders of measures.go), and fold each day's parts alone and the shown days' together
+// Each card is a day builder and a fold (parts.go): PRChecksTimings, DeployJobs and LeadTimes put
+// their rows on the shown UTC days, build each day's parts (PRChecksDay, DeployJobsDay and the
+// lead-time builders of measures.go), and fold each day's parts alone and the shown days' together
 // (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds the CI and delivery evals read stored
 // parts with. The failing-jobs table is no day part: FailingJobs reads the run jobs of the
 // FailingWindow before the end its caller names.
@@ -345,10 +345,10 @@ func jobTimings(parts []DayPart, days []string) map[string]Timing {
 }
 
 // FoldSlowestJobs is pr-ci's ranking of its jobs over parts (pipeline.py:137-142), the one ranking
-// both the Pipeline's slowest-jobs table, its first SlowestJobs (PRChecks), and pr-ci's items
-// sorted by median read: every job with minResults timed results over the shown days, the job
-// series' min_n, and at least one, by its median over those days, slowest first, then by name,
-// each with its cell of every shown day; never nil.
+// both the Pipeline's slowest-jobs table, its first SlowestJobs (PRChecksTimings), and pr-ci's
+// items sorted by median read: every job with minResults timed results over the shown days, the
+// job series' min_n, and at least one, by its median over those days, slowest first, then by
+// name, each with its cell of every shown day; never nil.
 func FoldSlowestJobs(parts []DayPart, days []string, minResults int) []JobTiming {
 	slowest := []JobTiming{}
 	for name, timing := range jobTimings(parts, days) {
@@ -378,40 +378,33 @@ func prChecksParts(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.D
 	return parts
 }
 
-// PRChecks is the PR-checks workflow's Pipeline numbers (pipeline.py:113-167), from the parts
-// PRChecksDay builds of each shown day's runs: run and slowest, PRChecksTimings'; and failing,
-// FailingJobs up to end. The caller passes the shown days' runs, each with its event and branch
-// already selected.
-func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string, slowestMinResults int) (run Timing, slowest []JobTiming, failing []FailingJob) {
-	run, slowest = PRChecksTimings(runs, jobsByRun, days, slowestMinResults)
-	return run, slowest, FailingJobs(runs, jobsByRun, end, rollupJob)
-}
-
-// PRChecksTimings is PRChecks' run and slowest: run, every run's wall time from its start to its
-// completion and its outcome, each day folded alone and the shown days together by FoldTiming; and
-// slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with slowestMinResults
-// timed results. A run on no shown day adds to no cell. A reader of several repositories' runs
-// tallies their failing jobs apart, each run's without its own repository's roll-up job.
+// PRChecksTimings is the PR-checks workflow's Pipeline timings (pipeline.py:113-142), from the
+// parts PRChecksDay builds of each shown day's runs: run, every run's wall time from its start to
+// its completion and its outcome, each day folded alone and the shown days together by
+// FoldTiming; and slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with
+// slowestMinResults timed results. A run on no shown day adds to no cell. The caller passes the
+// shown days' runs, each with its event and branch already selected. Their failing jobs are
+// FailingJobs', which a reader of several repositories' runs hands each run's jobs without its own
+// repository's roll-up job.
 func PRChecksTimings(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, slowestMinResults int) (run Timing, slowest []JobTiming) {
 	parts := prChecksParts(runs, jobsByRun, days)
 	ranked := FoldSlowestJobs(parts, days, slowestMinResults)
 	return timingByDay(parts, days, FoldTiming), ranked[:min(len(ranked), SlowestJobs)]
 }
 
-// FailingJobs is PRChecks' failing tally (pipeline.py:144-157): every job that failed in a run
-// completed in the FailingWindow up to end (a run that completed after end, which a pinned `at`
-// or a range in the past can read, is not counted), most failures first, then by name. It reads
-// only runs that ended in success or failure (a cancelled run's jobs are not the prototype's to
-// count) and only their jobs that did, and leaves out rollupJob (none when empty) and every
-// summary or guard job (delivery.IsSummaryOrGuardJob). It is no day part: the 24 hours it looks
-// back over end at any instant, not at a UTC day's end, so it is read from the run jobs
-// themselves, the rows the PR-checks parts are built from, as an items read is.
+// FailingJobs is the PR-checks workflow's failing tally (pipeline.py:144-157): every job that
+// failed in a run completed in the FailingWindow up to end (InFailingWindow: a run that completed
+// after end, which a pinned `at` or a range in the past can read, is not counted), most failures
+// first, then by name. It reads only runs that ended in success or failure (a cancelled run's jobs
+// are not the prototype's to count) and only their jobs that did, and leaves out rollupJob (none
+// when empty) and every summary or guard job (delivery.IsSummaryOrGuardJob). It is no day part:
+// the 24 hours it looks back over end at any instant, not at a UTC day's end, so it is read from
+// the run jobs themselves, the rows the PR-checks parts are built from, as an items read is.
 func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, end time.Time, rollupJob string) []FailingJob {
-	horizon := end.Add(-FailingWindow)
 	var recent []delivery.DeliveryRun
 	for _, run := range runs {
 		outcome, ok := OutcomeOf(run.Conclusion)
-		if ok && outcome.timed() && run.CompletedAt != nil && !run.CompletedAt.Before(horizon) && !run.CompletedAt.After(end) {
+		if ok && outcome.timed() && InFailingWindow(run, end) {
 			recent = append(recent, run)
 		}
 	}
@@ -453,6 +446,12 @@ func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Del
 		return cmp.Compare(a.Name, b.Name)
 	})
 	return failing
+}
+
+// InFailingWindow reports whether run completed in the FailingWindow up to end: the runs whose
+// jobs FailingJobs reads, of those that ended in success or failure.
+func InFailingWindow(run delivery.DeliveryRun, end time.Time) bool {
+	return run.CompletedAt != nil && !run.CompletedAt.Before(end.Add(-FailingWindow)) && !run.CompletedAt.After(end)
 }
 
 // DeployJobCardID identifies one Pipeline deploy card: the key DeployJobsDay answers a card's
@@ -584,11 +583,9 @@ type SourceDeployRuns struct {
 func DeployJobsOf(sources []SourceDeployRuns, days []string) map[DeployJobCardID]DeployJobTiming {
 	parts := map[DeployJobCardID][]DayPart{}
 	names := map[DeployJobCardID][]string{}
-	var order []DeployJobCardID
 	for _, source := range sources {
 		for _, card := range source.Cards {
 			if _, named := names[card.CardID]; !named {
-				order = append(order, card.CardID)
 				names[card.CardID] = []string{}
 			}
 			for _, name := range card.JobNames {
@@ -604,9 +601,9 @@ func DeployJobsOf(sources []SourceDeployRuns, days []string) map[DeployJobCardID
 			}
 		}
 	}
-	timings := make(map[DeployJobCardID]DeployJobTiming, len(order))
-	for _, card := range order {
-		timings[card] = DeployJobTiming{Job: strings.Join(names[card], " or "), Timing: timingByDay(parts[card], days, FoldTiming)}
+	timings := make(map[DeployJobCardID]DeployJobTiming, len(names))
+	for card, jobNames := range names {
+		timings[card] = DeployJobTiming{Job: strings.Join(jobNames, " or "), Timing: timingByDay(parts[card], days, FoldTiming)}
 	}
 	return timings
 }

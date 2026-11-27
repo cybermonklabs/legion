@@ -19,6 +19,7 @@ export const supportFiles = [
   "outside-agent-peer.sh",
   "outside-agent-sweep.sh",
   "outside-agent-pins.sh",
+  "outside-agent-grants.sh",
 ];
 
 /** The Codex leg's rows, in order, which the public leg prints after P10. */
@@ -47,9 +48,10 @@ export interface LegRun {
   readonly stderr: string;
 }
 
-/** The shell tools the legs read text with. PATH holds these alone in the absent-target runs, so
- *  no tool the legs drive (`omp`, `tmux`, `bun`, `gh`, `git`, `crane`, `agent-secrets`,
- *  `agent-secrets-helper`) is there. */
+/** The shell tools the legs read text and lay out their scratch with: `ln` makes the links of
+ *  real_tools, which the legs' children find their programs through. PATH holds these alone in the
+ *  absent-target runs, so no tool the legs drive (`omp`, `tmux`, `bun`, `gh`, `git`, `crane`,
+ *  `agent-secrets`, `agent-secrets-helper`) is there. */
 const textTools = [
   "bash",
   "curl",
@@ -60,6 +62,7 @@ const textTools = [
   "mkdir",
   "cat",
   "ls",
+  "ln",
   "od",
   "tr",
   "chmod",

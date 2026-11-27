@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The eval writes record their change rows in the change log's outbox (delivery_changes_pending,
@@ -119,6 +120,8 @@ func isDrain(hold storetest.AdvisoryHold) bool {
 // each write is the write's drain, whose hold is logged. Before the outbox each write took the lock
 // first and held it to its commit.
 func TestAnEvalWriteHoldsNoChangeLogLock(t *testing.T) {
+	// Not parallel: it samples who holds the change log's lock every millisecond
+	// (storetest.SampleAdvisoryHolds), which other tests' writes on the same server would hold.
 	r := newRig(t)
 	ctx := t.Context()
 	commits := recordCommitHolds(t, r)
@@ -296,6 +299,8 @@ func median(durations []time.Duration) time.Duration {
 // measure (k20), which a busy runner would fail here. Before the outbox every run write sent
 // during a correction waited behind that correction's transaction until it committed.
 func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
+	// Not parallel: it times the intake's statements behind a correction (intakeBlockers), a
+	// bound that other tests' load on the same server would move.
 	r := newRig(t)
 	ctx := t.Context()
 	intake := intakePool(t, r, 48)
@@ -393,6 +398,8 @@ func TestNoIntakeStatementWaitsOnAnEvalCorrection(t *testing.T) {
 // release to the write's answer, which bounds the drain's hold from above, is logged. Before the
 // outbox the write waited for the lock before it wrote anything, and held it for the whole write.
 func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
+	// Not parallel: it samples who holds the change log's lock every millisecond
+	// (storetest.SampleAdvisoryHolds), which other tests' writes on the same server would hold.
 	r := newRig(t)
 	ctx := t.Context()
 	readings := readingIDs(r.write(t, "build-minutes", alice, readingsOverDays(t, correctionSize, nil)...))
@@ -427,9 +434,7 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 		answered <- time.Now()
 		done <- err
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, time.Minute); waiting < 1 {
-		t.Fatal("the correction never waited for the change log's lock")
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	pending := r.count(t, `select count(*) from delivery_changes_pending`)
 	if pending == 0 {
 		t.Fatal("the correction waits for the change log's lock with no change of its own committed: it takes the lock before it writes")
@@ -478,6 +483,7 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 // Before, the write's drain moved batch after batch until the outbox was empty, and the write
 // answered only then.
 func TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	minutes := func(key string, day int) json.RawMessage {
@@ -524,4 +530,101 @@ func TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog(t *testing.T) {
 		t.Errorf("the log holds %d changes after the write, want the %d it moved and the %d the next drain moved, the write's readings change among them (%t)",
 			len(changes), moved, pending, own)
 	}
+}
+
+// TestACancelledDrainAfterCommitStillAnswersSuccessAndLeavesChangesForTheNextDrain: a readings
+// write whose context is cancelled while its post-commit drain waits on the change log's lock
+// still answers success with the reading it committed, and leaves its change rows pending in the
+// outbox rather than losing them; once the lock is let go, the next drain moves every one of them
+// into the change log. The backend of the cancelled drain can stay queued behind the lock and run
+// the drain when it is let go, so the test ends every backend still queued behind it first, and the
+// drain that moves the rows is the next one.
+func TestACancelledDrainAfterCommitStillAnswersSuccessAndLeavesChangesForTheNextDrain(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	minutes := func(key string, day int) json.RawMessage {
+		return row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": 3, "measured_at": at(day, 9, 0)})
+	}
+	evalID := r.write(t, "build-minutes", alice, minutes("a", 4)).Definition.EvalID
+	head, err := delivery.ChangesHead(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := head.Seq
+
+	gate, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the gate: %v", err)
+	}
+	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1, $2)`, changeLockClass, changeLockObject); err != nil {
+		t.Fatalf("take the change log's lock: %v", err)
+	}
+
+	writeCtx, cancelWrite := context.WithCancel(ctx)
+	defer cancelWrite()
+	type answer struct {
+		written Written
+		err     error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		written, err := r.registry.WriteReadings(writeCtx, Batch{Project: r.project, Slug: "build-minutes", Caller: alice, BuiltBy: testBuild,
+			Rows: []json.RawMessage{minutes("b", 5)}})
+		done <- answer{written, err}
+	}()
+	storetest.WaitForLockWaiters(t, gate, 1)
+	pending := r.count(t, `select count(*) from delivery_changes_pending`)
+	if pending == 0 {
+		t.Fatal("the write waits on the change log's lock with no change row pending: it took the lock before its commit")
+	}
+	cancelWrite()
+	got := testwait.Receive(t, "the write's answer once its drain is cancelled", done)
+	if got.err != nil || len(got.written.Readings) != 1 {
+		t.Fatalf("the write whose post-commit drain was cancelled answered %v (%d readings), want success with the committed reading", got.err, len(got.written.Readings))
+	}
+	if still := r.count(t, `select count(*) from delivery_changes_pending`); still != pending {
+		t.Errorf("%d change rows remain pending after the cancelled drain, want all %d", still, pending)
+	}
+	if _, err := r.database.Pool.Exec(ctx, `
+		select pg_terminate_backend(pid) from pg_stat_activity
+		where datname = current_database() and $1::integer = any(pg_blocking_pids(pid))
+	`, int32(gate.Conn().PgConn().PID())); err != nil {
+		t.Fatalf("end the backends queued behind the gate: %v", err)
+	}
+	testwait.Until(t, "no backend to stay queued behind the gate (the backends queued, last read)", func() (int, bool) {
+		queued, err := storetest.LockWaiters(ctx, gate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return queued, queued == 0
+	})
+	if still := r.count(t, `select count(*) from delivery_changes_pending`); still != pending {
+		t.Errorf("%d change rows remain pending once the backends behind the gate are ended, want all %d", still, pending)
+	}
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatalf("let the change log's lock go: %v", err)
+	}
+	moved, err := delivery.DrainPending(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatalf("the next drain: %v", err)
+	}
+	if left := r.count(t, `select count(*) from delivery_changes_pending`); left != 0 || moved != int64(pending) {
+		t.Errorf("the next drain moved %d rows and left %d pending, want %d and none", moved, left, pending)
+	}
+	changes, err := delivery.ChangesSince(ctx, r.database.Pool, before, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, change := range changes {
+		if change.Ref == evalID {
+			kinds = append(kinds, change.Kind)
+		}
+	}
+	if len(changes) != pending || !slices.Contains(kinds, delivery.ChangeKindEvalReadings) || !slices.Contains(kinds, delivery.ChangeKindEvalDays) {
+		t.Errorf("the next drain moved %v into the log (%d changes), want the %d pending changes, its readings' and its day rows'", kinds, len(changes), pending)
+	}
+	t.Logf("the write answered success with its drain cancelled, left %d change rows pending, and the next drain moved %v", pending, kinds)
 }

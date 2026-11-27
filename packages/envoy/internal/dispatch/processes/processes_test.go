@@ -17,7 +17,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // fingerprints is the fingerprint list a process holding setting (DISPATCH_SIGNING_KEY's form)
 // registers with.
@@ -109,6 +114,7 @@ func rowExists(t *testing.T, database *store.Store, id string) bool {
 // A registered process is live and reads back as it registered: its build, its dashboard and its
 // key fingerprints, current first.
 func TestRegisterRecordsTheProcessAsLive(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K1 K0")
 
@@ -149,6 +155,8 @@ func liveProcess(t *testing.T, database *store.Store, id string) Process {
 // read and write, its embedder's identity and whether it stores files in a bucket - read back as
 // the process registered them, and again after a heartbeat writes a pruned row back.
 func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration, err := Register(context.Background(), database.Pool, Instance{
@@ -173,10 +181,57 @@ func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
 	want("the row written again after a prune", liveProcess(t, database, registration.ID))
 }
 
+// A refresh writes the schema numbers the process serves now into its row, where every process's
+// socket admission reads them, and a row written again after a prune carries the refreshed numbers
+// rather than the ones the process registered with. A refresh to the numbers it last wrote writes
+// nothing: the process's own record of its row is what it compares with, not the row.
+func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	ctx := context.Background()
+	registration, err := Register(ctx, database.Pool, Instance{
+		Commit: "c1", SigningKeys: fingerprints(t, "K0"), SchemaVersion: 3, SchemaCreatable: 3,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	numbers := func(what string, version, creatable int) {
+		t.Helper()
+		if got := liveProcess(t, database, registration.ID); got.SchemaVersion != version || got.SchemaCreatable != creatable {
+			t.Errorf("%s holds schema version %d and creatable %d, want %d and %d", what, got.SchemaVersion, got.SchemaCreatable, version, creatable)
+		}
+	}
+
+	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
+		t.Fatalf("refresh the schema numbers: %v", err)
+	}
+	numbers("the row after a refresh to version 4", 4, 3)
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned after a refresh")
+	numbers("the row written again after a prune", 4, 3)
+
+	// A refresh to the numbers it last wrote writes nothing, so a row changed behind the
+	// registration keeps what it was changed to.
+	underRegistryLock(t, database, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `update server_processes set schema_version = 9 where instance = $1`, registration.ID); err != nil {
+			t.Fatalf("change the row behind the registration: %v", err)
+		}
+	})
+	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
+		t.Fatalf("refresh the schema numbers again: %v", err)
+	}
+	numbers("the row a refresh to the numbers it last wrote leaves alone", 9, 3)
+}
+
 // A row written by a build that predates the fleet columns carries none of them, so each holds its
 // default: it reads as a process that predates them, with no schema numbers, no embedder identity
 // and no file store.
 func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	var id string
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -194,6 +249,8 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 // Live is measured on the database's clock: a heartbeat 14 seconds before the database's now() is
 // live, one 16 seconds before it is not, whatever this process's clock says.
 func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, time.Hour)
 	database := storetest.Open(t)
 	fresh := mustRegister(t, database, "c1", "K0")
@@ -209,6 +266,8 @@ func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T
 // The heartbeat keeps a registered process live: a row the database dates past the live window
 // is live again within a heartbeat, since no live process disagrees with its key set.
 func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
@@ -226,6 +285,8 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 // Deregister deletes the row and stops the heartbeat, so the process is neither live nor written
 // again.
 func TestDeregisterDeletesTheRow(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
@@ -244,6 +305,8 @@ func TestDeregisterDeletesTheRow(t *testing.T) {
 // The prune loop deletes the rows whose heartbeat the database dates more than ten minutes ago,
 // and keeps every newer one, live or not.
 func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and PruneInterval
+	// (setInterval), which every registration's heartbeat and every prune loop read.
 	setInterval(t, &HeartbeatInterval, time.Hour)
 	setInterval(t, &PruneInterval, 200*time.Millisecond)
 	database := storetest.Open(t)
@@ -285,6 +348,8 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 // live process shares when the only other row is a process gone. A peer that refuses heartbeats
 // throughout, so its refusal stands through Register's wait for it to lapse.
 func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
+	// Not parallel: its rows write the package variables HeartbeatInterval and LiveWindow
+	// (setInterval, quickRegistry), which every registration reads.
 	for _, c := range []struct {
 		name, peer, mine string
 		stale            bool
@@ -348,6 +413,8 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // this test takes on the table, and released together, which is the moment two reads without the
 // registry's own lock would both find the registry empty.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
+	// (quickRegistry), which every registration reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())
@@ -368,9 +435,7 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 			_, results[i] = register(t, database, "c1", setting)
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("%d registrations queued behind the held registry within 10 s, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
 	}
@@ -399,6 +464,8 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
 func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
+	// (quickRegistry), which every registration reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	var dead string
@@ -416,6 +483,8 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 // Beside a peer that keeps heartbeating, Register's wait ends in the refusal: the peer's row stays
 // live past LiveWindow and one HeartbeatInterval after the first refusal, and nothing is recorded.
 func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T) {
+	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
+	// (quickRegistry), which every registration reads.
 	quickRegistry(t)
 	database := storetest.Open(t)
 	peer := mustRegister(t, database, "c1", "K9")
@@ -437,6 +506,8 @@ func TestARefusalBesideAPeerThatKeepsHeartbeatingStandsAfterTheWait(t *testing.T
 // Register's wait ends with its context: a process stopped (SIGTERM) while it waits for a refusing
 // peer to lapse stops then, registered nowhere, not once the wait is over.
 func TestRegistersWaitEndsWithItsContext(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
 	database := storetest.Open(t)
 	peer := mustRegister(t, database, "c1", "K9")
@@ -562,6 +633,8 @@ func requireRefusal(t *testing.T, database *store.Store, registration *Registrat
 // not share is refused by its next heartbeat, which reports it (Lost) and records nothing; beside a
 // process that shares its keys it rejoins, and its row is the one it registered.
 func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	for _, c := range []struct {
 		name, peer string
@@ -606,6 +679,8 @@ func TestALapsedHeartbeatChecksTheKeysAgainBeforeTheProcessCountsAsLive(t *testi
 // live process disagrees with its key set; beside one that does, the heartbeat reports the refusal
 // and writes nothing.
 func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	t.Run("no live peer disagrees", func(t *testing.T) {
 		database := storetest.Open(t)
@@ -646,6 +721,8 @@ func TestAPrunedRowIsWrittenAgainUnlessALivePeerDoesNotShareTheKeys(t *testing.T
 // registered, and every process registered since checked its own against them. A peer that
 // disagrees, written past Register's check, refuses nothing while this process's row stays live.
 func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K1 K0")
@@ -675,6 +752,92 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
 }
 
+// A schema refresh and a heartbeat that has to rejoin, running at once, both finish. The two
+// want the same two things: the registry pool's one connection and the registration's lock.
+// renew takes the connection for its transaction and then the lock to read the instance it
+// rejoins with, so a refresh that held the lock while it waited for the connection would wait
+// on the heartbeat that waits on it, and neither would move until the refresh's own context ran
+// out - with the heartbeat sitting on the registry's advisory lock all the while, so every
+// other process misses a beat.
+//
+// The interleaving is arranged, not raced for: the refresh is held inside the function that
+// reads the numbers, which it calls under the lock, and the heartbeat is started and given the
+// pool's connection before the refresh is let go.
+func TestARefreshAndALapsedHeartbeatAtOnceBothFinish(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
+	setInterval(t, &HeartbeatInterval, time.Hour)
+	database := storetest.Open(t)
+	registration := mustRegister(t, database, "c1", "K0")
+	// The heartbeat's own goroutine is stopped, so the two runs below are the only callers of
+	// the registry's pool and the test drives renew itself. Deregister stops it again, which
+	// costs nothing, and closes the pool.
+	registration.stop()
+	<-registration.stopped
+	// A row still live is stamped and nothing else is read: the heartbeat reads the instance
+	// only where its row dropped out of Live and it has to rejoin (renew).
+	ageHeartbeat(t, database, registration.ID, LiveWindow+time.Second)
+
+	// Each call is bounded, so the pair that waits on each other ends rather than hanging the
+	// test; the bound is far above what either takes.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reading, release := make(chan struct{}), make(chan struct{})
+	refreshed := make(chan error, 1)
+	go func() {
+		refreshed <- registration.RefreshSchema(ctx, func() (int, int) {
+			close(reading)
+			<-release
+			return 7, 7
+		})
+	}()
+	<-reading
+	renewed := make(chan error, 1)
+	go func() {
+		refusal, err := registration.renew(ctx)
+		renewed <- errors.Join(refusal, err)
+	}()
+	// What the heartbeat holds before it asks for the other: the pool's one connection, which
+	// it takes for its transaction. Where the refresh already holds it, this reads so at once,
+	// which is the order that cannot deadlock.
+	waitForConnectionHeld(t, registration)
+	close(release)
+
+	started := time.Now()
+	bound := time.NewTimer(time.Second)
+	defer bound.Stop()
+	for _, run := range []struct {
+		name   string
+		result <-chan error
+	}{{"the refresh", refreshed}, {"the heartbeat", renewed}} {
+		select {
+		case err := <-run.result:
+			if err != nil {
+				t.Fatalf("%s run beside the other: %v", run.name, err)
+			}
+		case <-bound.C:
+			t.Fatalf("%s had not finished a second after the two were let go (%v): the refresh and the heartbeat take the registry's connection and the registration's lock in two orders",
+				run.name, time.Since(started))
+		}
+	}
+	if got := liveProcess(t, database, registration.ID); got.SchemaVersion != 7 || got.SchemaCreatable != 7 {
+		t.Errorf("the row after both ran holds schema version %d and creatable %d, want 7 and 7", got.SchemaVersion, got.SchemaCreatable)
+	}
+}
+
+// waitForConnectionHeld waits until the registry's pool has its one connection out, which is
+// what renew holds from the moment its transaction begins.
+func waitForConnectionHeld(t *testing.T, registration *Registration) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for registration.pool.Stat().AcquiredConns() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the registry's one connection was taken by neither run within five seconds")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // A process registers at this build's owner lock protocol (store.OwnerLockProtocol), which no
 // Instance carries, so neither a registration that names nothing but its build and keys nor the
 // heartbeat that writes its pruned row again is an earlier build's arrival: the row reads 1, no
@@ -683,6 +846,8 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 // would fire owner_lock_legacy_registration and put every owner lock of the database beside an
 // earlier build for store.OwnerLockMarkWindow (migration 20261115200014).
 func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
+	// Not parallel: it writes the package variable HeartbeatInterval (setInterval), which every
+	// registration's heartbeat reads.
 	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
 	database := storetest.Open(t)
 	registration, err := Register(context.Background(), database.Pool, Instance{Commit: "c1", SigningKeys: fingerprints(t, "K0")})
@@ -719,6 +884,7 @@ func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
 // after its last heartbeat, which its documents state as until the row is pruned: the two are one
 // duration, declared in two packages only because the store cannot import this one.
 func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
+	t.Parallel()
 	if store.OwnerLockLegacyWindow != PruneAge {
 		t.Errorf("store.OwnerLockLegacyWindow is %s and PruneAge %s; want them equal, so a row of an earlier build counts in the owner lock's fleet until it is pruned",
 			store.OwnerLockLegacyWindow, PruneAge)

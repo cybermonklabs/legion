@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // The read-time path of the delivery and CI evals (dispatch://INFRA-2918, D7a; R21): an eval's
@@ -50,7 +49,7 @@ const (
 	// each counted for the projects of the deploy it is (atReadDeploys).
 	atReadPushes
 	// atReadFailures is the record of deploys and failures (production_events) of the project, from
-	// its first day on (readFailureRecord), whose rows the refresher's builder builds
+	// its first day on (readFailureRecords), whose rows the refresher's builder builds
 	// (failureRecord.day: measures.ChangeFailRateDay, RecoveryDay and ReworkRateDay).
 	atReadFailures
 )
@@ -110,6 +109,10 @@ type AtRead struct {
 	// Now is the read's moment: a failure measure's rows stand through its UTC day and no later,
 	// as the refresher writes them through its own (refresh.writeFailures).
 	Now time.Time
+	// Attributor is the attributor the refresher's day builders attribute pull requests through
+	// (Store.attributor, delivery.Attributor.ResolvedCandidates): the deployment's own, so the
+	// rows are attributed as the stored rows were.
+	Attributor *delivery.Attributor
 }
 
 // NarrowInput is what a Narrowing selects from: every pull request merged on a day a read-time
@@ -138,23 +141,26 @@ type Narrowing func(ctx context.Context, q delivery.Querier, input NarrowInput) 
 // evals on each day of its window and its compare range, as DayWindowIn answers the stored rows
 // of those days: for each day, the day's pull requests (one read of each span of consecutive days,
 // split by the day each merged), and, where an eval needs them, each repository's deploys and CI
-// runs of the day, read as the refresher's read of a day reads them (readDeliveryDay), with each
-// repository the rows stand built for, under the rule recorded with its rows (eval_days_rules,
-// keptOf); each repository's apply runs read once from the first day on
+// runs of the day, read as the refresher's read of its days reads them (readDeliveryDays), with
+// each repository the rows stand built for, under the rule recorded with its rows
+// (eval_days_rules, keptOf); each repository's apply runs read once from the first day on
 // (delivery.ApplyRows.Since), as the refresher's walk reads them, and each events repository's
 // posted deploys once from the first day on (postedDeploys), which hold every one a day's rows
-// read; attributed to their projects by one read of what attributes every day's rows
-// (readAttribution); built into the rows of the day of each key the read's projects fold the rows
-// of (ownersIn) by the refresher's day builders (deliveryReadOf, deliveryRead.Rows); less each lead
-// time to production that counts no pull request before its first input day (dropUnshipped); and
-// with the zero row of each series the day holds no input of from its first input day on, on each
-// day the stored rows are whole through (eval_days_serving), as the refresher writes them
-// (zerosFrom), each key's first input days read from its stored rows as the refresher reads them
-// (firstDaysIn). Each row kept is of an eval read names, under the project's eval id of its slug
-// (asReader), of a deploy repository its stored read reads (DeployRepoOf), listed, and of one of
-// read.Repos (each project's own row where it names none), answered once for each range whose days
-// hold it. The failure measures' rows are built apart (failureRowsAtRead), whatever rules the
-// refresher records.
+// read; attributed to their projects and owner keys by one read of what attributes every day's
+// rows (readAttributionIn, through read.Attributor, one read after the other in the snapshot);
+// built into the rows of the day of each key the read's projects fold the rows of (ownersIn) by
+// the refresher's day builders (deliveryReadOf, deliveryRead.Rows); less each lead time to
+// production that counts no pull request before its first input day (dropUnshipped); and with the
+// zero row of each series the day holds no input of from its first input day on, on each day the
+// stored rows are whole through (eval_days_serving), as the refresher writes them (zerosFrom), each
+// key's first input days read from its stored rows as the refresher reads them (firstDaysIn). Each
+// row kept is of an eval read names, under the project's eval id of its slug (asReader), of a
+// deploy repository its stored read reads (DeployRepoOf), listed, and of one of read.Repos (each
+// project's own row where it names none), answered once for each range whose days hold it, with
+// its via-repository count as the project reads the key (viaAsRead) and its key, repository and
+// deploy repository as DayWindowIn answers them, so the folds take a day's rows in the stored
+// read's order (sortWindowRows). The failure measures' rows are built apart (failureRowsAtRead),
+// whatever rules the refresher records.
 //
 // With read.Narrow set, the pull requests are narrowed to those it keeps before anything is built,
 // and only the evals that count pull requests are built: a deploy counts what it ships whatever a
@@ -164,6 +170,9 @@ type Narrowing func(ctx context.Context, q delivery.Querier, input NarrowInput) 
 func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]WindowRow, error) {
 	if len(read.Entries) == 0 {
 		return nil, nil
+	}
+	if read.Attributor == nil {
+		return nil, errors.New("evals: a read-time computation attributes its pull requests through the deployment's attributor (AtRead.Attributor), and none was given")
 	}
 	families := map[atReadFamily]bool{}
 	keyed := false
@@ -195,7 +204,7 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
-	rows, err := failureRowsAtRead(ctx, q, failures, repos, ranges, days, read.Now)
+	rows, err := failureRowsAtRead(ctx, q, read.Attributor, failures, repos, ranges, days, read.Now)
 	if err != nil || len(delivered) == 0 {
 		return rows, err
 	}
@@ -223,12 +232,12 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	// facet).
 	shipping := len(kept) > 0 && (families[atReadPullRequests] || needDeploys)
 	applies := map[string]delivery.ApplyRows{}
-	posted := map[string][]prodevents.Event{}
+	posted := map[string]postedRecord{}
 	var sources []NarrowSource
 	for _, repo := range all {
-		if _, events := eventsProject(repo.name); events {
+		if IsEventsRepo(repo.name) {
 			if shipping {
-				if posted[repo.name], err = postedDeploys(ctx, q, repo.rule.Project, days[0], postedEnd); err != nil {
+				if posted[repo.name], err = postedDeploys(ctx, q, repo.rule.Project, days[0]); err != nil {
 					return nil, err
 				}
 			}
@@ -250,15 +259,14 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		}
 	}
 
+	// What attributes the days' rows, as the refresher's read of its days collects it: every pull
+	// request of the days and of what the days' deploys can ship, and the pull request of each of
+	// the days' PR-checks runs.
 	reads := make([][]repoReads, len(days))
-	var issueKeys []string
-	var checks []delivery.DeliveryRun
+	var pulls []delivery.DeliveryPullRequest
+	var checks []delivery.PullRequestKey
 	for i, day := range days {
-		for _, pr := range prs[i] {
-			if pr.IssueKey != nil {
-				issueKeys = append(issueKeys, *pr.IssueKey)
-			}
-		}
+		pulls = append(pulls, prs[i]...)
 		if len(kept) == 0 {
 			continue
 		}
@@ -268,7 +276,7 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 			one := &reads[i][k]
 			one.settings, one.since = repo.rule, repo.since
 			one.settings.DeployRepo = repo.name
-			if _, events := eventsProject(repo.name); events {
+			if IsEventsRepo(repo.name) {
 				one.posted = posted[repo.name]
 				continue
 			}
@@ -281,22 +289,25 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 				if one.deploys, err = delivery.ReadDeploys(ctx, q, one.settings, day, end); err != nil {
 					return nil, fmt.Errorf("read the deploys of %s on %s: %w", repo.name, day.Format(time.DateOnly), err)
 				}
-				for _, pr := range one.deploys.Earlier.PullRequests {
-					if pr.IssueKey != nil {
-						issueKeys = append(issueKeys, *pr.IssueKey)
-					}
-				}
+				pulls = append(pulls, one.deploys.Earlier.PullRequests...)
 			}
 			if needCI {
 				cardNames := measures.DeployCardJobNames(measures.DeployCards(one.settings))
 				if one.ci, err = delivery.ReadCIRows(ctx, q, repo.name, day, end, cardNames); err != nil {
 					return nil, fmt.Errorf("read the CI runs of %s on %s: %w", repo.name, day.Format(time.DateOnly), err)
 				}
-				checks = append(checks, one.ci.Checks.Runs...)
+				for _, run := range one.ci.Checks.Runs {
+					if run.PRNumber != nil {
+						checks = append(checks, delivery.PullRequestKey{Repo: run.Repo, Number: *run.PRNumber})
+					}
+				}
 			}
 		}
 	}
-	attribute, err := readAttribution(ctx, q, issueKeys, checks)
+	inSnapshot := func(ctx context.Context, reads ...func(context.Context) error) error {
+		return delivery.ReadAll(ctx, q, reads...)
+	}
+	attribute, err := readAttributionIn(ctx, q, read.Attributor, pulls, checks, inSnapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -318,37 +329,53 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		return nil, err
 	}
 	rules := keptRules(kept)
-	firsts := map[string]map[evalKey]time.Time{}
+	zeros := map[string][]DayRow{}
 	for _, project := range projects {
 		for _, owner := range owners[project] {
-			if _, held := firsts[owner]; held {
-				continue
-			}
-			if firsts[owner], err = firstDaysIn(ctx, q, owner, ZeroDeliveryDay(owner, days[0], rules).Rows, nil); err != nil {
-				return nil, err
+			if _, held := zeros[owner.project]; !held {
+				zeros[owner.project] = ZeroDeliveryDay(owner.project, days[0], rules).Rows
 			}
 		}
+	}
+	firsts, err := firstDaysIn(ctx, q, zeros, nil)
+	if err != nil {
+		return nil, err
 	}
 	deployRepoOf := make(map[string][]string, len(definitions))
 	for id, definition := range definitions {
 		deployRepoOf[id] = DeployRepoOf(definition, read.DeployRepos)
 	}
+	// The keys DayWindowIn answers a row with, which the folds order a day's rows by
+	// (sortWindowRows): its repository where the read names repositories, and its deploy repository
+	// where a project the read reads folds several.
+	withRepo := len(read.Repos) > 0
+	multiDeploy := slices.ContainsFunc(projects, func(project string) bool { return len(read.DeployRepos.Of(project)) > 1 })
 	for i, day := range days {
 		built := deliveryReadOf(day, kept, prs[i], reads[i], attribute)
 		for _, project := range projects {
 			for _, owner := range owners[project] {
-				first := firsts[owner]
-				own := built.Rows(owner)
+				first := firsts[owner.project]
+				own := built.Rows(owner.project)
 				own.Rows = dropUnshipped(own.Rows, first, day)
 				if next != nil && day.Before(*next) {
-					own = own.WithZeros(zerosFrom(ZeroDeliveryDay(owner, day, rules).Rows, first, day))
+					own = own.WithZeros(zerosFrom(ZeroDeliveryDay(owner.project, day, rules).Rows, first, day))
 				}
 				for _, row := range own.Rows {
-					id := asReader(owner, project, row.EvalID)
+					id := asReader(owner.project, project, row.EvalID)
 					if deployRepos, held := deployRepoOf[id]; !held || !slices.Contains(deployRepos, row.DeployRepo) || !row.Listed || !slices.Contains(repos, row.Repo) {
 						continue
 					}
-					rows = inRanges(rows, ranges, day, WindowRow{EvalID: id, Part: row.DayPart, owner: owner})
+					window := WindowRow{EvalID: id, Part: row.DayPart, owner: owner.project}
+					if !owner.via {
+						window.Part.ViaRepository = 0
+					}
+					if withRepo {
+						window.repo = row.Repo
+					}
+					if multiDeploy {
+						window.deployRepo = row.DeployRepo
+					}
+					rows = inRanges(rows, ranges, day, window)
 				}
 			}
 		}
@@ -375,12 +402,15 @@ func inRanges(rows []WindowRow, ranges []Range, day time.Time, row WindowRow) []
 // failureRowsAtRead builds, reading in q, the rows of entries' failure measures on each of days
 // that ranges hold, as the refresher's whole write of a project builds them
 // (refresh.writeFailures): each project's failure measures as its delivery settings turn them on
-// (failureProjectOf), none where they are off; its record read once, over the deploys of every
-// project (readFailureRecord); and each day from its first day through the UTC day of now built
-// (failureRecord.day). They are the project's own rows, which no owner key holds and no deploy
-// repository keys. Each row kept is of an eval entries names and of one of repos ("" for the
-// project's own row).
-func failureRowsAtRead(ctx context.Context, q delivery.Querier, entries []Entry, repos []string, ranges []Range, days []time.Time, now time.Time) ([]WindowRow, error) {
+// (failureProjectOf), none where they are off; their records read once, over the deploys of every
+// project, attributed through attributor under the published selection (readFailureRecords); and
+// each day from its first day through the UTC day of now built (failureRecord.day). They are the
+// project's own rows, which no owner key holds and no deploy repository keys, so each is read as a
+// read of the project's own key reads it: its via_repository counts none (viaAsRead, o.via false),
+// whatever the stored column holds. Each row kept is of an eval entries names and of one of repos
+// ("" for the project's own row).
+func failureRowsAtRead(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, entries []Entry, repos []string, ranges []Range, days []time.Time,
+	now time.Time) ([]WindowRow, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -400,24 +430,31 @@ func failureRowsAtRead(ctx context.Context, q delivery.Querier, entries []Entry,
 	if err != nil {
 		return nil, err
 	}
+	var on []failureProject
+	for _, one := range settings {
+		if project, measured := failureProjectOf(one); measured && slices.Contains(projects, project.project) {
+			on = append(on, project)
+		}
+	}
+	read, err := readFailureRecords(ctx, q, attributor, on, every, nil, nil)
+	if err != nil {
+		return nil, err
+	}
 	today := measures.Midnight(now)
 	var rows []WindowRow
-	for _, one := range settings {
-		project, on := failureProjectOf(one)
-		if !on || !slices.Contains(projects, project.project) {
-			continue
-		}
-		record, err := readFailureRecord(ctx, q, project, every)
-		if err != nil {
-			return nil, err
-		}
+	for _, record := range read.records {
 		for _, day := range days {
 			if day.After(today) {
 				break
 			}
 			for _, row := range record.day(day).Rows {
 				if named[row.EvalID] && row.Listed && slices.Contains(repos, row.Repo) {
-					rows = inRanges(rows, ranges, day, WindowRow{EvalID: row.EvalID, Part: row.DayPart, owner: project.project})
+					window := WindowRow{EvalID: row.EvalID, Part: row.DayPart, owner: record.project.project}
+					window.Part.ViaRepository = 0
+					if len(repos) > 1 || repos[0] != "" {
+						window.repo = row.Repo
+					}
+					rows = inRanges(rows, ranges, day, window)
 				}
 			}
 		}

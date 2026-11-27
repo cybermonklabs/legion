@@ -4,15 +4,13 @@ package storetest
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"runtime"
 	"runtime/trace"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // These tests are of the rig's execution trace, which the race build does not take, so they are
@@ -31,7 +29,7 @@ func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 	RequireXidGapJudgment(t)
 	// A run of this test against a rig that leaks the trace leaves it on; stop it, so the tests
 	// after this one still start their own.
-	t.Cleanup(trace.Stop)
+	testcleanup.Add(t, trace.Stop)
 	database := Open(t)
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
@@ -89,7 +87,7 @@ func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	if err := trace.Start(io.Discard); err != nil {
 		t.Fatalf("start a trace as go test -trace does: %v", err)
 	}
-	t.Cleanup(trace.Stop)
+	testcleanup.Add(t, trace.Stop)
 	ran := false
 	stopping := &stoppingTB{TB: t}
 	measured := make(chan struct{})
@@ -104,30 +102,4 @@ func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	if ran {
 		t.Error("Measure ran its operation under a trace it could not take its own beside")
 	}
-}
-
-// stoppingTB is a testing.TB whose Fatal, Fatalf and FailNow record why and stop the goroutine that
-// calls them (runtime.Goexit), as a test's own do, without failing the test it wraps.
-type stoppingTB struct {
-	testing.TB
-	mu      sync.Mutex
-	stopped string
-}
-
-func (s *stoppingTB) Fatalf(format string, args ...any) {
-	s.mu.Lock()
-	s.stopped = fmt.Sprintf(format, args...)
-	s.mu.Unlock()
-	runtime.Goexit()
-}
-
-func (s *stoppingTB) Fatal(args ...any) { s.Fatalf("%s", fmt.Sprint(args...)) }
-
-func (s *stoppingTB) FailNow() { s.Fatalf("FailNow") }
-
-// stop is why the TB was stopped, empty when it was not.
-func (s *stoppingTB) stop() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.stopped
 }

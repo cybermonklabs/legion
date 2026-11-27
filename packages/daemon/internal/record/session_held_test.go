@@ -7,11 +7,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // SessionHeld answers whether claim_sessions holds every name a claim's record gives its session
-// and file for that claim, as LiveRoleHolders reads a holder: true for the claim holding them, false
+// and file for that claim, as RoleHolders reads a holder: true for the claim holding them, false
 // for another claim of the same project and for the same claim in another project, and false for a
 // claim that records no session.
 func TestSessionHeldReadsTheHoldsOfItsClaim(t *testing.T) {
@@ -65,7 +66,7 @@ func TestAFailedSessionHeldReadLeavesTheFactUsable(t *testing.T) {
 			t.Fatalf("rename claim_sessions: %v", err)
 		}
 	})
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		held, err := SessionHeld(ctx, tx, "legion", holder, "ses_holder", "")
 		if err == nil || held {
 			t.Errorf("SessionHeld with no claim_sessions table = %t, %v; want false and the read's error", held, err)

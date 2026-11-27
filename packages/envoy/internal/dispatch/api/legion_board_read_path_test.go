@@ -126,9 +126,9 @@ func explainBoardRead(t *testing.T, database *store.Store, ran ranStatement) exp
 	return explainedBoardRead{sql: ran.sql, plan: explaintest.OnePlan(t, planJSON), text: strings.Join(lines, "\n")}
 }
 
-// planRelations is every relation a plan reads, at any depth, each once and sorted: what says
-// whether a plan reaches the event log or the daemon's observations.
-func planRelations(t *testing.T, planJSON json.RawMessage) []string {
+// sortedPlanRelations is every relation a plan reads, at any depth, each once and sorted: what
+// says whether a plan reaches the event log or the daemon's observations.
+func sortedPlanRelations(t *testing.T, planJSON json.RawMessage) []string {
 	t.Helper()
 	var node struct {
 		Relation string            `json:"Relation Name"`
@@ -142,7 +142,7 @@ func planRelations(t *testing.T, planJSON json.RawMessage) []string {
 		named = append(named, node.Relation)
 	}
 	for _, child := range node.Plans {
-		named = append(named, planRelations(t, child)...)
+		named = append(named, sortedPlanRelations(t, child)...)
 	}
 	slices.Sort(named)
 	return slices.Compact(named)
@@ -213,7 +213,7 @@ func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 		for _, read := range reads {
 			explained := explainBoardRead(t, database, read)
 			examined++
-			relations := planRelations(t, explained.plan)
+			relations := sortedPlanRelations(t, explained.plan)
 			t.Logf("over %s (%d rows in issue_facts), the board's read\n%s\nplans as:\n%s",
 				population, rows, strings.TrimSpace(read.sql), explained.text)
 			for _, forbidden := range []string{"events", "legion_observations"} {

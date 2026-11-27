@@ -1,11 +1,21 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
+import type { CredentialPendingResponse } from "../../api/types";
+import { ADD_SOURCE_PATH } from "../issue/IssueComponentsLine";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ARCHITECTURE_SOURCES_HEADING_ID } from "./ArchitectureSourcesSection";
 import { SettingsPage } from "./SettingsPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -64,11 +74,24 @@ test("holds no delivery settings form and reads no project's delivery settings",
     null
   );
 
+  // One project, drawn before the check, so a per-project read of its delivery settings would
+  // have been made by then.
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      gated_steps: [],
+      key: "ACME",
+      name: "Acme",
+      open_asks: 0,
+      proven_sessions: false,
+    },
+  ]);
+
   try {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeDefined();
-    await waitFor(() => expect(unrelated.listProjects).toHaveBeenCalled());
+    expect((await screen.findAllByText("ACME")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("heading", { name: "Delivery timeline" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Save delivery settings" })
@@ -78,6 +101,175 @@ test("holds no delivery settings form and reads no project's delivery settings",
     cleanup();
     getCredentialPending.mockRestore();
     getProjectDeliverySettings.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// An issue whose project has no architecture source links to Settings at its Architecture
+// sources section (`IssueComponentsLine`'s ADD_SOURCE_PATH); the page opens there, since the app
+// routes in the page and the browser's own scroll to a hash never runs (dispatch://INFRA-5200).
+test("an address naming a section opens Settings at that section", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const scrolled: string[] = [];
+  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this.id);
+  });
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={[ADD_SOURCE_PATH]}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(scrolled.at(-1)).toBe(ARCHITECTURE_SOURCES_HEADING_ID));
+    expect(screen.getByRole("heading", { name: "Architecture sources" }).id).toBe(
+      ARCHITECTURE_SOURCES_HEADING_ID
+    );
+  } finally {
+    cleanup();
+    scrollIntoView.mockRestore();
+    getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// On a Dispatch with a secrets broker, Live grants and Sign-ins are drawn above Architecture
+// sources once the broker's read answers, which moves the section down after the first scroll;
+// the page scrolls to it again once that read has settled (dispatch://INFRA-5200).
+test("Settings scrolls to the section again once the broker's read has drawn the sections above it", async () => {
+  const unrelated = stubUnrelatedQueries();
+  // A Dispatch with a secrets broker, whose list answers only once the test says so.
+  const pending = Promise.withResolvers<CredentialPendingResponse>();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
+    () => pending.promise
+  );
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+  const scrolled: string[] = [];
+  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this.id);
+  });
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={[ADD_SOURCE_PATH]}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]));
+    expect(screen.queryByRole("heading", { name: "Live grants" })).not.toBeInTheDocument();
+
+    pending.resolve({ pending: [] });
+    expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
+    await waitFor(() =>
+      expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID, ARCHITECTURE_SOURCES_HEADING_ID])
+    );
+  } finally {
+    cleanup();
+    scrollIntoView.mockRestore();
+    getCredentialGrants.mockRestore();
+    getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A reader who scrolls before the broker's read settles has gone where they meant to: the page
+// does not scroll them back to the section when that read draws Live grants and Sign-ins above it
+// (dispatch://INFRA-5200). Each of the reader's ways cancels it: a wheel turn, and the scroll
+// position moving from where the page's first scroll left it.
+test.each([
+  ["a wheel turn", () => window.dispatchEvent(new WheelEvent("wheel", { deltaY: 120 }))],
+  [
+    "the scroll position moving",
+    () => {
+      Object.defineProperty(window, "scrollY", { configurable: true, value: 400, writable: true });
+      window.dispatchEvent(new Event("scroll"));
+    },
+  ],
+])("a reader's own scroll (%s) before the broker's read settles keeps Settings from scrolling them back", async (_way, readerScrolls) => {
+  const unrelated = stubUnrelatedQueries();
+  const pending = Promise.withResolvers<CredentialPendingResponse>();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
+    () => pending.promise
+  );
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+  const scrolled: string[] = [];
+  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this.id);
+  });
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={[ADD_SOURCE_PATH]}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]));
+    readerScrolls();
+
+    pending.resolve({ pending: [] });
+    expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
+    // The settled read's render has run its effects by the time its heading is drawn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]);
+  } finally {
+    cleanup();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+    scrollIntoView.mockRestore();
+    getCredentialGrants.mockRestore();
+    getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A `#` part that is no valid percent-encoding names no section: Settings opens at its top and
+// stays usable, rather than the decode throwing from the page's effect (dispatch://INFRA-5200).
+test("an address whose # part cannot be decoded opens Settings at its top", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const scrollIntoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/settings#%E0%A4%A"]}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Architecture sources" })).toBeDefined();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    scrollIntoView.mockRestore();
+    getCredentialPending.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

@@ -21,8 +21,9 @@ body: |-
   answers read the targets too: `GET /api/v1/delivery/measures`, the timeline's `measures` and
   `GET /api/v1/delivery/pipeline` judge their figures by the targets of
   `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`,
-  `deploy-run-success` and `unowned-p0` in the project the deploy repository is mapped to (the
-  catalogue's where it maps to none), by the rule the eval routes judge by, so each verdict is the
+  `deploy-run-success` and `unowned-p0` in the project whose published default repository is the
+  deploy repository (the catalogue's where no project or more than one publishes it), by the rule
+  the eval routes judge by, so each verdict is the
   eval's own, and a register write of one updates their open live views. Their `targets` changed
   shape: each is `{value, inclusive, direction, judges}`, or null where the target is off, with
   the eval's direction and the statistics its verdict judges (`<series>.<stat>`); every `status`

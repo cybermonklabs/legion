@@ -3,19 +3,29 @@
 -- The stored figures of the eval list (dispatch://INFRA-2916, k8; evals/figures.go): the folds of
 -- the ranges the Evals tab offers, kept ahead of the read, so a paint of an offered range reads
 -- its figures by key where it would read and fold every day row of its range (eval_days, migration
--- 20261117100006). A stored figure is a fold of day rows, and moves only with them: every write of
--- day rows rewrites, in its own transaction, the figures of the days whose rows it moved.
+-- 20261117100006). A stored figure folds day rows. A write that folds its moved days inline
+-- does so in each cut they reach. A settings rewrite or a readings write past its inline limit
+-- instead marks the cuts it reaches and folds the first paints it can in its own transaction.
+-- Each figure is kept for every cut a read folds: the project's own rows (eval_days.repo
+-- '', its own and those of the owner keys it reads under the published defaults), which a read
+-- that names no repository folds, and each repository's, which a read that names that one
+-- repository folds (evals.cutOf): the rows of that repository the project reads, and, of the
+-- repository it publishes as its default, its own rows stored under ':default'
+-- (legionfacts.DefaultRepo, the Legion rows of an issue whose chain names no repository), which no
+-- other cut folds.
 --
--- eval_range_figures holds one row per project, repository, range, eval and deploy repository:
+-- eval_range_figures holds one row per project, cut, range, eval and deploy repository:
 --   project_key, eval_id  the eval, of its project, as eval_days holds them.
---   repo        '' for the fold of the project's own rows, and a repository's name for the fold of
---               that repository's rows, which a read naming that one repository folds.
+--   repo        the cut: '' for the fold of the project's own rows, and a repository's name for
+--               the fold of the rows a read naming that one repository folds; never ':default',
+--               which no read names.
 --   deploy_repo the deploy repository of the rows folded, as eval_days.deploy_repo keeps them: ''
 --               for an eval no deploy repository moves, and for an eval that reads it, the
 --               repository its rows are computed as if it were the deploy repository, one fold of
---               each repository's rows. A read folds the rows of the repository the delivery
---               settings name, as a read of the day rows does. It is the key's last column: a
---               read's every other column is one value, and its deploy repository one of a few.
+--               each repository's rows. A read folds the rows of the repository recorded with the
+--               stored rows (eval_days_settings.deploy_repo, evals.DeployRepoIn), as a read of the
+--               day rows does. It is the key's last column: a read's every other column is one
+--               value, and its deploy repository one of a few.
 --   days, end_day
 --               the range: its length in days and its end day, exclusive, so it holds the days
 --               end_day - days to end_day - 1. Every length the Evals tab offers is stored, and
@@ -34,23 +44,27 @@
 --               day row: every build writes the figures of the rows it writes, and a release whose
 --               folds differ rewrites, in its rebuild's flip (evals/rebuild.go), the figures an
 --               older build folded that its folds move, and no other.
--- A range that holds no listed row of the eval has no row: its fold is the fold of no parts.
+-- A range that holds no listed row of the eval in the cut has no row: its fold is the fold of no
+-- parts.
 --
--- eval_day_figures holds one row per project, repository, day, eval and deploy repository that
--- holds a listed day row of the eval:
+-- eval_day_figures holds one row per project, cut, day, eval and deploy repository that holds a
+-- listed day row of the eval in the cut:
 --   figures     the day's figures of each headline series that holds a row that day (the per-day
 --               array a read answers), encoded as eval_range_figures' are.
 --   fold_key, built_by
 --               as eval_range_figures'.
---   rows_stamp  a fingerprint of the listed rows the figures folded: each one's series and
---               updated_at, which every write that moves a row's value moves. A day whose rows
---               no longer match it has moved, and its figures and every range that holds it are
---               folded again.
+--   rows_stamp  a fingerprint of the listed rows of the cut the figures folded, the project's own
+--               and those of the owner keys it reads: each one's series, its updated_at and its
+--               via_repository as the project reads it (evals.rowsStamp). Every write that moves a
+--               row's value moves its updated_at, and a publishing of the default repositories that
+--               moves what the project reads of an owner key moves the rows or their
+--               via_repository. A day whose rows no longer match it has moved, and its figures and
+--               every range that holds it are folded again.
 -- eval_day_figures_eval_day, (project_key, eval_id, day), is the stored figures' read of an eval's
--- stored day rows over a span of days, which names no repository: the moved-day test every write
--- of day rows makes (evals.movedFigureDays) and the figures walk's read of the day rows it deletes
--- (evals.buildFigureEnds), one range of it for each eval, where the primary key bounds only the
--- project.
+-- stored day rows of every cut over a span of days: the moved-day test (evals.movedFigureDays)
+-- and the figures walk's read of the day rows it deletes
+-- (evals.buildFigureEnds), one range of it for each eval, where the primary key, whose column
+-- after the project is the cut, bounds only the project.
 --
 -- eval_figures_built holds one row per project whose figures are built: the first whole walk of
 -- them, by any build, sets it, and a read of an offered range folds the stored figures from then
@@ -60,18 +74,50 @@
 --   built_by    the build whose walk first built them.
 --   updated_at  when through last moved.
 --
+-- eval_figure_cuts_stale holds one row per cut ('' for the project's own rows, or a repository's
+-- name; every deploy repository of it) whose figures need refolding. A move of a default
+-- repository, a settings rewrite, a large readings write, a change of a fold key or a rename
+-- can mark a cut. The mark stands until the refresher has folded every range and day of the
+-- evals it names (evals.refoldStaleCuts). A default move or settings rewrite folds the first
+-- paint in its commit where the mark names only computed evals. A first paint still owed is
+-- folded before the rest of the cut; the boot folds owed first paints before it serves
+-- (evals.FoldFirstPaintsAtBoot). The refold folds the rest newest end day first, in batches.
+-- A read of the cut folds those evals' day rows until the stored
+-- rows it reads of them are folded again: a first paint's from its first-paint fold on, an older
+-- window's once the refold has come down past it (evals.figuresThrough). It reads every other
+-- eval's stored figures throughout, and every other cut stays served.
+--   generation  1 for the first mark, one more for each move that marks the cut again, which sets
+--               ready_through and next_day back to null: the first-paint fold records its
+--               ready_through, and the refold's batch that reaches the cut's first end day deletes
+--               the row, each only where the generation is the one the batch read, so a move
+--               during a refold leaves the cut stale, its first paint owed, until the refold of
+--               its generation is done.
+--   ready_through
+--               the last end day the project's figures were folded through (evals.readFigureScope)
+--               when the first-paint fold of this generation folded its first paint, which names
+--               the windows ending on the three end days up to it and their compare ranges; null
+--               until that fold commits. A UTC day that moves the figures on owes the first
+--               paint of the new last end day, which the refresher's next pass folds first.
+--   next_day    the newest end day the refold of this generation has not folded, null while it is
+--               to begin at the last end day the project's figures are folded through; every end
+--               day after it stands folded again from the rows the move left.
+--   evals       the ids of the project's evals (as the project reads them, `<project>/<slug>`)
+--               to refold in this cut. Marking the cut again adds the new ids and restarts its
+--               refold. Null names every eval of the cut and stays null when marked again.
+--               The stored figures of other evals of the cut stay served.
+--
 -- Six statement-level triggers, three on each figures table, record the end days a statement wrote
 -- or deleted figures of (a range's end day, the day after a day's) for the figures walk of the
 -- building rebuild that has folded them (eval_rebuild_reverify, migration 20261117100021), whatever
 -- process's statement it was: the flip's pass folds those end days again before the flip. They
 -- write nothing while no rebuild is building.
 --
--- Three new tables, all empty, and the triggers: nothing existing is read or rewritten, and the
--- release before this one neither reads nor writes any, so the two builds roll together
--- (cmd/dispatch/README.md, "Database migrations"). The foreign keys to projects take SHARE ROW
--- EXCLUSIVE on projects for the length of this transaction, which holds a project write and no
--- project read, as 20261117100006's do. The census answers 0, and rolling back past it is an
--- image rollback alone.
+-- Four new tables, all empty, and the triggers with their two functions: nothing existing is read
+-- or rewritten, and the release before this one neither reads nor writes any, so the two builds
+-- roll together (cmd/dispatch/README.md, "Database migrations"). The foreign keys to projects take
+-- SHARE ROW EXCLUSIVE on projects for the length of this transaction, which holds a project write
+-- and no project read, as 20261117100006's do. The census answers 0, and rolling back past it is
+-- an image rollback alone.
 create table eval_range_figures (
     project_key text not null references projects (key) on delete cascade,
     repo text not null,
@@ -124,6 +170,16 @@ create table eval_figures_built (
     through date not null,
     built_by text not null,
     updated_at timestamptz not null default now()
+);
+
+create table eval_figure_cuts_stale (
+    project_key text not null references projects (key) on delete cascade,
+    repo text not null,
+    generation bigint not null check (generation > 0),
+    ready_through date,
+    next_day date,
+    evals text[],
+    primary key (project_key, repo)
 );
 
 -- eval_rebuild_queue_range_figures and eval_rebuild_queue_day_figures record, for each project a

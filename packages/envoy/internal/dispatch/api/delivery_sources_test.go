@@ -108,7 +108,7 @@ func TestTheDeliveryTargetsAreTheOneOwningProjects(t *testing.T) {
 	saveProjectRules(t, database, "ALPHA", deployRule("acme/one", "one / release"), deployRule("acme/two", "two / release"))
 	saveProjectRules(t, database, "BETA", deployRule("acme/three", "three / release"))
 	setDelivery(t, database, "BETA", false)
-	if _, err := evals.New(database, deps.Docs, deps.Events).Register(t.Context(), evals.Registration{
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Register(t.Context(), evals.Registration{
 		Project: "ALPHA", Slug: evals.SlugDeployFrequency, Caller: model.Actor{Kind: "user", ID: "alice"}, Target: evals.Set(new(7.0)),
 	}); err != nil {
 		t.Fatalf("set ALPHA's deploy-frequency target: %v", err)
@@ -129,5 +129,24 @@ func TestTheDeliveryTargetsAreTheOneOwningProjects(t *testing.T) {
 	catalogue := catalogueTargets()
 	if got := target(); catalogue.DeploysPerDay == nil || got != catalogue.DeploysPerDay.Value {
 		t.Fatalf("with ALPHA and BETA each reading a repository the target is %v, want the catalogue's %+v", got, catalogue.DeploysPerDay)
+	}
+}
+
+// A run read where the one delivery-on project's one source is an events source, which reads no
+// repository, is 404 NOT_FOUND saying that no source reads a repository, rather than naming an
+// empty list of them.
+func TestARunReadWhereNoSourceReadsARepositorySaysSo(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "POSTED")
+	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{
+		Project: "POSTED", Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+	})
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/runs/7", nil, "alice")
+	refusal := decodeBody[refusalAnswer](t, response)
+	if response.Code != http.StatusNotFound || refusal.Code != "NOT_FOUND" ||
+		refusal.Error != "no run 7: no deploy source of a delivery-on project reads a repository" {
+		t.Fatalf("a run read with no source repository: status=%d body=%s, want 404 NOT_FOUND saying no source reads a repository",
+			response.Code, response.Body.String())
 	}
 }

@@ -286,23 +286,23 @@ func TestTheGitWrapperPutsItsHooksPathAfterTheCallersGlobalOptions(t *testing.T)
 // git wrapper over a logging stand-in that records its argv in log, under the name and in the
 // directory bin that the jj wrapper looks for on PATH, since the jj wrapper's first check is that
 // the git jj would shell out to is that wrapper; script, a copy of the jj wrapper repointed at the
-// real jj and at that git wrapper; and a bare remote, which each repository names as origin, so a
-// push the wrapper lets through finds nothing to push and exits 0: jj 0.46 fails a push from a
-// repository with no remote at all, where 0.45 printed "Nothing changed.". setup is the test's
-// own git and jj, which make the remote and the repositories, not the stand-in; run is the same
-// with bin first on PATH, which runs the wrapper.
+// real jj and at that git wrapper, whose legion is passingLegion, which runs the real jj with the
+// line it is handed; and a bare remote, which each repository names as origin, so a push the
+// wrapper lets through finds nothing to push and exits 0: jj 0.46 fails a push from a repository
+// with no remote at all, where 0.45 printed "Nothing changed.". jj is the real jj
+// (fixturegit.CompiledJJ), which script runs and which every jj command a test makes itself runs
+// by its path, plain jj's included: a jj of the machine's own first on PATH, a dev box's shim,
+// reads a push with the stand-in git and refuses it before jj runs. setup is the test's own git
+// and jj, which make the remote and the repositories, not the stand-in; run is the same with bin
+// first on PATH, which runs the wrapper.
 type jjWrapper struct {
-	dir, log, gitWrapper, script, remote string
-	setup, run                           fixturegit.Runner
+	dir, jj, log, gitWrapper, script, remote string
+	setup, run                               fixturegit.Runner
 }
 
 func newJJWrapper(t *testing.T) jjWrapper {
 	t.Helper()
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("this test runs the real jj, which reads the configuration and pushes: %v", err)
-	}
-	f := jjWrapper{dir: t.TempDir()}
+	f := jjWrapper{dir: t.TempDir(), jj: fixturegit.CompiledJJ(t)}
 	bin := filepath.Join(f.dir, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -312,8 +312,9 @@ func newJJWrapper(t *testing.T) jjWrapper {
 		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(f.dir, "stand-in-git"), f.log),
 	})
 	f.script = wrapperCopy(t, f.dir, "jj",
-		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"real=/usr/local/bin/jj", "real=" + f.jj},
 		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + f.gitWrapper},
+		[2]string{"legion=/opt/legion/bin/legion", "legion=" + passingLegion(t, filepath.Join(f.dir, "stand-in-legion"))},
 	)
 	f.setup = fixturegit.Isolated(t, filepath.Join(f.dir, "home"))
 	f.remote = filepath.Join(f.dir, "remote.git")
@@ -325,9 +326,15 @@ func newJJWrapper(t *testing.T) jjWrapper {
 // repo is a new jj repository named name under the fixture's directory, with the remote as origin.
 func (f jjWrapper) repo(name string) string {
 	repo := filepath.Join(f.dir, name)
-	f.setup.Run(f.dir, fixturegit.JJInit(repo, false)...)
-	f.setup.Run(repo, "jj", "git", "remote", "add", "origin", f.remote)
+	f.setup.Run(f.dir, jjInit(f.jj, repo)...)
+	f.setup.Run(repo, f.jj, "git", "remote", "add", "origin", f.remote)
 	return repo
+}
+
+// jjInit is fixturegit.JJInit of dir, a repository jj does not colocate, made by the jj at jj
+// rather than the first jj on PATH.
+func jjInit(jj, dir string) []string {
+	return append([]string{jj}, fixturegit.JJInit(dir, false)[1:]...)
 }
 
 // assertRefused fails the test unless the jj wrapper's run that printed out and returned err
@@ -349,7 +356,9 @@ func assertRefused(t *testing.T, out string, err error, says string) {
 // those arguments answered for a push nobody was making and let that one through to an unwrapped
 // git — a push with no pre-push hook and so no leak check. jj prints `git` and exits 0 when
 // nothing sets the value, so a read that fails answers for no git, and the wrapper refuses the
-// push rather than take it for the bare `git` the read used to stand for.
+// push rather than take it for the bare `git` the read used to stand for. A push it lets through
+// goes to legion jj, here a stand-in that runs the real jj with the line the wrapper hands it, the
+// git wrapper's layers included, and no step (passingLegion).
 func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	f := newJJWrapper(t)
 	// A configuration file naming another git, for the --config-file spelling.
@@ -432,7 +441,7 @@ func TestTheJJWrapperPrintsJJsOwnErrorForAPushItCannotRead(t *testing.T) {
 		{name: "a -R after --", args: []string{"git", "push", "--", "-R", empty}, says: "unexpected argument '-R' found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if out, err := f.setup.Try(repo, append([]string{"jj"}, tc.args...)...); err == nil || !strings.Contains(out, tc.says) {
+			if out, err := f.setup.Try(repo, append([]string{f.jj}, tc.args...)...); err == nil || !strings.Contains(out, tc.says) {
 				t.Fatalf("plain jj %q does not fail saying %q, so what this case expects of the wrapper is stale: %v\n%s", tc.args, tc.says, err, out)
 			}
 			wrapped := exec.Command(f.script, tc.args...)
@@ -475,7 +484,7 @@ func TestTheJJWrapperChecksAGerritUploadAsAPush(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "file"), []byte("a change\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f.setup.Run(repo, "jj", "describe", "-m", "a change")
+	f.setup.Run(repo, f.jj, "describe", "-m", "a change")
 
 	for _, tc := range []struct {
 		name       string
@@ -540,7 +549,7 @@ func TestTheJJWrapperReadsTheRepositoryNamedAfterTheSubcommand(t *testing.T) {
 		{name: "an earlier -R naming it", executable: "/usr/bin/git", args: []string{"-R", named, "git", "push", "-R", clean}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f.setup.Run(f.dir, "jj", "-R", named, "config", "set", "--repo", "git.executable-path", tc.executable)
+			f.setup.Run(f.dir, f.jj, "-R", named, "config", "set", "--repo", "git.executable-path", tc.executable)
 			out, err := f.run.Try(f.dir, append([]string{f.script}, tc.args...)...)
 			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
 			if refused != tc.refused {
@@ -574,9 +583,9 @@ func TestTheJJWrapperKeepsACommandScopedGitOffThePush(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "file"), []byte("a change\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f.setup.Run(repo, "jj", "describe", "-m", "a change")
-	f.setup.Run(repo, "jj", "bookmark", "create", "probe", "-r", "@")
-	repoConfig := f.setup.Run(repo, "jj", "config", "path", "--repo")
+	f.setup.Run(repo, f.jj, "describe", "-m", "a change")
+	f.setup.Run(repo, f.jj, "bookmark", "create", "probe", "-r", "@")
+	repoConfig := f.setup.Run(repo, f.jj, "config", "path", "--repo")
 
 	for _, tc := range []struct {
 		name, command string
@@ -641,11 +650,11 @@ func TestTheJJWrapperKeepsTheCallersConfigurationOnThePushUnderItsOwnGit(t *test
 	if err := os.WriteFile(filepath.Join(repo, "file"), []byte("a change\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f.setup.Run(repo, "jj", "describe", "-m", "a change")
-	f.setup.Run(repo, "jj", "bookmark", "create", "probe", "-r", "@")
+	f.setup.Run(repo, f.jj, "describe", "-m", "a change")
+	f.setup.Run(repo, f.jj, "bookmark", "create", "probe", "-r", "@")
 	elsewhere := filepath.Join(f.dir, "elsewhere.git")
 	f.setup.Run(f.dir, fixturegit.InitBare(elsewhere, "main")...)
-	f.setup.Run(repo, "jj", "git", "remote", "add", "elsewhere", elsewhere)
+	f.setup.Run(repo, f.jj, "git", "remote", "add", "elsewhere", elsewhere)
 
 	// A scope naming the other git for the push alone, passed on the push's own command line in
 	// each spelling of --config. Whatever the wrapper does about it, refuse the push or run it
@@ -700,12 +709,177 @@ func TestTheJJWrapperKeepsTheCallersConfigurationOnThePushUnderItsOwnGit(t *test
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := []string{"--config", tc.config, "git", "push", "--bookmark", "probe", "--dry-run"}
-			if out, err := f.setup.Try(repo, append([]string{"jj"}, args...)...); !strings.Contains(out, tc.says) {
+			if out, err := f.setup.Try(repo, append([]string{f.jj}, args...)...); !strings.Contains(out, tc.says) {
 				t.Fatalf("plain jj %q does not say %q, so what this case expects of the wrapper is stale: %v\n%s", args, tc.says, err, out)
 			}
 			out, err := f.run.Try(repo, append([]string{f.script}, args...)...)
 			if !strings.Contains(out, tc.says) {
 				t.Fatalf("the wrapper's push of %q does not say %q as plain jj does, so it ran with a configuration other than the one its read checked: %v\n%s", args, tc.says, err, out)
+			}
+		})
+	}
+}
+
+// passingLegion is a stand-in for legion at path that takes `jj --real <real> -- <arguments>`, as
+// the jj wrapper hands it a push, and runs the real jj with the arguments, as legion jj does when
+// its step has nothing to do. Any other command line exits 97.
+func passingLegion(t *testing.T, path string) string {
+	t.Helper()
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = jj ] && [ \"$2\" = --real ] && [ \"$4\" = -- ] || exit 97\n" +
+		"real=$3\n" +
+		"shift 4\n" +
+		"exec \"$real\" \"$@\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The jj wrapper hands a line it reads as a `jj git push` to legion jj, which runs the step that
+// sets each commit's author, where its rules let it, and then the push: after its setup checks,
+// it runs legion as `jj --real <the real jj> -- <the line>`, the line being the one it runs the
+// real jj with for a `jj gerrit upload`. That line is the git wrapper's first layer
+// (`--config=git.executable-path="<the git wrapper>"` and `--config-file=/dev/null`), then the
+// command line as jj expands it, global options in front of the command included, with the git
+// wrapper once more as its last layer, which goes right in front of the command where no
+// `--config` or `--config-file` of the caller's is after it, as in each push here. An alias of the
+// repository's own that expands to a push reaches legion as its expansion. Every other command
+// reaches the real jj, the first layer in front of its arguments, and legion is not run; so does
+// `jj gerrit upload`, which the wrapper checks as a push, and which therefore gets the last layer
+// too. The two setup refusals still come first: a git on PATH that is not the git wrapper, or a
+// git.executable-path naming another git, is refused in the shared check's words and with its
+// status, and legion is never run.
+func TestTheJJWrapperHandsAPushToLegionJJ(t *testing.T) {
+	jj := fixturegit.CompiledJJ(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The git wrapper, under the name and in the directory the jj wrapper looks for on PATH.
+	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "git-argv")),
+	})
+	repo := filepath.Join(dir, "repo")
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+	run.Run(dir, jjInit(jj, repo)...)
+	// An alias of the repository's own that expands to a push, which jj reads from the repository
+	// a command runs in.
+	run.Run(repo, jj, "config", "set", "--repo", "aliases.up", `["git", "push", "-b", "b"]`)
+	// copyWith is a copy of the jj wrapper in a directory of its own whose real jj is real and
+	// whose legion is a logging stand-in, and the log of that legion.
+	copyWith := func(t *testing.T, real string) (script, legionLog string) {
+		t.Helper()
+		at := t.TempDir()
+		legionLog = filepath.Join(at, "legion-argv")
+		script = wrapperCopy(t, at, "jj",
+			[2]string{"real=/usr/local/bin/jj", "real=" + real},
+			[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+			[2]string{"legion=/opt/legion/bin/legion", "legion=" + logging(t, filepath.Join(at, "stand-in-legion"), legionLog)},
+		)
+		return script, legionLog
+	}
+	// first is the git wrapper's layer in front of every line the wrapper runs; last is the layer
+	// it writes once more on a push, the last one jj reads.
+	force := `--config=git.executable-path="` + gitWrapper + `"`
+	first := []string{force, "--config-file=/dev/null"}
+	last := []string{"--config-file=/dev/null", force}
+
+	for _, tc := range []struct {
+		// options are the global options in front of the command; command is the rest of the line.
+		options, command []string
+		// expansion is what jj expands command to; command itself where nil.
+		expansion []string
+	}{
+		{command: []string{"git", "push", "--bookmark", "legion/K-1"}},
+		{options: []string{"-R", repo, "--config", "user.email=a@example.invalid"}, command: []string{"git", "push", "-c", "@", "--dry-run"}},
+		{options: []string{"--at-op", "@"}, command: []string{"git", "--color", "never", "push", "--named", "x=@"}},
+		{options: []string{"--repository=" + repo, "--config=ui.color=\"never\""}, command: []string{"git", "push", "--change=@"}},
+		// aliases.up, of the repository's own configuration.
+		{command: []string{"up"}, expansion: []string{"git", "push", "-b", "b"}},
+	} {
+		args := slices.Concat(tc.options, tc.command)
+		t.Run("push "+strings.ReplaceAll(strings.Join(args, " "), repo, "<repo>"), func(t *testing.T) {
+			script, legionLog := copyWith(t, jj)
+			if out, err := run.Try(repo, append([]string{script}, args...)...); err != nil {
+				t.Fatalf("the wrapper: %v\n%s", err, out)
+			}
+			expansion := tc.expansion
+			if expansion == nil {
+				expansion = tc.command
+			}
+			want := slices.Concat([]string{"jj", "--real", jj, "--"}, first, tc.options, last, expansion)
+			if got := ranAs(t, legionLog); !slices.Equal(got, want) {
+				t.Fatalf("the wrapper ran legion with %q, want %q", got, want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		// options are the global options in front of the command; command is the rest of the line.
+		options, command []string
+		// checked is whether the wrapper checks the line as a push, and so writes its last layer.
+		checked bool
+	}{
+		{command: []string{"log", "-r", "@", "--no-graph"}},
+		{command: []string{"git", "fetch", "--remote", "push"}},
+		{options: []string{"--config", "git.executable-path=/usr/bin/git"}, command: []string{"status"}},
+		{options: []string{"-R", repo}, command: []string{"git", "remote", "list"}},
+		{command: []string{"gerrit", "upload", "-r", "@", "--remote", "origin", "-b", "main"}, checked: true},
+	} {
+		args := slices.Concat(tc.options, tc.command)
+		t.Run("not to legion: "+strings.ReplaceAll(strings.Join(args, " "), repo, "<repo>"), func(t *testing.T) {
+			// The real jj is a stand-in that hands its arguments to logging, which logs them, but for
+			// the read of the git a push would use, as the wrapper makes it for a line with no
+			// repository or configuration option, which it hands to the real jj.
+			at := t.TempDir()
+			realLog := filepath.Join(at, "argv")
+			logged := logging(t, filepath.Join(at, "logged-jj"), realLog)
+			standIn := filepath.Join(at, "stand-in-jj")
+			body := "#!/bin/sh\n" +
+				"[ \"$*\" = '--ignore-working-copy --color=never config get git.executable-path' ] && exec '" + jj + "' \"$@\"\n" +
+				"exec '" + logged + "' \"$@\"\n"
+			if err := os.WriteFile(standIn, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			script, legionLog := copyWith(t, standIn)
+			if out, err := run.Try(repo, append([]string{script}, args...)...); err != nil {
+				t.Fatalf("the wrapper: %v\n%s", err, out)
+			}
+			want := slices.Concat(first, args)
+			if tc.checked {
+				want = slices.Concat(first, tc.options, last, tc.command)
+			}
+			if got := ranAs(t, realLog); !slices.Equal(got, want) {
+				t.Fatalf("the wrapper ran the real jj with %q, want %q", got, want)
+			}
+			if _, err := os.Stat(legionLog); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the wrapper ran legion for a command legion jj does not take (%v)", err)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		args []string
+		// names is what the refusal names.
+		names string
+	}{
+		{name: "a git on PATH that is not the wrapper", path: os.Getenv("PATH"), args: []string{"git", "push"}, names: "the git on PATH is"},
+		{name: "a --config naming another git", path: bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+			args: []string{"git", "push", "--config", "git.executable-path=/usr/bin/git"}, names: "/usr/bin/git"},
+	} {
+		t.Run("refused: "+tc.name, func(t *testing.T) {
+			script, legionLog := copyWith(t, jj)
+			out, err := run.With("PATH="+tc.path).Try(repo, append([]string{script}, tc.args...)...)
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.ExitCode() != 2 || !strings.Contains(out, "LEAK CHECK SETUP ERROR") || !strings.Contains(out, tc.names) {
+				t.Fatalf("the wrapper exited %v and printed\n%s\nwant the shared check's setup error, naming %q, and status 2", err, out, tc.names)
+			}
+			if _, err := os.Stat(legionLog); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the wrapper ran legion after a setup refusal (%v)", err)
 			}
 		})
 	}
@@ -745,10 +919,7 @@ func TestTheJJWrapperKeepsTheCallersConfigurationOnThePushUnderItsOwnGit(t *test
 // then put after `status`, a deeper level than the caller's own `--config`, so jj dropped the
 // caller's: `jj --config <a template> st` ran without it.
 func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("this test runs the real jj, which reads the configuration: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
@@ -761,19 +932,20 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 	script := wrapperCopy(t, dir, "jj",
 		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
 		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+		[2]string{"legion=/opt/legion/bin/legion", "legion=" + passingLegion(t, filepath.Join(dir, "stand-in-legion"))},
 	)
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
 	// plain names no git of its own and has the remote a real push has, so a push from it runs to
 	// jj's "Nothing changed." under jj 0.45 and 0.46 alike and runs no git.
 	plain := filepath.Join(dir, "plain")
-	run.Run(dir, fixturegit.JJInit(plain, false)...)
+	run.Run(dir, jjInit(jj, plain)...)
 	remote := filepath.Join(dir, "remote.git")
 	run.Run(dir, fixturegit.InitBare(remote, "")...)
-	run.Run(plain, "jj", "git", "remote", "add", "origin", remote)
+	run.Run(plain, jj, "git", "remote", "add", "origin", remote)
 	// another names another git in its own configuration.
 	another := filepath.Join(dir, "another")
-	run.Run(dir, fixturegit.JJInit(another, false)...)
-	run.Run(another, "jj", "config", "set", "--repo", "git.executable-path", "/usr/bin/git")
+	run.Run(dir, jjInit(jj, another)...)
+	run.Run(another, jj, "config", "set", "--repo", "git.executable-path", "/usr/bin/git")
 	configFile := filepath.Join(dir, "another.toml")
 	if err := os.WriteFile(configFile, []byte("git.executable-path = \"/usr/bin/git\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -781,19 +953,19 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 	// aliased names another git in its own configuration, beside the aliases jj reads from the
 	// repository a command runs in. jj ignores the aliases that have a built-in command's name.
 	aliased := filepath.Join(dir, "aliased")
-	run.Run(dir, fixturegit.JJInit(aliased, false)...)
+	run.Run(dir, jjInit(jj, aliased)...)
 	// defaulted names another git and runs `git push` for a command line that names no command.
 	// Its bookmark has a built-in command's name, log.
 	defaulted := filepath.Join(dir, "defaulted")
-	run.Run(dir, fixturegit.JJInit(defaulted, false)...)
-	run.Run(defaulted, "jj", "bookmark", "create", "log", "-r", "@")
+	run.Run(dir, jjInit(jj, defaulted)...)
+	run.Run(defaulted, jj, "bookmark", "create", "log", "-r", "@")
 	// carrier names no git of its own; its alias pushes from another, which does.
 	carrier := filepath.Join(dir, "carrier")
-	run.Run(dir, fixturegit.JJInit(carrier, false)...)
+	run.Run(dir, jjInit(jj, carrier)...)
 	// twice names another git, and its default command names an alias of options only, which a
 	// command line naming that alias has expanded already.
 	twice := filepath.Join(dir, "twice")
-	run.Run(dir, fixturegit.JJInit(twice, false)...)
+	run.Run(dir, jjInit(jj, twice)...)
 	for _, setting := range []struct{ repository, key, value string }{
 		{aliased, "git.executable-path", "/usr/bin/git"},
 		{aliased, "aliases.p", `["git", "push"]`},
@@ -817,7 +989,7 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 		{plain, "aliases.tp.definition", `["git", "push"]`},
 		{plain, "aliases.tp.description", `"a table alias, which jj 0.45 and 0.46 both run"`},
 	} {
-		run.Run(setting.repository, "jj", "config", "set", "--repo", setting.key, setting.value)
+		run.Run(setting.repository, jj, "config", "set", "--repo", setting.key, setting.value)
 	}
 
 	for _, tc := range []struct {
@@ -929,10 +1101,7 @@ func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 // itself, with the scoped git: the remote then holds the bookmark, so the test can see another git
 // push.
 func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("this test runs the real jj, which pushes: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
@@ -945,6 +1114,7 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 	script := wrapperCopy(t, dir, "jj",
 		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
 		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+		[2]string{"legion=/opt/legion/bin/legion", "legion=" + passingLegion(t, filepath.Join(dir, "stand-in-legion"))},
 	)
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With(
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -1006,16 +1176,16 @@ func TestTheJJWrapperRunsEveryPushThroughTheGitWrapper(t *testing.T) {
 				bookmark = "b"
 			}
 			remote := repo + "-remote.git"
-			run.Run(dir, fixturegit.JJInit(repo, false)...)
+			run.Run(dir, jjInit(jj, repo)...)
 			run.Run(dir, fixturegit.InitBare(remote, "")...)
 			if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			run.Run(repo, "jj", "commit", "-m", "c")
-			run.Run(repo, "jj", "bookmark", "create", bookmark, "-r", "@-")
-			run.Run(repo, "jj", "git", "remote", "add", "origin", remote)
+			run.Run(repo, jj, "commit", "-m", "c")
+			run.Run(repo, jj, "bookmark", "create", bookmark, "-r", "@-")
+			run.Run(repo, jj, "git", "remote", "add", "origin", remote)
 			if tc.config != "" {
-				path := strings.TrimSpace(run.Out(repo, "jj", "config", "path", "--repo"))
+				path := strings.TrimSpace(run.Out(repo, jj, "config", "path", "--repo"))
 				file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 				if err != nil {
 					t.Fatal(err)

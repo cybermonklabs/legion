@@ -123,10 +123,12 @@
 # created and nothing else, and leaves the logs; it runs on a normal exit, on Ctrl-C, on SIGTERM
 # and on a failure part way through, so a start that fails before "ready" leaves nothing running,
 # and ends within seconds of the process that failed, one that exited after it reported its port
-# among them: every readiness request gives up after 5 s. Each process gets 10 s after its SIGTERM
-# and is then killed, which the log says, so one that ignores the signal delays the drops and does
-# not prevent them. Only a process this script started and that is still running is signalled,
-# never whatever holds the pid of one that exited earlier. A SIGTERM sent to the whole process
+# among them: every readiness request gives up after 5 s (DEV_STACK_READINESS_REQUEST_SECONDS sets
+# another whole number of seconds). Each process gets 10 s after its SIGTERM
+# (DEV_STACK_STOP_GRACE_SECONDS sets another) and is then killed, which the log says, so one that
+# ignores the signal delays the drops and does not prevent them. Only a process this script started
+# and that is still running is signalled, never whatever holds the pid of one that exited earlier,
+# and one that has exited is never waited on. A SIGTERM sent to the whole process
 # group, as a supervisor's stop sends it, is that same stop, and so is the same signal repeated
 # while the stop runs, and so is either with this script's standard error piped to a reader the
 # signal stops too (`dev-stack.sh 2>&1 | tee`: the stop writes its lines there), and so is a closed
@@ -136,7 +138,7 @@
 #
 # With --callout the hub runs behind the NATS auth service, in two brokers, which
 # scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds. It
-# is refused beside --project-access, since both brokers would take the airlock proxy's one port.
+# is refused beside --project-access, since the airlock proxy's front points at one broker's proxy.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -175,10 +177,17 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$SCRIPT_DIR/lib/exec-env.sh"
 
+# The stop's grace and a readiness request's bound when the caller sets neither
+# DEV_STACK_STOP_GRACE_SECONDS nor DEV_STACK_READINESS_REQUEST_SECONDS (usage, below). Each is a
+# line of its own: scripts/dev-stack.test.sh reads both here rather than copying the numbers.
+DEFAULT_STOP_GRACE_SECONDS=10
+DEFAULT_READINESS_REQUEST_SECONDS=5
+
 usage() {
   cat <<'EOF'
 Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout]
-                    [--project-access] [--help]
+                    [--project-access] [--approve [--approve-allow-all]]
+                    [--broker-bin <file>] [--dispatch-bin <file>] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
@@ -201,8 +210,27 @@ and Dispatch admits that account to its access routes. The run also starts the a
 broker's proxy, and dev-airlock-stands in a docker container, so it needs docker. Without the
 option none of this runs, as before.
 
---callout and --project-access cannot run together: both of --callout's brokers would take the
-airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
+--callout and --project-access cannot run together: the airlock proxy's front points at the
+first broker's proxy alone, and --callout starts two. The pair is refused with exit 2 before
+anything is created or started.
+
+With --approve, a person's approvals go through Cipher's proxy (scripts/lib/approve-stack.sh):
+the broker gets its proxy port and the dpop block DISPATCH_APPROVE_TOKEN, bound to
+dispatch.approve.test and sent to this run's Dispatch on loopback, and Dispatch serves under
+https://dispatch.approve.test, the origin the proxy signs its proofs for. --approve-allow-all opens
+that block's allow list to every method on /api/. --approve runs alone of --callout and
+--project-access, each of which takes the proxy's port.
+
+--broker-bin and --dispatch-bin run the given file as the broker or Dispatch in place of the one
+built or copied, for a check's control build.
+EOF
+  cat <<EOF
+DEV_STACK_STOP_GRACE_SECONDS ($DEFAULT_STOP_GRACE_SECONDS unless set) is how long the stop gives
+each process after its SIGTERM before it kills it, and DEV_STACK_READINESS_REQUEST_SECONDS
+($DEFAULT_READINESS_REQUEST_SECONDS unless set) how long each readiness request waits for an
+answer. Each is a whole number of seconds from 1 to 9999, written without a leading zero; any
+other value, an empty one among them, is refused with exit 2 before anything is created or
+started.
 EOF
 }
 
@@ -210,6 +238,10 @@ CALLOUT=false
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
 PROJECT_ACCESS=false
+APPROVE=false
+APPROVE_ALLOW_ALL=false
+BROKER_BIN_OPTION=""
+DISPATCH_BIN_OPTION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -248,6 +280,22 @@ while [ "$#" -gt 0 ]; do
       PROJECT_ACCESS=true
       shift
       ;;
+    --approve)
+      APPROVE=true
+      shift
+      ;;
+    --approve-allow-all)
+      APPROVE_ALLOW_ALL=true
+      shift
+      ;;
+    --broker-bin | --dispatch-bin)
+      if [ "$#" -lt 2 ] || [ ! -f "$2" ] || [ ! -x "$2" ]; then
+        echo "dev-stack: $1 needs an executable file" >&2
+        exit 2
+      fi
+      if [ "$1" = --broker-bin ]; then BROKER_BIN_OPTION="$2"; else DISPATCH_BIN_OPTION="$2"; fi
+      shift 2
+      ;;
     --help | -h)
       usage
       exit 0
@@ -260,14 +308,35 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# --- --callout starts two brokers with one set of settings, and --project-access gives every
-# broker the one airlock proxy port this run picks (BROKER_AIRLOCK_LISTEN_ADDR), so the second
-# broker could not bind it and its start would stop the run. The pair is refused here, before
-# anything is created or started. ---
+# --- --callout starts two brokers with one set of settings, and --project-access names the airlock
+# proxy by one front, which it points at the first broker's proxy alone (project_access_proxy_check),
+# so nothing would reach the second broker's proxy. The pair is refused here, before anything is
+# created or started. ---
 if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
-  echo "dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port" >&2
+  echo "dev-stack: --callout and --project-access cannot run together: the airlock proxy's front points at the first broker's proxy alone, and --callout starts two" >&2
   exit 2
 fi
+if [ "$APPROVE" = true ] && { [ "$CALLOUT" = true ] || [ "$PROJECT_ACCESS" = true ]; }; then
+  echo "dev-stack: --approve runs alone of --callout and --project-access: each takes the broker's proxy port" >&2
+  exit 2
+fi
+if [ "$APPROVE_ALLOW_ALL" = true ] && [ "$APPROVE" != true ]; then
+  echo "dev-stack: --approve-allow-all opens the allow list of --approve's block, so it needs --approve" >&2
+  exit 2
+fi
+
+# --- The stop's grace and a readiness request's bound (usage, above), checked before anything is
+# created: a value bash arithmetic cannot read would end the stop between the kills and the drops,
+# and one with a leading zero it reads as octal. A variable that is set is checked even when
+# empty, which would otherwise read as unset. The stop reads its grace where it runs
+# (stop_bounded), so scripts/dev-stack.test.sh can run it alone. ---
+for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; do
+  if [[ -v $bound ]] && ! [[ ${!bound} =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "dev-stack: $bound must be a whole number of seconds from 1 to 9999, not '${!bound}'" >&2
+    exit 2
+  fi
+done
+READINESS_REQUEST_SECONDS="${DEV_STACK_READINESS_REQUEST_SECONDS:-$DEFAULT_READINESS_REQUEST_SECONDS}"
 
 # --- The one input, checked before anything is created, so a missing or malformed URL leaves
 # nothing behind. The three sources in order, as the header names them. ---
@@ -338,6 +407,9 @@ fi
 if [ "$PROJECT_ACCESS" = true ]; then
   required_tools+=(docker)
 fi
+if [ "$APPROVE" = true ]; then
+  required_tools+=(openssl)
+fi
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null || {
     echo "dev-stack: $tool is required on PATH" >&2
@@ -398,6 +470,10 @@ FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
 # here, once that is made, on every run.
 # shellcheck source=lib/project-access-stack.sh
 . "$SCRIPT_DIR/lib/project-access-stack.sh"
+# What --approve adds: the broker's proxy with the approve capability's dpop block, and the origin
+# Dispatch serves under. Its functions do nothing without the option.
+# shellcheck source=lib/approve-stack.sh
+. "$SCRIPT_DIR/lib/approve-stack.sh"
 # The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
 # nothing here calls AWS.
 SECRETS_PREFIX="example/agent-secrets/"
@@ -488,40 +564,66 @@ DISPATCH_PID=""
 BROKER_DB_CREATED=false
 DISPATCH_DB_CREATED=false
 
-# running_child PID: whether PID is a process this shell started that bash still counts as running
-# (jobs -rp), the one test each stop below makes before every signal it sends. A process of the
-# stack that exited early, a crash during a long run or the second broker callout-check.sh kills,
-# has been reaped and is listed no longer, and its pid is free: on a busy box the kernel hands it
-# to another process within minutes, which kill -0 cannot tell from the one this run started, so a
-# stop that signalled by pid alone could SIGTERM, and 10 s later SIGKILL, a process of someone
-# else's. A child that has exited and is not yet reaped still holds its pid, so it is listed and a
-# signal to it reaches no one else.
+# running_child PID: whether PID is a process this shell started that is still there, the one test
+# each stop below makes before every signal it sends. Bash must still count it as running (jobs
+# -rp): a process of the stack that exited early, a crash during a long run or the second broker
+# callout-check.sh kills, has been reaped and is listed no longer, and its pid is free: on a busy
+# box the kernel hands it to another process within minutes, which kill -0 cannot tell from the one
+# this run started, so a stop that signalled by pid alone could SIGTERM, and 10 s later SIGKILL, a
+# process of someone else's. And the kernel must still name this shell its parent (field 4 of
+# /proc/PID/stat, read past the last `) ` because a process names itself; ps on a host with no
+# /proc): bash 5.2 loses the exit of a child that ends while a trapped signal interrupts the
+# `wait -n` below, which a group's SIGTERM does to every child at once, and then lists that child
+# as running for good although the kernel has reaped it. The stop of such a run waited out the
+# whole grace on the Dispatch port keeper, gone since the signal, and logged that it killed it.
+# A child that has exited and is not yet reaped still holds its pid and its parent, so it is
+# running here and a signal to it reaches no one else. Each answer is an explicit return 0 or 1:
+# cleanup runs inside a trap, where a bare `return` gives the status of the command the trap
+# interrupted (130 from the `wait -n` an INT cut short), not that of the test before it.
 running_child() {
-  local child
+  local child stat=""
+  local -a fields
   for child in $(jobs -rp); do
-    [ "$child" = "$1" ] && return 0
+    [ "$child" = "$1" ] || continue
+    if [ -d /proc/self ]; then
+      { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+      [ -n "$stat" ] || return 1
+      read -r -a fields <<<"${stat##*) }"
+      [ "${fields[1]}" = "$$" ] && return 0
+      return 1
+    fi
+    [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ] && return 0
+    return 1
   done
   return 1
 }
 
-# stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to 10 s for it
-# to exit, then SIGKILL, which the log names, so a process that ignores or outlives its SIGTERM
-# holds the stop 10 s at most and the drops below still run. Cleanup ignores every further INT and
-# TERM, so a `wait` on such a process would have held the stop, and both databases, for good. The
-# look is running_child every 0.1 s, so a process that exits during the 10 s is never signalled
-# again, whatever holds its pid by then.
+# stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to the grace,
+# DEV_STACK_STOP_GRACE_SECONDS or DEFAULT_STOP_GRACE_SECONDS, for it to exit, then SIGKILL, which
+# the log names with the time from the SIGTERM to the kill, so a process that ignores or outlives
+# its SIGTERM holds the stop that long at most and the drops below still run. Cleanup ignores every
+# further INT and TERM, so a `wait` on such a process would have held the stop, and both
+# databases, for good. The look is running_child every 0.1 s, so a process that exits during the
+# grace is never signalled again, whatever holds its pid by then. The grace is counted in
+# microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may make
+# a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS plus
+# 10 came up to a second short.
 stop_bounded() {
-  local name="$1" pid="$2" deadline
+  local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-$DEFAULT_STOP_GRACE_SECONDS}"
+  local termed deadline waited
   if [ -z "$pid" ] || ! running_child "$pid"; then
     return 0
   fi
   kill "$pid" 2>/dev/null
-  deadline=$((SECONDS + 10))
-  while running_child "$pid" && ((SECONDS < deadline)); do
+  termed=${EPOCHREALTIME//[!0-9]/}
+  deadline=$((termed + grace * 1000000))
+  while running_child "$pid" && ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
     sleep 0.1
   done
   if running_child "$pid"; then
-    echo "dev-stack: $name (pid $pid) did not stop within 10 s of its SIGTERM; killing it" >&2
+    waited=$((${EPOCHREALTIME//[!0-9]/} - termed))
+    printf 'dev-stack: %s (pid %s) did not stop within %s s of its SIGTERM; killing it %d.%03d s after it\n' \
+      "$name" "$pid" "$grace" $((waited / 1000000)) $((waited % 1000000 / 1000)) >&2
     kill -KILL "$pid" 2>/dev/null
   fi
   wait "$pid" 2>/dev/null
@@ -568,6 +670,7 @@ cleanup() {
   stop_bounded 'the listener port keeper' "$LISTENER_KEEPER_PID"
   stop_bounded 'the second broker' "$BROKER2_PID"
   stop_bounded broker "$BROKER_PID"
+  stop_bounded "the airlock proxy's front" "${AIRLOCK_FRONT_PID:-}"
   stop_bounded natsd "$NATS_PID"
   stop_bounded dev-oidc-issuer "$ISSUER_PID"
   stop_bounded 'the Dispatch port keeper' "$KEEPER_PID"
@@ -649,6 +752,15 @@ else
     [ "$built" = "${stack_entry%%=*}" ] || mv "$BIN_DIR/$built" "$BIN_DIR/${stack_entry%%=*}"
   done
 fi
+# A check's control build, in place of the broker or Dispatch built or copied above.
+if [ -n "$BROKER_BIN_OPTION" ]; then
+  echo "dev-stack: running $BROKER_BIN_OPTION as the broker" >&2
+  cp "$BROKER_BIN_OPTION" "$BIN_DIR/broker"
+fi
+if [ -n "$DISPATCH_BIN_OPTION" ]; then
+  echo "dev-stack: running $DISPATCH_BIN_OPTION as Dispatch" >&2
+  cp "$DISPATCH_BIN_OPTION" "$BIN_DIR/dispatch"
+fi
 
 # --- Each process's readiness is read from its own log, or from its answer at the port it reported
 # there, never from a port this script chose: await runs one reader until it prints a value, and
@@ -680,13 +792,14 @@ await() {
 
 # answered_at URL is await's reader for a server's answer: it prints "answered" once URL answers
 # with no HTTP error (curl -f), so a server is watched by its process as well as by its port. Each
-# request gives up after 5 s, over the listener's own 3 s health budget, and that bound is what lets
-# await's deadline and its look at the process hold: the listener and Dispatch serve on a socket
-# their keeper holds for the whole run, so once either has exited the kernel still queues a request
-# on its port and no process ever answers it. A request with no bound waited there for good, and a
+# request gives up after READINESS_REQUEST_SECONDS, 5 s unless DEV_STACK_READINESS_REQUEST_SECONDS
+# sets another, over the listener's own 3 s health budget, and that bound is what lets await's
+# deadline and its look at the process hold: the listener and Dispatch serve on a socket their
+# keeper holds for the whole run, so once either has exited the kernel still queues a request on
+# its port and no process ever answers it. A request with no bound waited there for good, and a
 # stop signal to this script with it, since bash runs a trap only once the command in the
 # foreground has returned.
-answered_at() { curl -sf --max-time 5 "$1" >/dev/null && echo answered; }
+answered_at() { curl -sf --max-time "$READINESS_REQUEST_SECONDS" "$1" >/dev/null && echo answered; }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
 broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
@@ -711,13 +824,15 @@ KEEPER_PID=$!
 await 'the Dispatch port keeper' "$KEEPER_PID" "$KEEPER_LOG" "$KEEPER_PORT_FILE" 'the port it holds' kept_port_in
 DISPATCH_PORT="$awaited"
 DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
+approve_dispatch_setup
 
 # --- The local issuer. It writes every token file before it logs its URL, so once that line is
 # there the files are there to be read. Every sign-in it serves, through the code flow or the
 # device grant, signs the approver in: nothing here queues another person at its
-# POST /_dev/sign-in-as control route. The two client secrets are written under umask 077, so
-# neither is readable by anyone else even for a moment, and neither process takes one on its
-# command line. ---
+# POST /_dev/sign-in-as control route. The code flow's one callback is the broker's approval page
+# on loopback, which the issuer takes at the port the broker binds below. The two client secrets
+# are written under umask 077, so neither is readable by anyone else even for a moment, and
+# neither process takes one on its command line. ---
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$SIGNIN_SECRET_FILE")
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$DEVICE_SECRET_FILE")
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$MACHINE_SECRET_FILE")
@@ -733,7 +848,7 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$BROKER_AUDIENCE=$PRIV_ACCOUNT=$PRIV_POD_TOKEN_FILE" \
   --token "$DISPATCH_AUDIENCE=$BROKER_ACCESS_ACCOUNT=$BROKER_ACCESS_TOKEN_FILE" \
   --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
-  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
+  --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE=http://127.0.0.1/signin/callback" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \
   --sign-in-as "$APPROVER_LOGIN" \
@@ -801,6 +916,8 @@ echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
 # stands they name, started; without the option both are empty and nothing is started.
 project_access_broker_setup
+# The broker's --approve settings (APPROVE_ENV); empty without the option.
+approve_broker_setup
 # start_with_only LOG SETTING... -- COMMAND [ARG...] starts COMMAND in the background, its standard
 # output and error to LOG, with exactly the SETTINGs (NAME=value) as its environment, which env -i
 # gave the processes this script starts, and sets started_pid. The settings reach it through the
@@ -848,6 +965,7 @@ start_broker() {
     BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
     "${PROJECT_ACCESS_ENV[@]}" \
     "${AIRLOCK_ENV[@]}" \
+    "${APPROVE_ENV[@]}" \
     "${callout_broker_env[@]}" \
     -- "$BIN_DIR/broker"
 }
@@ -860,6 +978,9 @@ await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_URL/healthz" 'its health check
 echo "dev-stack: broker $BROKER_URL" >&2
 # Under --project-access, the broker's proxy must be on the port this run picked, or the run stops.
 project_access_proxy_check
+# Under --approve, the broker's proxy must be on the port this run picked and serve the approve
+# capability, or the run stops.
+approve_proxy_check
 callout_after_first_broker
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
@@ -964,10 +1085,9 @@ dispatch_settings=(PATH="$PATH"
   DATABASE_URL="$DISPATCH_DATABASE_URL"
   DISPATCH_LISTEN_FD=3
   DISPATCH_LISTEN_HOST=127.0.0.1
-  DISPATCH_SERVER_URL="$DISPATCH_URL"
+  DISPATCH_SERVER_URL="$DISPATCH_SERVER_URL_SETTING"
   DISPATCH_IDENTITY=cookie
-  DISPATCH_DEV_SIGNIN=1
-  DISPATCH_INSECURE_COOKIE=1
+  "${DISPATCH_SIGNIN_SETTINGS[@]}"
   DISPATCH_AGENT_TOKEN="$DISPATCH_TOKEN_VALUE"
   DISPATCH_AGENT_SECRETS_URL="$BROKER_URL"
   DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE"
@@ -1147,6 +1267,7 @@ dev-stack: ready.
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
   export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
 $(project_access_exports)
+$(approve_exports)
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for

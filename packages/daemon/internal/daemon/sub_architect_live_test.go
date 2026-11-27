@@ -20,7 +20,7 @@
 // whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
+// whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration load,
 // the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has: the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream, the
@@ -73,6 +73,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -118,6 +119,7 @@ type subArchitectLive struct {
 // TestEveryChildThatStartsRunsUnderItsOwnArchitectLive drives the seven steps of the proof
 // against one booted daemon.
 func TestEveryChildThatStartsRunsUnderItsOwnArchitectLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newSubArchitectLive(t)
 	r.step("release", r.releaseStep)
@@ -152,7 +154,7 @@ func newSubArchitectLive(t *testing.T) *subArchitectLive {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = childAdoptionGitHub(t)
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(r.logged))
 	r.root = r.register(r.tree, claim.RoleArchitect, "ses_root_architect", 0)
 	r.note("registered and readied %s's architect as session %s", r.tree, r.root.session)
 	return r
@@ -167,7 +169,7 @@ func (r *subArchitectLive) seed() {
 	ctx := context.Background()
 	r.board.show(r.tree, "in_progress")
 	approved := 1
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.tree, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.tree, Project: r.cfg.Project,
 			Title: r.tree, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A",
@@ -573,7 +575,7 @@ func (r *subArchitectLive) waitClaim(token claim.Token, what string, want func(a
 func (r *subArchitectLive) recorded(key string) *record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(context.Background(), tx, key)
 		return err
@@ -857,7 +859,7 @@ func (r *subArchitectLive) register(issue string, role claim.Role, session strin
 	r.waitClaim(token, "with its shim connected", func(held api.OperatorClaim) bool { return held.State == string(supervise.StateShimConnected) })
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)

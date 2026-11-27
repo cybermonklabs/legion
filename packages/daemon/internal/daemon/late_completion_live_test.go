@@ -36,7 +36,7 @@
 // tool reads it back through Dispatch's `/handoffs/<word>/latest`, and the daemon reads the
 // record a completion names through `/handoffs/<id>` and holds it to that session.
 //
-// The daemon is the whole daemon (run, through startDaemonWithin). What the proof reads is the
+// The daemon is the whole daemon (run, through startDaemonLogging). What the proof reads is the
 // tool's answer, the daemon's own line for each completion it answers (api's handoffComplete,
 // `api: handoff completion answered`, which names the record and the commit the call carried and
 // the status and code it was answered with), and GET /legion/v1/state. GitHub is the harness's
@@ -88,13 +88,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -183,6 +180,7 @@ type lateAnswer struct {
 // approval moved the issue to accepting, each call made by the `legion` tool the panes load; then
 // judges the three late answers.
 func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newLateCompletionLive(t)
 	r.step("step1-the-implementer-pane-completes-implementing-through-the-real-tool-at-its-pushed-head", r.implementerCompletes)
@@ -281,7 +279,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.key, r.cfg.DispatchURL)
 	return r
@@ -368,19 +366,12 @@ func (r *lateCompletionLive) pushedHead() string {
 	return r.workspaceJJ("log", "-r", fmt.Sprintf("remote_bookmarks(exact:%q, exact:\"origin\")", "legion/"+r.key), "--no-graph", "-T", "commit_id")
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// API listener the fixture holds, the workflow's App tokens stood in for, and GitHub's stand-in.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), the
+// workflow's App tokens stood in for, and GitHub's stand-in.
 func (r *lateCompletionLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: r.tokens,
-		githubAPI:      r.github.url,
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens, o.githubAPI = r.tokens, r.github.url
+	return o
 }
 
 // seed records the issue as the daemon would hold it at the moment its implementer began: a root
@@ -396,7 +387,7 @@ func (r *lateCompletionLive) seed() {
 	t.Helper()
 	ctx := context.Background()
 	listed := r.dispatch.issue(r.key)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: listed.Title, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",

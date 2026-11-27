@@ -39,14 +39,27 @@
 --   restored_at, restored_by, restored_by_deploy   when the failure was restored, who said so,
 --                    and the deploy that restored it where one did (a revert's own deploy).
 --
--- production_events_window, (project_key, kind, finished_at desc), is the read of a project's
--- deploys in a window, newest first (R6). production_events_failures_of, (deploy_id) over the
--- failure rows, is the read of the failures that blame one deploy, which every day row of the
--- three measures makes for each deploy it counts. production_events_detected, (project_key,
--- detected_at desc) over the failure rows, is the route's read of a project's failures in a
--- window.
+-- The indexes:
+--   production_events_window, (project_key, kind, finished_at desc), is the read of a project's
+--     deploys in a window, newest first (R6).
+--   production_events_posted, (project_key, finished_at) over the deploys a system posted (source
+--     api), is the read of a project's posted deploys, which the delivery day rows of a project
+--     with an events source read.
+--   production_events_commits, a GIN index of commits over the deploy rows, is the read of the
+--     deploy whose commits hold a commit (prodevents.DeployForCommit), which every check_fail and
+--     revert asks.
+--   production_events_github_runs, (lower(repo), source_ref) over the GitHub adapter's deploy
+--     rows, is the read of a repository's GitHub deploy rows and of the row of one of its runs.
+--   production_events_failures_of, (deploy_id) over the rows that name a deploy, which are the
+--     failure rows, is the read of the failures that blame one deploy, which every day row of the
+--     three measures makes for each deploy it counts, and the check of the foreign key when a
+--     deploy row is deleted.
+--   production_events_restored_by, (restored_by_deploy) over the rows that name one, is the other
+--     foreign key's check when a deploy row is deleted.
+--   production_events_detected, (project_key, detected_at desc) over the failure rows, is the
+--     route's read of a project's failures in a window.
 --
--- A new table and three indexes on it: nothing existing is read or rewritten, and the release
+-- A new table and seven indexes on it: nothing existing is read or rewritten, and the release
 -- before this one neither reads nor writes it, so the two builds roll together. The census
 -- answers 0.
 create table production_events (
@@ -92,5 +105,12 @@ create table production_events (
   constraint production_events_restored check ((restored_at is null) = (restored_by is null))
 );
 create index production_events_window on production_events (project_key, kind, finished_at desc);
-create index production_events_failures_of on production_events (deploy_id) where kind = 'failure';
+create index production_events_posted on production_events (project_key, finished_at)
+  where kind = 'deploy' and source = 'api';
+create index production_events_commits on production_events using gin (commits) where kind = 'deploy';
+create index production_events_github_runs on production_events (lower(repo), source_ref)
+  where kind = 'deploy' and source = 'github';
+create index production_events_failures_of on production_events (deploy_id) where deploy_id is not null;
+create index production_events_restored_by on production_events (restored_by_deploy)
+  where restored_by_deploy is not null;
 create index production_events_detected on production_events (project_key, detected_at desc) where kind = 'failure';

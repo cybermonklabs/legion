@@ -13,7 +13,7 @@ import (
 // PUT /api/v1/settings/delivery still make, clears the progress of the run steps named without a
 // repository alone, the names that release reads and writes: each source repository's progress
 // under its own step names (repoStep) stays, and so does every installation's merged-pull-request
-// search (dispatch://INFRA-978, T9 of its plan).
+// search (dispatch://INFRA-978, D10).
 func TestASingletonSaveLeavesEachSourcesProgress(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	through := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
@@ -72,6 +72,7 @@ func TestASingletonSaveLeavesEachSourcesProgress(t *testing.T) {
 // measures count the middle two, oldest start first. listRuns, which filters on a run's creation
 // (its start here, since none carries created_at), would return the three started at or after from.
 func TestListRunsStartedInIsHalfOpenAndOrderedByStart(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
@@ -123,6 +124,7 @@ func TestListRunsStartedInIsHalfOpenAndOrderedByStart(t *testing.T) {
 // value, an empty one matches anything, and a run stored with neither (one the backfill has not
 // reached) matches only when both filters are empty.
 func TestUpsertRunRoundTripsBranchAndEvent(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
@@ -176,6 +178,7 @@ func TestUpsertRunRoundTripsBranchAndEvent(t *testing.T) {
 // TestListRunsNarrowsContainmentToOneBranch: the creation-time listing containment reads passes
 // "main", so a successful deploy on another branch never ships a pull request.
 func TestListRunsNarrowsContainmentToOneBranch(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	since := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
 	main, feature, push := "main", "feature/x", "push"

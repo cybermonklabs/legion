@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reconnectWaitFixture is a client that reaches NATS through a proxy the test can cut, a subscriber
@@ -71,25 +72,19 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 	t.Helper()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
-	waitFor(t, 5*time.Second, "the client to start reconnecting", f.client.Conn.IsReconnecting)
+	waitFor(t, "the client to start reconnecting", f.client.Conn.IsReconnecting)
 	f.onTick.Store(&onTick)
 	answer := make(chan error, 1)
 	go func() { answer <- f.client.PublishWithin(ctx, f.envelope) }()
 	return answer
 }
 
-// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish has
-// not answered within 15 s.
+// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish never
+// answers: the wait is bounded only by the test binary's deadline (testwait.Receive).
 func (f *reconnectWaitFixture) awaitAnswer(t *testing.T, answer <-chan error) error {
 	t.Helper()
 	defer f.onTick.Store(nil)
-	select {
-	case err := <-answer:
-		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish never returned")
-		return nil
-	}
+	return testwait.Receive(t, "the publish to return", answer)
 }
 
 // requireNothingReceived fails the test if the subscriber receives anything from the publisher.
@@ -120,6 +115,7 @@ func (f *reconnectWaitFixture) requireNothingReceived(t *testing.T, what string,
 // the same reconnect: it must be received, so the cancelled case's silence is the cancel's doing
 // and not a publish that never reached the wait.
 func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
+	t.Parallel()
 	f := newReconnectWaitFixture(t, "cancel-while-reconnecting")
 
 	// publishDuringReconnect starts the publish under ctx while the client is reconnecting, calls
@@ -134,20 +130,20 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		case <-waiting:
 		case err := <-answer:
 			t.Fatalf("the publish answered %v without entering the reconnect wait", err)
-		case <-time.After(5 * time.Second):
-			t.Fatal("the publish never entered the reconnect wait")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish had not entered the reconnect wait by the test's deadline")
 		}
 		release()
 		f.proxy.refuse.Store(false)
 		err := f.awaitAnswer(t, answer)
-		waitFor(t, 10*time.Second, "the client to reconnect", f.client.Conn.IsConnected)
+		waitFor(t, "the client to reconnect", f.client.Conn.IsConnected)
 		return err
 	}
 
-	// The deadline is a minute out, so publishBound's 5 s is the one PublishCoreContext keeps: still
-	// ahead when the cancel lands one tick into the wait and when the reconnect follows about a
-	// second later.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// The deadline is the test binary's less testwait's margin, far out, so publishBound's 5 s is the
+	// one PublishCoreContext keeps: still ahead when the cancel lands one tick into the wait and when
+	// the reconnect follows about a second later.
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	publishErr := publishDuringReconnect(ctx, cancel)
 	f.requireNothingReceived(t, "a publish cancelled during the reconnect wait", publishErr)
@@ -155,15 +151,21 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		t.Fatalf("publish cancelled during the reconnect wait = %v, want an error naming %v", publishErr, context.Canceled)
 	}
 
-	live, cancelLive := context.WithTimeout(context.Background(), time.Minute)
-	defer cancelLive()
-	if err := publishDuringReconnect(live, func() {}); err != nil {
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	if err := publishDuringReconnect(testwait.Context(t), func() {}); err != nil {
 		t.Fatalf("publish under a live context released by the reconnect: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	// No span of its own: the delivery can come late on a loaded machine with nothing wrong.
+	if _, err := f.received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish released by the reconnect: %v", err)
 	}
 }
+
+// reconnectTickSpare is what the reconnect wait's tick below leaves of the test binary's deadline
+// as it waits for the client to reconnect: more than the margin testwait's own waits leave, so the
+// tick gives up, and lets the publish answer, before the test's wait for that answer does
+// (awaitAnswer).
+const reconnectTickSpare = 45 * time.Second
 
 // A core publish whose context is cancelled at the moment its wait for a reconnect ends, after the
 // wait's last look at the context and with the connection already back, sends nothing.
@@ -177,6 +179,7 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 // The control is the same publish with the same tick and no cancel: it must be received, so the
 // cancelled case's silence is the cancel's doing and not a publish that never got past the wait.
 func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
+	t.Parallel()
 	f := newReconnectWaitFixture(t, "cancel-as-reconnected")
 
 	// publishAsTheReconnectCompletes publishes under ctx while the client is reconnecting; the
@@ -186,18 +189,17 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 	publishAsTheReconnectCompletes := func(ctx context.Context, release func()) error {
 		t.Helper()
 		var once sync.Once
-		var reconnected atomic.Bool
+		var tickErr error // the tick's own, read once ticked is closed
 		ticked := make(chan struct{})
 		answer := f.startPublishWhileReconnecting(t, ctx, func() {
 			once.Do(func() {
 				defer close(ticked)
 				f.proxy.refuse.Store(false)
-				for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-					if f.client.Conn.IsConnected() {
-						reconnected.Store(true)
-						break
-					}
+				bound, err := testwait.Left(t, reconnectTickSpare)
+				if err == nil && !testwait.Holds(bound, 10*time.Millisecond, f.client.Conn.IsConnected) {
+					err = errors.New("the client still read not connected " + reconnectTickSpare.String() + " before the test binary's deadline")
 				}
+				tickErr = err
 				release()
 			})
 		})
@@ -207,15 +209,16 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 		default:
 			t.Fatalf("the publish answered %v without entering the reconnect wait", err)
 		}
-		if !reconnected.Load() {
-			t.Fatalf("the client did not reconnect within the wait's tick (publish answered %v)", err)
+		if tickErr != nil {
+			t.Fatalf("the client did not reconnect within the wait's tick: %v (publish answered %v)", tickErr, err)
 		}
 		return err
 	}
 
-	// The deadline is a minute out, so publishBound's 5 s is the one PublishCoreContext keeps, and it is
-	// still ahead when the reconnect completes about a second into the wait.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// The deadline is the test binary's less testwait's margin, far out, so publishBound's 5 s is the
+	// one PublishCoreContext keeps, and it is still ahead when the reconnect completes about a second
+	// into the wait.
+	ctx, cancel := context.WithCancel(testwait.Context(t))
 	defer cancel()
 	publishErr := publishAsTheReconnectCompletes(ctx, cancel)
 	f.requireNothingReceived(t, "a publish cancelled as the reconnect completed", publishErr)
@@ -223,12 +226,12 @@ func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
 		t.Fatalf("publish cancelled as the reconnect completed = %v, want an error naming %v", publishErr, context.Canceled)
 	}
 
-	live, cancelLive := context.WithTimeout(context.Background(), time.Minute)
-	defer cancelLive()
-	if err := publishAsTheReconnectCompletes(live, func() {}); err != nil {
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	if err := publishAsTheReconnectCompletes(testwait.Context(t), func() {}); err != nil {
 		t.Fatalf("publish under a live context as the reconnect completed: %v", err)
 	}
-	if _, err := f.received.NextMsg(5 * time.Second); err != nil {
+	// No span of its own: the delivery can come late on a loaded machine with nothing wrong.
+	if _, err := f.received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the subscriber received nothing from the live publish as the reconnect completed: %v", err)
 	}
 }

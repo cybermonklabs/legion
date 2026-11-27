@@ -140,6 +140,7 @@ func pipelineSettings() delivery.DeliverySettings {
 // TestDeliveryPipelineProductionCardMergesJobNames proves one production card follows both names
 // across a deploy-job rename.
 func TestDeliveryPipelineProductionCardMergesJobNames(t *testing.T) {
+	t.Parallel()
 	const oldName, newName = "widgets-release / widgets-release", "release / release"
 	settings := pipelineSettings()
 	settings.ProductionJobNames = []string{oldName, newName}
@@ -165,6 +166,7 @@ func TestDeliveryPipelineProductionCardMergesJobNames(t *testing.T) {
 // TestDeliveryPipelineCardKeysSurviveReorderedCards proves each response field reads its card's
 // key, not the order cards were assembled in.
 func TestDeliveryPipelineCardKeysSurviveReorderedCards(t *testing.T) {
+	t.Parallel()
 	started := pipelineFixtureTime(32, 8, 0)
 	cards := []measures.DeployJobCard{
 		{CardID: measures.CardStagingApply, Production: delivery.Production{JobNames: []string{"staging-release / apply"}}},
@@ -213,6 +215,7 @@ func getDeliveryPipeline(t *testing.T, handler http.Handler, query string) (map[
 }
 
 func TestGetDeliveryPipelineWithoutSettingsIs404(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/pipeline", nil, "alice")
 	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"DELIVERY_NOT_CONFIGURED"`) {
@@ -221,6 +224,7 @@ func TestGetDeliveryPipelineWithoutSettingsIs404(t *testing.T) {
 }
 
 func TestGetDeliveryPipelineRejectsMalformedAt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/pipeline?at=yesterday", nil, "alice")
@@ -232,6 +236,7 @@ func TestGetDeliveryPipelineRejectsMalformedAt(t *testing.T) {
 // TestGetDeliveryPipelineIsAgentReadable: an agent reads the Pipeline numbers with its bearer, as a
 // person's browser does; an anonymous caller reads nothing.
 func TestGetDeliveryPipelineIsAgentReadable(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	target := "/api/v1/delivery/pipeline?at=" + pipelineAt
@@ -247,6 +252,7 @@ func TestGetDeliveryPipelineIsAgentReadable(t *testing.T) {
 // numbers are the prototype's (measures/pipeline_test.go cites the command that produced them),
 // and the merge_group, workflow_dispatch and feature/x runs are left out by the store's selection.
 func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedPipelineFixture(t, database, pipelineSettings())
 	pool := database.Pool
@@ -315,6 +321,11 @@ func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
 	if want := catalogueTargets(); !reflect.DeepEqual(body.Targets, want) {
 		t.Errorf("targets = %s, want the catalogue's %s", showTargets(body.Targets), showTargets(want))
 	}
+	// The catalogue seeds main's targets: 45 minutes from merge to production, and a 60-minute
+	// median from open to merge.
+	if merge, opened := body.Targets.MergeToProductionMinutes, body.Targets.OpenedToMergeMedianMinutes; merge == nil || merge.Value != 45 || opened == nil || opened.Value != 60 {
+		t.Errorf("targets = %s, want merge_to_production_minutes 45 and opened_to_merge_median_minutes 60, main's", showTargets(body.Targets))
+	}
 	if _, ok := raw["freshness"]; !ok {
 		t.Error("no freshness")
 	}
@@ -336,6 +347,7 @@ func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
 // TestGetDeliveryPipelineAnswersEmptyListsAsArrays: with no run stored, the lists are [] and the
 // optional cards null, never omitted.
 func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/pipeline?at="+pipelineAt, nil, "alice")
@@ -359,16 +371,19 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 // repository, or two or more projects' sources read them, whatever min_n another project's pr-ci
 // holds. Over a deliverytest history whose deploy repository DELIV's source reads as its default, a
 // register write setting DELIV's job min_n to the timed results of the busiest job the Pipeline
-// ranks at 50 moves its table, so the table can tell the two apart; with DELIV's default cleared,
-// its source reads no repository and the Pipeline answers its table at 50 again; with the
-// repository the default of a project made by SQL, which holds no delivery settings, too; and with
-// DELIV's default back and that project's source reading another repository, too: two projects own
-// the repositories.
+// ranks at 50 moves its table, so the table can tell the two apart; with that min_n cleared (null,
+// no minimum) it ranks every job with a timed result and states 1, the one result a job needs to
+// have a median to rank by (measures.FoldSlowestJobs); with DELIV's default cleared, its source
+// reads no repository and the Pipeline answers its table at 50 again; with the repository the
+// default of a project made by SQL, which holds no delivery settings, too; with DELIV's default
+// back it ranks by that null min_n again; and with that project's source reading another
+// repository it ranks at 50 again: two projects own the repositories.
 func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
-	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, fixture.Project); err != nil {
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, fixture.Project); err != nil {
 		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
 	}
 	publishDefaultRepos(t, database.Pool)
@@ -397,6 +412,17 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 		t.Fatalf("with %s's pr-ci min_n at %d the Pipeline ranks %v by %d, at 50 %v: want its table moved and ranked by %d",
 			fixture.Project, busiest, moved, movedMinN, at50, busiest)
 	}
+	cleared := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
+		"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": nil}},
+	}, "pr-ci-min-n-null")
+	if cleared.Code != http.StatusCreated && cleared.Code != http.StatusOK {
+		t.Fatalf("clear %s's pr-ci min_n: status %d, body %s", fixture.Project, cleared.Code, cleared.Body.String())
+	}
+	every, _, everyMinN := read()
+	if everyMinN != 1 || len(every) < len(at50) {
+		t.Fatalf("with %s's pr-ci min_n null the Pipeline ranks %v by %d, want every job with a timed result, at least the %d at 50, by 1",
+			fixture.Project, every, everyMinN, len(at50))
+	}
 
 	setDefault := func(project string, repo *string) {
 		t.Helper()
@@ -419,8 +445,8 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 		t.Errorf("with %s BARE's default and no source reading it the Pipeline ranks %v by %d, want none by %d", fixture.DeployRepo, bare, minN, measures.SlowestMinResults)
 	}
 	setDefault(fixture.Project, &fixture.DeployRepo)
-	if owned, _, minN := read(); minN != busiest || !slices.Equal(owned, moved) {
-		t.Errorf("with DELIV's source reading %s again the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, owned, minN, moved, busiest)
+	if owned, _, minN := read(); minN != 1 || !slices.Equal(owned, every) {
+		t.Errorf("with DELIV's source reading %s again the Pipeline ranks %v by %d, want %v by 1, its null min_n's", fixture.DeployRepo, owned, minN, every)
 	}
 	saveProjectRules(t, database, "BARE", deployRule(fixture.Repos[1], "release / release"))
 	if both, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(both, at50) {

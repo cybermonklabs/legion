@@ -15,6 +15,7 @@ import (
 )
 
 func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Raw event payload", "A spec")
 	fixtures := []struct {
@@ -33,7 +34,7 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 		}
 	}
 
-	events, err := directServer(deps).readEvents(context.Background(), issueOwner(issue.Key), eventListOptions{limit: 200})
+	events, err := directServer(deps).readEvents(context.Background(), model.Actor{}, issueOwner(issue.Key), eventListOptions{limit: 200})
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
@@ -66,6 +67,7 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 }
 
 func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	handler, database := rig.handler, rig.database
 	issue := createInteractionIssue(t, handler, "TEST", "Event response bytes", "A spec")
@@ -88,9 +90,10 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of",
 		"ask.follower_added", "ask.follower_removed",
 		"comment.created", "comment.delivery", "comment.answered", "comment.resolved", "comment.reopened",
-		"comment.edited", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
+		"comment.edited", "comment.deleted", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
 		"subscription.remove_requested", "subscription.removed",
-		"message.created", "message.answered", "message.delivery", "message.accepted", "handoff.recorded",
+		"message.created", "message.answered", "message.edited", "message.deleted", "message.delivery",
+		"message.accepted", "handoff.recorded", "role.undelivered",
 		"block.repaired", "block.invalid", "result.recorded", "result.retracted",
 		"project.created", "project.updated", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
@@ -197,7 +200,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		if read == len(stored)+20 {
 			t.Fatalf("the event feed's replay held %d of %d inserted events after %d frames", len(frames), len(stored), read)
 		}
-		frame := client.event(t, eventFeedWait, "events")
+		frame := client.event(t, "events")
 		var event servedEvent
 		if err := json.Unmarshal(frame.Event, &event); err != nil {
 			t.Fatalf("decode event frame %+v: %v", frame, err)
@@ -255,6 +258,7 @@ func createTitledChild(t *testing.T, handler http.Handler, title, parent string)
 // the assignee names nobody at all, carrying no thread_logins; a retitle names the issues whose
 // panels show the title.
 func TestIssueEventsSayWhatTheWriteChanged(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	root := createInteractionIssue(t, handler, "TEST", "Root of the tree", "A spec")
 	child := createTitledChild(t, handler, "Middle of the tree", root.Key)
@@ -331,6 +335,7 @@ func TestIssueEventsSayWhatTheWriteChanged(t *testing.T) {
 // names every blocker its write added or removed, and no other: a create every blocker it holds, a
 // PATCH the ones that came or went. A retitle that also moves blockers names each once.
 func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	create := func(title string, blockedBy []string) model.Issue {
 		t.Helper()
@@ -394,6 +399,7 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 // user_state.updated says which of pinned, last_read_seq and dismissed the write moved, so a tab
 // refreshes its pinned list for a pin and not for a read mark. It carries no issue key.
 func TestUserStateEventSaysWhichFieldsMoved(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned", "A spec")
 	type stateEvent struct {
@@ -424,6 +430,7 @@ func TestUserStateEventSaysWhichFieldsMoved(t *testing.T) {
 // gives an answer, so a client can read the list's length. A live frame is read through the same
 // attachAskEventFields (TestLiveAskEventFrameCarriesTheReadTimeFields).
 func TestAnsweredEventStoredWithNullSelectedServesEmptyLists(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	handler, database := rig.handler, rig.database
 	issue := createInteractionIssue(t, handler, "TEST", "Null selected events", "A spec")

@@ -197,16 +197,20 @@ const (
 // (an `omp` or a `worker-shim` the agent's own command runs) is not spared for it.
 //
 // It spares, outside every role, the launcher itself, each process the launcher holds (pidGuard:
-// the test database's script, the restore's jj and git, the leak-check install's run of the check,
-// each cache trimmer sweep's deleter) with its descendants, and the test database's server with its
-// backends, since ending one backend makes the postmaster end and restart every backend, which
-// stops every role's test database at once. In each role it spares the role-init itself, not its
+// the test database's script, the leak-check install's run of the check, each cache trimmer
+// sweep's deleter) with its descendants, and the test database's server with its backends, since
+// ending one backend makes the postmaster end and restart every backend, which stops every role's
+// test database at once. In each role it spares the role-init itself, not its
 // descendants; the shim, the oldest direct child of the role-init that is this binary run as
 // `worker-shim` (an orphan the role leaves is adopted by the role-init too); every direct child of
-// the shim, which is the agent before and after its start wrapper execs it, the secrets renewer,
-// the working copy's adoption and the CodeGraph warm-up; Oh My Pi's helpers but its eval kernel,
-// each reached from the agent through a chain of helpers; and a Claude Code role's `claude` and its
-// MCP server.
+// the shim but the CodeGraph warm-up (codegraphWarmUp), which is the agent before and after its
+// start wrapper execs it, the secrets renewer and the working copy's adoption, and never an orphan,
+// since a shim under role-init adopts none (only the controller pod's single-role shim reaps
+// orphans, reapingShim, and its classifier tells them from the shim's own, shimOwnChildren); Oh My
+// Pi's helpers but its eval kernel, each reached from the agent through a chain of helpers; and a
+// Claude Code role's `claude` and its MCP server. The warm-up and all it starts may be ended: the
+// shim starts it during the agent's session load (warmCodegraph, internal/shim), its end ends no
+// session, and the next start runs it again or finds the index its last build left.
 //
 // A process is the role's whose role-init is its ancestor by the parent chain, else the role's
 // whose role-init shares its PID namespace, else no role's. The ancestor comes first because a
@@ -305,6 +309,9 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		session[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
 			session[agent.PID] = true
+			if codegraphWarmUp(agent) {
+				continue
+			}
 			protectAgent(t, agent, protected)
 		}
 	}
@@ -349,22 +356,24 @@ func protectTrees(t *memoryguard.Table, roots []int, protected map[int]bool) {
 // (an `omp` copy or a helper's argument under another executable below the agent, a `worker-shim`
 // that is not the manager's generation) is not spared for it.
 //
-// It spares the launcher itself; each process the launcher holds (pidGuard: the restore's jj and
-// git) with its descendants; the shim, the manager's running generation, only while that process
+// It spares the launcher itself; each process the launcher holds (pidGuard) with its descendants;
+// the shim, the manager's running generation, only while that process
 // is this binary run as `worker-shim`, since the manager keeps its generation's pid until its wait
 // is done with it, and once the shim is reaped the kernel may give that pid to another process;
-// and every direct child of the shim with what is the agent's own under it (protectAgent): the
+// and each of the shim's own children with what is the agent's own under it (protectAgent): the
 // agent before and after its start wrapper execs it, Oh My Pi's helpers but its eval kernel, and
-// the secrets renewer and its keygen, which are Legion's own by construction, since a command the
-// agent runs is the agent's child and never the shim's.
+// the secrets renewer and its keygen, which are Legion's own by construction (shimOwnChildren). A
+// command the agent runs is the agent's child, never the shim's; one it leaves behind becomes the
+// shim's child, since this pod's shim reaps orphans (reapingShim), and stays the controller's work
+// as it was when the launcher adopted it.
 //
 // Every process of the container is the controller's, protected or not: no other role runs
-// there, so a kill of an orphan the launcher adopted as PID 1, or of a process a `kubectl exec`
+// there, so a kill of an orphan the launcher or the shim adopted, or of a process a `kubectl exec`
 // started under no shim, is reported to the controller as a kill of its agent's command is, and
 // every line of the guard's names the manager's role.
 //
-// It marks as a session process (memoryguard.Class.Session) the shim and every direct child of
-// the shim, as podClassifier marks a role's (the controller's pod has no role-init): the agent
+// It marks as a session process (memoryguard.Class.Session) the shim and each of the shim's own
+// children, as podClassifier marks a role's (the controller's pod has no role-init): the agent
 // and the shim's other children, which no place in the tree tells from it. Only the guest watch
 // reads the mark, which a microVM controller pod's launcher runs over this classifier
 // (serveMemoryGuard, INFRA-4567); the guard a gVisor controller pod's launcher runs ignores it.
@@ -406,7 +415,7 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 	if shim, ok := t.Get(shimPID); ok && isShim(c.exe, shim) {
 		protected[shim.PID] = true
 		session[shim.PID] = true
-		for _, agent := range t.Children(shim.PID) {
+		for _, agent := range shimOwnChildren(t, shim) {
 			session[agent.PID] = true
 			protectAgent(t, agent, protected)
 		}
@@ -418,6 +427,57 @@ func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguar
 		classes[p.PID] = memoryguard.Class{Role: c.manager.role, Protected: protected[p.PID], Session: session[p.PID]}
 	}
 	return classes
+}
+
+// shimOwnChildren are the direct children of shim that the shim started itself. The controller
+// pod's single-role shim, the one shim this classifier reads, reaps orphans (reapOrphansFlag,
+// which reapingShim gives it), so it also has for direct children the orphans its tree leaves,
+// which nothing in the tree tells from its own but their age and their executable: its own are
+// the agent, the oldest direct child that is not the secrets binary, since an orphan descends from
+// the agent's commands and so is younger than the agent, and the secrets keygen and renewer, the
+// executable the shim's shimwire.AgentSecretsBinFlag names run as shimwire.AgentSecretsKeygen or
+// shimwire.AgentSecretsRenew. Any other direct child is an orphan the shim adopted. An orphan that
+// runs that executable as either task is taken for the shim's own: that is the rule's cost.
+func shimOwnChildren(t *memoryguard.Table, shim *memoryguard.Process) []*memoryguard.Process {
+	children := t.Children(shim.PID)
+	options := shim.Args
+	if end := slices.Index(options, "--"); end >= 0 {
+		options = options[:end]
+	}
+	secrets := flagValue(options, "--"+shimwire.AgentSecretsBinFlag)
+	resolved := secrets
+	if secrets != "" {
+		if path, err := filepath.EvalSymlinks(secrets); err == nil {
+			resolved = path
+		}
+	}
+	var own []*memoryguard.Process
+	agent := false
+	for _, p := range children {
+		task := argument(p, 1)
+		switch {
+		case secrets != "" && p.Exe != "" && (p.Exe == secrets || p.Exe == resolved) && (task == shimwire.AgentSecretsKeygen || task == shimwire.AgentSecretsRenew):
+			own = append(own, p)
+		case !agent:
+			agent = true
+			own = append(own, p)
+		}
+	}
+	return own
+}
+
+// flagValue is the value of the flag name among a command's options, written as `name value` or
+// `name=value`, and "" where they hold none.
+func flagValue(options []string, name string) string {
+	for i, option := range options {
+		if option == name && i+1 < len(options) {
+			return options[i+1]
+		}
+		if value, ok := strings.CutPrefix(option, name+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 // protectAgent spares agent, a direct child of the shim (a role's in an issue pod, the one
@@ -455,6 +515,22 @@ func protectAgent(t *memoryguard.Table, agent *memoryguard.Process, protected ma
 			}
 		}
 	}
+}
+
+// codegraphWarmUp is whether p, a direct child of a role's shim, is the CodeGraph warm-up rather
+// than the agent: the image's `codegraph` command (runCodegraph, internal/workspace), a shell
+// script that execs its bundled node on lib/dist/bin/codegraph.js, so the warm-up reads as that
+// script under its shell until the exec (argument 1 is the script, or argument 0 where it runs as
+// itself) and as node on codegraph.js after it. Each is matched by a whole base name, `codegraph`
+// or `codegraph.js`, never by a part of one, so an agent whose arguments name the CodeGraph plugin
+// (`pi-codegraph`) is not taken for the warm-up.
+func codegraphWarmUp(p *memoryguard.Process) bool {
+	for i, arg := range p.Args {
+		if base := filepath.Base(arg); (base == "codegraph" && i <= 1) || base == "codegraph.js" {
+			return true
+		}
+	}
+	return false
 }
 
 // isTestPG is whether pid, a direct child of the launcher whose executable is a postgres, runs in
@@ -561,13 +637,12 @@ func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
 
 // openMemoryReports makes writer, this role's new connection, the one the kill reports of this
 // role's processes go on, and sends the reports waiting for it. serve calls it after the
-// connection's state frame, as it calls reportRestore, so the daemon reads the role's state
-// first. carried is whether the connection's acknowledgement says the daemon behind it knows the
-// report (serve): guard settings for a gVisor pod's launcher, KernelKills for a microVM pod's. A
-// daemon that does not know the report may close a connection on a frame it does not know, or
-// tell a role of the kernel's kill in the guard's words, so where carried is false every report
-// waiting then, and each made while that connection is up, is dropped with a line rather than
-// sent.
+// connection's state frame, so the daemon reads the role's state first. carried is whether the
+// connection's acknowledgement says the daemon behind it knows the report (serve): guard settings
+// for a gVisor pod's launcher, KernelKills for a microVM pod's. A daemon that does not know the
+// report may close a connection on a frame it does not know, or tell a role of the kernel's kill
+// in the guard's words, so where carried is false every report waiting then, and each made while
+// that connection is up, is dropped with a line rather than sent.
 func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 	m.mu.Lock()
 	m.reportWriter, m.reportsCarried = writer, carried
@@ -576,9 +651,9 @@ func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 }
 
 // sendMemoryKills writes the reports waiting on this role's connection, oldest first, one at a
-// time. The writer is taken under the manager's lock and written outside it, as state and
-// reportRestore write theirs, and shimwire.Writer writes each frame whole under a lock of its own,
-// so a report never interleaves with a command's answer. A report leaves the queue only once it is
+// time. The writer is taken under the manager's lock and written outside it, as state writes its
+// own, and shimwire.Writer writes each frame whole under a lock of its own, so a report never
+// interleaves with a command's answer. A report leaves the queue only once it is
 // written, and stays at the queue's head while it is being written, since queueMemoryKill never
 // drops the report memorySending names; a write that fails leaves it, and the rest, for the next
 // connection. memorySend holds one send at a time, so serve's send at a connection's start and the

@@ -25,6 +25,7 @@ import type {
   IssueDetails,
   MyRepliesResponse,
   ProjectTimelineResponse,
+  ReferenceTarget,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -187,6 +188,11 @@ function referenceTargetBatches(named: readonly string[]): string[][] {
   return batches;
 }
 
+/** What a names read (`referenceTargetsQuery`) holds: one member per address it names. */
+export interface ReferenceTargetsAnswer {
+  readonly targets: readonly ReferenceTarget[];
+}
+
 /** What the `dispatch://` references a page names point at (`GET /api/v1/reference-targets`): a
  *  page that names many references reads their names with this query, in as few requests as
  *  both bounds of one request allow. The key holds the references themselves, sorted, so two
@@ -207,7 +213,7 @@ export const referenceTargetsQuery = (refs: readonly string[]) => {
   return queryOptions({
     enabled: named.length > 0,
     queryKey: ["reference-targets", named],
-    queryFn: async () => {
+    queryFn: async (): Promise<ReferenceTargetsAnswer> => {
       const answers = await Promise.all(
         referenceTargetBatches(named).map((batch) => api.getReferenceTargets(batch))
       );
@@ -409,11 +415,13 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
- *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
- *  leaves the closed issues out, as the project listing's own flag does. */
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, only
+ *  those whose own row names it where it asks for that (`own`), in the statuses it names, with
+ *  their move into backlog or icebox where it asks for that. `open` leaves the closed issues
+ *  out, as the project listing's own flag does. */
 export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
   advances: [listing.advances],
+  ...(listing.own ? { own: true } : {}),
   ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
   ...(listing.moved ? { moved: true } : {}),
   ...(open ? { open: true } : {}),
@@ -434,6 +442,7 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
       "issues",
       "advances",
       listing.advances,
+      ...(listing.own ? ["own"] : []),
       ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
       ...(listing.moved ? ["moved"] : []),
       ...(open ? ["open"] : []),
@@ -734,6 +743,19 @@ export const projectDeliverySettingsQuery = (project: string) =>
     queryKey: ["project-delivery-settings", project],
     queryFn: () => api.getProjectDeliverySettings(project),
   });
+
+/** Where the next page of an offset-paged list starts, for an infinite query's
+ *  `getNextPageParam`: after the rows this page answered, and nowhere once those reach the
+ *  total the answer carries. `GET /api/v1/me/answers` and `GET /api/v1/people/{login}/nodes`
+ *  both answer that shape (api.myAnswersQuery), so both pages read their next page from here. */
+export const nextOffsetPage = (last: {
+  offset: number;
+  rows?: readonly unknown[] | null;
+  total: number;
+}): number | undefined => {
+  const read = last.offset + (last.rows ?? []).length;
+  return read < last.total ? read : undefined;
+};
 
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project

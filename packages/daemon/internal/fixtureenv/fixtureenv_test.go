@@ -2,6 +2,7 @@ package fixtureenv_test
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,7 +25,11 @@ import (
 const guardFailureChildEnv = "LEGION_FIXTUREENV_GUARD_FAILURE"
 
 // TestMain guards the test process, as the TestMain of every package whose tests run git or jj
-// does, after the branch where this binary runs as that helper child.
+// does, after the branch where this binary runs as that helper child. Only TestMain makes that
+// child of a copy a test starts: in a build of these tests without it, such a copy runs the tests,
+// TestMustGuardEndsATestProcessWhoseGuardFails among them, which would start a copy of its own.
+// That test refuses to in such a process (guardChildCopyRefusal), and starts its copy with -h, so
+// it fails in such a build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(guardFailureChildEnv) == "1" {
 		fixtureenv.RunGuardFailureAndExit()
@@ -36,8 +41,15 @@ func TestMain(m *testing.M) {
 // A TestMain whose Guard fails prints the failure and ends the test process with status 1, so no
 // package's tests run on a process Guard did not take the pod's workspace, remote and credential
 // out of. That is MustGuard's whole difference from Guard, and every guarding TestMain has it.
+//
+// The child gets -h, which it does not read. In a build without TestMain, the testing package reads
+// -h before any test runs, prints its own flag usage and exits 0, so this test fails there by name
+// and its child starts no child of its own.
 func TestMustGuardEndsATestProcessWhoseGuardFails(t *testing.T) {
-	child := exec.Command(os.Args[0])
+	if err := guardChildCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(os.Args[0], "-h")
 	child.Env = append(os.Environ(), guardFailureChildEnv+"=1")
 	out, err := child.CombinedOutput()
 	var exited *exec.ExitError
@@ -46,6 +58,31 @@ func TestMustGuardEndsATestProcessWhoseGuardFails(t *testing.T) {
 	}
 	if string(out) != fixtureenv.ChildGuardFailureLine {
 		t.Fatalf("the child printed %q, want %q", out, fixtureenv.ChildGuardFailureLine)
+	}
+}
+
+// guardChildCopyRefusal is why this process may start no copy of this test binary, nil when it
+// may. A process that has guardFailureChildEnv=1 was started as the guard's failing child, and
+// TestMain runs such a process as that child, so one that runs the tests runs in a build without
+// TestMain, and a copy started there would run the tests again.
+func guardChildCopyRefusal() error {
+	if os.Getenv(guardFailureChildEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the guard's failing child, but it runs the tests: this build of the tests has no TestMain that runs the child, and a copy started here would run the tests again", guardFailureChildEnv)
+	}
+	return nil
+}
+
+// guardChildCopyRefusal, which TestMustGuardEndsATestProcessWhoseGuardFails asks before its copy
+// starts, refuses a process that has guardFailureChildEnv=1 and no other. While TestMain is in the
+// build no copy reaches it, so this test is what holds the refusal.
+func TestAProcessStartedAsTheGuardsFailingChildStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, guardFailureChildEnv)
+	if err := guardChildCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", guardFailureChildEnv, err)
+	}
+	t.Setenv(guardFailureChildEnv, "1")
+	if err := guardChildCopyRefusal(); err == nil || !strings.Contains(err.Error(), guardFailureChildEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", guardFailureChildEnv, err)
 	}
 }
 
@@ -204,11 +241,11 @@ func TestIsolatedAndHomeGiveAStateHomeOfTheTestsOwn(t *testing.T) {
 // A repository whose own configuration allows http (protocol.http.allow=always, which outranks
 // protocol.allow) still reaches no network remote under Isolated: jj git push to a loopback HTTP
 // server fails and the server receives no request. Without GIT_ALLOW_PROTOCOL the same push
-// reaches the server, so the refusal is the environment's.
+// reaches the server, so the refusal is the environment's. Every jj is the real jj
+// (fixturegit.CompiledJJ): a jj of the machine's own first on PATH, a dev box's shim, can refuse
+// the push itself, which would read as the environment's refusal.
 func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Fatalf("this test drives a real jj: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -218,13 +255,13 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 
 	env := fixtureenv.Isolated(t.TempDir())
 	repo := t.TempDir()
-	mustRun(t, repo, env, fixturegit.JJInit(repo, true)...)
-	mustRun(t, repo, env, "jj", "describe", "-m", "work that must not leave the test", "-R", repo)
-	mustRun(t, repo, env, "jj", "bookmark", "set", "main", "-r", "@", "-R", repo)
-	mustRun(t, repo, env, "jj", "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
+	mustRun(t, repo, env, append([]string{jj}, fixturegit.JJInit(repo, true)[1:]...)...)
+	mustRun(t, repo, env, jj, "describe", "-m", "work that must not leave the test", "-R", repo)
+	mustRun(t, repo, env, jj, "bookmark", "set", "main", "-r", "@", "-R", repo)
+	mustRun(t, repo, env, jj, "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
 	mustRun(t, repo, env, "git", "config", "protocol.http.allow", "always")
 
-	push := []string{"jj", "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
+	push := []string{jj, "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
 	if out, err := run(repo, env, push...); err == nil {
 		t.Errorf("jj git push under Isolated succeeded, want a refusal:\n%s", out)
 	}
@@ -236,5 +273,70 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 	_, _ = run(repo, open, push...)
 	if requests.Load() == 0 {
 		t.Fatal("the push without GIT_ALLOW_PROTOCOL never reached the loopback server, so this test proves nothing")
+	}
+}
+
+// writeWrapper writes an executable shell script named name holding body into dir.
+func writeWrapper(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Guard puts first on PATH the git that the PATH's own git runs, read from that git as it runs, so
+// a wrapper first on PATH no longer stands between a test and git: here one that refuses every
+// commit, as a machine's own git shim can under a fixture's home. The same commit through the
+// wrapper is refused first, so the wrapper is in the way until Guard runs.
+func TestGuardPutsTheGitAWrapperRunsFirstOnPath(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("this test drives a real git: %v", err)
+	}
+	wrappers := t.TempDir()
+	wrapper := writeWrapper(t, wrappers, "git",
+		"case \" $* \" in *\" commit \"*) echo 'the wrapper refuses every commit' >&2; exit 3 ;; esac\nexec '"+git+"' \"$@\"\n")
+	t.Setenv("PATH", wrappers+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	env := fixtureenv.Isolated(t.TempDir())
+	repo := t.TempDir()
+	mustRun(t, repo, env, fixturegit.InitWorkTree(repo, "main")...)
+	commit := []string{"git", "commit", "--quiet", "--allow-empty", "-m", "one"}
+	if out, err := run(repo, env, commit...); err == nil {
+		t.Fatalf("the commit through the wrapper succeeded, so this test proves nothing:\n%s", out)
+	}
+
+	if err := fixtureenv.Guard(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := filepath.EvalSymlinks(first); err != nil || target == wrapper || first == wrapper {
+		t.Fatalf("the first git on PATH is %s (%s, %v), want a link to the git the wrapper runs", first, target, err)
+	}
+	if out, err := run(repo, env, commit...); err != nil {
+		t.Fatalf("the commit after Guard = %v, want the real git's:\n%s", err, out)
+	}
+}
+
+// A git or jj on PATH whose program cannot be read from it, here a jj that runs no jj, is an error
+// of Guard's naming it, and PATH is left as it was.
+func TestGuardNamesAToolItCannotRead(t *testing.T) {
+	wrappers := t.TempDir()
+	broken := writeWrapper(t, wrappers, "jj", "echo 'no jj here' >&2\nexit 1\n")
+	path := wrappers + string(filepath.ListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", path)
+	err := fixtureenv.Guard()
+	if err == nil {
+		t.Fatal("Guard answered no error over a jj that runs no jj")
+	}
+	if !strings.Contains(err.Error(), broken) || !strings.Contains(err.Error(), "no jj here") {
+		t.Errorf("the error is %q, want it to name %s and what it printed", err, broken)
+	}
+	if got := os.Getenv("PATH"); got != path {
+		t.Errorf("PATH after the error is %q, want it as it was, %q", got, path)
 	}
 }

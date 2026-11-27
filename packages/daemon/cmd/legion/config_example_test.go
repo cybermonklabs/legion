@@ -1,5 +1,7 @@
 package main
 
+//ci:reads deploy/kubernetes/daemon/legion.yaml.example stageShippedExample reads it from the repository root (runtime.Caller + ../../../..)
+
 import (
 	"bytes"
 	"context"
@@ -21,12 +23,14 @@ import (
 // an operator's first check. The example names no Postgres; the environment does, as its comment
 // offers.
 func TestShippedLegionYAMLExamplePassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	checkShippedExample(t, func(example string) string { return example })
 }
 
 // The example's commented role_config_files, uncommented with the operator-roles volume and mount
 // it points to, passes the same check, and names the three roles' overlays.
 func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example,
 			"# role_config_files:",
@@ -52,6 +56,7 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 // `instructions` stays commented: boot reads that file from the daemon's own disk, and the example
 // names a path only an operator has.
 func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -86,6 +91,7 @@ func TestShippedLegionYAMLExamplesMemoryPassesCheckConfig(t *testing.T) {
 // project declares: its mode, its unit, and the two arms it compares. The arm that names no file
 // is the control, which is why only one of the two carries an overlay.
 func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -135,10 +141,44 @@ func TestShippedLegionYAMLExamplesExperimentsPassCheckConfig(t *testing.T) {
 	}
 }
 
+// The example's commented experiment that sets how each issue is done, uncommented alone, passes
+// the same check, and names its two arms with the group each sets: `owner`, whose issues take the
+// plan their owner gives, and `default`, whose issues run the project's default steps. It needs no
+// volume and no mount: neither arm names a file.
+func TestShippedLegionYAMLExamplesPlanningExperimentPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   experiments:",
+			"  #     planning: {mode: random, unit: issue, variants: [{name: owner, plan: owner}, {name: default, plan: default}]}",
+		)
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := cfg.Projects["WIDGETS"].Experiments
+	if len(declared) != 1 || declared[0].Name != "planning" || declared[0].Mode != configpkg.ExperimentRandom || declared[0].Unit != configpkg.ExperimentIssue {
+		t.Fatalf("the WIDGETS experiments = %+v, want the planning experiment alone, at mode random over the issue", declared)
+	}
+	want := []configpkg.Variant{
+		{Name: "owner", Weight: 1, Plan: configpkg.PlanGroupOwner},
+		{Name: "default", Weight: 1, Plan: configpkg.PlanGroupDefault},
+	}
+	if !slices.EqualFunc(declared[0].Variants, want, func(got, want configpkg.Variant) bool {
+		return got.Name == want.Name && got.Weight == want.Weight && got.Plan == want.Plan && len(got.ConfigFiles) == 0
+	}) {
+		t.Errorf("the planning variants = %+v, want %+v", declared[0].Variants, want)
+	}
+}
+
 // The example's commented commit_issue_trailer_repos, uncommented, passes the same check and
 // names the one repository whose commits a pane of the project stamps with its issue key. It
 // needs no volume and no mount: the key names repositories, not files.
 func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
 			"  # WIDGETS:",
@@ -162,6 +202,7 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 // passes the same check and settles on the repository and the manifest digest it names. It needs
 // no volume and no mount: the block names a repository and a digest, not files.
 func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	checker := strings.Repeat("5e", 32)
 	config := checkShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example,
@@ -183,12 +224,14 @@ func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the
-// example teach a hook no daemon runs. The example's second hook names a `prompt_file`, a path
-// only an operator has, whose words the check reads, so it is covered no more than the memory
-// block's `instructions` is.
+// example teach a hook no daemon runs. The lines of its folded `prompt` are uncommented by their
+// form, not their words, so the two copies are held to each other and no third copy is held here.
+// The example's second hook names a `prompt_file`, a path only an operator has, whose words the
+// check reads, so it is covered no more than the memory block's `instructions` is.
 func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
-		return uncommentExample(t, example,
+		example = uncommentExample(t, example,
 			"# hooks:",
 			"#   - name: work-back",
 			"#     on: work_back",
@@ -196,11 +239,8 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 			"#     every: 5",
 			"#     roles: [implementer, tester, reviewer]",
 			"#     prompt: >-",
-			"#       We read no progress on this issue: its work has gone back the number of times recorded",
-			"#       below. Report to the architect what is in your way, in your own words. The architect",
-			"#       takes a step back, reads what each of you says, and decides the path. Carry on with the",
-			"#       work while you wait, and say so if you read it as on track.",
 		)
+		return uncommentFoldedLines(t, example, "\n    prompt: >-\n", "#       ")
 	})
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
@@ -219,6 +259,7 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 // stays commented in the file itself: an active key would change the stdout
 // TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
 func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, "# worker_silence_minutes: 30")
 		return strings.Replace(example, "worker_silence_minutes: 30", "worker_silence_minutes: 15", 1)
@@ -241,6 +282,7 @@ func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T
 // file itself, as the silence key's does, for the same reason: an active key would change the
 // stdout TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
 func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	config := stageShippedExample(t, func(example string) string {
 		example = uncommentExample(t, example, "# worker_background_hours: 4")
 		return strings.Replace(example, "worker_background_hours: 4", "worker_background_hours: 0.5", 1)
@@ -281,6 +323,7 @@ var memoryGuardExampleLines = []string{
 // (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
 // example teach a number no daemon runs. The controller pod's wait_seconds is 1.
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example, memoryGuardExampleLines...)
 	})
@@ -303,6 +346,7 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 // the range the block's own comment states. The block stays commented in the file itself: its
 // values are the defaults, which apply without it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	for _, kind := range []struct {
 		name string
 		max  int
@@ -340,6 +384,7 @@ func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T
 // file itself: the shipped store is postgres, and the stdout
 // TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
 func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAccountsEmailAndLogin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	for _, tc := range []struct {
 		name           string
 		edit           [][2]string
@@ -350,12 +395,12 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 		{name: "impersonate_service_account as the account's login",
 			edit: [][2]string{{"impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com", "impersonate_service_account: legion-sessions@example-project.iam"}},
 			code: 1,
-			stderr: `legion config check: runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email,` +
+			stderr: `legion config check: runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email,` +
 				" such as <name>@<project>.iam.gserviceaccount.com\n"},
 		{name: "user as another login",
 			edit: [][2]string{{"user: legion-sessions@example-project.iam ", "user: other@example-project.iam "}},
 			code: 1,
-			stderr: `legion config check: runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam":` +
+			stderr: `legion config check: runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam":` +
 				" Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,6 +451,33 @@ func uncommentExample(t *testing.T, example string, lines ...string) string {
 	return example
 }
 
+// uncommentFoldedLines is the example with the commented lines that follow the line `after` ends
+// with uncommented, each one `# ` removed, for as long as a line starts with prefix: the body of a
+// folded scalar, read by its indent rather than its words. A key with no such line is the test's
+// own mistake.
+func uncommentFoldedLines(t *testing.T, example, after, prefix string) string {
+	t.Helper()
+	at := strings.Index(example, after)
+	if at < 0 {
+		t.Fatalf("the example has no %q", after)
+	}
+	head, rest := example[:at+len(after)], example[at+len(after):]
+	folded := 0
+	for strings.HasPrefix(rest, prefix) {
+		end := strings.IndexByte(rest, '\n') + 1
+		if end == 0 {
+			end = len(rest)
+		}
+		head += strings.Replace(rest[:end], "# ", "", 1)
+		rest = rest[end:]
+		folded++
+	}
+	if folded == 0 {
+		t.Fatalf("no line starting %q follows %q in the example", prefix, after)
+	}
+	return head + rest
+}
+
 // stageShippedExample writes the shipped example as edit leaves it beside the files it names,
 // and answers the configuration's path, ready for `legion config check` to be run over
 // it: the check that passes (checkShippedExample) and the check a bad value makes fail
@@ -450,8 +522,8 @@ current-context: legion-daemon
 
 // shippedExampleCheckOK is the whole stdout of `legion config check` on the shipped
 // example, the same under either session store the example shows.
-const shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
-	"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
+var shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
+	productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") +
 	defaultCacheLine +
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 

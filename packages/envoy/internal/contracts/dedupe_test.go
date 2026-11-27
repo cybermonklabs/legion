@@ -1,5 +1,7 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/dedupe-keys.json TestDedupeKeyNamesTheUpstreamEvent
+
 import (
 	"encoding/json"
 	"os"
@@ -11,6 +13,7 @@ import (
 // stream's MsgId and every host's dedupe answer one question, so a key either side misjudges is a
 // repeat one of them drops and the other does not, or a distinct event both lose.
 func TestDedupeKeyNamesTheUpstreamEvent(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dedupe-keys.json"))
 	if err != nil {
 		t.Fatalf("read the dedupe-key fixture: %v", err)

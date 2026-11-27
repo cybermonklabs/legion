@@ -6,10 +6,12 @@ import * as path from "node:path";
 import {
   type Block,
   type Cleanup,
+  deleteRelayCapturingStreams,
   isSummarization,
   messageStream,
   ompRoot,
   type Request,
+  type Rpc,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
@@ -179,6 +181,13 @@ interface SurfaceSession {
   flushed(): Promise<void>;
   /** Sends one RPC command and resolves with its response frame. */
   command(command: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Ends this omp and starts another on the same session with `--continue`, as a pod's restart
+   *  does, and resolves once the new one has registered the session with the listener. */
+  restart(): Promise<void>;
+  /** Moves this omp off the session onto a fresh one and straight back onto it, as a person's
+   *  `/new` and `/resume` do, and resolves once it has taken this session up again: one process,
+   *  the same session, and whatever its ring still holds. */
+  moveAwayAndBack(): Promise<void>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
   /** The session file's lines, as raw JSON. */
@@ -301,37 +310,45 @@ async function startSession(
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
-  const rpc = spawnRpc(
-    binary,
-    {
-      extensions: [
-        path.join(import.meta.dir, "envoy.ts"),
-        ...(noWindowModel
-          ? [path.join(import.meta.dir, "..", "test", "no-window-provider.ts")]
-          : []),
-      ],
-      home,
-      workspace,
-      sessions,
-      env: {
-        ENVOY_URL: base,
-        ENVOY_NATS_URL: nats,
-        DISPATCH_URL: base,
-        DISPATCH_TOKEN,
-        ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
-        ...env,
+  /** omp over the session's directories, with `args` after the harness's flags: the first life
+   *  with none, and a restart's with `--continue`. The end of a life fails the case only while it
+   *  is the live one: a restart ends the life before it on purpose. */
+  const start = (args: readonly string[]): Rpc => {
+    const life = spawnRpc(
+      binary,
+      {
+        extensions: [
+          path.join(import.meta.dir, "envoy.ts"),
+          ...(noWindowModel
+            ? [path.join(import.meta.dir, "..", "test", "no-window-provider.ts")]
+            : []),
+        ],
+        home,
+        workspace,
+        sessions,
+        env: {
+          ENVOY_URL: base,
+          ENVOY_NATS_URL: nats,
+          DISPATCH_URL: base,
+          DISPATCH_TOKEN,
+          ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
+          ...env,
+        },
+        args,
+        onFrame: (frame) => {
+          if ("type" in frame && frame.type === "response" && "id" in frame) {
+            responses.get(String(frame.id))?.resolve(frame as Record<string, unknown>);
+          }
+        },
       },
-      onFrame: (frame) => {
-        if ("type" in frame && frame.type === "response" && "id" in frame) {
-          responses.get(String(frame.id))?.resolve(frame as Record<string, unknown>);
-        }
-      },
-    },
-    cleanup
-  );
-  rpc.closed.catch((error: unknown) => {
-    closed.error = error;
-  });
+      cleanup
+    );
+    life.closed.catch((error: unknown) => {
+      if (rpc === life) closed.error = error;
+    });
+    return life;
+  };
+  let rpc: Rpc | undefined = start([]);
 
   const sid = await until(
     "the session's registration with the listener",
@@ -344,6 +361,9 @@ async function startSession(
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   const subject = `notifications.agent.${sid}`;
   const control = `agentstream.${sid}.control`;
@@ -381,6 +401,12 @@ async function startSession(
   // One stream for the whole case: every frame of it carries the sequence after the last.
   let streamSeq = 0;
   let taken = 0;
+  /** How many times this session has registered itself with the listener: once for each process
+   *  or pass that has taken it up. */
+  const registrations = () =>
+    requests.filter(
+      (request) => request.path === "/v1/interests/subscribe" && request.body.session_id === sid
+    ).length;
   const session: SurfaceSession = {
     home,
     workspace,
@@ -523,15 +549,46 @@ async function startSession(
       );
     },
     async command(command) {
+      const live = rpc;
+      if (live === undefined)
+        throw new Error(`omp is restarting: ${String(command.type)} not sent`);
       const id = randomUUID();
       const waiting = Promise.withResolvers<Record<string, unknown>>();
       responses.set(id, waiting);
-      rpc.send({ ...command, id });
-      const response = await Promise.race([waiting.promise, rpc.closed]);
+      live.send({ ...command, id });
+      const response = await Promise.race([waiting.promise, live.closed]);
       if (response.success !== true) {
         throw new Error(`omp refused ${String(command.type)}: ${JSON.stringify(response)}`);
       }
       return response;
+    },
+    async restart() {
+      const ending = rpc;
+      rpc = undefined;
+      // omp exits once its stdin closes, as a pod's omp ends at its restart.
+      await ending?.end();
+      const before = registrations();
+      rpc = start(["--continue"]);
+      await until(
+        "the resumed session's registration with the listener",
+        () => (registrations() > before ? true : undefined),
+        closed
+      );
+    },
+    async moveAwayAndBack() {
+      // The file the live session writes, which is this life's own: a session resumed with
+      // `--continue` keeps its id and starts another file under it.
+      const state = RpcStateSchema.parse((await session.command({ type: "get_state" })).data);
+      const sessionPath = state.sessionFile;
+      if (sessionPath === undefined) throw new Error("get_state named no session file");
+      const before = registrations();
+      await session.command({ type: "new_session" });
+      await session.command({ type: "switch_session", sessionPath });
+      await until(
+        "this session's registration with the listener after the move back",
+        () => (registrations() > before ? true : undefined),
+        closed
+      );
     },
     async settled() {
       await until(
@@ -1252,19 +1309,32 @@ test.skipIf(skip)(
 );
 
 // One command runs for a session at a time: a second is answered naming the first rather than
-// queued behind it.
+// queued behind it. The first runs until the case releases it, on a session whose limit is the
+// default two minutes, so it is still running when the second is taken however long that takes.
+// On the shell session's 2 s limit the first `!sleep 600` could end before the second was taken,
+// and the second then ran; the limit's own answer is the row above's. The case releases the
+// first in a `finally`, and its loop also ends once the workspace is gone with the `holding` it
+// wrote, so a case that fails leaves no shell spinning after the binary is stopped.
 test.skipIf(skip)(
   "a second `!` sent while one runs is answered naming the command still running",
   async () => {
-    const session = await shellSession();
-    const first = await session.send("!sleep 600");
-    const second = await session.send("!printf hi");
-    expect(await session.reply(second, "the reply to the second command")).toBe(
-      "!printf hi\n\nThe command was not run: this session is still running !sleep 600."
-    );
-    expect(await session.reply(first, "the reply to the command still running")).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
-    );
+    const session = await startSession();
+    const released = path.join(session.workspace, "released");
+    const command =
+      "!: > holding; while [ ! -f released ] && [ -f holding ]; do sleep 0.05; done; printf released";
+    try {
+      const first = await session.send(command);
+      const second = await session.send("!printf hi");
+      expect(await session.reply(second, "the reply to the second command")).toBe(
+        `!printf hi\n\nThe command was not run: this session is still running ${command}.`
+      );
+      await Bun.write(released, "");
+      expect(await session.reply(first, "the reply to the first command once released")).toBe(
+        `${command}\n\n\`\`\`\nreleased\n\`\`\``
+      );
+    } finally {
+      await Bun.write(released, "");
+    }
   },
   120_000
 );
@@ -1359,30 +1429,36 @@ test.skipIf(skip)(
 // A `!command` runs on its own promise, never inside the queued delivery task (D11): a command
 // that runs for minutes must not hold the session's other Dispatch messages behind it. This
 // session's limit is the default two minutes, and the command ends when the case says so, so the
-// second message is answered with the first command demonstrably still running.
+// second message is answered with the first command demonstrably still running. The case
+// releases it in a `finally`, and its loop also ends once the workspace is gone with the
+// `holding` it wrote, so a case that fails leaves no shell spinning after the binary is stopped.
 test.skipIf(skip)(
   "a `!sleep` holds none of the session's other Dispatch messages",
   async () => {
     const session = await startSession();
     const release = path.join(session.workspace, "release");
-    const waiting = await session.send(
-      `!while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
-    );
+    try {
+      const waiting = await session.send(
+        "!: > holding; while [ ! -f release ] && [ -f holding ]; do sleep 0.05; done; printf released"
+      );
 
-    const prompt = await session.send("Are you still taking messages?");
-    const turn = await session.nextTurn("the turn the second message started");
-    expect(conversation(turn.request)).toContain("Are you still taking messages?");
-    // The first command is still running: its own answer is not on Dispatch yet.
-    expect(session.replied(waiting)).toBe(false);
-    turn.reply([text("Still taking them.")]);
-    await session.settled();
-    expect(session.replied(waiting)).toBe(false);
-    expect(session.replied(prompt)).toBe(false);
+      const prompt = await session.send("Are you still taking messages?");
+      const turn = await session.nextTurn("the turn the second message started");
+      expect(conversation(turn.request)).toContain("Are you still taking messages?");
+      // The first command is still running: its own answer is not on Dispatch yet.
+      expect(session.replied(waiting)).toBe(false);
+      turn.reply([text("Still taking them.")]);
+      await session.settled();
+      expect(session.replied(waiting)).toBe(false);
+      expect(session.replied(prompt)).toBe(false);
 
-    await Bun.write(release, "");
-    expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
-      "```\nreleased\n```"
-    );
+      await Bun.write(release, "");
+      expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
+        "```\nreleased\n```"
+      );
+    } finally {
+      await Bun.write(release, "");
+    }
   },
   120_000
 );
@@ -1442,6 +1518,126 @@ test.skipIf(skip)(
     expect(frameText(messages[card] ?? {})).toBe(`Envoy message from envoy:\n\n${brief}`);
     const reply = messages.findIndex((message) => frameText(message) === "ready");
     expect(reply).toBeGreaterThan(card);
+  },
+  120_000
+);
+
+// A pod's restart ends the session's omp and starts another on the same session with
+// `--continue`, which resumes it from its transcript: the terminal shows every earlier turn, and
+// the live view replayed none of them (dispatch://INFRA-5990, R1). The replay after the restart
+// holds the message frames the replay before it held, each the same but for the number its own
+// process gave it: a prompt and its reply, a person's Send, still tagged with its Dispatch message
+// so the page shows it once, and an Envoy card with the reply it started.
+test.skipIf(skip)(
+  "after omp restarts on the session it resumes, the live view's replay holds the turns it held before",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    await session.command({ type: "prompt", message: "What is the first question?" });
+    (await session.nextTurn("the prompt's model request")).reply([text("The first answer.")]);
+    await session.settled();
+    const sent = await session.send("What is the second question?");
+    (await session.nextTurn("the turn the person's Send started")).reply([
+      text("The second answer."),
+    ]);
+    await session.settled();
+    const label = `card-${randomUUID()}`;
+    const note = "Please check the second answer.";
+    await session.relay(
+      JSON.stringify({
+        event_id: `evt-${label}`,
+        source: "envoy",
+        source_event_id: `source-${label}`,
+        topic: "notifications.role.alice-acme-1",
+        dedupe_key: `envoy.role.forward.publish.${randomUUID().replaceAll("-", "")}`,
+        issued_at: Date.now(),
+        payload: note,
+        payload_summary: note,
+        expects_reply: false,
+        trace_id: `trace-${label}`,
+      }),
+      "the card"
+    );
+    (await session.nextTurn("the turn the card started")).reply([text("The card's answer.")]);
+    await session.settled();
+
+    const conversationOf = async () =>
+      (await session.replay()).frames
+        .filter((frame) => frame.kind === "message")
+        .map(({ seq: _seq, ...frame }) => frame as { readonly message: Record<string, unknown> });
+    const before = await conversationOf();
+    const said = before.map((frame) => frameText(frame.message));
+    expect(said).toEqual(
+      expect.arrayContaining([
+        "What is the first question?",
+        "The first answer.",
+        "What is the second question?",
+        "The second answer.",
+        `Envoy message from envoy:\n\n${note}`,
+        "The card's answer.",
+      ])
+    );
+    const send = before.find(
+      (frame) => frameText(frame.message) === "What is the second question?"
+    );
+    expect(send?.message.dispatchMessageId).toBe(sent.messageID);
+
+    await session.restart();
+    await session.arm();
+    const after = await conversationOf();
+    // A card the new process shows as it starts comes after every turn before it.
+    expect(after.slice(0, before.length)).toEqual(before);
+  },
+  120_000
+);
+
+// A take-up of a session this process is already serving — a `/new` and a `/resume` back onto it
+// here, a rollback or a move the heartbeat's pass learns of late on a pod — happens with the ring
+// in hand: it holds the turns the fill brought back and the turns this process has recorded
+// since. What a viewer is replayed then holds each turn once, in the order the session said it,
+// and the newest turn is still its last word (`AgentStreamPublisher.restore`). The ring here
+// holds 6 messages — the four turns and each process's own start notice — against a bound of
+// 200, so nothing of it is near the bound, which is what the fill's order decides: that is what
+// agent-stream.test.ts's bound rows measure. This row is the real path through the host: one
+// omp, one session, taken up twice.
+test.skipIf(skip)(
+  "after omp moves off the session and back onto it, the replay holds each turn once, the newest last",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    await session.command({ type: "prompt", message: "What is the first question?" });
+    (await session.nextTurn("the prompt's model request")).reply([text("The first answer.")]);
+    await session.settled();
+
+    // The restart fills the ring from the transcript; the turn after it is this process's own.
+    await session.restart();
+    await session.arm();
+    await session.command({ type: "prompt", message: "What is the second question?" });
+    (await session.nextTurn("the resumed session's model request")).reply([
+      text("The second answer."),
+    ]);
+    await session.settled();
+
+    const conversationOf = async () =>
+      (await session.replay()).frames
+        .filter((frame) => frame.kind === "message")
+        .map((frame) => frameText((frame as SeenMessage).message));
+    const turns = [
+      "What is the first question?",
+      "The first answer.",
+      "What is the second question?",
+      "The second answer.",
+    ];
+    const before = await conversationOf();
+    expect(before.filter((said) => turns.includes(said))).toEqual(turns);
+
+    await session.moveAwayAndBack();
+    await session.arm();
+    const after = await conversationOf();
+    expect(after.filter((said) => turns.includes(said))).toEqual(turns);
+    // A card the take-up shows comes after every frame the view held before it: nothing the ring
+    // held was dropped, replaced or said twice.
+    expect(after.slice(0, before.length)).toEqual(before);
   },
   120_000
 );

@@ -131,10 +131,10 @@ func (r *rig) pullRequest(number int, merged time.Time, commit, issue string) {
 	}
 }
 
-// passDeploys runs one pass of the deploys feed at the clock's now.
+// passDeploys runs one pass of the deploys feed.
 func (r *rig) passDeploys() {
 	r.t.Helper()
-	if err := passDeploys(r.ctx, r.pool, time.Now); err != nil {
+	if err := passDeploys(r.ctx, r.pool); err != nil {
 		r.t.Fatalf("the deploys feed's pass: %v", err)
 	}
 }
@@ -255,4 +255,15 @@ func (r *rig) checkResult(issue, block, commit, verdict, when string) string {
 		values ($1, $2, $2, $3, $4, 1, 'digest', 'tester', $5, $6, $7, $8)`,
 		id, issue, artifact, block, commit, verdict, actorJSON, seq)
 	return id
+}
+
+// verification is the id of issue's Verification document, which checkResult makes.
+func (r *rig) verification(issue string) string {
+	r.t.Helper()
+	var artifact string
+	if err := r.pool.QueryRow(r.ctx, `select id::text from artifacts where issue_key = $1 and slug = 'verification-md'`,
+		issue).Scan(&artifact); err != nil {
+		r.t.Fatalf("read the Verification document of %s: %v", issue, err)
+	}
+	return artifact
 }

@@ -411,6 +411,22 @@ test("the Repository facet sets the target cards' repo, and narrows the timeline
   expect(narrowed?.view).toMatchObject({ query: "repo=acme%2Fwidgets&limit=200" });
 });
 
+// The search is asked for once the typing rests (`useSettled`): the URL keeps every keystroke, and
+// the timeline subscribes the text the typing rested on, never a text it passed through on the way.
+test("the search subscribes the text the typing rested on, once", async () => {
+  const user = userEvent.setup();
+  renderTab();
+  const socket = await openSocket();
+  const first = await openTimeline(socket);
+  serve(socket, timelineSnapshot(first.sub, timelineAnswer(timelineRows(0, 20), 20)));
+
+  await user.type(within(region("Merge timeline")).getByLabelText("Search"), "widget");
+  expect(new URLSearchParams(search).get("q")).toBe("widget");
+  await waitFor(() =>
+    expect(timelineFrames(socket).map((frame) => queryOf(frame).get("q"))).toEqual([null, "widget"])
+  );
+});
+
 test("the table mode's rows are the loaded rows, one per merge, deploy or failed run, and a run row opens its drill-down", async () => {
   const user = userEvent.setup();
   const run = spyOn(api, "getProjectDeployRun").mockResolvedValue({

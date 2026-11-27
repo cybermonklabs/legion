@@ -15,22 +15,41 @@ import (
 // to "eventually" (dispatch://INFRA-1042, check k5).
 const searchFreshness = 60 * time.Second
 
-// within runs probe until it answers true, failing the test when searchFreshness has passed
-// since written. It polls rather than waits the whole time out, so a check that holds at once -
-// which every one of these does, since each kind is indexed in the write's own transaction and
-// the block-index tick these tests drive themselves has already run (INFRA-988) - costs
-// nothing.
-func within(t *testing.T, written time.Time, what string, probe func() bool) {
+// within runs probe until it answers true, and fails the test once a probe begun more than
+// searchFreshness after written still found the write missing. written is the write's own time
+// (writtenAt) and each probe's start is read just before it, both on the database's clock, so the
+// span is the product's: from the write to a search that should have found it. A probe that misses
+// the write proves the index did not hold it when that probe began, and a correct index holds it
+// by searchFreshness after the write, so a loaded machine that only looks late fails nothing, and
+// an index that holds it late fails however soon the test looks. It reads every 20 ms, and a check
+// that holds at once - which every one of these does, since each kind is indexed in the write's
+// own transaction and the block-index tick these tests drive themselves has already run
+// (INFRA-988) - costs one read.
+func within(t *testing.T, database *store.Store, written time.Time, what string, probe func() bool) {
 	t.Helper()
 	for {
+		asked := databaseNow(t, database.Pool)
 		if probe() {
 			return
 		}
-		if waited := time.Since(written); waited > searchFreshness {
-			t.Fatalf("%s was still not there %s after the write, want it within %s", what, waited, searchFreshness)
+		if after := asked.Sub(written); after > searchFreshness {
+			t.Fatalf("%s was still missing from a search begun %s after its write, both on the database's clock; want it within %s of the write",
+				what, after, searchFreshness)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// writtenAt is when the row of table whose column reads id was written, on the database's clock:
+// its created_at, the start of the transaction that wrote it and indexed it.
+func writtenAt(t *testing.T, database *store.Store, table, column, id string) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := database.Pool.QueryRow(context.Background(),
+		`select created_at from `+table+` where `+column+`::text = $1`, id).Scan(&at); err != nil {
+		t.Fatalf("read when the %s row %s was written: %v", table, id, err)
+	}
+	return at
 }
 
 // windowsUnder counts the embeddings windows of kind kind the indexers wrote under one owner:
@@ -49,40 +68,43 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 // A write of each kind the index holds - an issue, and a document, a comment, an ask and a
 // message - is returned by a search of its own words within 60 seconds of the write, and the
 // blocks of the document, the comment, the ask and the message are indexed as windows under
-// them over that same wait.
+// them over that same wait, each measured from its own row's write on the database's clock
+// (within).
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 
-	written := time.Now()
 	corpus := seedSearchCorpus(t, handler)
 	// An item's and a document's windows are the block-index tick's to write, not the write's
 	// (INFRA-988), and no tick runs behind a test server, so the test runs the one the
 	// deployment's reconciler would have run in the seconds this check allows.
 	windowOwedOwners(t, deps)
 
-	for _, item := range []struct{ query, kind, id string }{
-		{"astrolabe", "document", corpus.primaryArtifactID},
-		{"sextant", "comment", corpus.commentID},
-		{"quadrant", "ask", corpus.askID},
-		{"compass", "message", corpus.messageID},
-		{"instruments", "issue", corpus.issueKey},
+	for _, item := range []struct{ query, kind, id, table, column string }{
+		{"astrolabe", "document", corpus.primaryArtifactID, "artifacts", "id"},
+		{"sextant", "comment", corpus.commentID, "comments", "id"},
+		{"quadrant", "ask", corpus.askID, "asks", "id"},
+		{"compass", "message", corpus.messageID, "messages", "id"},
+		{"instruments", "issue", corpus.issueKey, "issues", "key"},
 	} {
-		within(t, written, "the "+item.kind+" searched for by its own word "+item.query, func() bool {
+		written := writtenAt(t, database, item.table, item.column, item.id)
+		within(t, database, written, "the "+item.kind+" searched for by its own word "+item.query, func() bool {
 			return searchResultOf(searchResponse(t, handler, "q="+item.query), item.kind, item.id) != nil
 		})
 	}
 
-	for _, window := range []struct{ kind, owner string }{
-		{"document_block", corpus.primaryArtifactID},
-		{"comment_block", "comment/" + corpus.commentID},
-		{"ask_part", "ask/" + corpus.askID},
-		{"message_block", "message/" + corpus.messageID},
+	for _, window := range []struct{ kind, owner, table, id string }{
+		{"document_block", corpus.primaryArtifactID, "artifacts", corpus.primaryArtifactID},
+		{"comment_block", "comment/" + corpus.commentID, "comments", corpus.commentID},
+		{"ask_part", "ask/" + corpus.askID, "asks", corpus.askID},
+		{"message_block", "message/" + corpus.messageID, "messages", corpus.messageID},
 	} {
-		within(t, written, "a "+window.kind+" window under "+window.owner, func() bool {
+		written := writtenAt(t, database, window.table, "id", window.id)
+		within(t, database, written, "a "+window.kind+" window under "+window.owner, func() bool {
 			return windowsUnder(t, database, window.kind, window.owner) > 0
 		})
 	}
-	within(t, written, "the issue's own embeddings row", func() bool {
+	within(t, database, writtenAt(t, database, "issues", "key", corpus.issueKey), "the issue's own embeddings row", func() bool {
 		return windowsUnder(t, database, "issue", corpus.issueKey) == 1
 	})
 }
@@ -91,6 +113,7 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 // leave every indexed kind complete: the route reports each with every item current, nothing
 // lacking, nothing failed and no oldest age, and the total the same.
 func TestTheBackfillLeavesEveryIndexedKindComplete(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
@@ -235,6 +258,7 @@ func seedNotIndexedKinds(t *testing.T, database *store.Store, corpus searchCorpu
 // they move when those tables do, and they are in no total: the covered kinds' numbers are
 // exactly what they were.
 func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
@@ -287,6 +311,7 @@ func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 // Every kind the report names is named once, whether it is covered or not: no kind is in both
 // halves, which would let one reader count it and another not.
 func TestSearchCoverageNamesNoKindTwice(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	report := searchCoverageResponse(t, handler)

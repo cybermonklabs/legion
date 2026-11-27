@@ -65,14 +65,17 @@ export function ProjectPage(): ReactNode {
   );
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
+  // Whose questions the pill counts, read as every other surface that counts work waiting on
+  // the reader reads it.
+  const whoAmI = useQuery(whoAmIQuery()).data;
+  const viewer = whoAmI?.login;
+  // The asks waiting on the reader, read under the `person` scope, which an agent viewer's bearer
+  // may not hold: for one the pill counts none and nothing is asked.
   const inbox = useQuery({
     queryKey: ["inbox", projectKey],
     queryFn: () => api.getInbox(projectKey),
-    enabled: projectKey !== undefined,
+    enabled: projectKey !== undefined && whoAmI?.kind !== "agent",
   });
-  // Whose questions the pill counts, read as every other surface that counts work waiting on
-  // the reader reads it.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
   const projects = useQuery(projectsQuery());
   const project = projects.data?.find((candidate) => candidate.key === route?.project);
   // Whether the project has an architecture source decides where the bare project path opens
@@ -164,11 +167,13 @@ export function ProjectPage(): ReactNode {
 
   return (
     <section>
-      {/* One strip at `md` and above. Every control is `shrink-0`, so something has to give
-          when they outgrow the row. The title gives, truncating, which is what a long project
-          name should do; otherwise the last control - the blocked-on-you pill - would be pushed
-          off the right edge and unreachable. */}
-      <header className="flex flex-wrap items-center gap-2 md:min-h-12 md:flex-nowrap">
+      {/* One strip at `md` and above while it fits. Every control is `shrink-0`, so something has
+          to give when they outgrow the row: the board's three buttons and the Settings tab
+          together are wider than the row at 900 and 1280 px, and the last control - the
+          blocked-on-you pill - would be pushed off the right edge and unreachable. The row wraps,
+          so a control that does not fit is on a second row; a name too long for the first row
+          truncates (below). */}
+      <header className="flex flex-wrap items-center gap-2 md:min-h-12">
         {/* `flex-initial` at `md`: the title takes the width its name needs and no more, so
             the project key sits beside a short name instead of 380px away, and only a long
             name truncates - carrying the whole name as its `title`. */}
@@ -318,9 +323,11 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "settings" ? (
-          // A project with no default repository carries no `default_repo`.
+          // A project with no default repository carries no `default_repo`. Keyed by the project,
+          // so another project's tab starts with none of this one's draft, save or refusal.
           <DeliverySettingsSection
             defaultRepo={project.default_repo ?? null}
+            key={route.project}
             project={route.project}
           />
         ) : null}

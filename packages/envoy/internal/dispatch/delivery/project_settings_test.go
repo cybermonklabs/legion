@@ -197,25 +197,25 @@ func TestReconciledThroughWaitsForEveryStepOfTheRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	rule := saved.Rules()[0]
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
+	rules, err := ReadSourceRules(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through, err := ReconciledThrough(ctx, pool, rule, rules); err != nil || through != nil {
 		t.Fatalf("with no progress: %v (%v), want nil", through, err)
 	}
 	deployed, checked, searched := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)
 	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindDeploy, rule.DeployRepo), "acme/deploys deploy.yaml", deployed); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
+	if through, err := ReconciledThrough(ctx, pool, rule, rules); err != nil || through != nil {
 		t.Fatalf("with the deploy listing alone: %v (%v), want nil", through, err)
 	}
 	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindPRChecks, rule.DeployRepo), "acme/deploys ci.yaml", checked); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
+	if through, err := ReconciledThrough(ctx, pool, rule, rules); err != nil || through != nil {
 		t.Fatalf("with both listings and no search: %v (%v), want nil", through, err)
-	}
-	rules, err := ReadSourceRules(ctx, pool)
-	if err != nil {
-		t.Fatal(err)
 	}
 	current := searchProgressScope(rules)
 	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(1), current, searched); err != nil {
@@ -224,13 +224,13 @@ func TestReconciledThroughWaitsForEveryStepOfTheRepository(t *testing.T) {
 	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(2), "authors=octocat excluded= deploy=acme/other", deployed); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
+	if through, err := ReconciledThrough(ctx, pool, rule, rules); err != nil || through != nil {
 		t.Fatalf("with one installation's search under an old scope: %v (%v), want nil", through, err)
 	}
 	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(2), current, deployed); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through == nil || !through.Equal(searched) {
+	if through, err := ReconciledThrough(ctx, pool, rule, rules); err != nil || through == nil || !through.Equal(searched) {
 		t.Fatalf("with both listings and every search: %v (%v), want the earliest, %v", through, err, searched)
 	}
 }
@@ -252,13 +252,13 @@ func TestReconciledThroughOfOneWorkflowWaitsForItsOneListing(t *testing.T) {
 	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(1), searchProgressScope(rules), listed.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through == nil || !through.Equal(listed) {
+	if through, err := ReconciledThrough(ctx, pool, rule, rules); err != nil || through == nil || !through.Equal(listed) {
 		t.Fatalf("one workflow listed through %v: %v (%v)", listed, through, err)
 	}
 }
 
 // A source repository the rename pass renames (store.RewriteRenamedRepositories) keeps its
-// progress (dispatch://INFRA-978, T6): the reconcile reads its run steps and the search's progress
+// progress (dispatch://INFRA-978, D3): the reconcile reads its run steps and the search's progress
 // under the names and the scopes it writes now, so the renamed source is reconciled through what it
 // was before the rename, as is the project's other source, and the reconcile imports nothing again.
 func TestARenamedSourceRepositoryKeepsItsProgress(t *testing.T) {
@@ -306,8 +306,58 @@ func TestARenamedSourceRepositoryKeepsItsProgress(t *testing.T) {
 		if !ok {
 			t.Fatalf("after the rename no source reads %s: %+v", repo, renamed.All())
 		}
-		if got, err := ReconciledThrough(ctx, pool, rule); err != nil || got == nil || !got.Equal(through) {
+		if got, err := ReconciledThrough(ctx, pool, rule, renamed); err != nil || got == nil || !got.Equal(through) {
 			t.Errorf("after the rename %s is reconciled through %v (%v), want %v as before it", repo, got, err, through)
+		}
+	}
+}
+
+// A project with delivery off and no default repository may hold a github_workflow source that
+// names no repository, and a second one is refused, naming it: the two would read one
+// repository, the default the project does not hold, which the one-repository-per-source index
+// holds as one. Nothing is written.
+func TestASecondSourceNamingNoRepositoryOfAProjectWithNoDefaultIsRefused(t *testing.T) {
+	pool, ctx := settingsStore(t)
+	_, err := save(t, ctx, pool, ProjectSettingsInput{Project: "BARE", Delivery: false,
+		Sources: []SourceInput{workflowSource(nil, "a.yaml"), workflowSource(new("bare/deploys"), "b.yaml"), workflowSource(nil, "c.yaml")}})
+	if refusal := refusedWith(t, err, CodeDeliverySettingsInput); refusal.Source == nil || *refusal.Source != 2 || refusal.Field != "repo" {
+		t.Errorf("the refusal %+v names source %v and field %q, want source 2's repo", refusal, refusal.Source, refusal.Field)
+	}
+	if _, err := GetProjectSettings(ctx, pool, "BARE"); !errors.Is(err, ErrNoSettings) {
+		t.Errorf("after the refused save BARE's settings read %v, want ErrNoSettings", err)
+	}
+}
+
+// A project's first failure day reads back as the day saved, midnight UTC, whatever the session's
+// time zone: east of UTC as at UTC.
+func TestTheFirstFailureDayReadsBackInEveryTimeZone(t *testing.T) {
+	pool, ctx := settingsStore(t)
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := save(t, ctx, pool, ProjectSettingsInput{Project: "ACME", Delivery: true, Sources: []SourceInput{workflowSource(nil, "d.yaml")},
+		FailureSources: []string{FailureSourceReverts}, FailuresMeasuredSince: &since}); err != nil {
+		t.Fatalf("save ACME: %v", err)
+	}
+	for _, zone := range []string{"UTC", "Asia/Tokyo"} {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `select set_config('timezone', $1, true)`, zone); err != nil {
+			t.Fatalf("set the time zone %s: %v", zone, err)
+		}
+		one, err := GetProjectSettings(ctx, tx, "ACME")
+		if err != nil {
+			t.Fatal(err)
+		}
+		all, err := ListProjectSettings(ctx, tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = tx.Rollback(ctx)
+		for _, read := range []ProjectSettings{one, all[0]} {
+			if read.FailuresMeasuredSince == nil || !read.FailuresMeasuredSince.Equal(since) {
+				t.Errorf("in the time zone %s ACME's first failure day reads %v, want %s", zone, read.FailuresMeasuredSince, since.Format(time.RFC3339))
+			}
 		}
 	}
 }

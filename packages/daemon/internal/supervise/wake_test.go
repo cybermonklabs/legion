@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,29 +37,32 @@ const (
 	thirdToken  claim.Token = "legion-LEGION-209-reviewer"
 )
 
-// pacedDeps sets a machine's pacing to one limiter of rate wakes a minute in bursts of one,
-// every paced release spread by half an interval. A rate of zero is the pacing off, and the
-// machine is handed no Reserve at all, which is what the daemon hands it at that rate rather
-// than a limiter that paces nothing (the daemon's run, openSupervision): a harness that handed
-// one would take a path production never takes, and the line its wakes write would say
-// paced=true of a pacing that is off (reserveWake, wakeRan).
+// pacedDeps sets a machine's pacing to one pacer over one limiter of rate wakes a minute in bursts
+// of one, every paced release spread by half an interval, on the harness's own clock, as the daemon
+// builds its pacer on the machines' clock (internal/daemon's run). A rate of zero is the pacing off,
+// and the machine is handed no Pacer at all, which is what the daemon hands it at that rate rather
+// than a pacer that paces nothing (the daemon's run, openSupervision): a harness that handed one
+// would take a path production never takes, and the line its wakes write would say paced=true of a
+// pacing that is off (reserveWake, wakeRan).
 func pacedDeps(rate int) func(*Deps) {
 	return func(d *Deps) {
 		d.WakePace = WakePace{Rate: rate, Burst: 1}
 		if rate > 0 {
-			d.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+			limiter := wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart })
+			d.WakePace.Pacer, d.WakePace.Interval = NewPacer(limiter, d.Clock), limiter.Interval()
 		}
 	}
 }
 
-// pacedHarness is a harness whose machines reserve from one such limiter (pacedDeps). tune is
-// whatever else the test's own Deps need, set before the first machine exists, as the daemon sets
-// them (openSupervision, then the machines it builds): the stale-plugin refresh gate is set that
-// way (plugin_refresh_gate_test.go).
+// pacedHarness is a harness whose machines take their places in one such pacer (pacedDeps), which
+// a restart builds afresh (harness.pace). tune is whatever else the test's own Deps need, set
+// before the first machine exists, as the daemon sets them (openSupervision, then the machines it
+// builds): the stale-plugin refresh gate is set that way (plugin_refresh_gate_test.go).
 func pacedHarness(t *testing.T, rate int, tune ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	pacedDeps(rate)(&h.deps)
+	h.pace = pacedDeps(rate)
+	h.pace(&h.deps)
 	for _, set := range tune {
 		set(&h.deps)
 	}
@@ -90,10 +94,18 @@ func wakeClaim(token claim.Token, state ClaimState) Claim {
 // wake limiter, over the claim given.
 func (h *harness) machineFor(c Claim) *Machine {
 	h.t.Helper()
+	return h.machineUnder(h.ctx, c)
+}
+
+// machineUnder is machineFor with the machine built on ctx, which a test ends for that machine
+// alone as a stopping daemon ends every machine's (shutdown); the claim is stored on the
+// harness's own.
+func (h *harness) machineUnder(ctx context.Context, c Claim) *Machine {
+	h.t.Helper()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		h.t.Fatal(err)
 	}
-	m, err := NewMachine(h.ctx, h.deps, c)
+	m, err := NewMachine(ctx, h.deps, c)
 	if err != nil {
 		h.t.Fatalf("new machine for %s: %v", c.Token, err)
 	}
@@ -224,6 +236,119 @@ func TestASecondClaimsWakeWaitsOneIntervalAndAPart(t *testing.T) {
 	h.wantWakeLine(secondToken, "waited=true")
 }
 
+// A spawn carrying a place its caller took (RequestSpawn.Place) waits at that place, and runs at
+// once where the pacer let that place out less than one interval before the spawn reached its gate:
+// that is still its own turn. One whose place was let out longer ago joins its queue afresh rather
+// than run at once: the boot posts its relaunches together, and those that reach their gates long
+// after their places were let out would otherwise all run in one instant, outside the rate and the
+// burst. The places are taken here as the boot takes them, from the harness's own pacer, before the
+// spawns are posted.
+func TestASpawnWhosePlaceWasLetOutLongAgoIsPacedAgain(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	third := h.machineFor(wakeClaim(thirdToken, StateQueued))
+	pacer, start := h.deps.WakePace.Pacer, h.clock.Now()
+	old := pacer.Join(wakepace.Second)
+	h.clock.Advance(2 * wakeInterval)
+	recent := pacer.Join(wakepace.Second)
+	h.clock.Advance(wakeInterval / 2)
+	waiting := pacer.Join(wakepace.Second)
+	if _, out := old.Let(); !out {
+		t.Fatal("the first place the pacer was asked for waits, want it let out at its join")
+	}
+	if _, out := recent.Let(); !out {
+		t.Fatal("the place joined two intervals on waits, want it let out at its join: the bucket refilled")
+	}
+	turn := start.Add(3*wakeInterval + wakePart)
+	if due := waiting.Estimate(); !due.Equal(turn) {
+		t.Fatalf("the place joined behind the second let-out is due at %s, want %s", due, turn)
+	}
+
+	h.must(RequestSpawn{Claim: h.token, Place: recent})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken, Place: old})
+	h.mustPostTo(third, RequestSpawn{Claim: thirdToken, Place: waiting})
+
+	h.wantStarts(h.token, 1)
+	h.wantWakeLine(h.token, "paced=true", "queue=other", "turnsWaited=0")
+	h.wantStarts(secondToken, 0)
+	if held := second.View().WakeWaiting; held == nil || !held.At.Equal(turn.Add(wakeInterval)) {
+		t.Fatalf("the spawn whose place was let out two and a half intervals ago holds wake %+v, want one joined afresh, due one interval after the place that waits", held)
+	}
+	if late := h.logs.lines("reached the wake gate an interval or more after the pacing let out the place its caller took"); len(late) != 1 ||
+		!strings.Contains(late[0], "claim="+string(secondToken)) {
+		t.Fatalf("the lines that say a late place was joined afresh are %v, want one, the second claim's", late)
+	}
+	if held := third.View().WakeWaiting; held == nil || !held.At.Equal(turn) {
+		t.Fatalf("the spawn whose place still waits holds wake %+v, want its own place, due at %s", held, turn)
+	}
+}
+
+// A parked wake runs at the turn its claim's view names, however far the clock moved between the
+// decision's read of it and the arm of the timer of the turn its place waits for (Clock.At). Here
+// the pacer's arm moves the clock a second, as the test goroutine of internal/daemon's
+// TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst moved the wave clock inside
+// another goroutine's park, which failed it with "timed out waiting for the launch of … at its
+// turn" (awaitLaunchAtItsTurn).
+func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) {
+	const moved = time.Second
+	var h *harness
+	h = pacedHarness(t, wakeRate, func(d *Deps) {
+		limiter, clock := wakepace.New(wakeRate, 1, func(time.Duration) time.Duration { return wakePart }), d.Clock
+		d.WakePace.Pacer = wakepace.NewPacer(limiter, clock.Now, func(at time.Time, f func()) {
+			if at.After(clock.Now()) {
+				h.clock.Advance(moved)
+			}
+			clock.At(at, f)
+		})
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	start := h.clock.Now()
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+
+	held := second.View().WakeWaiting
+	if want := start.Add(wakeInterval + wakePart); held == nil || !held.At.Equal(want) {
+		t.Fatalf("the waiting claim names wake %+v, want its turn at %s, one interval and a part after the first", held, want)
+	}
+	if now := h.clock.Now(); !now.Equal(start.Add(moved)) {
+		t.Fatalf("the clock reads %s after the park, want %s: the pacer's arm moved it %s", now, start.Add(moved), moved)
+	}
+	h.clock.Advance(held.At.Sub(h.clock.Now()) - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// The fake clock arms a moment it has passed, by either arm, for its own time: it fires at the
+// clock's next move and never moves the clock back.
+func TestTheFakeClockFiresAPassedMomentAtItsOwnTime(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		arm  func(c *fakeClock, passed time.Time, f func())
+	}{
+		{name: "AfterFunc", arm: func(c *fakeClock, passed time.Time, f func()) { c.AfterFunc(passed.Sub(c.Now()), f) }},
+		{name: "At", arm: func(c *fakeClock, passed time.Time, f func()) { c.At(passed, f) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c := newFakeClock()
+			c.Advance(time.Hour)
+			before := c.Now()
+			var read time.Time
+			row.arm(c, before.Add(-time.Minute), func() { read = c.Now() })
+			c.Advance(time.Nanosecond)
+			if read.IsZero() || read.Before(before) {
+				t.Fatalf("the timer %s armed for a passed moment read the clock at %s, want no earlier than %s, the clock's time at the arm", row.name, read, before)
+			}
+		})
+	}
+}
+
 // A start request repeated against a claim whose wake is still waiting starts no second launch and
 // takes no second token: the claim behind it keeps the turn it already holds.
 func TestASecondStartOfAWaitingClaimTakesNoSecondToken(t *testing.T) {
@@ -249,9 +374,11 @@ func TestASecondStartOfAWaitingClaimTakesNoSecondToken(t *testing.T) {
 }
 
 // A wake whose claim may no longer launch by the time its turn comes launches nothing — the stop
-// that retired it let the wake go with the process — and the claim behind it still wakes at the
-// moment it was given.
-func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *testing.T) {
+// that retired it let the wake go with the process, and gave its place in the pacing up — and the
+// claim behind it takes the turn that place would have taken. Before the place-based pacing the
+// dropped wake's token stayed spent and the claim behind it kept its own later moment; a waiting
+// place has drawn no token, so the turn now goes to the next head (wakepace.Place.Leave).
+func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextTakesItsTurn(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
 	third := h.machineFor(wakeClaim(thirdToken, StateQueued))
@@ -259,7 +386,7 @@ func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *tes
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
 	h.mustPostTo(third, RequestSpawn{Claim: thirdToken})
-	h.mustPostTo(second, RequestStop{Claim: secondToken})
+	h.mustPostTo(second, RequestStop{Claim: secondToken, By: SuspendedByOperator})
 
 	h.clock.Advance(2*wakeInterval + 2*wakePart)
 	second.Wait()
@@ -270,7 +397,7 @@ func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *tes
 	}
 	h.wantStarts(secondToken, 0)
 	h.wantStarts(thirdToken, 1)
-	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
+	h.wantWakeLine(thirdToken, "waitedFor="+(wakeInterval+wakePart).String())
 }
 
 // R2 of dispatch://INFRA-976/spec: a wake that waits blocks nothing and loses nothing, and its
@@ -280,8 +407,10 @@ func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *tes
 // process to protect and nothing to wait for. It must be decided where it arrives, and written,
 // since the hold lives in memory alone (holdSuspension) and no outbox row carries an operator's
 // suspend — a restart inside the wait would forget it and the boot would relaunch the claim it
-// was told to drain. The wakes behind it keep the turns they already hold, as they do behind
-// every other wake the pacing drops.
+// was told to drain. The wake behind it takes the turn the drained claim's place would have taken,
+// as it does behind every other wake the pacing drops: a waiting place has drawn no token, so the
+// turn goes to the next head (wakepace.Place.Leave), where before this test read the dropped
+// token left spent.
 func TestASuspendOfAWaitingProcesslessClaimIsDecidedWhereItArrives(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateSuspended))
@@ -311,11 +440,13 @@ func TestASuspendOfAWaitingProcesslessClaimIsDecidedWhereItArrives(t *testing.T)
 
 	h.wantStarts(secondToken, 0)
 	h.wantStarts(thirdToken, 1)
-	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
+	h.wantWakeLine(thirdToken, "waitedFor="+(wakeInterval+wakePart).String())
 }
 
 // The operator's resume never waits: it drops the wake the pacing holds, launches the claim at
-// once, and takes nothing from the rate — the claim behind it keeps the turn it already holds.
+// once, and takes nothing from the rate — the dropped wake's place is given up, and the claim that
+// joins behind it takes the turn that place would have taken. Before the place-based pacing the
+// dropped wake's token stayed spent and the claim behind waited a turn later.
 func TestAnExemptResumeOfAWaitingClaimLaunchesAtOnce(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateSuspended))
@@ -325,7 +456,7 @@ func TestAnExemptResumeOfAWaitingClaimLaunchesAtOnce(t *testing.T) {
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	h.wantStarts(secondToken, 0)
 
-	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.mustPostTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
 
 	h.wantStarts(secondToken, 1)
 	if state := second.Claim().State; state != StateLaunching {
@@ -335,7 +466,44 @@ func TestAnExemptResumeOfAWaitingClaimLaunchesAtOnce(t *testing.T) {
 	h.mustPostTo(third, RequestSpawn{Claim: thirdToken})
 	h.clock.Advance(2*wakeInterval + 2*wakePart)
 	third.Wait()
-	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
+	h.wantWakeLine(thirdToken, "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// A message wake that the pacing lets out more than 45 minutes after its mark says so in the line
+// it writes, and writes that line as a warning (dispatch://INFRA-5682 R1): Envoy keeps a role's
+// message for an hour, so a wake that late brings its role back close to the moment the message is
+// dropped, or after it. A message wake let out sooner writes the line as any paced wake does. Both
+// name the message queue and the one turn they waited behind the first claim's launch.
+func TestAMessageWakeLetOutLongAfterItsMarkSaysItCameLate(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		marked time.Duration
+		late   bool
+	}{
+		{name: "marked 45 minutes before it joined", marked: 45 * time.Minute, late: true},
+		{name: "marked 44 minutes before it joined", marked: 44 * time.Minute},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			second := h.machineFor(wakeClaim(secondToken, StateSuspended))
+
+			h.must(RequestSpawn{Claim: h.token})
+			h.mustPostTo(second, MessageMarked{Claim: secondToken, At: h.clock.Now().Add(-row.marked)})
+			h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
+			h.wantStarts(secondToken, 0)
+			h.clock.Advance(wakeInterval + wakePart)
+			second.Wait()
+			h.wantStarts(secondToken, 1)
+
+			line := h.wantWakeLine(secondToken, "queue=message", "turnsWaited=1", "waitedFor="+(wakeInterval+wakePart).String())
+			if late := strings.Contains(line, "lateForMessage=true"); late != row.late {
+				t.Fatalf("the wake's line says it came late for its message: %t, want %t: %s", late, row.late, line)
+			}
+			if warned := strings.Contains(line, "level=WARN"); warned != row.late {
+				t.Fatalf("the wake's line is a warning: %t, want %t: %s", warned, row.late, line)
+			}
+		})
+	}
 }
 
 // An operator's forget-session of a waiting claim is decided rather than refused — parked
@@ -349,7 +517,7 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session, By: SuspendedByOperator})
 
 	if got := second.Claim(); got.Session != "" || got.SessionFile != "" {
 		t.Fatalf("the claim records session %q at %q, want neither", got.Session, got.SessionFile)
@@ -373,10 +541,88 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 	}
 }
 
-// An operator's retry of a waiting claim the gate found suspended is refused, as it is of any
-// suspended claim — a suspended claim is resumed, not retried — and the refusal costs the claim
-// nothing: the wake it dropped is taken up again and runs at the moment it already held.
-func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.T) {
+// An operator's retry of a claim whose launch the pacing holds over no process runs that launch at
+// once, whatever state the gate found the claim in. A boot's relaunch of an unfinished launch and
+// every spawn park from queued, and the claim reads launching for the whole wait, so a person who
+// sees it stuck reaches for `legion claims retry`; answering "a queued claim is spawned, not
+// retried" left that claim waiting its turn behind a restart's whole queue (dispatch://INFRA-5482).
+// The launch is the one the wake held, so it runs once: the place it held is given up and lets
+// nothing out, and the claim that joins behind it takes the turn that place would have taken,
+// where before the place-based pacing it waited behind the dropped wake's spent token.
+func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	third := h.machineFor(wakeClaim(thirdToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	h.wantStarts(secondToken, 0)
+
+	h.mustPostTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator})
+
+	h.wantStarts(secondToken, 1)
+	if got := second.Claim(); got.State != StateLaunching || got.Locator == nil {
+		t.Fatalf("the retried claim is %s recording %+v, want %s recording the process the retry started", got.State, got.Locator, StateLaunching)
+	}
+	if held := second.View().WakeWaiting; held != nil {
+		t.Fatalf("the retried claim still names wake %+v, want none: its launch ran", held)
+	}
+	h.wantWakeLine(secondToken, "kind=launch", "paced=false")
+	h.mustPostTo(third, RequestSpawn{Claim: thirdToken})
+	h.clock.Advance(2*wakeInterval + 2*wakePart)
+	second.Wait()
+	third.Wait()
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(thirdToken, "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// The controller's retry of an agent whose launch waits its turn runs no launch at once. The wake
+// pacing lets the operator's retry alone through (exemptWake, dropsWaitingWake): the controller
+// asks its retries of as many agents at once as it decides to, so each keeps the turn the pacing
+// gave it. Its retry drops no wake, so the decision finds the claim where the park wrote it,
+// launching for the whole wait (waitOnMachine), and the retry is refused naming that state, as a
+// retry of an agent whose claim's launch is under way is. The agent launches once, at its turn.
+//
+// The negative control is exemptWake letting every RequestAskedRetry through, whoever asks it: the
+// controller's retry then drops the wake, the claim is put back in the state the gate found,
+// queued, and the refusal names queued; with runDroppedLaunchForRetry taking every retry as well,
+// the agent launches at once, and this test reads that at the runtime's starts.
+func TestAControllersRetryOfAnAgentWhoseLaunchWaitsItsTurnKeepsTheTurn(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	held := second.View().WakeWaiting
+	if held == nil {
+		t.Fatal("the second claim's launch is not waiting its turn")
+	}
+
+	err := h.postTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByController})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateLaunching {
+		t.Fatalf("the controller's retry answered %v, want a refusal naming %s", err, StateLaunching)
+	}
+	h.wantStarts(secondToken, 0)
+	if again := second.View().WakeWaiting; again == nil || *again != *held {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v", again, held)
+	}
+	h.clock.Advance(wakeInterval + wakePart - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// The same retry of a claim the gate found suspended runs the launch the rule's resume parked —
+// the session the claim records, resumed — rather than being refused as a retry of a suspended
+// claim: a person waiting on the claim is not made to know which state a launching claim was in
+// before the pacing took it.
+func TestAnOperatorsRetryOfAClaimWaitingFromSuspendedResumesItAtOnce(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateSuspended))
 
@@ -384,12 +630,144 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	h.clock.Advance(wakeInterval / 4)
 	second.Wait()
+	h.wantStarts(secondToken, 0)
 
-	err := h.postTo(second, RequestOperatorRetry{Claim: secondToken})
+	h.mustPostTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator})
+
+	resumed := 0
+	for _, call := range h.rt.CallsOf("Resume") {
+		if call.Spec.Claim == secondToken {
+			resumed++
+		}
+	}
+	if resumed != 1 {
+		t.Fatalf("the retry resumed %s %d times, want once, the launch its wake held", secondToken, resumed)
+	}
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval/4).String(), "paced=false")
+	h.clock.Advance(wakeInterval + wakePart)
+	second.Wait()
+	h.wantStarts(secondToken, 1)
+}
+
+// The operator's retry runs no parked launch while a project pause holds the claim: the API refuses
+// a retry while the project is paused, and a pause that opened after that refusal was read holds
+// this launch as it holds every other. The retry is refused naming the state the gate found, and
+// the wake keeps the turn it held, for that turn to hand the launch to the pause's gate.
+func TestAnOperatorsRetryOfAWaitingClaimAPauseHoldsLaunchesNothing(t *testing.T) {
+	flag := &pauseFlag{}
+	h := pacedHarness(t, wakeRate, func(d *Deps) { d.Paused = flag.Paused })
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	held := second.View().WakeWaiting
+	if held == nil {
+		t.Fatal("the second claim's launch is not waiting its turn")
+	}
+	flag.set(7)
+
+	err := h.postTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator})
 
 	var refused *RefusedError
-	if !errors.As(err, &refused) || refused.State != StateSuspended {
-		t.Fatalf("the operator's retry answered %v, want a refusal naming %s", err, StateSuspended)
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the operator's retry under the pause answered %v, want a refusal naming %s", err, StateQueued)
+	}
+	h.wantStarts(secondToken, 0)
+	if again := second.View().WakeWaiting; again == nil || *again != *held {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v", again, held)
+	}
+}
+
+// A launch the pause's gate held is refused a retry while the pause holds, and run by a retry once
+// the pause has ended and before the gate's own stop or the resume's event has let it out: a
+// person retrying a claim just after a resume is not answered "a queued claim is spawned, not
+// retried". It runs once, and no stop of the pause's gate is left armed after it.
+func TestAnOperatorsRetryOfALaunchThePausesGateHeldRunsItOnceThePauseHasEnded(t *testing.T) {
+	flag := &pauseFlag{}
+	h := pacedHarness(t, wakeRate, func(d *Deps) { d.Paused = flag.Paused })
+	flag.set(7)
+	h.must(RequestSpawn{Claim: h.token})
+	h.wantStarts(h.token, 0)
+	if !h.armed(TimerPause) {
+		t.Fatal("the pause's gate holds the launch with no stop armed")
+	}
+
+	err := h.postTo(h.m, RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the operator's retry under the pause answered %v, want a refusal naming %s", err, StateQueued)
+	}
+	h.wantStarts(h.token, 0)
+
+	flag.set(0)
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
+
+	h.wantStarts(h.token, 1)
+	if h.armed(TimerPause) {
+		t.Fatal("the gate's stop is still armed over a launch the retry let out")
+	}
+	h.wantWakeLine(h.token, "kind=launch", "paced=false")
+}
+
+// A try the pause met after its write (pauseHeldTry) is held launching, past the pacing already. A
+// retry under the pause is refused as a retry of a launching claim is, and a retry once the pause
+// has ended runs a fresh try of that launch, once, with no second wake line and the gate's stop
+// disarmed.
+func TestAnOperatorsRetryLetsOutATryThePauseMetAfterItsWrite(t *testing.T) {
+	flag := &pauseFlag{}
+	h := pacedHarness(t, wakeRate, func(d *Deps) { d.Paused = flag.Paused })
+	ahead := h.machineFor(wakeClaim(secondToken, StateQueued))
+	h.mustPostTo(ahead, RequestSpawn{Claim: secondToken})
+	h.must(RequestSpawn{Claim: h.token})
+	h.wantStarts(h.token, 0)
+	var paused sync.Once
+	h.store.onPut = func(c Claim) {
+		if c.Token == h.token && c.State == StateLaunching && c.Generation > 0 {
+			paused.Do(func() { flag.set(7) })
+		}
+	}
+
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
+
+	h.wantStarts(h.token, 0)
+	if !h.armed(TimerPause) {
+		t.Fatal("the try the pause met after its write is held with no stop of the pause's gate armed")
+	}
+	err := h.postTo(h.m, RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateLaunching {
+		t.Fatalf("the operator's retry under the pause answered %v, want a refusal naming %s", err, StateLaunching)
+	}
+	h.wantStarts(h.token, 0)
+
+	flag.set(0)
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
+
+	h.wantStarts(h.token, 1)
+	if h.armed(TimerPause) {
+		t.Fatal("the gate's stop is still armed over a try the retry let out")
+	}
+	h.wantWakeLine(h.token, "kind=launch", "paced=false")
+}
+
+// An operator's request no row of the state the gate found decides, and that is no retry, is
+// refused as that state refuses it — a queued claim is spawned, not resumed — and the refusal costs
+// the claim nothing: the wake it dropped is taken up again and runs at the moment it already held.
+func TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	h.clock.Advance(wakeInterval / 4)
+	second.Wait()
+
+	err := h.postTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the operator's resume answered %v, want a refusal naming %s", err, StateQueued)
 	}
 	h.clock.Advance(wakeInterval + wakePart - wakeInterval/4 - time.Nanosecond)
 	second.Wait()
@@ -400,6 +778,63 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 
 	h.wantStarts(secondToken, 1)
 	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// Only the operator's own resume and retry are let past the wake pacing, because a person is
+// waiting on each. The controller's come through the agent door, which it asks of as many agents
+// at once as it decides to — lifting its own holds after a deploy, it asks it of every agent it
+// held — so each takes its turn behind the wake ahead of it, as every launch the pacing holds
+// does, and launches at that turn.
+//
+// The negative control is exemptWake letting every RequestResume and RequestAskedRetry
+// through whoever names it, as it did: the controller's rows then launch at once, and this test
+// reads that at the runtime's starts.
+func TestOnlyTheOperatorsResumeAndRetryAreLetPastThePacing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		state       ClaimState
+		suspendedBy SuspendSource
+		ask         Event
+		paced       bool
+	}{
+		{"the operator's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByOperator}, false},
+		{"the controller's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByController}, true},
+		{"the operator's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator}, false},
+		{"the controller's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByController}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			c := wakeClaim(secondToken, tc.state)
+			c.SuspendedBy = tc.suspendedBy
+			if tc.state == StateFailed {
+				c.Failure = "launch failures ran out"
+			}
+			second := h.machineFor(c)
+			// The harness's own claim takes the one token of the burst, so a paced wake behind it
+			// waits an interval and the part the jitter draws.
+			h.must(RequestSpawn{Claim: h.token})
+
+			h.mustPostTo(second, tc.ask)
+
+			if !tc.paced {
+				h.wantStarts(secondToken, 1)
+				h.wantWakeLine(secondToken, "waited=false", "paced=false")
+				return
+			}
+			h.wantStarts(secondToken, 0)
+			if got := second.View(); got.State != StateLaunching || got.WakeWaiting == nil || got.WakeWaiting.Kind != WakeLaunch {
+				t.Fatalf("the claim is %s waiting on %+v, want it launching under a launch wake the pacing holds", got.State, got.WakeWaiting)
+			}
+			h.clock.Advance(wakeInterval + wakePart - time.Nanosecond)
+			second.Wait()
+			h.wantStarts(secondToken, 0)
+
+			h.clock.Advance(time.Nanosecond)
+			second.Wait()
+			h.wantStarts(secondToken, 1)
+			h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String(), "paced=true")
+		})
+	}
 }
 
 // A wake over a claim whose process still runs leaves the claim exactly as it was — its state and
@@ -637,10 +1072,12 @@ func TestTheControllersStalePluginIsRelaunchedWhereItIsFound(t *testing.T) {
 
 // What a machine tells a reader of every claim about the wake it is holding
 // (ClaimView.WakeWaiting, which the daemon's state is built from): its kind and the moment the
-// pacing gave it, for as long as it waits, and nothing at all once its turn has run it. The wake
-// travels on the published view rather than behind the machine's lock because the reader asking is
-// asking about every claim at once, and a claim mid-relaunch holds its lock for as long as the
-// runtime waits out its pods.
+// pacer estimates for its place, for as long as it waits, and nothing at all once its turn has run
+// it. The estimate is the pending turn, which carries its jitter, and one interval for each place
+// ahead (wakepace.Place.Estimate): the jitter of the turns behind the pending one is not drawn
+// yet, so a place two back is estimated one part early. The wake travels on the published view
+// rather than behind the machine's lock because the reader asking is asking about every claim at
+// once, and a claim mid-relaunch holds its lock for as long as the runtime waits out its pods.
 func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.deps.PluginContract = PodUpdateContract + 1
@@ -664,7 +1101,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 		{stale, WakePluginRefresh, 2},
 	} {
 		held := waiting.m.View().WakeWaiting
-		at := reserved.Add(time.Duration(waiting.turns) * (wakeInterval + wakePart))
+		at := reserved.Add(wakePart + time.Duration(waiting.turns)*wakeInterval)
 		if held == nil || held.Kind != waiting.kind || !held.At.Equal(at) {
 			t.Fatalf("%s names wake %+v, want a %s wake due at %s", waiting.m.View().Token, held, waiting.kind, at)
 		}
@@ -760,9 +1197,9 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 // marked interrupted, and the resumed agent is told to carry on from where the turn stopped.
 //
 // A prompt acknowledged before the park is not one of those turns any more: the park disarms the
-// wait for it with the rest of the dead-or-replaced process's timers (parkWake), so a bare start
-// in that window is attributed to no delivery and nothing is confirmed for the launch to take
-// back.
+// wait for it with the rest of the dead-or-replaced process's timers (waitOnMachine), so a bare
+// start in that window is attributed to no delivery and nothing is confirmed for the launch to
+// take back.
 //
 // The negative control is that take-back reverted (wakeNow's interrupted): the task is then gone
 // from the claim at its turn, which this test reads where it asks for the pending task.
@@ -1009,13 +1446,13 @@ func TestAClosedConnectionAfterTheSweepsDeathChargesNothingMore(t *testing.T) {
 }
 
 // A process that dies while it is booting is the common failure of a restart wave, and the park
-// keeps that dead process recorded until the launch's turn (parkWake). Its boot interval goes
+// keeps that dead process recorded until the launch's turn (waitOnMachine). Its boot interval goes
 // with the rest of that process's timers at the park, so nothing of it falls inside the wait:
 // the probe a boot interval makes would be about a process whose fate the waiting relaunch has
 // already decided, and the turn is what replaces it and arms the new process's own (armBoot).
 // The test reads the timer gone for the whole of the wait and no probe made inside it.
 //
-// The negative control is the disarm reverted (parkWake's timers): the boot interval is then
+// The negative control is the disarm reverted (waitOnMachine's timers): the boot interval is then
 // armed over the dead process and fires inside the wait, which this test reads where it asks
 // the machine for that timer. Nothing else of the test moves with that one revert — the probe
 // such a timer makes is stopped by probe's own guard, and what a probe reported would be
@@ -1068,7 +1505,7 @@ func TestTheBootIntervalOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t *testing
 // (armRegistration). The test reads the timer gone for the whole of the wait and no probe made
 // inside it.
 //
-// The negative control is the disarm reverted (parkWake's timers): the deadline is then armed
+// The negative control is the disarm reverted (waitOnMachine's timers): the deadline is then armed
 // over the dead process and fires inside the wait, which this test reads where it asks the
 // machine for that timer. Nothing else of the test moves with that one revert — the probe the
 // deadline makes is stopped by probe's own guard, and what a probe reported would be stopped by
@@ -1112,17 +1549,334 @@ func TestTheRegistrationDeadlineOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t 
 	h.wantStarts(h.token, 2)
 }
 
+// The boot's replay of a recorded death (RecordedDeath) raises no second relaunch over a claim
+// whose death the sweep already decided: at boot the runtime's first report can reach a machine
+// before the replay does — a pod that is gone reads gone at once — and that report raised the
+// relaunch the record names. A second launch raised over a waiting wake replaces it and takes a
+// token of its own at the back of the queue (reserveWake), so the replay must find the launch
+// already raised and decide nothing (relaunchRecordedDeath, launchMet).
+//
+// The negative control is that guard reverted: the replay then reserves again and the claim's
+// wake moves to a later turn, which wantWakeDueAt reads.
+func TestARecordedDeathWhoseReportCameFirstTakesNoSecondWake(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	if !h.claim().DeathCharged {
+		t.Fatal("the claim records no charge for the death the sweep decided, want DeathCharged: the boot's replay reads it")
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+	h.wantWakeDueAt(waiting)
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.wantStarts(h.token, 1)
+}
+
+// One death is charged one launch failure, however many daemons raise its relaunch. The
+// relaunch a death raises waits in the pacing in memory, and a write the claim makes while it
+// waits — the task a workflow start queues on it, here — stores the claim as the machine holds
+// it. After a restart the death's relaunch is raised again, by the boot's replay of the record
+// (RecordedDeath) or by the sweep's next report of the same death (died), and neither may charge
+// the death a second launch failure: that walks a claim to the launch budget for a process that
+// failed once, and fails it with no launch tried.
+//
+// The negative control is the charge made at every raise of the relaunch (relaunchAfterFailure
+// without its deathLaunchFailureCharged guard): the restart reads the stored count with the first
+// charge in it and adds a second.
+func TestARestartChargesADeathWhoseRelaunchWaitedNoSecondLaunchFailure(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		again func(h *harness, dead runtime.Locator)
+	}{
+		{"the boot's replay of the recorded death", func(h *harness, _ runtime.Locator) {
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+		}},
+		{"the sweep's next report of the death", func(h *harness, dead runtime.Locator) {
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateReady)
+			queueAhead(h, 1)
+			dead := h.locator()
+			h.observe(runtime.Gone)
+			h.wantWaitingWake(WakeLaunch)
+			charged := h.claim().Budgets
+			h.must(RequestDeliver{Claim: h.token, Task: "the phase's task", ID: "outbox:7", Row: 7})
+			if stored := h.store.load(h.token).Budgets; stored != charged {
+				t.Fatalf("the claim is stored with budgets %+v while its relaunch waits, want %+v: the task's write stores the claim as the machine holds it",
+					stored, charged)
+			}
+
+			h.restart()
+			// The restarted daemon's pacer is fresh, so a launch takes its bucket's one turn first
+			// and the relaunch raised again waits, as it waited in the queue the old daemon held.
+			queueAhead(h, 1)
+			row.again(h, dead)
+
+			h.wantWaitingWake(WakeLaunch)
+			h.wantBudgets(charged)
+		})
+	}
+}
+
+// The boot's replay of a recorded death relaunches the claim in every live state a death can
+// leave it stored in: the park over a dead process writes nothing of the claim, so it is restored
+// in the state its process died in — shim_connected or registered for a role that died before it
+// was ready, which is where most roles of a pod killed during its relaunch stand.
+func TestTheBootsReplayRelaunchesARecordedDeathInEveryStateItCanBeStoredIn(t *testing.T) {
+	for _, state := range []ClaimState{StateShimConnected, StateRegistered, StateReady, StateWorking} {
+		t.Run(string(state), func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(state)
+			queueAhead(h, 1)
+			h.observe(runtime.Gone)
+			h.wantWaitingWake(WakeLaunch)
+			h.restart()
+			// The restarted daemon's pacer is fresh, so a launch takes its bucket's one turn first
+			// and the replay's relaunch waits, as it waited in the queue the old daemon held.
+			queueAhead(h, 1)
+			if restored := h.claim(); restored.State != state || !restored.DeathCharged || restored.Locator == nil {
+				t.Fatalf("the restored claim is %s, DeathCharged %v, recording %+v; want %s over its dead process with the death charged",
+					restored.State, restored.DeathCharged, restored.Locator, state)
+			}
+
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+			h.wantWaitingWake(WakeLaunch)
+		})
+	}
+}
+
+// A report that finds the recorded process running, decided before the boot's replay of its
+// death, leaves the replay nothing to relaunch: the report clears the charge (reportedProcess),
+// and a replay that relaunched anyway would end a running worker's turn for a death the runtime
+// has just said did not happen.
+func TestTheBootsReplayOfADeathTheRuntimeSinceFoundRunningRelaunchesNothing(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	h.observe(runtime.Gone)
+	h.restart()
+	h.observe(runtime.Alive)
+	charged := h.claim().Budgets
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim waits on wake %+v, want none: the runtime found its process running", *held)
+	}
+	h.wantStarts(h.token, 1)
+	h.wantBudgets(charged)
+	h.wantState(StateReady)
+}
+
+// A suspension held over a restored dead claim keeps the boot's replay of the death from
+// relaunching it: the claim reads working, its process unreported since the restart, so an
+// operator's suspension is held for a turn that will not end, and the death's own report ends that
+// hold as a suspension (died, endHeld). A replay that launched instead — at once, where the pacing
+// does not hold it — would let the process go with the hold (letGo), and the claim would run where
+// the operator suspended it, with no request left to suspend it again.
+//
+// The death's relaunch is refused before the restart, so the claim is stored working over its dead
+// process with the death charged, which is what the replay reads (relaunchRecordedDeath).
+func TestTheBootsReplayLeavesARecordedDeathWithAHeldSuspensionToItsReport(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	dead := h.locator()
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.restart()
+	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); err != nil && !errors.Is(err, ErrSuspendHeld) {
+		t.Fatal(err)
+	}
+	if !h.claim().SuspensionHeld {
+		t.Fatalf("the operator's suspension of the restored working claim is not held, state %s", h.state())
+	}
+
+	h.must(RecordedDeath{Claim: testToken, Generation: h.claim().Generation})
+
+	h.wantStarts(testToken, 1)
+	if !h.claim().SuspensionHeld {
+		t.Fatal("the replay dropped the held suspension, want it kept for the death's report to end")
+	}
+	h.must(gone)
+	h.wantState(StateSuspended)
+	h.wantStarts(testToken, 1)
+}
+
+// The boot's replay names the generation it read, and a claim a launch has moved past it raises
+// nothing, even where a death of that later process is charged and its relaunch was refused: that
+// relaunch is the later death's, which its own report raises, and the death the replay names was
+// relaunched already.
+func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	refusing := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	first := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}
+	h.m.deps.Store = refusing
+	if err := h.handle(first); err == nil {
+		t.Fatal("the relaunch the first death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.restart()
+	read := h.claim().Generation
+	// The sweep's report of the first death raises its relaunch, which runs at once.
+	h.must(first)
+	h.wantStarts(h.token, 2)
+	// That process dies too, and the lifecycle refuses its relaunch, so the claim stands charged
+	// over its dead process at the later generation with no launch raised.
+	h.m.deps.Store = refusing
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err == nil {
+		t.Fatal("the relaunch the second death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.m.deps.Store = h.store
+	if c := h.claim(); c.Generation == read || !c.DeathCharged {
+		t.Fatalf("the claim is at generation %d with DeathCharged %v, want past %d with the later death charged", c.Generation, c.DeathCharged, read)
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: read})
+
+	h.wantStarts(h.token, 2)
+}
+
+// firstAhead joins n places in pacer's first queue, none bound to a machine: the places the boot's
+// pass takes for the other recorded deaths it relaunches, which wait in the first queue ahead of
+// whatever joins it after them (WakeQueue, dispatch://INFRA-5682 R2).
+func firstAhead(pacer *wakepace.Pacer, n int) {
+	for range n {
+		pacer.Join(wakepace.First)
+	}
+}
+
+// A report of a recorded death that reaches the machine after the boot's pass placed that death's
+// relaunch and before the pass's replay parks the relaunch at a place of its own, behind every
+// place the pass took in the first queue. The replay moves that wake to the place the pass took
+// for it (takeEarlierPlace), so a report that lands after the pass costs the relaunch no place in
+// its queue, and the relaunch is charged no second launch failure and launches once, at that
+// place's turn; the report's own place is given up. Before the place-based pacing this test also
+// moved the clock between the replay's read of it and the machine's arm of the moved turn; the
+// machine arms no turn any more, since the pacer that holds the place arms it, so that part of
+// the premise is gone.
+//
+// The negative control is the replay deciding nothing over the waiting wake, as it does for a
+// relaunch it finds parked at an earlier place: the wake stays at the report's later place.
+func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysPlace(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	dead := h.locator()
+	h.observe(runtime.Gone)
+	h.restart()
+	pacer := h.deps.WakePace.Pacer
+	// The first launch after the restart takes the fresh bucket's one turn, so the places after it
+	// wait.
+	queueAhead(h, 1)
+	boot := pacer.Join(wakepace.First)
+	firstAhead(pacer, 3)
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+	late := h.wantWaitingWake(WakeLaunch)
+	turn := boot.Estimate()
+	if !turn.Before(late.At) {
+		t.Fatalf("the report's relaunch waits for %s, want a turn after %s: the queue ahead of it is too short", late.At, turn)
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Place: boot})
+
+	h.wantWakeDueAt(WakeWaiting{Kind: WakeLaunch, At: turn})
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.advance(turn.Sub(h.clock.Now()))
+	h.wantStarts(h.token, 2)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim still waits on wake %+v after its turn, want none: the report's later place is given up, not run", *held)
+	}
+}
+
+// The replay moves only a wake of the pacing's own, to a place the pacer lets out before that
+// wake's own, or let out less than an interval ago (takeEarlierPlace); over any other relaunch the
+// report raised, it decides nothing, and the relaunch waits where the report put it. A place behind
+// the report's would move the relaunch back; one let out an interval or more ago would let it out
+// at once, ahead of every place the boot's pass took after it; and a launch the pause's gate holds
+// has no place to move, and moved would run while the project is paused. The carried place the
+// replay does not take is given up (Machine.handle).
+func TestTheBootsReplayMovesNoRelaunchOutsideItsRule(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		paused bool
+		// early is a carried place taken before the queue ahead of the report, which the pacer
+		// lets out at its join an interval before the report; otherwise the carried place is
+		// taken after the report, behind it.
+		early bool
+	}{
+		{name: "a place behind the report's"},
+		{name: "a place let out an interval or more ago", early: true},
+		{name: "a launch the pause's gate holds", paused: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateReady)
+			queueAhead(h, 1)
+			dead := h.locator()
+			h.observe(runtime.Gone)
+			flag := &pauseFlag{}
+			stops := &stopTransaction{store: h.store}
+			h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+			h.restart()
+			pacer := h.deps.WakePace.Pacer
+			var carried *wakepace.Place
+			if row.early {
+				carried = pacer.Join(wakepace.First)
+				h.advance(wakeInterval)
+			}
+			queueAhead(h, 1)
+			firstAhead(pacer, 3)
+			if row.paused {
+				flag.set(7)
+			}
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+			waiting := h.m.View().WakeWaiting
+			if row.paused != (waiting == nil) {
+				t.Fatalf("the report's relaunch publishes wake %+v with the project paused %v, want one only where no pause holds it", waiting, row.paused)
+			}
+			if carried == nil {
+				carried = pacer.Join(wakepace.First)
+			}
+
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Place: carried})
+
+			if got := h.m.View().WakeWaiting; (got == nil) != (waiting == nil) || got != nil && *got != *waiting {
+				t.Fatalf("the claim names wake %+v after the replay, want the report's %+v: the replay moves nothing outside its rule", got, waiting)
+			}
+			if _, out := carried.Let(); !out && !carried.Estimate().IsZero() {
+				t.Fatalf("the carried place still waits, due %s, want it given up by the replay that did not take it", carried.Estimate())
+			}
+			h.advance(2 * wakeInterval)
+			h.wantStarts(h.token, 1)
+		})
+	}
+}
+
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside
 // the wait. The probe interval was the one of the four timers that could still be armed there:
-// the park disarms the others (parkWake), and a closed connection whose probe the runtime could
-// not answer arms this one again (probe), which would ask the runtime about a process whose fate
-// the launch has already decided, every interval of a wait that is tens of minutes long in a
+// the park disarms the others (waitOnMachine), and a closed connection whose probe the runtime
+// could not answer arms this one again (probe), which would ask the runtime about a process whose
+// fate the launch has already decided, every interval of a wait that is tens of minutes long in a
 // wave. So the probe makes no call and arms nothing while the launch waits, and the report that
 // does arrive — the sweep's own — is the one judge answers (launchWaits).
 //
-// The wait here is a queue of four turns, which is what a wave looks like from one claim: the
+// The wait here is a queue of five turns, which is what a wave looks like from one claim: the
 // probe interval would fall inside it, where at the head of an empty queue the turn would come
-// first.
+// first. The relaunch of a charged death waits in the pacing's first queue (WakeQueue, R2), so
+// the places ahead of it are a wave of other deaths' relaunches, which wait there too.
 //
 // The negative control is the guard reverted (probe's launchWaits): the closed connection then
 // probes the process, the runtime's error arms the interval, and the probe at that interval asks
@@ -1130,9 +1884,10 @@ func TestTheRegistrationDeadlineOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t 
 func TestTheProcessAWaitingLaunchReplacesIsNotProbedInsideTheWait(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateWorking)
-	queueAhead(h, 3)
+	firstAhead(h.deps.WakePace.Pacer, 4)
 	h.observe(runtime.Gone)
-	waiting := h.wantWaitingWake(WakeLaunch)
+	h.wantWaitingWake(WakeLaunch)
+	place := h.m.wake.place
 
 	// The connection closes behind the process the sweep found gone. The runtime would answer
 	// that it cannot say what became of the pod, which is the answer that arms the interval.
@@ -1148,24 +1903,56 @@ func TestTheProcessAWaitingLaunchReplacesIsNotProbedInsideTheWait(t *testing.T) 
 
 	h.wantCalls("Probe", 0)
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
-	h.wantWakeDueAt(waiting)
+	// A turn of the wave ahead ran inside the probe interval, and its jitter moved the moment of
+	// every place behind it, so the wake is read by its place: the same one, never a second place
+	// at the back of the queue.
+	if h.m.wake == nil || h.m.wake.place != place {
+		t.Fatalf("the claim holds wake %+v, want the wake it held, at the same place: nothing it met took a second place", h.m.wake)
+	}
 	h.wantStarts(h.token, 1)
 
-	h.advance(waiting.At.Sub(h.clock.Now()))
+	h.advanceToTurn(h.m)
 
 	h.wantState(StateLaunching)
 	h.wantStarts(h.token, 2)
 }
 
 // queueAhead puts n claims of a wave in the queue, each taking the turn it is given, so that the
-// next wake reserved waits n turns more than it would at the head of an empty queue. That is what
-// a restart or a plugin wave does to one claim's wait, and it is what puts a timer of the process
-// a launch waits over inside that wait.
+// next wake that joins the pacing's second queue waits n turns more than it would at the head of an
+// empty queue. That is what a restart or a plugin wave does to one claim's wait, and it is what
+// puts a timer of the process a launch waits over inside that wait.
 func queueAhead(h *harness, n int) {
 	h.t.Helper()
 	for i := range n {
 		h.mustPostTo(h.machineFor(wakeClaim(waveToken(i), StateQueued)), RequestSpawn{Claim: waveToken(i)})
 	}
+}
+
+// advanceToTurn moves the clock until the wake m holds now runs, step by step to the moment the
+// pacer estimates for its place, read afresh each step. An estimate counts one interval for each
+// place ahead and none of the jitter their turns are still to draw (wakepace.Place.Estimate), so
+// it is never later than the let-out and moves the clock no further than it, and by the last step
+// the place is the head, whose estimate is its turn. A wake the run raises after it is left
+// waiting.
+func (h *harness) advanceToTurn(m *Machine) {
+	h.t.Helper()
+	m.mu.Lock()
+	waiting := m.wake
+	m.mu.Unlock()
+	if waiting == nil || waiting.place == nil {
+		h.t.Fatalf("%s holds no wake waiting in the pacing", m.View().Token)
+	}
+	for range 100 {
+		m.mu.Lock()
+		held, due := m.wake == waiting, waiting.due()
+		m.mu.Unlock()
+		if !held {
+			return
+		}
+		h.clock.Advance(max(0, due.Sub(h.clock.Now())))
+		m.Wait()
+	}
+	h.t.Fatalf("%s's wake did not run within a hundred turns of the pacing", m.View().Token)
 }
 
 // A launch rechecks the tree lifecycle at its turn, because the turn can come tens of minutes
@@ -1222,7 +2009,7 @@ func (s *unansweredCheckLaunchStore) CheckLaunch(ctx context.Context, c Claim) e
 
 // A launch refused at its turn over a process the claim still records leaves that process
 // watched. The park disarmed the boot interval and the registration deadline of the process the
-// launch was to replace (parkWake), the wake is spent by the time the recheck refuses, and the
+// launch was to replace (waitOnMachine), the wake is spent by the time the recheck refuses, and the
 // refusal keeps the claim exactly as it stands (runWake, relaunchRefused): without the timers
 // armed again (watchAgain) a process still booting would have nothing left to retire it, and a
 // pod whose agent never registers would sit in shim_connected for the rest of the tree's life.
@@ -1279,7 +2066,7 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 }
 
 // The third timer the same refusal hands back: the bound a prompt the agent acknowledged waits
-// for its turn on (acked). The park takes it with the rest of the process's timers (parkWake)
+// for its turn on (acked). The park takes it with the rest of the process's timers (waitOnMachine)
 // because the turn would be cut off by the launch anyway, and a refusal at that turn keeps both
 // the process and the prompt — so without the bound armed again (watchAgain) an agent that
 // acknowledged a task and started no turn on it would leave that task pending for ever, where
@@ -1709,7 +2496,9 @@ func TestARefusedRetryOfAProcesslessClaimKeepsItsPluginMark(t *testing.T) {
 // they just gave a claim, as they are on the resume and the retry the same route sends. So an
 // operator's task launches the claim where it arrives and takes nothing from the rate — whether
 // the claim is suspended, or parked by a wake of the daemon's own that the request drops
-// (dropsWaitingWake) — and the queue behind it keeps every turn it already held.
+// (dropsWaitingWake) — and the queue behind it takes the turn the dropped wake's place would have
+// taken, where before the place-based pacing that token stayed spent and the queue kept its
+// later turns.
 //
 // The negative control is the exemption reverted (deliverResuming's revive and dropsWaitingWake):
 // both claims then wait for a turn of the queue, which this test reads at the runtime's starts.
@@ -1741,14 +2530,15 @@ func TestAnOperatorsDeliveryNeverWaitsForATurn(t *testing.T) {
 		}
 	}
 
-	// The queue behind them is untouched: the burst let one wake out and the rule's resume took
-	// the next turn, so the claim raised after the two deliveries holds the turn after that one.
+	// The queue behind them is untouched by the deliveries' launches: the burst let one wake out,
+	// and the rule's resume took the place behind it, which its delivery then gave up, so the
+	// claim raised after the two deliveries takes the turn that place would have taken.
 	h.mustPostTo(behind, RequestSpawn{Claim: waveToken(0)})
 	h.clock.Advance(2 * (wakeInterval + wakePart))
 	behind.Wait()
 
 	h.wantStarts(waveToken(0), 1)
-	h.wantWakeLine(waveToken(0), "kind=launch", "waitedFor="+(2*(wakeInterval+wakePart)).String())
+	h.wantWakeLine(waveToken(0), "kind=launch", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
 // The other park an operator's task can reach: a claim that is ready with a launch of the
@@ -1763,7 +2553,8 @@ func TestAnOperatorsDeliveryNeverWaitsForATurn(t *testing.T) {
 // it, and the task goes at that process's ready.
 //
 // The budget is spent before the park, so a turn of its own would be a wake away, and the launch
-// run here takes no second token: the claim behind keeps the turn the queue already gave it.
+// run here takes no turn of the pacing: its place is given up, and the claim behind takes the turn
+// that place would have taken, where before the place-based pacing it kept its own later turn.
 //
 // The negative control is the launch dropped where it is run (dropWakeFor widened to a claim
 // that records a process, with no run in its place): the task is then read by the process the
@@ -1809,12 +2600,13 @@ func TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow(t *testing.T) {
 		t.Fatalf("the prompts are %+v, want the operator's task at the process the launch started", sent)
 	}
 
-	// The launch took no second token, so the claim behind keeps the turn the queue gave it.
+	// The launch took no turn of the pacing, so the claim behind takes the turn its place would
+	// have taken.
 	h.clock.Advance(2 * (wakeInterval + wakePart))
 	behind.Wait()
 
 	h.wantStarts(waveToken(0), 1)
-	h.wantWakeLine(waveToken(0), "kind=launch", "waitedFor="+(2*(wakeInterval+wakePart)).String())
+	h.wantWakeLine(waveToken(0), "kind=launch", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
 // The same park over a process that is already dead, met by a task the claim refuses. The claim
@@ -1986,9 +2778,9 @@ func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *tes
 }
 
 // The park over a process that is still booting, which the launch at its turn would retire: the
-// park disarms that process's boot interval and registration deadline (parkWake), so nothing but
-// the launch retires it. Running the launch where the operator's task arrives arms the new
-// process's own timers (launchNow, armBoot), and the claim goes on being watched: the agent that
+// park disarms that process's boot interval and registration deadline (waitOnMachine), so nothing
+// but the launch retires it. Running the launch where the operator's task arrives arms the new
+// process's own timers (launchTries, armBoot), and the claim goes on being watched: the agent that
 // never registers has its deadline, and the deadline retires its process and relaunches.
 //
 // The negative control is the launch dropped where it is run (dropWakeFor widened to a claim

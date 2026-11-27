@@ -6,6 +6,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -31,9 +32,87 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main) and the databases
-// their pools are cloned on (storetest.Run).
-func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
+// deliveryTestParallelism is how many of this package's tests run at once when the command line
+// names no -parallel. Every test calls t.Parallel except those that change or read back something
+// the whole process shares, which stay serial and run before the rest: a package variable a test
+// shortens (githubPageRetryWait, decodeEnvelope), t.Setenv, the process's goroutines, a select on
+// a short time.After or a quiet window close to what it waits for, a measurement of the machine's
+// speed, or a read of Postgres's whole-server views. No test reads the default logger: an
+// intake's own timers, hooks and logger are its tuning (tuningFor, captureIntakeLogs), which no
+// other test's intake reads, the duty leases and holds an intake takes write to that logger too,
+// and a NATS client's logger is the one the test gives it (bus.WithLogger, captureTestLogs).
+// Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
+// its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
+// of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
+// and pools at once would open more connections than the test server allows.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const deliveryTestParallelism = 8
+
+// tunings holds each running test's intake tuning, by the test's name (tuningFor).
+var tunings = struct {
+	sync.Mutex
+	byTest map[string]*intakeTuning
+}{byTest: map[string]*intakeTuning{}}
+
+// tuningFor is the tuning (intakeTuning) of every intake test t builds, and the one t changes to
+// shorten a timer, hook a step or read the lines of those intakes: made for t on its first use and
+// dropped when t ends, as a copy of its nearest ancestor test's when one has a tuning and
+// production's (newIntakeTuning) otherwise. Each test has its own, so a test that changes it runs
+// beside tests that do not, and every intake one test builds shares it, as they shared the package
+// variables it replaces. Set its durations, createDurable and log before the intakes start; its
+// atomics at any time.
+func tuningFor(t testing.TB) *intakeTuning {
+	tunings.Lock()
+	defer tunings.Unlock()
+	name := t.Name()
+	if tuning, ok := tunings.byTest[name]; ok {
+		return tuning
+	}
+	tuning := newIntakeTuning()
+	for ancestor := name; strings.Contains(ancestor, "/"); {
+		ancestor = ancestor[:strings.LastIndex(ancestor, "/")]
+		if parent, ok := tunings.byTest[ancestor]; ok {
+			tuning = copyTuning(parent)
+			break
+		}
+	}
+	tunings.byTest[name] = tuning
+	t.Cleanup(func() {
+		tunings.Lock()
+		defer tunings.Unlock()
+		delete(tunings.byTest, name)
+	})
+	return tuning
+}
+
+// copyTuning is a tuning holding what from holds now: its fields copied one by one, since its
+// atomics cannot be copied with it.
+func copyTuning(from *intakeTuning) *intakeTuning {
+	to := &intakeTuning{
+		messageTimeout:         from.messageTimeout,
+		maxAckPending:          from.maxAckPending,
+		stopBudget:             from.stopBudget,
+		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
+		createDurable:          from.createDurable,
+		log:                    from.log,
+	}
+	to.callWait.Store(from.callWait.Load())
+	to.drainWait.Store(from.drainWait.Load())
+	to.stopArmed.Store(from.stopArmed.Load())
+	to.beforeRelease.Store(from.beforeRelease.Load())
+	to.attempted.Store(from.attempted.Load())
+	return to
+}
+
+// TestMain sets the package's default -parallel, and removes the NATS server the package's tests
+// share (testnats.Main) and the databases their pools are cloned on (storetest.Run).
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(deliveryTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
+}
 
 // deliveryTestPool returns the pool of a database of the test's own, with the test's context:
 // storetest.Open's clone of the template this test process migrated once, dropped after the test,
@@ -103,7 +182,7 @@ func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) D
 
 // putTestRule saves rule as deliveryProject's one deploy source (saveProjectRules), making the
 // project with deliveryRepo its default repository where it has no row, and answers the rule as
-// the tables hold it: what PutSettings answered of the singleton row.
+// the tables hold it.
 func putTestRule(ctx context.Context, pool *store.Pool, rule DeliverySettings, actor model.Actor) (DeliverySettings, error) {
 	if _, err := pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee, default_repo) values ($1, 'Delivery', 'alice', $2)
@@ -159,8 +238,7 @@ func saveProjectRules(ctx context.Context, pool *store.Pool, project string, act
 }
 
 // getTestRule is deliveryProject's rule of its first source as the tables hold it now, its
-// source's bookkeeping included, or ErrNoSettings with none: what GetSettings answered of the
-// singleton row.
+// source's bookkeeping included, or ErrNoSettings with none.
 func getTestRule(ctx context.Context, q Querier) (DeliverySettings, error) {
 	settings, err := GetProjectSettings(ctx, q, deliveryProject)
 	if err != nil {
@@ -284,23 +362,44 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
-// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
-// answers the records written so far. Intake logs from NATS's delivery goroutine, so the buffer is
-// locked. Call it before startIntake, so the default logger is restored only once intake stops.
-func captureLogs(t *testing.T) func() []map[string]any {
+// captureIntakeLogs points the logger of every intake the test builds after it (tuningFor), and
+// of the settings caches it builds for them (loadedSettingsCache), at a buffer of the test's own,
+// as JSON, and answers the records written so far. The duty leases and holds those intakes take
+// write there too. The default logger is left alone, so the test reads its own intakes' lines,
+// none of another test's, and may run beside other tests; what does not take the intake's logger
+// -- a NATS client the test does not give it (captureTestLogs), the store, a duty.Exclusive the
+// test calls itself with a nil logger -- still writes to the default. Call it before the test
+// builds its intakes, which read their logger once they run.
+func captureIntakeLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
 	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
-	return func() []map[string]any {
-		var records []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
-			var record map[string]any
-			if line != "" && json.Unmarshal([]byte(line), &record) == nil {
-				records = append(records, record)
-			}
+	tuningFor(t).log = slog.New(slog.NewJSONHandler(&buffer, nil))
+	return func() []map[string]any { return loggedRecords(&buffer) }
+}
+
+// captureTestLogs is captureIntakeLogs for a test that reads the lines of its NATS clients as well
+// as its intakes', or requires that none of them wrote some line: it answers the intakes' logger
+// beside their records, for the test to give every NATS client it and its helpers build
+// (bus.WithLogger: intakeTestClient, startIntakeProcess, startIntakes' connect) and every lease it
+// takes itself (duty.Exclusive). The default logger is left alone, so such a test may run beside
+// other tests.
+func captureTestLogs(t *testing.T) (logs func() []map[string]any, logger *slog.Logger) {
+	t.Helper()
+	logs = captureIntakeLogs(t)
+	return logs, tuningFor(t).log
+}
+
+// loggedRecords is every JSON record buffer holds, in the order written, skipping a line that does
+// not decode.
+func loggedRecords(buffer *lockedBuffer) []map[string]any {
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
+		var record map[string]any
+		if line != "" && json.Unmarshal([]byte(line), &record) == nil {
+			records = append(records, record)
 		}
-		return records
 	}
+	return records
 }
 
 // lockedBuffer is a buffer safe to write from one goroutine while another reads it.
@@ -315,33 +414,31 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// shrinkIntakeFlowControl shrinks the intake's own timing so a test exercises its real flow
-// control in test time. intakeMaxAckPending is deliberately left alone: it is the bound under
-// test.
+// shrinkIntakeFlowControl shrinks the messageTimeout of the intakes this test builds after it
+// (tuningFor), so a test exercises their real flow control in test time. maxAckPending is
+// deliberately left alone: it is the bound under test.
 func shrinkIntakeFlowControl(t *testing.T) {
 	t.Helper()
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = 5 * time.Second
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+	tuningFor(t).messageTimeout = 5 * time.Second
 }
 
-// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
-// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
-// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
-// cap measures is that there is one at all, which two deliveries show as well as thirty.
+// capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
+// it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the shipped cap
+// of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a
+// test of the cap measures is that there is one at all, which two deliveries show as well as
+// thirty.
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
-	was := headWriteMaxDeliveries
-	headWriteMaxDeliveries = deliveries
-	t.Cleanup(func() { headWriteMaxDeliveries = was })
+	tuningFor(t).headWriteMaxDeliveries = deliveries
 }
 
 // loadedSettingsCache is a settings cache holding the rules the projects' delivery settings hold
 // now, read once and never again: what an intake under test routes by when nothing changes its
 // settings meanwhile. With no delivery-on project it holds no rule, and an intake does not bind.
+// It logs to the test's intake logger (tuningFor), as the cache startIntakes builds does.
 func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
 	t.Helper()
-	settings := newSettingsCache(pool, nil, nil)
+	settings := newSettingsCache(pool, SettingsWakes{}, tuningFor(t).log)
 	if !settings.reload(ctx) {
 		t.Fatal("read the delivery settings into the cache")
 	}
@@ -386,9 +483,7 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 }
 
 // startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on. Cancelling alone does not: Run reads the intake flow-control vars, and the next
-// test's shrinkIntakeFlowControl writes them, so a Run still unwinding from the previous test is a
-// data race on them.
+// cleanups go on, so no Run outlives the test that started it.
 func startIntake(t *testing.T, intake *Intake) {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(t.Context())
@@ -403,10 +498,11 @@ func startIntake(t *testing.T, intake *Intake) {
 	})
 }
 
-// intakeTestClient connects one NATS client for an intake test and closes it with the test.
-func intakeTestClient(t *testing.T) *bus.Client {
+// intakeTestClient connects one NATS client for an intake test, under options, and closes it with
+// the test.
+func intakeTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
-	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
+	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, options...)
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
@@ -416,29 +512,24 @@ func intakeTestClient(t *testing.T) *bus.Client {
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
 // test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
 // merely slow on a loaded machine still passes, and one that never comes fails the row with time
 // left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var state string
-	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
 			return false
 		}
 		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
-		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+		return info.PushBound && info.Config.MaxAckPending == tuningFor(t).maxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", tuningFor(t).maxAckPending, state)
 	})
 }
-
-// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
-// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
-// database.
-const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say
@@ -512,7 +603,7 @@ func deleteProbeConsumer(t *testing.T, natsClient *bus.Client, name string) {
 	}
 }
 
-// The three deploy sources the per-repository tests read (dispatch://INFRA-978, T7): deliveryProject
+// The three deploy sources the per-repository tests read (dispatch://INFRA-978, D1): deliveryProject
 // reads its default repository, acme/widgets, through a source that names none, and acme/gadgets
 // through a second source, and toolsProject reads its default, acme/tools. Each repository's rule
 // names workflows and production jobs of its own, and each project a population of its own.
@@ -562,14 +653,15 @@ func sourcesByRepo(t *testing.T, ctx context.Context, q Querier) map[string]Deli
 }
 
 // An event the intake handles records its time on the source that reads the event's repository,
-// and on no other (dispatch://INFRA-978, T6): with three sources in three repositories, two of one
+// and on no other (dispatch://INFRA-978, D1): with three sources in three repositories, two of one
 // project, an event of a repository no source reads stamps no source, a pull request of acme/gadgets
 // stamps the second source of its project alone, and a run of acme/tools the other project's source.
 func TestAnEventRecordsItsTimeOnItsRepositorysOwner(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedThreeSources(t, ctx, pool)
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -607,10 +699,11 @@ func TestAnEventRecordsItsTimeOnItsRepositorysOwner(t *testing.T) {
 }
 
 // A merged pull request is admitted by the union of the delivery-on projects' populations
-// (dispatch://INFRA-978, T7): an author of either project's population merging into any repository
+// (dispatch://INFRA-978, D1): an author of either project's population merging into any repository
 // is stored, whichever project's source reads the repository, or none; a repository either project
 // excludes is excluded for every author; and a merge outside the union costs no GitHub call.
 func TestAPullRequestIsAdmittedByTheUnionOfThePopulations(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedThreeSources(t, ctx, pool)
 	merges := []struct {
@@ -652,7 +745,7 @@ func TestAPullRequestIsAdmittedByTheUnionOfThePopulations(t *testing.T) {
 		}
 		mustEncode(t, w, []any{map[string]any{"commit": map[string]any{"message": "feat: a change", "author": map[string]any{"date": "2024-01-01T00:00:00Z"}}}})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 	rules := readTestRules(t, ctx, pool)
 
 	for _, merge := range merges {

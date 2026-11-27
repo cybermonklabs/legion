@@ -269,7 +269,7 @@ func TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds(t *testing.T) {
 	}
 
 	day := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
-	quiet := []FailureDeploy{{ID: "a", FinishedAt: day.Add(9 * time.Hour)}, {ID: "b", FinishedAt: day.Add(11 * time.Hour)}}
+	quiet := []FailureDeploy{{}, {}}
 	measured := Compute(prs, runs, FailureParts{
 		ChangeFail: ChangeFailRateDay(day, quiet), Recovery: RecoveryDay(day, nil, 0), Rework: ReworkRateDay(day, quiet),
 	}, window)
@@ -283,7 +283,7 @@ func TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds(t *testing.T) {
 		t.Errorf("time_to_restore with no restore = %+v, want no median and nothing left", recovery)
 	}
 
-	broken := []FailureDeploy{{ID: "a", FinishedAt: day.Add(9 * time.Hour), Failures: 1}, {ID: "b", FinishedAt: day.Add(11 * time.Hour), Restores: true}}
+	broken := []FailureDeploy{{Failures: 1}, {Restores: true}}
 	parts := FailureParts{
 		ChangeFail: ChangeFailRateDay(day, broken),
 		Recovery:   RecoveryDay(day, []RestoredFailure{{DeployFinishedAt: day.Add(9 * time.Hour), RestoredAt: day.Add(11 * time.Hour)}}, 0),

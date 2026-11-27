@@ -1,16 +1,12 @@
-import {
-  createProject,
-  listProjectEvals,
-  mintAgentToken,
-  putProjectDefaultRepository,
-  registerEval,
-} from "./api";
+import type { DeliveryMeasuresResponse } from "../web/src/api/types";
+import { createProject, mintAgentToken, registerEval } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
   seedMeasuresFixture,
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
+import { deploySource, projectWithDefault, saveDeliverySettings } from "./delivery-settings-steps";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
@@ -515,8 +511,7 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
   // Contents: read, a minted token, then the repository read under it); the fake answers all
   // three for a seeded repository and 404s an unseeded one.
   await seedFakeGithub({ "acme/widgets": { contents: "read", installation_id: 301 } });
-  await createProject({ key: "ACME", name: "Acme" });
-  await putProjectDefaultRepository("ACME", "acme/widgets");
+  await projectWithDefault("ACME", "Acme", "acme/widgets");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -529,7 +524,7 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
     const delivery = page.getByRole("switch", { name: "Delivery" });
     await expect(delivery).not.toBeChecked();
     await delivery.check();
-    const source = page.getByRole("group", { name: "Deploy source 1" });
+    const source = deploySource(page, 1);
     const repository = source.getByLabel("Repository", { exact: true });
     await expect(repository).toHaveValue("");
     await expect(repository).toHaveAttribute("placeholder", "acme/widgets");
@@ -566,17 +561,7 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
 
     // Emptied, the source reads the project's default repository, which the App can read.
     await repository.fill("");
-    const saved = page.waitForResponse(
-      (response) =>
-        response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/projects/ACME/settings/delivery") &&
-        response.ok()
-    );
-    await page.getByRole("button", { name: "Save delivery settings" }).click();
-    await saved;
-    await expect(
-      page.getByRole("status").filter({ hasText: "Delivery settings saved" })
-    ).toBeVisible();
+    await saveDeliverySettings(page, "ACME");
     expect(
       await sql(
         `SELECT s.delivery || ' ' || coalesce(d.repo, 'default') || ' ' || array_to_string(s.population_authors, ',') || ' ' || array_to_string(s.excluded_repos, ',') || ' ' || array_to_string(d.production_job_names, ',') || ' ' || d.production_apply_step_name
@@ -655,37 +640,51 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
   await context.close();
 });
 
+/** The target the measures answer for the fixture window judges deploys a day by, null where it
+ *  is off: the target the panel's "Deploys a day" card states. */
+async function deploysTarget(page: Page): Promise<number | null> {
+  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`);
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as DeliveryMeasuresResponse;
+  return body.targets.deploys_per_day?.value ?? null;
+}
+
 // dispatch://INFRA-2916's R5: the measures panel judges a KPI by the target a person sets on the
-// eval of the deploy repository's project, the one whose default repository it is, and states that
-// target, not a constant of the code. A target written on deploy-frequency moves the card's caption
-// and its verdict, and a null target turns it off.
+// eval of the deploy repository's project, the one whose deploy source reads it, and states that
+// target, not a constant of the code (dispatch://INFRA-978, D9). A target written on
+// deploy-frequency moves the card's caption and its verdict, and a null target turns it off.
 test("the measures panel judges deploys a day by the target a person set on the eval", async ({
   browser,
 }) => {
+  // Made through the API, so its evals are seeded in the create's own transaction and ACME holds
+  // them once it has answered, before the fixture's settings name it: its source reads
+  // acme/widgets, the repository every deploy of the fixture runs in.
+  await createProject({ key: "ACME", name: "Acme" });
   await seedMeasuresFixture();
-  await createProject({ key: "TGT", name: "Targets" });
-  await putProjectDefaultRepository("TGT", "acme/widgets");
-  await expect
-    .poll(async () => ((await listProjectEvals("TGT"))?.items ?? []).map((item) => item.id), {
-      timeout: 60_000,
-    })
-    .toContain("TGT/deploy-frequency");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const card = page.getByLabel("KPI targets").locator('[data-kpi="Deploys a day"]');
 
-  // 5 deploys over the window: under the catalogue's 20 a day.
+  // 5 deploys over the window: under the catalogue's 20 a day, which is also the target ACME's seed
+  // wrote.
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("5 deploys");
   await expect(card).toContainText("target \u2265 20/day");
   await expect(card).toContainText("\u2717 missed");
 
-  await registerEval("TGT", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
+  // A target written on ACME reaches the measures answer only once the eval refresher has published
+  // ACME's default repository, acme/widgets, which the fixture's source reads, a page of the
+  // refresher's does after the fixture's write; until then the answer judges by the catalogue's
+  // entry (evals.Store.DeployRepoEvals). So each write is awaited at the answer before the page
+  // loads again.
+  await registerEval("ACME", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
+  await expect.poll(() => deploysTarget(page)).toBe(0.1);
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("target \u2265 0.1/day");
   await expect(card).toContainText("\u2713 met");
 
-  await registerEval("TGT", { slug: "deploy-frequency", target: null });
+  await registerEval("ACME", { slug: "deploy-frequency", target: null });
+  await expect.poll(() => deploysTarget(page)).toBeNull();
   await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
   await expect(card).toContainText("target off");
   await expect(card).not.toContainText("\u2713 met");

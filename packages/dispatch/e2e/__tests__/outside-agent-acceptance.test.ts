@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -48,6 +48,7 @@ import {
 import {
   fullLogin,
   inviteUrl,
+  linkToken,
   liveStandInDispatches,
   type PreparedStandIn,
   passingControls,
@@ -55,7 +56,9 @@ import {
   proxyRepository,
   type StandInRun,
   type StandIns,
+  serviceGrant,
   unknownsCounted,
+  unlistedPerson,
   workflowInputs,
   workflowRepository,
   writeIds,
@@ -390,6 +393,126 @@ done
       // The shape script, a bounded child under the short bound.
       rowLimit("short")
     );
+
+    // await_child looks at its child, pauses (`pause`, a `sleep 0.1`) and looks again, and returns
+    // once the child has ended, or at its bound (outside-agent-lib.sh, end_within). The row reads
+    // each wait in its pauses rather than in seconds: a `sleep` of the row's own stands ahead on
+    // PATH, writes a line for each sleep the waits run, with its argument and whether the child
+    // the script names in WAITED had ended as it began, and runs the real one. A child that never
+    // ends is the control: its wait returns with no exit status, the child still listed, after at
+    // least a second of its 2 s bound. A child that ends at 0.2 s ends its wait then, with its own
+    // exit status: every sleep of the waits is a pause, so the wait looks every pause, and no
+    // more than one pause begins once the child has ended, since the shell reaps the child while
+    // it waits for that pause and the next look finds it gone. A wait that looked only every 5 s,
+    // the slow wait #5247 removed, sleeps 5; one that looked on past the child's end pauses again
+    // with it ended. stop_child's TERM ends the first child inside its 10 s bound: the status its
+    // wait read (end_within_exit, which stop_child holds local and kill_child, run next, sees) is
+    // 143, where a child its TERM did not end is still running at the bound, and nothing is left
+    // running. No clock decides a verdict: in a builds pod running this row beside the whole
+    // harness, the wait came back 3.02 s to 5.24 s after the child's end in 12 of 768 runs, past
+    // the 3 s the row once held it to, and the stop took up to 8.53 s of its 9, each look of each
+    // wait a fork the load slowed (dispatch://INFRA-3904).
+    test(
+      "await_child ends as its child ends, and at its bound for one that never does",
+      async () => {
+        const base = `9${Math.floor(Math.random() * 1e6)
+          .toString()
+          .padStart(6, "0")}`;
+        const sleep = hostTool("sleep") as string;
+        const directory = scratch("waits");
+        const sleeps = join(directory, "sleeps");
+        const shims = scratch("shims");
+        script(
+          join(shims, "sleep"),
+          `#!/usr/bin/env bash
+state=running
+if [ -e /proc/self/stat ]; then
+  { read -r stat <"/proc/$WAITED/stat"; } 2>/dev/null || stat=''
+  case $stat in '' | *') Z '*) state=ended ;; esac
+else
+  stat=$(ps -o stat= -p "$WAITED" 2>/dev/null)
+  case $stat in '' | Z*) state=ended ;; esac
+fi
+printf '%s %s %s\\n' "$WAITED" "$*" "$state" >>'${sleeps}'
+exec '${sleep}' "$@"
+`
+        );
+        const waits = script(
+          join(directory, "waits.sh"),
+          `#!/usr/bin/env bash
+set -u
+. '${join(acceptance, "outside-agent-lib.sh")}'
+background=''
+clock() { printf '%s' "\${EPOCHREALTIME:-$(date +%s.%N)}"; }
+since() { awk -v a="$1" -v b="$(clock)" 'BEGIN { printf "%.2f", b - a }'; }
+listed() { case " $background " in *" $1 "*) echo yes ;; *) echo no ;; esac; }
+'${sleep}' ${base}1 &
+never=$!
+background="$background $never"
+export WAITED=$never
+began=$(clock)
+await_child "$never" 2
+echo "never pid=$never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
+( '${sleep}' 0.2; exit 7 ) &
+seven=$!
+background="$background $seven"
+WAITED=$seven
+await_child "$seven" 30
+echo "seven pid=$seven exit=\${child_exit:-none} listed=$(listed "$seven")"
+eval "lib_$(declare -f kill_child)"
+kill_child() { stop_exit=\${end_within_exit:-running}; lib_kill_child "$@"; }
+WAITED=$never
+stop_child "$never"
+echo "stopped exit=\${stop_exit:-none} left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
+`
+        );
+        const { code, stdout } = await runBounded({
+          argv: ["bash", waits],
+          bound: "short",
+          cwd: scratch("cwd"),
+          env: { PATH: `${shims}:${process.env.PATH ?? ""}` },
+          from: import.meta.url,
+        });
+        const read = (name: string) =>
+          Object.fromEntries(
+            (stdout.split("\n").find((line) => line.startsWith(`${name} `)) ?? "")
+              .split(" ")
+              .slice(1)
+              .map((pair) => pair.split("=") as [string, string])
+          );
+        const never = read("never");
+        const seven = read("seven");
+        const stopped = read("stopped");
+        const slept = (existsSync(sleeps) ? readFileSync(sleeps, "utf8") : "")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split(" "));
+        const pausesOnceSevenEnded = slept.filter(
+          ([pid, , state]) => pid === seven.pid && state === "ended"
+        ).length;
+        expect({
+          code,
+          never: { exit: never.exit, listed: never.listed, atTheBound: Number(never.seconds) >= 1 },
+          seven: {
+            exit: seven.exit,
+            listed: seven.listed,
+            atMostOnePauseOnceEnded: pausesOnceSevenEnded <= 1,
+          },
+          sleepsThatAreNoPause: slept.filter(([, seconds]) => seconds !== "0.1"),
+          stopped: { exit: stopped.exit, left: stopped.left },
+          stdout,
+          sleeps: slept.map((line) => line.join(" ")),
+        }).toMatchObject({
+          code: 0,
+          never: { exit: "none", listed: "yes", atTheBound: true },
+          seven: { exit: "7", listed: "no", atMostOnePauseOnceEnded: true },
+          sleepsThatAreNoPause: [],
+          stopped: { exit: "143", left: "0" },
+        });
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
   }
 );
 
@@ -433,31 +556,63 @@ function squatterPid(printed: string): number {
   return pid;
 }
 
+/** What one squat's wait did (`squatTrial`): the squatter's pid; whether the squatter answered as
+ *  another run's stand-in; the wait's deadline and each of its reads, as the wait's shell wrote
+ *  them, its clock (`SECONDS`, whole seconds since the shell started) as each read began and the
+ *  exit status of that read's `curl`, 28 where its own `--max-time` ended it. */
+interface SquatTrial {
+  readonly pid: number;
+  readonly took: boolean;
+  readonly deadline: number;
+  readonly reads: readonly { readonly at: number; readonly exit: number }[];
+}
+
 /** Starts a process that binds `port` and answers there as another run's stand-in Dispatch does
- *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there; returns
- *  the squatter's pid, or stops it and throws. The squatter tries the port for at most 10 s by the
- *  clock, and the wait reads it for at most 10 s by the clock, plus the 1 s of its last read, so a
- *  port that takes connections and never answers holds the wait for 11 s at most. It is
- *  synchronous because the listener stop it follows is: the port is taken before that stop
- *  returns. */
-function squat(port: number): number {
+ *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there. The
+ *  squatter tries the port for at most 10 s by the clock, and the wait reads it while its clock
+ *  is under 10 s, each read ended by `curl`'s own 1 s, so the wait's clock and its reads' timers
+ *  end it on a port that takes connections and never answers. On a machine whose forks are slow
+ *  the wall time of that is longer, and no verdict rests on it. It is synchronous because the
+ *  listener stop it follows is: the port is taken before that stop returns. */
+function squatTrial(port: number): SquatTrial {
   const squatter = `const port = Number(process.argv[1]); const until = Date.now() + 10000; while (Date.now() < until) { try { Bun.serve({ hostname: "127.0.0.1", port, fetch: (r) => new URL(r.url).pathname === "/_ready" ? new Response("ready") : Response.json({ ok: true, commit: "another-run", fleet_commit: "another-run" }) }); break; } catch { await Bun.sleep(25); } }`;
-  const started = Bun.spawnSync([
-    "bash",
-    "-c",
-    `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); while [ "$SECONDS" -lt "$deadline" ]; do [ "$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready")" = ready ] && exit 0; sleep 0.05; done; exit 1`,
-    process.execPath,
-    squatter,
-    String(port),
-  ]);
+  const started = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); echo "deadline $deadline" >&2; while at=$SECONDS; [ "$at" -lt "$deadline" ]; do answer=$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready"); code=$?; echo "read $at $code" >&2; [ "$answer" = ready ] && exit 0; sleep 0.05; done; exit 1`,
+      process.execPath,
+      squatter,
+      String(port),
+    ],
+    { stderr: "pipe" }
+  );
   const pid = squatterPid(started.stdout.toString());
-  if (!started.success) {
+  const report = String(started.stderr ?? "").split("\n");
+  const deadline = /^deadline (\d+)$/.exec(
+    report.find((line) => line.startsWith("deadline ")) ?? ""
+  );
+  return {
+    pid,
+    took: started.success,
+    deadline: deadline === null ? Number.NaN : Number(deadline[1]),
+    reads: report.flatMap((line) => {
+      const read = /^read (\d+) (\d+)$/.exec(line);
+      return read === null ? [] : [{ at: Number(read[1]), exit: Number(read[2]) }];
+    }),
+  };
+}
+
+/** `squatTrial`: the squatter's pid where it took the port, or it stops the squatter and throws. */
+function squat(port: number): number {
+  const trial = squatTrial(port);
+  if (!trial.took) {
     try {
-      process.kill(pid, "SIGKILL");
+      process.kill(trial.pid, "SIGKILL");
     } catch {}
     throw new Error(`the squatter did not take port ${port}`);
   }
-  return pid;
+  return trial.pid;
 }
 
 /** Runs `body` with the next loopback listener this process stops taken over at once by another
@@ -498,26 +653,20 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
 describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
   "the stand-in Dispatch's port and readiness",
   () => {
-    test(
-      "control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in",
-      async () => {
-        const { result, squatted } = await withSquat(async () => {
-          const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-          const { port } = listener;
-          listener.stop(true);
-          return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
-        });
-        expect({ squatted, ready: result.ready }).toEqual({
-          squatted: [result.port],
-          ready: "ready",
-        });
-      },
-      {
-        // It drives one squat, a synchronous wait its own clock ends within 11 s, which Bun's 5 s
-        // default of a plain `bun test` would cut short; 20 s leaves that wait room under load.
-        timeout: 20_000,
-      }
-    );
+    test("control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in", async () => {
+      const { result, squatted } = await withSquat(async () => {
+        const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+        const { port } = listener;
+        listener.stop(true);
+        return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
+      });
+      expect({ squatted, ready: result.ready }).toEqual({
+        squatted: [result.port],
+        ready: "ready",
+      });
+    });
+    // One squat, a synchronous wait its own clock ends, under the command's guard: its wall time
+    // is the machine's, and Bun's timeout reads a synchronous wait only once it has returned.
 
     test("squat throws on a squatter pid it cannot read, before any kill: an empty line, 0 and -1 are refused, and a whole number above 0 is read", () => {
       // squat's shell stands in printing each line as its pid and failing, which is the path that
@@ -559,84 +708,83 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
       });
     });
 
-    test(
-      "the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s",
-      () => {
-        // The kernel takes each connection into this listener's queue while the wait blocks this
-        // file's event loop, so every read connects and then hears nothing until its 1 s passes.
-        const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-        const began = performance.now();
-        let thrown = "";
-        try {
-          squat(holder.port);
-        } catch (error) {
-          thrown = String(error);
-        } finally {
-          holder.stop(true);
-        }
-        const seconds = (performance.now() - began) / 1000;
-        expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
-          thrown: `Error: the squatter did not take port ${holder.port}`,
-          withinTheCap: true,
-          seconds: expect.any(Number),
-        });
-      },
-      {
-        // It drives one squat against a port that never answers, which the squat's own clock ends
-        // within 11 s by design; 20 s is past the 15 s it asserts, so the assertion fails first.
-        timeout: 20_000,
+    // The wait's clock and its reads' own timers end it, and the row reads those, not the wall
+    // time: every read began while the wait's clock was under its deadline, each read ended by its
+    // `curl`'s own 1 s (exit 28), and the squatter never answered. The kernel takes each
+    // connection into this listener's queue while the wait blocks this file's event loop, so
+    // every read connects and then hears nothing until its 1 s passes. A wall-time cap of 15 s
+    // read the machine, since each look and each read of the wait is a fork, which load slows: in
+    // builds pods with ten fork-exec loops beside the whole harness, at main `b47ad6c75c`, the row
+    // failed at 16.0 s and 16.5 s in 2 of 458 runs, and at 16.8 s in another such run
+    // (dispatch://INFRA-3904).
+    test("the squat's wait is held by the clock: on a port that takes connections and never answers, each read ends at its own 1 s and none begins past the wait's deadline", () => {
+      const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      let trial: SquatTrial;
+      try {
+        trial = squatTrial(holder.port);
+      } finally {
+        holder.stop(true);
       }
-    );
+      try {
+        process.kill(trial.pid, "SIGKILL");
+      } catch {}
+      expect({
+        took: trial.took,
+        read: trial.reads.length > 0,
+        readsPastTheDeadline: trial.reads.filter(({ at }) => !(at < trial.deadline)),
+        readsNotEndedByTheirTimer: trial.reads.filter(({ exit }) => exit !== 28),
+        trial,
+      }).toMatchObject({
+        took: false,
+        read: true,
+        readsPastTheDeadline: [],
+        readsNotEndedByTheirTimer: [],
+      });
+    });
 
-    test(
-      "a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed",
-      async () => {
-        const { result, squatted } = await withSquat(async () => {
-          let prepared: PreparedStandIn;
-          try {
-            prepared = await prepareStandIn(scratch, passingControls);
-          } catch (error) {
-            return { thrown: String(error) };
-          }
-          try {
-            const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
-              commit?: string;
-            };
-            // The settings the stand-in runs with, as the kernel holds them: a port handed to it
-            // by any means the squat of `Bun.listen` cannot see (`Bun.serve`, `node:net`) would
-            // show here as a `port` of its settings.
-            const settings = readFileSync(`/proc/${prepared.dispatch.pid}/environ`, "utf8")
-              .split("\0")
-              .filter((entry) => entry.startsWith("OUTSIDE_STAND_IN_DISPATCH="))
-              .map(
-                (entry) =>
-                  JSON.parse(entry.slice("OUTSIDE_STAND_IN_DISPATCH=".length)) as Record<
-                    string,
-                    unknown
-                  >
-              );
-            return {
-              built: prepared.repo.built,
-              served: answer.commit,
-              handed: settings.map((each) => each.port ?? null),
-            };
-          } finally {
-            prepared.dispatch.stop();
-          }
-        });
-        expect({ ...result, squatted }).toEqual({
-          built: expect.any(String),
-          served: "built" in result ? result.built : "the run's own build",
-          handed: [null],
-          squatted: [],
-        });
-      },
-      {
-        // It drives a preparation (a git checkout, and the stand-in's start, whose readiness its own
-        // clock ends within 11 s) and at most one squat, also 11 s by its clock; 30 s holds both.
-        timeout: 30_000,
-      }
-    );
+    test("a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed", async () => {
+      const { result, squatted } = await withSquat(async () => {
+        let prepared: PreparedStandIn;
+        try {
+          prepared = await prepareStandIn(scratch, passingControls);
+        } catch (error) {
+          return { thrown: String(error) };
+        }
+        try {
+          const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
+            commit?: string;
+          };
+          // The settings the stand-in runs with, as the kernel holds them: a port handed to it
+          // by any means the squat of `Bun.listen` cannot see (`Bun.serve`, `node:net`) would
+          // show here as a `port` of its settings.
+          const settings = readFileSync(`/proc/${prepared.dispatch.pid}/environ`, "utf8")
+            .split("\0")
+            .filter((entry) => entry.startsWith("OUTSIDE_STAND_IN_DISPATCH="))
+            .map(
+              (entry) =>
+                JSON.parse(entry.slice("OUTSIDE_STAND_IN_DISPATCH=".length)) as Record<
+                  string,
+                  unknown
+                >
+            );
+          return {
+            built: prepared.repo.built,
+            served: answer.commit,
+            handed: settings.map((each) => each.port ?? null),
+          };
+        } finally {
+          prepared.dispatch.stop();
+        }
+      });
+      expect({ ...result, squatted }).toEqual({
+        built: expect.any(String),
+        served: "built" in result ? result.built : "the run's own build",
+        handed: [null],
+        squatted: [],
+      });
+    });
+    // A preparation and at most one squat, each a wait its own clock ends, under the command's
+    // guard, as the two rows above.
   }
 );
 
@@ -671,7 +819,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the positive control: the full member's browser minted an agent token, 201 (revoked: 204), and approved a machine login, 200 (revoked: 200)"
         );
         expect(pass.get("sweep")?.got).toContain(
-          `the full member's browser read ${proxyRepository}'s workflow runs through the proxy: 200`
+          `the full member's browser session read ${proxyRepository}'s workflow runs through the proxy: 200`
         );
         // The writer's line in its `write <began> <ended> <comment id> <message id> delivered` form.
         expect(pass.get("sweep")?.got).toContain(
@@ -799,24 +947,40 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep reads UNKNOWN without the full member's cookie, and with fills that lack a proxy read's line",
+      "without the full member's cookie the sweep's proxy reads use their token: PASS where Dispatch takes it, UNKNOWN naming the refusal where a build reads the proxy as a browser's person alone, and UNKNOWN with fills that lack a proxy read's line",
       async () => {
-        const [noCookie, gap] = await runStandIns(
+        const [noCookie, refused, gap] = await runStandIns(
           { ...passingControls, cookie: "absent" },
+          { ...passingControls, cookie: "absent", proxyRefusesToken: true },
           {
             ...passingControls,
             fillsLeaveOut: "GET /api/v1/github/app-installation/{owner}/{repo}",
           }
         );
-        if (noCookie === undefined || gap === undefined) throw new Error("two runs, want two");
-        // Without the cookie the sweep does not run, and P7 has no positive control either.
+        if (noCookie === undefined || refused === undefined || gap === undefined) {
+          throw new Error("three runs, want three");
+        }
+        // Without the cookie the sweep runs on the full member's token, its fills' proxy reads
+        // and the box's proxy control among them, and passes where Dispatch takes the token; P7
+        // has no positive control, which only a browser session makes.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
-          verdicts: { sweep: "UNKNOWN", P7: "UNKNOWN" },
+          verdicts: { sweep: "PASS", P7: "UNKNOWN" },
         });
         expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
-          "OUTSIDE_FULL_COOKIE_FILE is unset"
+          "the full member's token read example-owner/private-repo's workflow runs through the proxy: 200"
         );
         expect(existsSync(join(noCookie.state, "fills-read-the-cookie"))).toBe(false);
+        expect(existsSync(join(noCookie.state, "fills-read-the-token"))).toBe(true);
+        expect(existsSync(join(noCookie.state, "writer-stopped"))).toBe(true);
+        // A build whose proxy reads a browser's person alone refuses the token: the fills hold no
+        // proxy read's line, and the row reads UNKNOWN naming that refusal.
+        expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN" },
+        });
+        expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(
+          "was refused 403 OAUTH_SCOPE_REQUIRED: this build of Dispatch reads the proxy as a browser's person alone"
+        );
+        expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
         // Fills that lack a proxy read's full-member answer hold the sweep, and only the sweep.
         expect({ verdicts: verdictsOf(gap.stdout), stdout: gap.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", P7: "PASS" },
@@ -825,8 +989,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the sweep's fills hold no full member's answer that can fail for GET /api/v1/github/app-installation/{owner}/{repo}"
         );
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
 
     test(
@@ -1111,6 +1275,37 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       rowLimit({ atOnce: ["short", "short", "short", "short"] })
     );
 
+    // The leg links, at its start, the real program behind each tool its helper, its probe and
+    // its peer run under its PATH. A program it found and could not link leaves them to whatever
+    // PATH holds, so every row from the pins on reads UNKNOWN naming the program and the reason,
+    // and the gate with them.
+    test(
+      "a tailnet leg that cannot link a program it found reads every row UNKNOWN naming it",
+      async () => {
+        const prepared = await prepareStandIn(scratch, passingControls);
+        try {
+          rmSync(join(prepared.env.PATH as string, "ln"), { force: true });
+        } catch (error) {
+          prepared.dispatch.stop();
+          throw error;
+        }
+        const run = await runStandIn(prepared);
+        expect({ problems: unknownProblems(run, tailnetRows), stdout: run.stdout }).toEqual({
+          problems: [],
+          stdout: run.stdout,
+        });
+        const rows = rowsOf(run.stdout);
+        for (const name of tailnetRows.filter((name) => name !== "gate")) {
+          const got = rows.get(name)?.got ?? "";
+          for (const part of ["bun (", "was not linked into", "command not found"]) {
+            expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+          }
+        }
+      },
+      // The run, a bounded child under the short bound.
+      rowLimit("short")
+    );
+
     test(
       "T5 fails on a trade answered past its bound after a removal the list confirms, and reads UNKNOWN on one within it",
       async () => {
@@ -1335,6 +1530,459 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The two runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short"] })
+    );
+  }
+);
+
+/* The browser gate (OUTSIDE_GATE=browser): the browser leg alone, run while nothing of the agents'
+ * path serves. Against the stand-ins' owner commands, `dispatch` and workflow run (whose step `The
+ * delisting window` the stand-in `gh` reports), every row passes and the agents' path is never
+ * asked; each plant then makes the one row it aims at, and only that row's kin, not PASS. */
+const browserRows = [
+  "pins",
+  "issue",
+  "unlisted",
+  "T5",
+  "refusals",
+  "reach",
+  "sign-in",
+  "projects",
+  "limits",
+  "grants",
+  "public",
+  "sweep",
+  "pins-end",
+  "gate",
+];
+
+/** The browser gate's run against stand-ins with `browser`'s plants. */
+function browserRun(browser: StandIns["browser"]): StandIns {
+  return { ...passingControls, browser };
+}
+
+describe.skipIf(withoutTools)("the browser gate's refusals with no input", () => {
+  test(
+    "the browser gate reads each of its rows UNKNOWN with no input, OUTSIDE_GATE of another word reads every row UNKNOWN, and the check fails on a copy that defaults to PASS",
+    async () => {
+      const browser = await runLeg(tailnetLeg, [], { ...noInput(), OUTSIDE_GATE: "browser" });
+      expect(unknownProblems(browser, browserRows)).toEqual([]);
+      const other = await runLeg(tailnetLeg, ["EXAMPLE"], {
+        ...(await tailnetInputs()),
+        OUTSIDE_GATE: "agents",
+      });
+      expect(unknownProblems(other, tailnetRows)).toEqual([]);
+      expect(rowsOf(other.stdout).get("pins")?.got).toContain(
+        "OUTSIDE_GATE must be all or browser, not agents"
+      );
+      // The control: the same check on a copy of the leg in which every UNKNOWN reads PASS.
+      const passing = await runLeg(passingCopy(tailnetLeg), [], {
+        ...noInput(),
+        OUTSIDE_GATE: "browser",
+      });
+      const problems = unknownProblems(passing, browserRows);
+      expect(problems).toContain("exit 0, want 2");
+      expect(problems.some((problem) => problem.endsWith("reads PASS, want UNKNOWN"))).toBe(true);
+    },
+    // The three legs, one after another, each a bounded child under the short bound.
+    rowLimit("short", "short", "short")
+  );
+});
+
+describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
+  "the browser gate against stand-ins",
+  () => {
+    test(
+      "every row passes on the owner commands, the workflow's checks and its window step, with no edge listener pin, no agents' input and no owner's browser session; the same stand-ins under OUTSIDE_GATE=all read the edge listener's pin",
+      async () => {
+        const [run] = await runStandIns(browserRun({}));
+        if (run === undefined) throw new Error("one run, want one");
+        const prepared = await prepareStandIn(scratch, browserRun({}));
+        const control = await runStandIn({
+          ...prepared,
+          env: { ...prepared.env, OUTSIDE_GATE: "all" },
+        });
+        const rows = rowsOf(run.stdout);
+        // Every row PASS, in the gate's order, and the gate's exit 0.
+        expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(browserRows.map((name) => [name, "PASS"])),
+        });
+        expect([...rows.keys()]).toEqual(browserRows);
+        expect(run.code).toBe(0);
+        // The pins of the broker and Dispatch alone, though the pins file names an edge listener
+        // whose file the deployment repository lacks.
+        expect(rows.get("pins")?.got).not.toContain("edge-listener");
+        expect(rows.get("unlisted")?.got).toContain("refused 409 PERSON_NOT_LISTED");
+        expect(rows.get("T5")?.got).toContain("T5-cookie at at most");
+        expect(rows.get("T5")?.got).toContain("T5-passkey at at most");
+        // The workflow got the browser checks, Dispatch's routed control, the owner's one link
+        // (not the link OUTSIDE_WORKFLOW_INPUTS held), the issue row's key and the probe grant,
+        // the one grant of the full member's list with no approver and no operator, on stdin alone.
+        const links = readFileSync(join(run.state, "links"), "utf8").trim().split("\n");
+        expect(links).toHaveLength(1);
+        const inputs = JSON.parse(
+          readFileSync(join(run.state, "workflow-inputs.json"), "utf8")
+        ) as Record<string, string>;
+        expect(inputs).toEqual({
+          checks: "browser",
+          project: "EXAMPLE",
+          routed_controls: "dispatch-healthz",
+          invite_url: links[0],
+          sweep_member_issue: "EXAMPLE-7",
+          grants_probe_id: serviceGrant,
+          sweep_project: "PRIV",
+          sweep_fills: expect.any(String),
+        });
+        // The full member's list was read before the run and after it, with the token.
+        expect(rows.get("grants")?.got).toContain(
+          "the full member's list held 1 grants every signed-in person is listed before the run and 1 after, 1 in both"
+        );
+        expect(run.seen.filter((each) => each === "GET /api/v1/credential-grants")).toHaveLength(2);
+        expect(readFileSync(join(run.state, "workflow-args"), "utf8")).not.toContain(linkToken);
+        expect(`${run.stdout}${run.stderr}`).not.toContain(linkToken);
+        // The window was read from the step's status; the owner's remove took the person off.
+        expect(existsSync(join(run.state, "window-reads"))).toBe(true);
+        expect(readFileSync(join(run.state, "listed"), "utf8")).not.toContain(
+          "outside-e2e@example.com"
+        );
+        // No agents' path: no agent-secrets call, no full member's helper, and the access list
+        // read by the owner's command, never the full member's browser.
+        expect(existsSync(join(run.state, "agent-secrets-calls"))).toBe(false);
+        expect(run.seen).not.toContain("POST /api/v1/me/agent-tokens");
+        expect(run.seen).not.toContain("GET /api/v1/projects/EXAMPLE/access");
+        // The control: under OUTSIDE_GATE=all the edge listener's pin is read, and holds the gate.
+        expect(rowsOf(control.stdout).get("pins")).toMatchObject({ verdict: "UNKNOWN" });
+        expect(rowsOf(control.stdout).get("pins")?.got).toContain("edge-listener");
+      },
+      // Two preparations, then the control run and the browser run one after another, each a
+      // bounded child under the short bound.
+      rowLimit("short", "short")
+    );
+
+    test(
+      "the owner rows: a token refused 403 BROWSER_SESSION_REQUIRED starts no run, an address already listed gets a link and fails unlisted, a remove that removes nobody holds T5, and OUTSIDE_PUBLIC_COMMAND is refused",
+      async () => {
+        const [session, listed, kept, local] = await runStandIns(
+          browserRun({ invite: "browser-session" }),
+          browserRun({ unlistedListed: true }),
+          browserRun({ removeNothing: true }),
+          browserRun({ publicCommand: true })
+        );
+        if (
+          session === undefined ||
+          listed === undefined ||
+          kept === undefined ||
+          local === undefined
+        ) {
+          throw new Error("four runs, want four");
+        }
+        // Today's Dispatch answers an owner's token on the invite route 403
+        // BROWSER_SESSION_REQUIRED: no link, so no run, and nothing reads PASS from it.
+        expect({ verdicts: verdictsOf(session.stdout), stdout: session.stdout }).toMatchObject({
+          verdicts: {
+            unlisted: "UNKNOWN",
+            T5: "UNKNOWN",
+            refusals: "UNKNOWN",
+            "sign-in": "UNKNOWN",
+            public: "UNKNOWN",
+            sweep: "UNKNOWN",
+          },
+        });
+        expect(rowsOf(session.stdout).get("unlisted")?.got).toContain(
+          "refused 403 BROWSER_SESSION_REQUIRED"
+        );
+        expect(rowsOf(session.stdout).get("public")?.got).toContain("no invitation link");
+        expect(existsSync(join(session.state, "workflow-args"))).toBe(false);
+        expect(session.code).toBe(2);
+        // An address on the list gets its link: unlisted FAILs, and prints no link.
+        expect({ verdicts: verdictsOf(listed.stdout), stdout: listed.stdout }).toMatchObject({
+          verdicts: { unlisted: "FAIL", T5: "PASS", public: "PASS" },
+        });
+        expect(rowsOf(listed.stdout).get("unlisted")?.got).toContain(
+          `made a link for ${unlistedPerson}`
+        );
+        expect(readFileSync(join(listed.state, "links"), "utf8").trim().split("\n")).toHaveLength(
+          2
+        );
+        expect(`${listed.stdout}${listed.stderr}`).not.toContain(linkToken);
+        expect(listed.code).toBe(1);
+        // The run's own T5 rows pass, yet the list still names the person: no removal was made.
+        expect({ verdicts: verdictsOf(kept.stdout), stdout: kept.stdout }).toMatchObject({
+          verdicts: { T5: "UNKNOWN", unlisted: "PASS", public: "PASS" },
+        });
+        expect(rowsOf(kept.stdout).get("T5")?.got).toContain("the access list reads true");
+        expect(kept.code).toBe(2);
+        // A local public command cannot open the browser gate's window: no run starts.
+        expect({ verdicts: verdictsOf(local.stdout), stdout: local.stdout }).toMatchObject({
+          verdicts: { T5: "UNKNOWN", public: "UNKNOWN", refusals: "UNKNOWN" },
+        });
+        expect(rowsOf(local.stdout).get("public")?.got).toContain("OUTSIDE_PUBLIC_COMMAND");
+        expect(existsSync(join(local.state, "workflow-args"))).toBe(false);
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
+      "with no full member's cookie the sweep's proxy reads use the full member's token, and only a build that refuses it holds the sweep row, while the owner's rows pass on their commands",
+      async () => {
+        const [noCookie, refused] = await runStandIns(
+          { ...browserRun({}), cookie: "absent" },
+          { ...browserRun({}), cookie: "absent", proxyRefusesToken: true }
+        );
+        if (noCookie === undefined || refused === undefined) throw new Error("two runs, want two");
+        // Where Dispatch takes the token on its GitHub proxy, no cookie is needed: the fills and
+        // the box's proxy control read with the token, and every row passes.
+        expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
+          verdicts: { sweep: "PASS", unlisted: "PASS", T5: "PASS", gate: "PASS" },
+        });
+        expect(existsSync(join(noCookie.state, "fills-read-the-token"))).toBe(true);
+        expect(noCookie.code).toBe(0);
+        // A build whose proxy reads a browser's person alone refuses the token: the fills go to
+        // the workflow with no proxy read's line, and the sweep row, and so the gate, reads
+        // UNKNOWN naming that refusal, never PASS.
+        expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN", unlisted: "PASS", T5: "PASS", gate: "UNKNOWN" },
+        });
+        expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(
+          "refused 403 OAUTH_SCOPE_REQUIRED: this build of Dispatch reads the proxy as a browser's person alone"
+        );
+        expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
+        expect(existsSync(join(refused.state, "writer-stopped"))).toBe(true);
+        const fills = (
+          JSON.parse(readFileSync(join(refused.state, "workflow-inputs.json"), "utf8")) as Record<
+            string,
+            string
+          >
+        ).sweep_fills;
+        expect(Buffer.from(fills ?? "", "base64").toString()).toContain(
+          `proxy_repo\t${proxyRepository}`
+        );
+        expect(Buffer.from(fills ?? "", "base64").toString()).not.toContain("can_fail");
+        expect(refused.code).toBe(2);
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
+      "the grants row passes on the runner's two rows and a control both reads hold, fails on either row's FAIL with or without the control, and reads UNKNOWN on an empty control, a probe grant that names an approver or an operator, or no artifact",
+      async () => {
+        const [listed, revokedBare, bare, named, guarded, absent] = await runStandIns(
+          browserRun({ grantRows: ["FAIL", "PASS"] }),
+          browserRun({ grantRows: ["PASS", "FAIL"], fullGrants: "no-everyone" }),
+          browserRun({ fullGrants: "no-everyone" }),
+          browserRun({ fullGrants: "judged-only" }),
+          browserRun({ grantRows: ["PASS", "UNKNOWN"] }),
+          browserRun({ grantRows: "none" })
+        );
+        if (
+          listed === undefined ||
+          revokedBare === undefined ||
+          bare === undefined ||
+          named === undefined ||
+          guarded === undefined ||
+          absent === undefined
+        ) {
+          throw new Error("six runs, want six");
+        }
+        const probeOf = (run: StandInRun) =>
+          (
+            JSON.parse(readFileSync(join(run.state, "workflow-inputs.json"), "utf8")) as Record<
+              string,
+              string
+            >
+          ).grants_probe_id;
+        // Another session's grant on the person's list is a FAIL by itself.
+        expect({ verdicts: verdictsOf(listed.stdout), stdout: listed.stdout }).toMatchObject({
+          verdicts: { grants: "FAIL", limits: "PASS" },
+        });
+        expect(listed.code).toBe(1);
+        // A revoke let through fails though no grant every signed-in person is listed was there,
+        // and with no grant of no approver and no operator, no probe grant is passed at all.
+        expect(verdictsOf(revokedBare.stdout)).toMatchObject({ grants: "FAIL" });
+        expect(probeOf(revokedBare)).toBeUndefined();
+        // An empty list proves nothing where nothing was there to list.
+        expect(verdictsOf(bare.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        expect(rowsOf(bare.stdout).get("grants")?.got).toContain(
+          "0 grants every signed-in person is listed before the run and 0 after, 0 in both"
+        );
+        // A list whose only grant with no approver names the full member as its operator, beside
+        // one the model judge approved for anyone: the control holds, and no probe grant is given.
+        expect(verdictsOf(named.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        expect(rowsOf(named.stdout).get("grants")?.got).toContain(
+          "no grant of the list before the run had no approver and no operator, so no probe grant was given"
+        );
+        expect(probeOf(named)).toBeUndefined();
+        // The driver's own guard, a probe grant its list shows naming an approver or an operator,
+        // makes no revoke and reads UNKNOWN.
+        expect(verdictsOf(guarded.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        // No artifact is no PASS.
+        expect(verdictsOf(absent.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        expect(rowsOf(absent.stdout).get("grants")?.got).toContain(
+          "the run left no outside-edge-grants.tsv"
+        );
+      },
+      // The six runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
+    );
+
+    test(
+      "the owner's acts by the owner's browser session, with the called origin's Origin: every row passes with no owner command; a write sent another Origin is refused 403 invalid request origin, which the rows name; and with neither, the rows read UNKNOWN naming both",
+      async () => {
+        const [byCookie, otherOrigin, neither] = await runStandIns(
+          browserRun({ ownerByCookie: true }),
+          {
+            ...browserRun({ ownerByCookie: true }),
+            legChange: (text) =>
+              text.replace(
+                '-H "Origin: $OUTSIDE_TAILNET_DISPATCH_URL"',
+                '-H "Origin: https://elsewhere.example"'
+              ),
+          },
+          { ...browserRun({ ownerByCookie: true }), cookie: "absent" }
+        );
+        if (byCookie === undefined || otherOrigin === undefined || neither === undefined) {
+          throw new Error("three runs, want three");
+        }
+        expect({ verdicts: verdictsOf(byCookie.stdout), stdout: byCookie.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(browserRows.map((name) => [name, "PASS"])),
+        });
+        expect(byCookie.seen).toEqual(
+          expect.arrayContaining([
+            "PUT /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com",
+            "GET /api/v1/projects/EXAMPLE/access",
+            "POST /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com/invitations",
+            "DELETE /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com",
+          ])
+        );
+        expect(rowsOf(byCookie.stdout).get("unlisted")?.got).toContain(
+          "refused 409 PERSON_NOT_LISTED"
+        );
+        expect(`${byCookie.stdout}${byCookie.stderr}`).not.toContain(linkToken);
+        // The control: the same acts sent another Origin are refused, and no run starts.
+        expect({
+          verdicts: verdictsOf(otherOrigin.stdout),
+          stdout: otherOrigin.stdout,
+        }).toMatchObject({ verdicts: { unlisted: "UNKNOWN", public: "UNKNOWN", T5: "UNKNOWN" } });
+        expect(rowsOf(otherOrigin.stdout).get("unlisted")?.got).toContain(
+          "refused 403 invalid request origin"
+        );
+        expect(rowsOf(otherOrigin.stdout).get("public")?.got).toContain(
+          "exited 1 (403 invalid request origin)"
+        );
+        expect(existsSync(join(otherOrigin.state, "workflow-args"))).toBe(false);
+        // Neither a command nor the session: each owner row names both.
+        expect(verdictsOf(neither.stdout)).toMatchObject({
+          unlisted: "UNKNOWN",
+          public: "UNKNOWN",
+        });
+        expect(rowsOf(neither.stdout).get("unlisted")?.got).toContain(
+          "neither OUTSIDE_OWNER_INVITE_COMMAND nor the owner's browser session OUTSIDE_FULL_COOKIE_FILE is given"
+        );
+        expect(existsSync(join(neither.state, "workflow-args"))).toBe(false);
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "outside-agent-grants.sh run alone prints the probe grant, `no grant with no approver and no operator` (exit 1), or UNKNOWN without the token (exit 2)",
+      async () => {
+        const prepared = await Promise.all(
+          (["default", "judged-only"] as const).map((fullGrants) =>
+            prepareStandIn(scratch, browserRun({ fullGrants }))
+          )
+        );
+        try {
+          const preflight = (each: PreparedStandIn, env: Record<string, string> = {}) =>
+            runLeg(join(each.leg, "..", "outside-agent-grants.sh"), [], {
+              PATH: each.env.PATH ?? "",
+              HOME: each.env.HOME ?? "",
+              OUTSIDE_ALLOW_HTTP: "1",
+              OUTSIDE_TAILNET_DISPATCH_URL: each.dispatch.origin,
+              OUTSIDE_SWEEP_FULL_TOKEN_FILE: each.env.OUTSIDE_SWEEP_FULL_TOKEN_FILE ?? "",
+              OUTSIDE_PERSON: "outside-e2e@example.com",
+              ...env,
+            });
+          const [found, none] = prepared;
+          if (found === undefined || none === undefined) throw new Error("two stand-ins, want two");
+          const [grant, noGrant, noToken] = await Promise.all([
+            preflight(found),
+            preflight(none),
+            preflight(found, { OUTSIDE_SWEEP_FULL_TOKEN_FILE: "" }),
+          ]);
+          expect({ code: grant.code, stdout: grant.stdout }).toEqual({
+            code: 0,
+            stdout: `grant ${serviceGrant}\n`,
+          });
+          expect({ code: noGrant.code, stdout: noGrant.stdout }).toEqual({
+            code: 1,
+            stdout: "no grant with no approver and no operator\n",
+          });
+          expect(noToken.code).toBe(2);
+          expect(noToken.stdout).toStartWith("UNKNOWN: OUTSIDE_SWEEP_FULL_TOKEN_FILE is unset");
+        } finally {
+          for (const each of prepared) each.dispatch.stop();
+        }
+      },
+      // Two preparations, then the three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "the workflow rows: a skipped window step, a late cookie, a check's FAIL, a check's missing exit and the driver's limits each hold their own row",
+      async () => {
+        const [skipped, late, failed, uncoded, overLimit, noLimit] = await runStandIns(
+          browserRun({ noWindow: true }),
+          browserRun({ cookieAfter: 60 }),
+          browserRun({ codes: { "outside-edge-refusals": 1 } }),
+          browserRun({ noCode: ["outside-path-reach"] }),
+          browserRun({ limits: ["PASS", "FAIL"] }),
+          browserRun({ limits: [] })
+        );
+        if (
+          skipped === undefined ||
+          late === undefined ||
+          failed === undefined ||
+          uncoded === undefined ||
+          overLimit === undefined ||
+          noLimit === undefined
+        ) {
+          throw new Error("six runs, want six");
+        }
+        // A step that never ran: no removal, and T5 UNKNOWN.
+        expect({ verdicts: verdictsOf(skipped.stdout), stdout: skipped.stdout }).toMatchObject({
+          verdicts: { T5: "UNKNOWN", refusals: "PASS" },
+        });
+        expect(rowsOf(skipped.stdout).get("T5")?.got).toContain("before this leg read");
+        expect(existsSync(join(skipped.state, "removed"))).toBe(false);
+        // The cookie's 401 a minute after the removal is past its 30 s.
+        expect({ verdicts: verdictsOf(late.stdout), stdout: late.stdout }).toMatchObject({
+          verdicts: { T5: "FAIL" },
+        });
+        expect(rowsOf(late.stdout).get("T5")?.got).toContain("past 30 s");
+        expect(late.code).toBe(1);
+        // A check's exit 1 is its row's FAIL, and the run's failure is the public row's FAIL.
+        expect({ verdicts: verdictsOf(failed.stdout), stdout: failed.stdout }).toMatchObject({
+          verdicts: { refusals: "FAIL", reach: "PASS", public: "FAIL" },
+        });
+        expect(rowsOf(failed.stdout).get("public")?.got).toContain("outside-edge-refusals 1");
+        // A check whose exit the run did not keep is no PASS, whatever else it printed.
+        expect({ verdicts: verdictsOf(uncoded.stdout), stdout: uncoded.stdout }).toMatchObject({
+          verdicts: { reach: "UNKNOWN", refusals: "PASS" },
+        });
+        expect(rowsOf(uncoded.stdout).get("reach")?.got).toContain(
+          "the run left no outside-path-reach.code"
+        );
+        expect(uncoded.code).toBe(2);
+        // One limit row's FAIL fails limits; no limit row at all is no PASS.
+        expect(verdictsOf(overLimit.stdout)).toMatchObject({ limits: "FAIL", "sign-in": "PASS" });
+        expect(rowsOf(overLimit.stdout).get("limits")?.got).toContain("limit-2-60s");
+        expect(verdictsOf(noLimit.stdout)).toMatchObject({ limits: "UNKNOWN" });
+        expect(rowsOf(noLimit.stdout).get("limits")?.got).toContain("holds no limit row");
+      },
+      // The six runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
     );
   }
 );

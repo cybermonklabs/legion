@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RoleConfigRoles are the roles `role_config_files` may name, in the order the workflow reaches
-// them: every issue role, then the controller, which only `controller: daemon` launches.
+// RoleConfigRoles are the roles `role_config_files` may name, in claim.Roles' order (the default
+// steps' order): every issue role, then the controller, which only `controller: daemon` launches.
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
 // readRoleConfigFiles is `role_config_files`: a mapping of a Legion role (RoleConfigRoles) to the
@@ -37,6 +37,9 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 		roleNode, listNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
 		if !slices.Contains(RoleConfigRoles, role) {
+			if !keyShape(roleNode.Value) {
+				return nil, fmt.Errorf("%s: it must be a Legion role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(RoleConfigRoles))
+			}
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := files[role]; seen {

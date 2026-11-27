@@ -17,6 +17,7 @@ import (
 // or as this VM's Google identity token. A service token beside any other credential is refused
 // naming both, since a process connects as one identity; none set is no credential.
 func TestCredentialResolution(t *testing.T) {
+	t.Parallel()
 	seed, _ := testnats.User(t)
 	dir := t.TempDir()
 	write := func(name, text string) string {
@@ -48,7 +49,7 @@ func TestCredentialResolution(t *testing.T) {
 			refuses: []string{ServiceGoogleAudienceEnvVar, NkeySeedEnvVar}},
 		{name: "an empty token file setting", env: map[string]string{ServiceTokenFileEnvVar: ""}, refuses: []string{ServiceTokenFileEnvVar}},
 		{name: "a token file that is not there", env: map[string]string{ServiceTokenFileEnvVar: filepath.Join(dir, "missing")},
-			refuses: []string{ServiceTokenFileEnvVar, filepath.Join(dir, "missing")}},
+			refuses: []string{ServiceTokenFileEnvVar, "could not be read", "no such file or directory"}},
 		{name: "an empty audience", env: map[string]string{ServiceGoogleAudienceEnvVar: " "}, refuses: []string{ServiceGoogleAudienceEnvVar}},
 	} {
 		t.Run(row.name, func(t *testing.T) {

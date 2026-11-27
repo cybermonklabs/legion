@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An approval request reads the document's approval twice inside its own transaction, once
@@ -25,6 +26,7 @@ import (
 // request answers in sequence - 201 for the first, 200 for a repeat - is reviews_test.go's
 // (TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion).
 func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documents := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
@@ -48,7 +50,7 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 			map[string]any{"actor": sessionActor()}).Code
 	}
 	// atOnce sends each of targets' requests at the same moment and answers their statuses, or
-	// fails when one has not answered within a bound no healthy transaction reaches.
+	// fails when one never answers: its one bound is the test binary's deadline (testwait.Receive).
 	atOnce := func(targets []string) []int {
 		t.Helper()
 		statuses := make([]int, len(targets))
@@ -65,11 +67,7 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 		done := make(chan struct{})
 		go func() { finished.Wait(); close(done) }()
 		started.Done()
-		select {
-		case <-done:
-		case <-time.After(90 * time.Second):
-			t.Fatalf("approval requests sent at once did not all answer within 90 s")
-		}
+		testwait.Receive(t, "every approval request sent at once to answer", done)
 		return statuses
 	}
 
@@ -163,11 +161,17 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (queueNewAskReferences, through refs.PlanReplace);
 //  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  21. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
-//     and the part rows of its question and options, the author's follow, the references and
-//     the row the ask owes the grammar's re-index queue, deleted with them
-//     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
-//     issue's last_seq, the reference stamps, and the approval as the request leaves it;
+//  21. a batch of 19: the whole write phase, sent back to back - the ask's node, in its
+//     document's project, which costs no read of its own since the document was read with its
+//     project, in the three statements of the store's node write (graphstore.QueueNodes: the
+//     insert, the check that no node moves project, and the move), the ask row, its block state
+//     and the part rows of its question and options, the references and the row the ask owes the
+//     grammar's re-index queue, deleted with them (refs.Replacement.Queue, INFRA-869), the
+//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the base
+//     attributes the node write stated - its visibility, its state and its project - appended
+//     under that event (graphstore.QueueCaused), the author's follow and the session node it
+//     records, caused by that ask.opened, in one statement (asks.QueueFollowAuthor), and the
+//     approval as the request leaves it;
 //  22. commit;
 //  23. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);
@@ -187,6 +191,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
 func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}

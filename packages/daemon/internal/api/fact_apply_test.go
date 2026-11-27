@@ -19,9 +19,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// The places of today's fixed phases where a step runs (workflow's stepOf), which a start
+// The places of today's fixed phases where a step runs (workflow's placeOnWalk), which a start
 // records its agent under.
 var (
 	implementingPlace = record.StepPlace{Task: "default", Kind: "step", Place: 2}
@@ -79,7 +80,7 @@ func (r *awaitRig) made() []streamWait {
 func (r *awaitRig) runs(t *testing.T, issue string, place record.StepPlace, agent claim.Token) {
 	t.Helper()
 	at := time.Now().UTC().Truncate(time.Microsecond)
-	if err := r.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().RaiseStepStarts(context.Background(), tx, issue, place, func(starts int64) record.StepRecord {
 			return record.StepRecord{Task: place.Task, Step: place.Place, Kind: place.Kind, Agent: string(agent), StartedAt: &at}
 		})
@@ -108,11 +109,12 @@ type agentRoute struct {
 // Every route of the table is in this test's table, and each request of an agent whose fact names
 // an issue where the record names that agent the agent of a run that is not ended waits for the
 // agent's stream before its fact applies: the tester's completion, a phase worker's and the
-// architect's moves back and the architect's sign-off, each ending its own step, and the
-// architect's retry of an issue its own failure held in accepting and its gate registration on a
-// root in accepting. So the record of a step an agent's request ends names the model whose answer
-// its stream read ahead of the request. The routes are read from the server's own table (routes),
-// so a route added later fails here by name until it is put in this one.
+// architect's moves back and the architect's sign-off, each ending its own step, the architect's
+// retry of an issue its own failure held in accepting, and its gate registration, its plan
+// registration and its stop of a task on a root in accepting, the stop ending its own step. So the
+// record of a step an agent's request ends names the model whose answer its stream read ahead of
+// the request. The routes are read from the server's own table (routes), so a route added later
+// fails here by name until it is put in this one.
 func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *testing.T) {
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
@@ -133,14 +135,24 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/controller/secret":            {none: "the controller's secret; " + noFact},
 		"POST /legion/v1/controller/github-credential": {none: "the controller's GitHub credential; " + noFact},
 		"POST /legion/v1/issues/status":                {none: controller},
-		"POST /legion/v1/claims/fresh-session":         {none: controller},
+		"POST /legion/v1/issues/pod-update":            {none: "it applies no fact: it posts the update round of the issue's pod to that issue's claims' machines (Options.RequestPodUpdate), and " + controller},
 		"POST /legion/v1/claims/compact":               {none: controller},
+		"POST /legion/v1/claims/fresh-session":         {none: controller},
+		"POST /legion/v1/agents/stop":                  {none: controller},
+		"POST /legion/v1/agents/suspend":               {none: controller},
+		"POST /legion/v1/agents/resume":                {none: controller},
+		"POST /legion/v1/agents/retry":                 {none: controller},
 		"POST /legion/v1/project/pause":                {none: controller},
 		"POST /legion/v1/project/resume":               {none: controller},
+		"POST /legion/v1/project/p0-bound":             {none: controller},
+		"POST /legion/v1/project/p0-bound/clear":       {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
-		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
+		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's Walk.PlaceOf)"},
 		"POST /legion/v1/children/rerun": {none: "its child is out of the workflow, at phase done, which runs no step"},
+		"POST /legion/v1/intake/replay": {none: controller + "; a replay applies the stored message of a far side's event, " +
+			"which no agent's request made, through the intake's own handling (intake.GiveUps)"},
+		"POST /legion/v1/intake/discard": {none: controller + "; " + noFact},
 		"POST /legion/v1/handoff/complete": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
 			tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
@@ -202,6 +214,30 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 					"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": artifact, "version": 7}, nil)
 			}}}
 		}},
+		"POST /legion/v1/plans/register": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// A later version of the plan, given while the architect runs the root's accepting.
+			r.statuses.documents = map[string]string{planDoc: "LEGION-208"}
+			r.statuses.approvals = map[string]dispatch.Approval{planDoc: {State: "none", LatestVersion: 9}}
+			r.statuses.plans = map[string]dispatch.DocumentVersion{}
+			r.statuses.givePlan(planDoc, 9, taskBlock("a", "implementer reviewer"))
+			seedTree(t, r.h, "LEGION-208")
+			setIssue(t, r.h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Accepting })
+			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
+			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return registerPlan(r.h, architect.grant(t), "LEGION-208", planDoc, 9)
+			}}}
+		}},
+		"POST /legion/v1/tasks/stop": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
+			// A stop at accepting ends the architect's own step.
+			seedTree(t, r.h, "LEGION-208")
+			setIssue(t, r.h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Accepting })
+			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
+			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
+			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
+				return stopTask(r.h, architect.grant(t), "LEGION-208", "a")
+			}}}
+		}},
 		"POST /legion/v1/operator/claims":                        {none: noRequester},
 		"GET /legion/v1/operator/claims":                         {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/deliver":        {none: noRequester},
@@ -213,8 +249,12 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/claims/{token}/forget-session": {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/release-names":  {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/close":          {none: noRequester},
+		"POST /legion/v1/operator/intake/replay":                 {none: noRequester},
+		"POST /legion/v1/operator/intake/discard":                {none: noRequester},
 		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
 		"POST /legion/v1/operator/project/resume":                {none: noRequester},
+		"POST /legion/v1/operator/project/p0-bound":              {none: noRequester},
+		"POST /legion/v1/operator/project/p0-bound/clear":        {none: noRequester},
 		"/": {none: "the catch-all answers no route; " + noFact},
 	}
 

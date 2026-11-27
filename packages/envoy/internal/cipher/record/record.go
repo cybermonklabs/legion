@@ -77,10 +77,11 @@ func ValidID(id string) bool {
 
 // CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
 // before people were named by email keeps the GitHub login it was decided under), and lowers its
-// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
-// this form on both sides.
+// ASCII letters and nothing else: fold.Login, the one spelling of that rule, which Dispatch's
+// model.CanonicalLogin reads too. Every login comparison in the module goes through this form on
+// both sides.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,
@@ -102,8 +103,8 @@ const judgePrefix = "judge:"
 
 // JudgeActor is the audit actor of a decision the model judge made: "judge:" and the id of the
 // model that decided it, which is what the audit row names in place of a person. It is no
-// person's login: a judge's approval is the broker's own, taken inside the bound the airlock
-// rules allow the judge, and the person who would otherwise have decided is named nowhere in it.
+// person's login: a judge's approval is the broker's own, taken inside the bound the key's judge
+// tag gives the judge, and the person who would otherwise have decided is named nowhere in it.
 func JudgeActor(modelID string) string {
 	return judgePrefix + modelID
 }
@@ -909,34 +910,56 @@ func MayDecide(kind, approver, service, login string, groups Groups) bool {
 }
 
 // ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the
-// request names other than one agent secret, the airlock rules allow the judge no lifetime for
-// that secret or less than the record asks for, or the request's signed reason names no Dispatch
-// issue. A caller that only asks "is this the judge's to decide" collapses them with
-// errors.Is(err, ErrNotJudgeable); one that must say why keeps the wrapped reason.
+// request names other than agent secrets, a key the judge decided carries no judge tag or one
+// that gives the judge less than the record asks for, or the record names no lifetime. A caller
+// that only asks "is this the judge's to decide" collapses them with errors.Is(err,
+// ErrNotJudgeable); one that must say why keeps the wrapped reason.
 var ErrNotJudgeable = errors.New("not a request the model judge may decide")
 
-// JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds the
-// airlock rules give the judge for one secret, which proxyrules.Rules.JudgeSeconds answers as
-// bound. It is the one comparison three callers make — the judge's own check before the model
+// JudgeTagRefusal is MayJudge's refusal of a record because a key the judge decided is one its
+// judge tag does not admit now: the key carries no judge tag (Tagged false), or the tag gives the
+// judge fewer seconds (Bound) than the record's lifetime (Lifetime). It wraps ErrNotJudgeable. A
+// release that meets it on a grant the judge made ends that grant for good (requests'
+// endJudgedGrant), as a lowered max-grant does: putting the tag back must not revive a grant the
+// tag stopped admitting.
+type JudgeTagRefusal struct {
+	Name     string
+	Tagged   bool
+	Bound    uint32
+	Lifetime int
+}
+
+func (e JudgeTagRefusal) Error() string {
+	if !e.Tagged {
+		return fmt.Sprintf("%s: %q carries no judge tag, so the judge decides nothing of it", ErrNotJudgeable, e.Name)
+	}
+	return fmt.Sprintf("%s: the record asks for %d seconds of %q, past the %d its judge tag lets the judge decide", ErrNotJudgeable, e.Lifetime, e.Name, e.Bound)
+}
+
+func (e JudgeTagRefusal) Unwrap() error { return ErrNotJudgeable }
+
+// JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds a key's
+// judge tag gives the judge, which policy.Set.JudgeSeconds answers as bound. It is the one
+// comparison three callers make — the judge's own check before the model
 // (judge.lifetimeAllowed), MayJudge below, which holds a judged approval at decision time and
-// again on every release, and requests.judgeStillDecides, which re-reads the rules for a grant
+// again on every release, and requests.judgeStillDecides, which re-reads the tag for a grant
 // already made — and it is written once here, so a judge that approves and a state machine
 // that then refuses cannot drift apart. Each caller keeps its own refusal wording, which is
 // what a person reads; only the comparison is shared.
 //
-// It lives in this package rather than beside JudgeSeconds in proxyrules because MayJudge must
-// reach it and this package must not import proxyrules; the other two callers already import
-// this one. Both sides are widened to int64, the bound being a uint32 and the lifetime an int,
-// so neither is ever cut to the other's range.
+// It lives in this package rather than beside JudgeSeconds in policy because MayJudge must reach
+// it and this package must not import policy; the other two callers already import this one.
+// Both sides are widened to int64, the bound being a uint32 and the lifetime an int, so neither
+// is ever cut to the other's range.
 func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 	return int64(lifetimeSeconds) <= int64(bound)
 }
 
-// MayJudge reports whether the model judge may grant this record at all: the airlock rules' own
-// bound on what a judge decides, read here so one rule answers for every caller. The record names
-// agent secrets alone; every key the judge decided is one the rules give the judge seconds of;
-// and the lifetime is within every one of those seconds. The error names the first that does
-// not hold. What the reason says is the judge's to read against each key's guidance, and no
+// MayJudge reports whether the model judge may grant this record at all: the bound the keys'
+// judge tags put on what a judge decides, read here so one rule answers for every caller. The
+// record names agent secrets alone; every key the judge decided carries a judge tag; and the
+// lifetime is within every one of those tags' seconds. The error names the first that does not
+// hold. What the reason says is the judge's to read against each key's guidance, and no
 // condition of this.
 //
 // decided answers which of the record's keys needed a decision when the request was written —
@@ -945,11 +968,10 @@ func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 // nothing of it. A record none of whose keys needed a decision is no record the judge decided. A
 // nil decided is every key decided.
 //
-// judgeSeconds is the rules file's answer for one secret (proxyrules.Rules.JudgeSeconds); both
-// funcs are injected because this package must not import proxyrules or read the request rows. A
-// nil judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an
-// unbounded grant is exactly what the judge's seconds are there to bound, so nothing the rules
-// say can admit it.
+// judgeSeconds is the live policy's answer for one secret (policy.Set.JudgeSeconds); both funcs
+// are injected because this package must not import policy or read the request rows. A nil
+// judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an unbounded
+// grant is exactly what the judge's seconds are there to bound, so no tag can admit it.
 func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (uint32, bool), decided func(secret string) bool) error {
 	if len(obj.Details) == 0 {
 		return fmt.Errorf("%w: the request names no authorization detail", ErrNotJudgeable)
@@ -973,10 +995,10 @@ func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (ui
 		judged++
 		bound, ok := judgeSeconds(d.Identifier)
 		if !ok {
-			return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, d.Identifier)
+			return JudgeTagRefusal{Name: d.Identifier}
 		}
 		if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
-			return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, d.Identifier, bound)
+			return JudgeTagRefusal{Name: d.Identifier, Tagged: true, Bound: bound, Lifetime: *body.LifetimeSeconds}
 		}
 	}
 	if judged == 0 {

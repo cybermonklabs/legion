@@ -65,7 +65,7 @@ func IsPopulationPR(pr RawPullRequest, rules *SourceRules, window TimeWindow) (b
 // pull request of that repository with NEITHER label (an unclassified PR -- surfacing this loudly
 // is the point: the Python reference's is_task_pr raises for exactly this case rather than
 // guessing). A PR outside rule's repository (compared in any case) is never a task PR and never
-// errors: each pull request is judged against its own repository's rule (dispatch://INFRA-978, T7).
+// errors: each pull request is judged against its own repository's rule (dispatch://INFRA-978, D1).
 //
 // The Python reference this is ported from (the weekly-review skill's common.is_task_pr) has a
 // second branch for a different, file-path-based task rule on a second repository; LEGION-294's

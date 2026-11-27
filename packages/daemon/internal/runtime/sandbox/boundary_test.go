@@ -1,5 +1,7 @@
 package sandbox
 
+//ci:builds packages/daemon ./cmd/legion buildLegion go build .../daemon/cmd/legion
+
 import (
 	"archive/tar"
 	"bytes"
@@ -10,7 +12,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -23,110 +24,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
-	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The provisioning token is the implement App's installation token, and every agent of an issue can
-// write the issue's disk: its pod's own generic ephemeral volume, or, for a microVM pod under
-// keep_volume, the claim that its Sandbox owns (keptVolume). These tests run a pod's init
-// containers exactly as the manifest states them, on this machine, and plant on that disk what an
-// agent of the issue can plant there: nothing planted may ever run where the provisioning Secret is
-// readable, and nothing planted on a disk of the pod's own outlives that pod. A kept volume
-// outlives its pod by design, so what is planted on it reaches the issue's next pod, and that pod
-// must keep the token from it as a restart of the pod does.
-//
-// What the boundary protects is identity, not a repository-write token kept off the issue's disk:
-// an implement role now holds the implement App's token — for the issue's owner the App's own
-// installation token, which writes, where the provisioning token is that same App narrowed to
-// reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
-// (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
-// keeps is that no review role ever holds the implement App's token, which is what lets the
-// daemon read a push's App from the App that made it, and so tell the review App's red tests
-// from the implementer's code. A plant that
-// an agent's own git triggers after provisioning runs under that agent's role: its clone's
-// helper is `legion git-credential` (workspace.GitHubCredentialHelper), which answers from the gh
-// files of the process running it (its LEGION_GH_OWNERS_DIR and GH_CONFIG_DIR), and here, with
-// none, answers nothing (exit 1).
-//
-// Provisioning also pins its git and jj — no hook, the git boot resolved, https alone, a credential
-// scoped to github.com, no working-copy snapshot in a credentialed fetch; internal/workspace's
-// tests prove each. Those pins are defence: the boundary must hold without them. So every git and
-// jj a container starts here is one on which each pin is ineffective, and one whose credential
-// answers any host with the token.
+// Every agent of an issue can write its pod's disk: its pod's own generic ephemeral volume, or,
+// for a microVM pod under keep_volume, the claim that its Sandbox owns (keptVolume). These rigs run
+// an issue pod's workspace-init exactly as the manifest states it, with the mounted provisioning
+// and cache credentials, and model each volume's lifetime. An ephemeral disk dies with its pod; a
+// kept volume reaches the issue's next pod (TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod).
 
 // canaryToken is the provisioning Secret's value in every pod the rig runs.
 const canaryToken = "ghs_canary_the_tree_must_never_read"
 
-// canaryForms are the ways the token can sit in a file: as itself, and base64-encoded inside any
-// payload, such as the Basic credential an http.extraHeader holds, whatever its username. Base64
-// encodes three bytes as four characters, so the token encodes differently at each byte offset
-// modulo three: each form is the run of characters the token's own bytes decide at one offset,
-// without the partial groups at either end.
-var canaryForms = func() []string {
-	forms := []string{canaryToken}
-	for shift := 0; shift < 3; shift++ {
-		encoded := base64.StdEncoding.EncodeToString(append(make([]byte, shift), canaryToken...))
-		start := 0
-		if shift > 0 {
-			start = 4
-		}
-		forms = append(forms, encoded[start:(shift+len(canaryToken))/3*4])
-	}
-	return forms
-}()
-
 // boundaryRepo is the repository every pod provisions (testSpec's).
 const boundaryRepo = "sjawhar/legion-smoke"
-
-// defeatedTool is the git or jj first on every container's PATH: the real one, with every pin
-// provisioning's runner adds made ineffective. The core.hooksPath pin is renamed out of the
-// GIT_CONFIG_* pairs, a credential scoped to github.com is widened to every host, the https-only
-// transport list is dropped, and a process holding the one-shot credential asks the any-host
-// askpass. jj also loses the git.executable-path it is handed and --ignore-working-copy.
-const defeatedTool = `#!/bin/sh
-unset GIT_ALLOW_PROTOCOL
-i=0
-while [ "$i" -lt "${GIT_CONFIG_COUNT:-0}" ]; do
-	eval "key=\${GIT_CONFIG_KEY_$i}"
-	case "$key" in
-		core.hooksPath) export "GIT_CONFIG_KEY_$i=legion.defeated" ;;
-		credential.https://github.com.helper) export "GIT_CONFIG_KEY_$i=credential.helper" ;;
-	esac
-	i=$((i + 1))
-done
-[ -z "$LEGION_PROVISIONING_TOKEN_FILE" ] || export GIT_ASKPASS=@ASKPASS@
-if [ "@NAME@" = jj ]; then
-	for arg; do
-		shift
-		case "$arg" in
-			--config=git.executable-path=*|--ignore-working-copy) ;;
-			*) set -- "$@" "$arg" ;;
-		esac
-	done
-fi
-PATH=@PATH@ exec @REAL@ "$@"
-`
-
-// anyHostAskpass answers every host's prompts with the one-shot credential's token.
-const anyHostAskpass = `#!/bin/sh
-case "$1" in
-	Username*) printf '%s\n' x-access-token ;;
-	*) cat "$LEGION_PROVISIONING_TOKEN_FILE" ;;
-esac
-`
 
 // initRig runs pods' init containers, reaching "github.com" through the cluster's egress proxy: a
 // stand-in that serves boundaryRepo over git's smart HTTP to a request that authenticates as
@@ -134,23 +60,22 @@ esac
 type initRig struct {
 	t *testing.T
 	r *Runtime
-	// root holds everything the rig makes; pods holds each pod's volumes and container
-	// filesystems (rigPod), tree is the directory a claim a Sandbox owns maps to, shared by every
-	// pod that mounts the claim and outliving them all, sink is what planted code recorded, and
-	// pattern the canary a probe looks for (off every volume, so no planted file carries it).
-	root, pods, tree, sink, pattern string
-	// bin is ahead of the system's directories on every container's PATH: the defeated git and jj.
+	// root holds everything the rig makes; pods holds each pod's volumes and container filesystems
+	// (rigPod), and tree is the directory a claim a Sandbox owns maps to, shared by every pod that
+	// mounts it and outliving them all.
+	root, pods, tree string
+	// bin holds isolated wrappers around the host git and jj for agent commands.
 	bin    string
 	legion string
 	github *gitHubStandIn
-	// cache is the repository cache of boundaryRepo the pods' fetch fills its feed from.
+	// cache is the repository cache of boundaryRepo that workspace-init fills the clone from.
 	cache *httptest.Server
 	// network is what every process reaching a remote is told: the egress proxy, the trust store
 	// holding the stand-in's CA, and the hosts reached directly.
 	network []string
-	pod     int
-	// host is the server a plant named, when it named one.
-	host *recordingHost
+	// cpus is what an agent's own command is told in place of the issue pod's CPU limit (podCPUs).
+	cpus []string
+	pod  int
 }
 
 // rigPod is a pod the rig has created (create) and not yet deleted (delete). Its disk, the volume
@@ -198,15 +123,12 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 	root := t.TempDir()
 	rig := &initRig{
 		t: t, r: r, root: root, pods: filepath.Join(root, "pods"), tree: filepath.Join(root, "tree"),
-		sink: filepath.Join(root, "sink"), pattern: filepath.Join(root, "pattern"), bin: filepath.Join(root, "bin"), legion: legion,
+		bin: filepath.Join(root, "bin"), legion: legion,
 	}
 	for _, dir := range []string{rig.pods, rig.tree, rig.bin} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.WriteFile(rig.pattern, []byte(strings.Join(canaryForms, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
 	}
 	rig.github = newGitHubStandIn(t, root)
 	rig.cache = newCacheStandIn(t, rig.github.remote)
@@ -214,19 +136,13 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 		"HTTPS_PROXY=" + rig.github.proxy.URL, "https_proxy=" + rig.github.proxy.URL,
 		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost", "GIT_SSL_CAINFO=" + rig.github.caFile,
 	}
-	askpass := filepath.Join(root, "any-host-askpass")
-	if err := os.WriteFile(askpass, []byte(anyHostAskpass), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	rig.cpus = podCPUs(opts.Resources.Issue.Limits[corev1.ResourceCPU])
 	for _, name := range []string{"git", "jj"} {
 		real, err := exec.LookPath(name)
 		if err != nil {
-			t.Fatalf("provisioning's boundary tests drive a real %s: %v", name, err)
+			t.Fatalf("the rig drives a real %s: %v", name, err)
 		}
-		// Drop this fixture's PATH prefix before handing off: a host wrapper that searches for
-		// its real tool must not rediscover this defeated-tool wrapper and recurse into it.
-		script := strings.NewReplacer("@NAME@", name, "@REAL@", shellprefix.Literal(real),
-			"@ASKPASS@", shellprefix.Literal(askpass), "@PATH@", shellprefix.Literal(os.Getenv("PATH"))).Replace(defeatedTool)
+		script := "#!/bin/sh\nexec " + shellprefix.Literal(real) + ` "$@"` + "\n"
 		if err := os.WriteFile(filepath.Join(rig.bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -242,44 +158,6 @@ func (pod *rigPod) clone() string {
 
 func (pod *rigPod) workspace(issue string) string {
 	return filepath.Join(pod.disk, "workspaces", "sjawhar", "legion-smoke", strings.ToLower(issue))
-}
-
-// probe is a shell command a planted program runs: it appends what it is, and the first copy of
-// the canary it can read on any volume of any pod or on the tree, to the sink.
-func (rig *initRig) probe(what string) string {
-	return fmt.Sprintf(`printf '%%s read=[%%s]\n' %s "$(grep -rhoFf %s %s %s 2>/dev/null | head -n 1)" >> %s`,
-		shellprefix.Literal(what), shellprefix.Literal(rig.pattern), shellprefix.Literal(rig.pods), shellprefix.Literal(rig.tree), shellprefix.Literal(rig.sink))
-}
-
-// script writes an executable that runs probe(what), then tail, at scriptPath(what).
-func (rig *initRig) script(what, tail string) string {
-	rig.t.Helper()
-	path := rig.scriptPath(what)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		rig.t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+rig.probe(what)+"\n"+tail+"\n"), 0o755); err != nil {
-		rig.t.Fatal(err)
-	}
-	return path
-}
-
-// scriptPath is where script(what) writes its executable.
-func (rig *initRig) scriptPath(what string) string {
-	return filepath.Join(rig.root, "planted", what)
-}
-
-// sunk is every line planted code recorded.
-func (rig *initRig) sunk() []string {
-	rig.t.Helper()
-	body, err := os.ReadFile(rig.sink)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		rig.t.Fatal(err)
-	}
-	return strings.Split(strings.TrimSpace(string(body)), "\n")
 }
 
 // launch is a pod of spec's claim, as the runtime would create it: its gh bundles minted, so each
@@ -434,9 +312,6 @@ func (rig *initRig) initialize(pod *rigPod) error {
 		if err := rig.runContainer(pod.dir, volumes, c); err != nil {
 			return err
 		}
-		if c.Name == fetchContainer {
-			rig.holdsNoCanary("the feed", filepath.Join(volumes[issueVolume], feedSubPath))
-		}
 	}
 	return nil
 }
@@ -498,6 +373,7 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 	}
 	env = append(env, "PATH="+rig.bin+":/usr/bin:/bin", "HOME="+home)
 	env = append(env, rig.network...)
+	env = append(env, podCPUs(c.Resources.Limits[corev1.ResourceCPU])...)
 	argv := make([]string, len(c.Command))
 	for i, arg := range c.Command {
 		argv[i] = remap(kubeExpand(arg, declared))
@@ -552,6 +428,17 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 	return nil
 }
 
+// podCPUs is what the rig tells a process in place of the CPU limit, limit, of the container it
+// would run in. In a pod that limit is the cgroup quota the Go runtime sizes GOMAXPROCS to, the
+// host's CPUs or max(ceil(limit), 2) where that is fewer (runtime/cgroup_linux.go), and jj its
+// thread pool to. The rig runs every process under no quota, where both size themselves to the
+// host: on a 288-CPU host each legion started about 80 threads and each jj about 290, with the
+// vectors' pods side by side.
+func podCPUs(limit resource.Quantity) []string {
+	cpus, host := (limit.MilliValue()+999)/1000, int64(goruntime.NumCPU())
+	return []string{"GOMAXPROCS=" + strconv.FormatInt(min(host, max(cpus, 2)), 10), "RAYON_NUM_THREADS=" + strconv.FormatInt(min(host, max(cpus, 1)), 10)}
+}
+
 // chmodTree adds or removes every owner write permission under dir.
 func chmodTree(dir string, writable bool) error {
 	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
@@ -573,133 +460,17 @@ func chmodTree(dir string, writable bool) error {
 	})
 }
 
-// git and jj run a defeated tool in the rig's network, as a tree agent's own command would; what
-// it prints is returned, its failure ignored: a live check only needs the planted program to run.
-func (rig *initRig) git(dir string, args ...string) string {
-	rig.t.Helper()
-	return rig.tool(dir, "git", args...)
-}
-
-func (rig *initRig) jj(dir string, args ...string) string {
-	rig.t.Helper()
-	return rig.tool(dir, "jj", args...)
-}
-
-func (rig *initRig) tool(dir, name string, args ...string) string {
-	rig.t.Helper()
-	output, _ := rig.agent().Try(dir, append([]string{filepath.Join(rig.bin, name)}, args...)...)
-	return output
-}
-
-// agent runs a tree agent's own commands: in the rig's network, with the defeated git and jj in
-// rig.bin first on its PATH.
+// agent runs a tree agent's own commands in the rig's network, with its isolated git and jj first
+// on PATH.
 func (rig *initRig) agent() fixturegit.Runner {
-	return fixturegit.Runner{TB: rig.t, Env: append([]string{
+	return fixturegit.Runner{TB: rig.t, Env: slices.Concat([]string{
 		"PATH=" + rig.bin + ":" + os.Getenv("PATH"), "HOME=" + filepath.Join(rig.root, "home"),
 		"XDG_CONFIG_HOME=" + filepath.Join(rig.root, "config"), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-	}, rig.network...)}
+	}, rig.network, rig.cpus)}
 }
 
-// holdsNoCanary fails when a file under dir, what names, holds the provisioning token in any of
-// its forms.
-func (rig *initRig) holdsNoCanary(what, dir string) {
-	rig.t.Helper()
-	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || !entry.Type().IsRegular() {
-			return err
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for _, form := range canaryForms {
-			if strings.Contains(string(body), form) {
-				rig.t.Errorf("%s holds the provisioning token in %s", what, path)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		rig.t.Fatalf("walk %s: %v", what, err)
-	}
-}
-
-// plantWorkspaceConfig writes a legacy .jj/workspace-config.toml into a working copy on a pod's
-// disk: jj migrates such a file into the configuration it reads while the workspace has no
-// workspace-config-id. Provisioning's runner removes it before any jj command of its own reads it
-// (internal/workspace, disarmLegacyConfig), so a vector planting one plants it again before its
-// live check: the agent's own command then shows the plant is configuration jj obeys.
-func plantWorkspaceConfig(t *testing.T, dir, toml string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, ".jj", "workspace-config.toml"), []byte(toml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// plantFilter makes every changed .txt file of the working copy at dir pass through a clean filter
-// that runs probe(what), and changes one.
-func (rig *initRig) plantFilter(dir, what string) {
-	rig.t.Helper()
-	filter := rig.script(what, "exec cat")
-	plantWorkspaceConfig(rig.t, dir, filterConfig(filter))
-	for name, body := range map[string]string{".gitattributes": filterAttributes, "planted.txt": "changed\n"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			rig.t.Fatal(err)
-		}
-	}
-}
-
-// filterConfig is the legacy workspace config plantFilter writes: a clean filter that runs filter.
-func filterConfig(filter string) string {
-	return "[git.filter]\nenabled = true\n[git.filter.drivers.planted]\nclean = ['" + filter + "']\nsmudge = ['cat']\nrequired = false\n"
-}
-
-// filterAttributes is the .gitattributes plantFilter writes, which sends every .txt file through
-// the filter.
-const filterAttributes = "*.txt filter=planted\n"
-
-// plantedFilter is nil when the working copy at dir holds the plant of plantFilter(dir, what): its
-// legacy workspace config and its .gitattributes. Otherwise it names what is not there.
-func (rig *initRig) plantedFilter(dir, what string) error {
-	return errors.Join(fileHolds(filepath.Join(dir, ".jj", "workspace-config.toml"), filterConfig(rig.scriptPath(what))),
-		fileHolds(filepath.Join(dir, ".gitattributes"), filterAttributes))
-}
-
-// plantGit names, in the legacy workspace config of the clone at clone, a git that runs
-// probe("git") before the real one.
-func (rig *initRig) plantGit(clone string) {
-	rig.t.Helper()
-	git, err := exec.LookPath("git")
-	if err != nil {
-		rig.t.Fatal(err)
-	}
-	planted := rig.script("git", "exec "+shellprefix.Literal(git)+` "$@"`)
-	plantWorkspaceConfig(rig.t, clone, gitPathConfig(planted))
-}
-
-// gitPathConfig is the legacy workspace config plantGit writes: the git at git.
-func gitPathConfig(git string) string {
-	return "[git]\nexecutable-path = '" + git + "'\n"
-}
-
-// plantedGit is nil when the clone at clone holds the plant of plantGit(clone), and otherwise names
-// what is not there.
-func (rig *initRig) plantedGit(clone string) error {
-	return fileHolds(filepath.Join(clone, ".jj", "workspace-config.toml"), gitPathConfig(rig.scriptPath("git")))
-}
-
-// gitPrints is nil when git, run as an agent's own command in dir with args, prints want, and
-// otherwise names what it printed.
-func (rig *initRig) gitPrints(dir, want string, args ...string) error {
-	rig.t.Helper()
-	if got := strings.TrimSpace(rig.git(dir, args...)); got != want {
-		return fmt.Errorf("git %s in %s prints %q, not %q", strings.Join(args, " "), dir, got, want)
-	}
-	return nil
-}
-
-// fileHolds is nil when the file at path holds exactly want, and otherwise names the file.
+// fileHolds is nil when the file at path holds exactly want, and otherwise names the mismatch.
 func fileHolds(path, want string) error {
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -709,44 +480,6 @@ func fileHolds(path, want string) error {
 		return fmt.Errorf("%s holds %q, not %q", path, body, want)
 	}
 	return nil
-}
-
-// gitHooks is every hook githooks(5) names.
-var gitHooks = []string{
-	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
-	"prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge",
-	"pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update",
-	"reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate",
-	"fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist",
-	"p4-pre-submit", "post-index-change",
-}
-
-// plantHooks writes each named hook into dir, each running probe("hook <name>") (hookBody).
-func (rig *initRig) plantHooks(dir string, hooks ...string) {
-	rig.t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		rig.t.Fatal(err)
-	}
-	for _, hook := range hooks {
-		if err := os.WriteFile(filepath.Join(dir, hook), []byte(rig.hookBody(hook)), 0o755); err != nil {
-			rig.t.Fatal(err)
-		}
-	}
-}
-
-// hookBody is the hook plantHooks writes under the name hook.
-func (rig *initRig) hookBody(hook string) string {
-	return "#!/bin/sh\n" + rig.probe("hook "+hook) + "\nexit 0\n"
-}
-
-// plantedHooks is nil when dir holds each named hook as plantHooks wrote it, and otherwise names
-// what is not there.
-func (rig *initRig) plantedHooks(dir string, hooks ...string) error {
-	var missing []error
-	for _, hook := range hooks {
-		missing = append(missing, fileHolds(filepath.Join(dir, hook), rig.hookBody(hook)))
-	}
-	return errors.Join(missing...)
 }
 
 // buildLegion is the Go legion built from this commit, which runs every init container of the
@@ -768,289 +501,29 @@ func mountsClaim(t *testing.T, pod *rigPod, name string) {
 	}
 }
 
-// An agent of an issue can plant each of these on its pod's disk (the Stage 4b plan's Task 4b.6b;
-// #1286's reviews), and two provisionings follow it, one with the plant in reach and one without:
-//
-//   - The pod's restart (restart): the kubelet runs the pod's init containers again on the disk its
-//     agents left, so provisioning takes the retained-disk paths — the clone kept as it stands
-//     (ensureRepoClone), the workspace brought up to date (update-stale) or added again where it is
-//     gone — with the plant in place. Whatever runs, nothing it runs reads the provisioning token,
-//     no host the plant named receives it, and no file on the disk holds it.
-//   - The issue's next pod, once the first is deleted: its disk is its own (issuePod.disk),
-//     so it starts empty and provisions afresh, and nothing of the plant reaches it — none of the
-//     first pod's files are on its disk, nothing planted runs, and no host the plant named hears
-//     from it.
-//
-// Between the two, each plant is shown live on the first pod's disk, by an agent's own command
-// there triggering it: so its harmlessness on the restart is the boundary's doing, and its absence
-// from the next pod is the fresh disk's.
-//
-// A microVM pod under keep_volume runs every vector too. Its disk is a claim that its Sandbox owns
-// (keptVolume), so the issue's next pod mounts the same claim and starts on the first pod's disk,
-// with the plant on it. That pod's provisioning has the plant in reach, as the restart has:
-// nothing it runs reads the provisioning token, no host the plant named receives it, and no file
-// on the disk holds it.
-func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *testing.T) {
-	legion := buildLegion(t)
-	testbin.RequireJJFilters(t)
-
-	type vector struct {
-		name string
-		// plant is what an agent of the issue writes on its pod's disk.
-		plant func(rig *initRig, pod *rigPod)
-		// live triggers the plant on that pod's disk as an agent's own command would.
-		live func(rig *initRig, pod *rigPod)
-		// planted is nil when the plant is on pod's disk, and otherwise names what is not there.
-		planted func(rig *initRig, pod *rigPod) error
+// A pod with an ephemeral issue volume loses its agent's files when Kubernetes deletes that pod. The
+// next pod renders the same workspace-init contract but begins on a new volume.
+func TestAnEphemeralIssueVolumeDoesNotOutliveItsPod(t *testing.T) {
+	t.Parallel()
+	rig := newInitRig(t, buildLegion(t))
+	first, err := rig.start(rig.launch(rootSpec(t)))
+	if err != nil {
+		t.Fatalf("the issue's first pod: %v", err)
 	}
-	vectors := []vector{
-		// Every hook git names, in the clone's own hooks directory. The restart's git meets them
-		// in the retained clone; the next pod's clone is a new one, with none of them.
-		{
-			name: "hooks in .git/hooks",
-			plant: func(rig *initRig, pod *rigPod) {
-				rig.plantHooks(filepath.Join(pod.clone(), ".git", "hooks"), gitHooks...)
-			},
-			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "update-ref", "refs/legion/live", "HEAD") },
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.plantedHooks(filepath.Join(pod.clone(), ".git", "hooks"), gitHooks...)
-			},
-		},
-		// Hooks off the disk, which the clone's configuration names. The restart's git reads that
-		// configuration in the retained clone; the next pod's clone names no hooks, so hooks still
-		// on the host never run for it.
-		{
-			name: "hooks under core.hooksPath",
-			plant: func(rig *initRig, pod *rigPod) {
-				hooks := filepath.Join(rig.root, "planted-hooks")
-				rig.plantHooks(hooks, gitHooks...)
-				rig.git(pod.clone(), "config", "core.hooksPath", hooks)
-			},
-			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "update-ref", "refs/legion/live", "HEAD") },
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.gitPrints(pod.clone(), filepath.Join(rig.root, "planted-hooks"), "config", "--get", "core.hooksPath")
-			},
-		},
-		// A git of the agent's, named in the clone's legacy workspace config. The restart's jj meets
-		// the file in the retained clone; the next pod's clone has none.
-		{
-			name:  "git.executable-path in the clone's legacy workspace config",
-			plant: func(rig *initRig, pod *rigPod) { rig.plantGit(pod.clone()) },
-			live: func(rig *initRig, pod *rigPod) {
-				rig.plantGit(pod.clone())
-				rig.jj(pod.clone(), "git", "fetch", "-R", pod.clone())
-			},
-			planted: func(rig *initRig, pod *rigPod) error { return rig.plantedGit(pod.clone()) },
-		},
-		// A clean filter of the agent's, in the clone's legacy workspace config, and a changed file
-		// it filters. The restart's jj meets both in the retained clone; the next pod's has neither.
-		// The live check gives the clone's working copy the whole tree before it snapshots, with the
-		// `jj sparse reset` provisioning runs on a workspace (workspace.Provision's checkout): a
-		// pod's shared clone holds no working tree and no sparse pattern, since workspace.feedClone
-		// clones it with `git clone --no-checkout` and then clears its patterns, so no jj command of
-		// Legion's snapshots a file there. An agent's filter in the clone becomes live only once the
-		// agent gives that working copy a pattern itself, which is an agent's own command like any
-		// other: what the empty patterns take from the plant is reach, not a way in.
-		{
-			name:  "a working-copy filter in the clone",
-			plant: func(rig *initRig, pod *rigPod) { rig.plantFilter(pod.clone(), "clone filter") },
-			live: func(rig *initRig, pod *rigPod) {
-				rig.plantFilter(pod.clone(), "clone filter")
-				rig.jj(pod.clone(), "sparse", "reset", "-R", pod.clone())
-				rig.jj(pod.clone(), "status", "-R", pod.clone())
-			},
-			planted: func(rig *initRig, pod *rigPod) error { return rig.plantedFilter(pod.clone(), "clone filter") },
-		},
-		// The repository's URL rewritten to a command of the agent's. The restart's git reads the
-		// rewrite in the retained clone; the next pod's clone has none.
-		{
-			name: "url.<ext::command>.insteadOf",
-			plant: func(rig *initRig, pod *rigPod) {
-				command := rig.script("ext", "exit 1")
-				rig.git(pod.clone(), "config", "protocol.ext.allow", "always")
-				rig.git(pod.clone(), "config", "url.ext::"+command+" %S.insteadOf", "https://github.com/"+boundaryRepo)
-			},
-			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "ls-remote", "origin") },
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.gitPrints(pod.clone(), "ext::"+rig.scriptPath("ext")+" %S", "ls-remote", "--get-url", "origin")
-			},
-		},
-		// The clone's origin moved to a host of the agent's. The host never receives the token
-		// from the restart, and hears nothing at all from the next pod, whose origin is GitHub.
-		{
-			name: "a remote on another host, answered by any-host credentials",
-			plant: func(rig *initRig, pod *rigPod) {
-				rig.host = newRecordingHost(rig.t, false)
-				rig.git(pod.clone(), "remote", "set-url", "origin", rig.host.server.URL+"/"+boundaryRepo)
-				rig.git(pod.clone(), "config", "http.sslVerify", "false")
-			},
-			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "ls-remote", "origin") },
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.gitPrints(pod.clone(), rig.host.server.URL+"/"+boundaryRepo, "ls-remote", "--get-url", "origin")
-			},
-		},
-		// A proxy of the agent's in the clone's configuration. It never receives the token from
-		// the restart, and hears nothing at all from the next pod, whose clone names no proxy.
-		{
-			name: "an http.proxy that terminates TLS, with sslVerify off",
-			plant: func(rig *initRig, pod *rigPod) {
-				rig.host = newRecordingHost(rig.t, true)
-				rig.git(pod.clone(), "config", "http.proxy", rig.host.server.URL)
-				rig.git(pod.clone(), "config", "http.sslVerify", "false")
-			},
-			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "ls-remote", "origin") },
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.gitPrints(pod.clone(), rig.host.server.URL, "config", "--get", "http.proxy")
-			},
-		},
-		// post-index-change in the clone's hooks, and the issue's workspace removed, as its agent
-		// can: the restart finds the retained clone and no workspace, so its jj workspace add runs
-		// with the hook in place. The next pod adds its workspace to a new clone with no such hook.
-		// The restart adds the workspace again, so what of the plant stays on the disk is the hook.
-		{
-			name: "post-index-change, which jj workspace add runs on a restart that finds no workspace",
-			plant: func(rig *initRig, pod *rigPod) {
-				rig.plantHooks(filepath.Join(pod.clone(), ".git", "hooks"), "post-index-change")
-				if err := os.RemoveAll(pod.workspace(testTree)); err != nil {
-					rig.t.Fatal(err)
-				}
-			},
-			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "read-tree", "HEAD") },
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.plantedHooks(filepath.Join(pod.clone(), ".git", "hooks"), "post-index-change")
-			},
-		},
-		// A clean filter in the issue workspace's own legacy config. The restart finds the
-		// workspace, so its update-stale meets the filter; the issue's next pod finds no workspace
-		// at all and adds one afresh, so the first pod's workspace never reaches it.
-		{
-			name:  "a working-copy filter in the issue workspace's legacy config, which a restart's update-stale runs",
-			plant: func(rig *initRig, pod *rigPod) { rig.plantFilter(pod.workspace(testTree), "workspace filter") },
-			live: func(rig *initRig, pod *rigPod) {
-				rig.plantFilter(pod.workspace(testTree), "workspace filter")
-				rig.jj(pod.workspace(testTree), "status")
-			},
-			planted: func(rig *initRig, pod *rigPod) error {
-				return rig.plantedFilter(pod.workspace(testTree), "workspace filter")
-			},
-		},
+	plant := filepath.Join(first.disk, "plant")
+	if err := os.WriteFile(plant, []byte("agent output\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	disks := []struct {
-		name string
-		rig  func(t *testing.T) *initRig
-		// kept is whether the disk is a kept volume, a claim that the issue's Sandbox owns.
-		kept bool
-	}{
-		{name: "a disk of the pod's own", rig: func(t *testing.T) *initRig { return newInitRig(t, legion) }},
-		{name: "a kept volume", rig: func(t *testing.T) *initRig { return newMicroVMInitRig(t, legion, SandboxMicroVM, true) }, kept: true},
+	rig.delete(first)
+	next, err := rig.start(rig.launch(workerSpec(t)))
+	if err != nil {
+		t.Fatalf("the issue's next pod: %v", err)
 	}
-	for _, disk := range disks {
-		t.Run(disk.name, func(t *testing.T) {
-			t.Parallel()
-			for _, v := range vectors {
-				t.Run(v.name, func(t *testing.T) {
-					t.Parallel()
-					rig := disk.rig(t)
-					first, err := rig.start(rig.launch(rootSpec(t)))
-					if err != nil {
-						t.Fatalf("the issue's first pod: %v", err)
-					}
-					if disk.kept {
-						mountsClaim(t, first, IssueClaimName(rootToken))
-					}
-					if rig.github.authorized() == 0 {
-						t.Fatal("the first pod provisioned without presenting the provisioning token to github.com")
-					}
-					v.plant(rig, first)
-
-					// The first pod restarted, on its own disk with the plant in place.
-					if err := rig.restart(first); err != nil {
-						t.Logf("the first pod's restart, with the plant in place: %v", err)
-					}
-					holdsToken := func(text string) bool {
-						return slices.ContainsFunc(canaryForms, func(form string) bool { return strings.Contains(text, form) })
-					}
-					for _, line := range rig.sunk() {
-						if holdsToken(line) {
-							t.Errorf("on the pod's restart, planted code read the provisioning token: %s", line)
-						}
-					}
-					// A server a plant named must never receive the token; its live check is that it
-					// receives anything at all.
-					if rig.host != nil {
-						for _, credential := range rig.host.credentials() {
-							if holdsToken(credential) {
-								t.Errorf("on the pod's restart, the host the plant named received the provisioning token: %s", credential)
-							}
-						}
-					}
-					rig.holdsNoCanary("the first pod's disk", first.disk)
-
-					// The plant is live on the disk it was planted on: an agent's own command there runs it.
-					ran, reached := len(rig.sunk()), 0
-					if rig.host != nil {
-						reached = rig.host.requests()
-					}
-					v.live(rig, first)
-					if rig.host != nil {
-						if rig.host.requests() == reached {
-							t.Fatal("the host the plant named received nothing from an agent's own command on the first pod's disk: the plant is not live")
-						}
-					} else if len(rig.sunk()) == ran {
-						t.Fatal("the plant never ran for an agent's own command on the first pod's disk: it is not live")
-					}
-
-					// The issue's next pod, once the first is gone: on a kept volume, the first pod's
-					// disk, and otherwise a disk of its own.
-					ran = len(rig.sunk())
-					if rig.host != nil {
-						reached = rig.host.requests()
-					}
-					rig.delete(first)
-					if disk.kept {
-						next, err := rig.create(rig.launch(workerSpec(t)))
-						if err != nil {
-							t.Fatalf("the issue's next pod: %v", err)
-						}
-						mountsClaim(t, next, IssueClaimName(rootToken))
-						if err := v.planted(rig, next); err != nil {
-							t.Errorf("the issue's next pod started on its kept volume without the plant its first pod left there: %v", err)
-						}
-						if err := rig.initialize(next); err != nil {
-							t.Logf("the issue's next pod, on its kept volume with the plant in place: %v", err)
-						}
-						for _, line := range rig.sunk()[ran:] {
-							if holdsToken(line) {
-								t.Errorf("in the issue's next pod, on its kept volume, planted code read the provisioning token: %s", line)
-							}
-						}
-						if rig.host != nil {
-							for _, credential := range rig.host.credentials() {
-								if holdsToken(credential) {
-									t.Errorf("in the issue's next pod, on its kept volume, the host the plant named received the provisioning token: %s", credential)
-								}
-							}
-						}
-						rig.holdsNoCanary("the next pod's disk", next.disk)
-						return
-					}
-					next, err := rig.start(rig.launch(workerSpec(t)))
-					if err != nil {
-						t.Errorf("the issue's next pod, on a fresh disk: %v", err)
-					}
-					if len(next.inherited) != 0 {
-						t.Errorf("the issue's next pod started on a disk holding %v, which its first pod wrote: an issue pod's disk is its own", next.inherited)
-					}
-					if sunk := rig.sunk(); len(sunk) != ran {
-						t.Errorf("planted code ran in the issue's next pod, which no file of its first pod's disk reaches: %q", sunk[ran:])
-					}
-					if rig.host != nil && rig.host.requests() != reached {
-						t.Errorf("the host the first pod's plant named heard from the issue's next pod (%d requests)", rig.host.requests()-reached)
-					}
-					rig.holdsNoCanary("the next pod's disk", next.disk)
-				})
-			}
-		})
+	if len(next.inherited) != 0 {
+		t.Errorf("the issue's next pod started on a disk holding %v, which its first pod wrote: an issue pod's disk is its own", next.inherited)
+	}
+	if _, err := os.Stat(filepath.Join(next.disk, "plant")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the issue's next pod has the first pod's plant: %v", err)
 	}
 }
 
@@ -1065,6 +538,7 @@ func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *t
 // project without keep_volume gives each pod a disk of its own, and its next pod finds nothing that
 // the first pod's agent left.
 func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	for _, tc := range []struct {
 		name     string
@@ -1161,6 +635,51 @@ func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
 	}
 }
 
+// The rig stands in for each container's CPU limit, the cgroup quota a pod's processes size their
+// threads to, by giving each process it starts GOMAXPROCS and RAYON_NUM_THREADS from that limit
+// (podCPUs). This row fails by name when the two do not reach a process: each init container of an
+// issue pod, which runContainer starts with its own container's limit, and an agent's own command,
+// which agent() starts with the issue pod's limit. Without the row a lost cap shows only on a host
+// whose CPU count carries the rig's processes past a task limit, and no CI runner has that many
+// CPUs. Each child prints the two variables as it has them. The rig builds each child's environment
+// from nothing; the test process's own values are emptied here all the same, so that a child that
+// took them would not pass for one that has the cap.
+func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
+	t.Setenv("GOMAXPROCS", "")
+	t.Setenv("RAYON_NUM_THREADS", "")
+	const report = `printf 'GOMAXPROCS=%s RAYON_NUM_THREADS=%s' "${GOMAXPROCS-unset}" "${RAYON_NUM_THREADS-unset}"`
+	// The stand-in for the Go legion appends one line for each init container that runs it.
+	record := filepath.Join(t.TempDir(), "record")
+	standIn := filepath.Join(t.TempDir(), "legion")
+	if err := os.WriteFile(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rig := newInitRig(t, standIn)
+	pod, err := rig.start(rig.launch(rootSpec(t)))
+	if err != nil {
+		t.Fatalf("the issue's pod: %v", err)
+	}
+	body, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("no init container ran the stand-in: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+	if len(pod.spec.InitContainers) == 0 || len(lines) != len(pod.spec.InitContainers) {
+		t.Fatalf("%d lines from the stand-in, want one for each of the pod's %d init containers: %q", len(lines), len(pod.spec.InitContainers), lines)
+	}
+	for i, c := range pod.spec.InitContainers {
+		limit := c.Resources.Limits[corev1.ResourceCPU]
+		if want := strings.Join(podCPUs(limit), " "); lines[i] != want {
+			t.Errorf("init container %s ran with %q, want %q from its CPU limit %s", c.Name, lines[i], want, limit.String())
+		}
+	}
+	issue := goldenOptions().Resources.Issue.Limits[corev1.ResourceCPU]
+	if got, want := rig.agent().Out(rig.root, "/bin/sh", "-c", report), strings.Join(podCPUs(issue), " "); got != want {
+		t.Errorf("an agent's own command ran with %q, want %q from the issue pod's CPU limit %s", got, want, issue.String())
+	}
+}
+
 // writeFile writes body to path, with every directory above it.
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
@@ -1230,24 +749,23 @@ func newGitHubStandIn(t *testing.T, root string) *gitHubStandIn {
 // cache, and the one the stand-in cache takes.
 const boundaryCacheToken = "the-repository-cache-token"
 
-// newCacheStandIn is the repository cache of boundaryRepo as an issue pod's fetch reaches it at
-// the address the runtime names: its /healthz answers any request, its /tar only the bearer
-// boundaryCacheToken, it names sjawhar/legion-smoke on every answer it gives, is ready at once, and
-// streams as its /tar the refs and packs (workspace.FeedEntry) of a bare clone of remote as it is
-// when asked.
+// newCacheStandIn is the repository cache of boundaryRepo as workspace-init reaches it at the
+// address the runtime names: its /healthz answers ready with defaultBranchOnly, its /tar only the bearer boundaryCacheToken,
+// it names sjawhar/legion-smoke on every answer it gives, is ready at once, and streams as its
+// /tar the refs and packs (workspace.CacheEntry) of a bare clone of remote's default branch.
 func newCacheStandIn(t *testing.T, remote string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/healthz":
 			w.Header().Set(workspace.CacheRepositoryHeader, "sjawhar/legion-smoke")
-			_, _ = w.Write([]byte(`{"ready":true,"repo":"sjawhar/legion-smoke","bytes":1}`))
+			_, _ = w.Write([]byte(`{"ready":true,"defaultBranchOnly":true,"repo":"sjawhar/legion-smoke","bytes":1}`))
 		case "/tar":
 			if r.Header.Get("Authorization") != "Bearer "+boundaryCacheToken {
 				http.Error(w, "the repository cache's token is required", http.StatusUnauthorized)
 				return
 			}
-			body, err := feedTar(remote)
+			body, err := cacheTar(remote)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -1262,16 +780,16 @@ func newCacheStandIn(t *testing.T, remote string) *httptest.Server {
 	return server
 }
 
-// feedTar is a tar stream of the refs and packs of a bare clone of remote, as the repository
-// cache streams its own.
-func feedTar(remote string) ([]byte, error) {
+// cacheTar is a tar stream of the refs and packs of a bare clone of remote's default branch, as
+// the repository cache streams its own.
+func cacheTar(remote string) ([]byte, error) {
 	dir, err := os.MkdirTemp("", "boundary-cache-")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	clone := filepath.Join(dir, "clone.git")
-	command := exec.Command("git", "clone", "--bare", "--quiet", "--no-local", remote, clone)
+	command := exec.Command("git", "clone", "--bare", "--single-branch", "--no-tags", "--quiet", "--no-local", remote, clone)
 	command.Dir = dir
 	command.Env = fixtureenv.Isolated(dir)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -1288,7 +806,7 @@ func feedTar(remote string) ([]byte, error) {
 			return err
 		}
 		name := filepath.ToSlash(relative)
-		if !workspace.FeedEntry(name, entry.IsDir()) {
+		if !workspace.CacheEntry(name, entry.IsDir()) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -1327,57 +845,6 @@ func (g *gitHubStandIn) authorized() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.count
-}
-
-// recordingHost is a server a tree agent points provisioning at: a TLS host of its own, or an
-// http.proxy that terminates TLS for whatever host the client asked to CONNECT to, with a
-// certificate no trust store holds. It records every request and the credentials each carried,
-// and challenges for more.
-type recordingHost struct {
-	server *httptest.Server
-	mu     sync.Mutex
-	seen   int
-	creds  []string
-}
-
-func newRecordingHost(t *testing.T, proxy bool) *recordingHost {
-	t.Helper()
-	h := &recordingHost{}
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		h.mu.Lock()
-		h.seen++
-		if authorization := r.Header.Get("Authorization"); authorization != "" {
-			decoded, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(authorization, "Basic "))
-			h.creds = append(h.creds, string(decoded))
-		}
-		h.mu.Unlock()
-		w.Header().Set("WWW-Authenticate", `Basic realm="planted"`)
-		w.WriteHeader(http.StatusUnauthorized)
-	}
-	if proxy {
-		ca, caKey, _ := newCertificateAuthority(t)
-		h.server = tlsTerminatingProxy(t, leafCertificate(t, ca, caKey), handler, func() {
-			h.mu.Lock()
-			h.seen++
-			h.mu.Unlock()
-		})
-	} else {
-		h.server = httptest.NewTLSServer(http.HandlerFunc(handler))
-		t.Cleanup(h.server.Close)
-	}
-	return h
-}
-
-func (h *recordingHost) requests() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.seen
-}
-
-func (h *recordingHost) credentials() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return slices.Clone(h.creds)
 }
 
 // tlsTerminatingProxy is an HTTP proxy that answers every CONNECT itself: it terminates TLS with

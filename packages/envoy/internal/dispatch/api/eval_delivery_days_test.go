@@ -59,15 +59,35 @@ func publishDefaultRepos(t *testing.T, pool *store.Pool) {
 	}
 }
 
-// storedDayRows reads every eval_days row of project but its unowned-p0 row of today (which the
-// refresher writes for every project), listed or not, every repository's, in key order: the rows
-// the partition is checked over, and the unlisted job series DayWindow leaves out.
+// leaveAttributionInputsUnread clears every stored pull request's attribution inputs, as a row
+// stored before its GitHub facts were read for them holds none, so the issue its row names
+// (issue_key) stands as its attribution: no inputs were read, and a row with none counts by the
+// one list its issue_key gives (evals/delivery_days.go's attribution). A test whose oracle is
+// deliverytest's issue_key, the project of the issue it names each pull request after, reads its
+// rows this way: the history's issues own no repository and only its project's default is the
+// deploy repository, so with the inputs read most of its pull requests would count by the
+// published defaults (under owner keys whose lists name the issue's project), and those of its
+// other repositories, and every one naming an issue of its second project, for no project the
+// issue names.
+func leaveAttributionInputsUnread(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		update delivery_pull_requests
+		set attribution_title_keys = null, attribution_cited_issues = null, attribution_branch_keys = null, attribution_commit_keys = null
+	`); err != nil {
+		t.Fatalf("leave the pull requests' attribution inputs unread: %v", err)
+	}
+}
+
+// storedDayRows reads every eval_days row of project, listed or not, every repository's, in key
+// order: the rows the partition is checked over, the unowned-p0 rows of each repository among them,
+// and the unlisted job series DayWindowIn leaves out.
 func storedDayRows(t *testing.T, pool *store.Pool, project string) []evals.DayRow {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `
 		select eval_id, series, repo, day, listed, n, sum, num, den, max, samples, counts, via_repository
-		from eval_days where project_key = $1 and eval_id <> $2 order by eval_id, series, repo, day
-	`, project, evals.EvalID(project, evals.SlugUnownedP0))
+		from eval_days where project_key = $1 order by eval_id, series, repo, day
+	`, project)
 	if err != nil {
 		t.Fatalf("read the day rows of %s: %v", project, err)
 	}
@@ -184,7 +204,7 @@ func partsByEval(project string, rows []evals.WindowRow) map[string][]measures.D
 }
 
 // seededEntries seeds project's evals as the project's creation does (evals.Store.Ensure) and
-// answers every one as the list read holds it (evals.Store.Current): the entries a DayWindow read
+// answers every one as the list read holds it (evals.Store.Current): the entries a DayWindowIn read
 // of the project's evals names.
 func seededEntries(t *testing.T, registry *evals.Store, project string) []evals.Entry {
 	t.Helper()
@@ -200,7 +220,7 @@ func seededEntries(t *testing.T, registry *evals.Store, project string) []evals.
 
 // jobParts is the unlisted job series of pr-ci among stored (every one of the project's rows),
 // those of repo's cut on the days of [from, to): the parts the slowest-jobs table folds, which a
-// DayWindow read, of listed rows alone, leaves out.
+// DayWindowIn read, of listed rows alone, leaves out.
 func jobParts(project string, stored []evals.DayRow, repo string, from, to time.Time) []measures.DayPart {
 	var parts []measures.DayPart
 	for _, row := range stored {
@@ -251,8 +271,9 @@ func leadSpread(parts []measures.DayPart) measures.Spread {
 
 // foldedMeasures is the measures route's measures folded from parts, one cut's day rows of a
 // window, by the folds the route answers through, the three failure measures' over their own day
-// rows, of which no builder writes any yet; ok false, with what is missing, where the parts hold no
-// deploy-frequency or deploy-run-success part, which read "no data".
+// rows, which the history's project, counting no failure source, holds none of; ok false, with
+// what is missing, where the parts hold no deploy-frequency or deploy-run-success part, which read
+// "no data".
 func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window) (measures.Result, string) {
 	frequency := measures.FoldDeployFrequency(parts[evals.SlugDeployFrequency], window)
 	success := measures.FoldDeployRunSuccess(parts[evals.SlugDeployRunSuccess])
@@ -374,9 +395,9 @@ type evalDaysWindow struct {
 	withPRs  int
 }
 
-// compareDayRowsWithRoutes folds the day rows of window, read by DayWindow for the project's cut
-// and each repository's, through the folds the delivery routes answer through, and compares each
-// with the route's answer: GET /api/v1/delivery/measures for that window, and
+// compareDayRowsWithRoutes folds the day rows of window, read by DayWindowIn on pool for the
+// project's cut and each repository's, through the folds the delivery routes answer through, and
+// compares each with the route's answer: GET /api/v1/delivery/measures for that window, and
 // GET /api/v1/delivery/pipeline at the window's last instant, which shows the seven days ending on
 // it whatever the window's length and so is compared with the rows of those seven days, for the
 // all-repositories cut; the measures route's pull-request measures (lead_time, rework_share)
@@ -387,7 +408,7 @@ type evalDaysWindow struct {
 // deploys_with_prs and with_prs_per_day included: a deploy with pull requests is one that ships
 // any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the window's
 // tally and every difference found.
-func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
+func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, pool *store.Pool, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
 	t.Helper()
 	tally := evalDaysWindow{from: from, to: to}
 	var differences []string
@@ -408,7 +429,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	pipelineDays := measures.ShownDays(pipelineAt)
 	query := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
 	read := func(repos []string, span evals.Range) map[string][]measures.DayPart {
-		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, evals.DeployReposOf(fixture.Project, fixture.DeployRepo), repos, span, nil)
+		rows, err := evals.DayWindowIn(t.Context(), pool, []string{fixture.Project}, entries, evals.DeployReposOf(fixture.Project, fixture.DeployRepo), repos, span, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s..%s for %v: %v", span.From.Format(time.DateOnly), span.To.Format(time.DateOnly), repos, err)
 		}
@@ -422,13 +443,13 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		return decodeDeliveryOracleTree(t, response.Body.Bytes())
 	}
 	pipelineDropped := []string{"computed_at", "freshness", "pr_checks.failing_jobs"}
-	// The evals each route judges its figures by, read as each reads them for the deploy
-	// repository.
-	targetEvals, err := registry.DeployRepoEvals(t.Context(), settings.DeployRepo, evals.DeliveryTargetSlugs)
+	// The evals each route judges its figures by, read as each reads them: those of the project
+	// that owns every deploy repository, the fixture's.
+	targetEvals, err := registry.DeployRepoEvals(t.Context(), evals.DeliveryTargetSlugs)
 	if err != nil {
 		t.Fatalf("read the measures' evals of %s: %v", settings.DeployRepo, err)
 	}
-	pipelineEvals, err := registry.DeployRepoEvals(t.Context(), settings.DeployRepo, evals.PipelineSlugs)
+	pipelineEvals, err := registry.DeployRepoEvals(t.Context(), evals.PipelineSlugs)
 	if err != nil {
 		t.Fatalf("read the Pipeline's evals of %s: %v", settings.DeployRepo, err)
 	}
@@ -439,7 +460,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	if folded, missing := foldedMeasures(all, window); missing != "" {
 		differ("all repositories: %s", missing)
 	} else {
-		compare("the measures of all repositories", oracleTree(t, folded), subtree(wholeMeasures, "measures"))
+		compare("the measures of all repositories", oracleTree(t, deliveryMeasuresOf(folded)), subtree(wholeMeasures, "measures"))
 		// The targets and each KPI's verdict, stated from the folded measures as the route states
 		// them from its own (deliveryTargets, measuresStatus over evals.ResultStatistics), the
 		// unowned P0 issues being those open now, which no day row of a past window counts.
@@ -493,25 +514,29 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 }
 
 // TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer: over a deliverytest history whose every
-// pull request names an issue of one project (Spec.OneProject) and whose deploy repository is that
-// project's default repository, so the project's read holds every row the deployment-wide delivery
+// pull request names an issue of one project (Spec.OneProject), its attribution inputs left unread
+// so the issue each row names is its attribution (leaveAttributionInputsUnread), and whose deploy
+// repository is that project's default repository, so the project's read holds every row the
+// deployment-wide delivery
 // routes count (what an issue attributes in its own rows, and what no issue attributes — a deploy
 // that ships none, a CI run of no population pull request — in the rows of the repository it
 // publishes as its default, R15), the day rows of every day of the history are written as the
 // server's refresher writes them (refreshEvalDays); their partition by repository is checked; and
 // for evalDaysWindows seeded windows of 1 to 84 whole days, the rows of each cut, read by
-// evals.Store.DayWindow, folded by the folds the routes answer through, equal the routes' answers
+// evals.DayWindowIn, folded by the folds the routes answer through, equal the routes' answers
 // (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then one day's rows of the first
 // window are deleted, and the same comparison must differ.
 func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true})
+	leaveAttributionInputsUnread(t, database.Pool)
 	ctx := t.Context()
 	settings, read := seededDeliveryRules(t, database.Pool).For(fixture.DeployRepo)
 	if !read {
 		t.Fatalf("no deploy source reads %s", fixture.DeployRepo)
 	}
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	entries := seededEntries(t, registry, fixture.Project)
 
 	started := time.Now()
@@ -522,8 +547,22 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 			t.Fatalf("%s holds a day row (%s on %s), want none: its project counts no failure source", row.EvalID, row.Series, row.Day.Format(time.DateOnly))
 		}
 	}
-	if other := storedDayRows(t, database.Pool, fixture.SecondProject); len(other) != 0 {
-		t.Fatalf("%s holds %d day rows, want none: no row of this history counts for it", fixture.SecondProject, len(other))
+	// The refresher writes every project's unowned-p0 row of today, which counts none of the
+	// second project's issues: this history holds no open P0 issue of it.
+	for _, row := range storedDayRows(t, database.Pool, fixture.SecondProject) {
+		if row.EvalID != evals.EvalID(fixture.SecondProject, evals.SlugUnownedP0) || row.Repo != "" || row.N != 0 {
+			t.Errorf("%s holds a day row of %s %s in %q on %s, n %d; want its unowned-p0 row of 0 alone: no row of this history counts for it",
+				fixture.SecondProject, row.EvalID, row.Series, row.Repo, row.Day.Format(time.DateOnly), row.N)
+		}
+	}
+	unownedRepoRows := 0
+	for _, row := range stored {
+		if row.EvalID == evals.EvalID(fixture.Project, evals.SlugUnownedP0) && row.Repo != "" {
+			unownedRepoRows++
+		}
+	}
+	if unownedRepoRows == 0 {
+		t.Errorf("%s holds no repository's unowned-p0 row beside its %d open P0 issues with no owner, so the partition checks none", fixture.Project, len(fixture.UnownedP0))
 	}
 	seriesDays, repositoryRows := checkDayRowPartition(t, stored)
 	written := map[time.Time]bool{}
@@ -543,7 +582,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	}
 	total := 0
 	for _, window := range windows {
-		tally, differences := compareDayRowsWithRoutes(t, handler, registry, fixture, settings, entries, stored, window[0], window[1])
+		tally, differences := compareDayRowsWithRoutes(t, handler, registry, database.Pool, fixture, settings, entries, stored, window[0], window[1])
 		for _, difference := range differences {
 			t.Error(difference)
 		}
@@ -561,7 +600,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete the day rows of %s: %v", gone.Format(time.DateOnly), err)
 	}
-	_, differences := compareDayRowsWithRoutes(t, handler, registry, fixture, settings, entries, storedDayRows(t, database.Pool, fixture.Project), windows[0][0], windows[0][1])
+	_, differences := compareDayRowsWithRoutes(t, handler, registry, database.Pool, fixture, settings, entries, storedDayRows(t, database.Pool, fixture.Project), windows[0][0], windows[0][1])
 	if len(differences) == 0 {
 		t.Fatalf("with the %d day rows of %s deleted, %s..%s still folds to the routes' answers, so the comparison cannot see a day it lacks",
 			deleted.RowsAffected(), gone.Format(time.DateOnly), windows[0][0].Format(time.DateOnly), windows[0][1].Format(time.DateOnly))
@@ -572,21 +611,24 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 
 // TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject (the architect's
 // condition): in deliverytest's default history, whose pull requests name issues of DELIV, one in
-// twenty of DELIVX, and some none, and whose deploy repository is DELIV's default repository, the
-// deploys that ship pull requests of both are counted once by GET /api/v1/delivery/measures over a
-// window holding one, and once in each project's read; a deploy that ships no pull request at all
-// counts for DELIV alone, whose deploy source found it (dispatch://INFRA-978, R12), and so does one
-// that ships pull requests of no project, through the repository DELIV publishes as its default
-// (R15); and one that ships a pull request of a project through its issue counts in that project
-// once, not twice (its repository's row names the project among its sharers, which the project's
-// read skips). So the two projects' folded deploy-frequency deploys, less the deploys that ship
-// both, are the deployment-wide count. A delivery route that answered the sum of the projects' rows
-// would count the deploys of both twice, and fail here.
+// twenty of DELIVX, and some none, their attribution inputs left unread so the issue each row names
+// is its attribution (leaveAttributionInputsUnread), and whose deploy repository is DELIV's default
+// repository, the deploys that ship pull requests of both are counted once by
+// GET /api/v1/delivery/measures over a window holding one, and once in each project's read; a
+// deploy that ships no pull request at all counts for DELIV alone, whose deploy source found it
+// (dispatch://INFRA-978, R12), and so does one that ships pull requests of no project, through the
+// repository DELIV publishes as its default (R15); and one that ships a pull request of a project
+// through its issue counts in that project once, not twice (its repository's row names the project
+// among its sharers, which the project's read skips). So the two projects' folded deploy-frequency
+// deploys, less the deploys that ship both, are the deployment-wide count. A delivery route that
+// answered the sum of the projects' rows would count the deploys of both twice, and fail here.
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
+	leaveAttributionInputsUnread(t, database.Pool)
 	ctx := t.Context()
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 
 	// The projects each deploy ships, by the attribution rule over the fixture's own containment:
 	// a pull request's issue's project, and none for one that names no issue.
@@ -656,8 +698,8 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 			both++
 		}
 		if !first && !second {
-			// It ships pull requests of no project, so it counts for DELIV through its default
-			// repository (R15).
+			// It ships pull requests of no project, so it counts, through its repository, for the
+			// project whose default repository that is: the first, DELIV (R15).
 			none++
 		}
 	}
@@ -674,7 +716,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		entries = slices.DeleteFunc(entries, func(entry evals.Entry) bool {
 			return entry.Definition.EvalID != evals.EvalID(project, evals.SlugDeployFrequency)
 		})
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, evals.DeployReposOf(project, fixture.DeployRepo), nil, evals.Range{From: from, To: to}, nil)
+		rows, err := evals.DayWindowIn(ctx, database.Pool, []string{project}, entries, evals.DeployReposOf(project, fixture.DeployRepo), nil, evals.Range{From: from, To: to}, nil)
 		if err != nil {
 			t.Fatalf("read the deploy-frequency rows of %s: %v", project, err)
 		}

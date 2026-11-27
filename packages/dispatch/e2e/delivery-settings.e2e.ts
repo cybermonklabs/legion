@@ -1,32 +1,23 @@
-// Each project's delivery settings, saved on its settings tab (dispatch://INFRA-978, R1, R2 and
-// R4; the plan's T10): two projects keep settings of their own, one with two deploy sources; a
-// project turned off shows the switch alone and the pipeline counts none of its runs; and the
-// editor saves under the stack's agent bearer with no sign-in, the surface INFRA's own settings
-// are saved through on production (T17). acme-shaped placeholders throughout (AGENTS.md: "This
-// repository is public").
+/** saves per-project delivery settings against the fake GitHub App's repository access check and
+ *  re-reads the stored settings, resolved default repositories and eval targets across tabs and
+ *  reloads; turns delivery off and polls the server's recomputed deployment-wide pipeline count;
+ *  and saves under the stack's agent bearer with no sign-in and asserts the stored writer session
+ *  (dispatch://INFRA-978, R1, R2, R4 and k5). */
+
+// acme-shaped placeholders throughout (AGENTS.md: "This repository is public").
 import type { Page } from "@playwright/test";
 
 import {
   baseUrl,
-  createProject,
   e2eAgentToken,
   getProjectDeliverySettings,
-  putProjectDefaultRepository,
   putProjectDeliverySettings,
 } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
+import { deploySource, projectWithDefault, saveDeliverySettings } from "./delivery-settings-steps";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { expect, test } from "./test";
 import { asUser } from "./users";
-
-const SAVE = "Save delivery settings";
-
-/** A project made through the API, so its evals are seeded, with `repo` as its default
- *  repository. */
-async function projectWithDefault(key: string, name: string, repo: string): Promise<void> {
-  await createProject({ key, name });
-  await putProjectDefaultRepository(key, repo);
-}
 
 /** The fake GitHub App installed on each of `repos` with Contents: read, which the settings save
  *  proves for each source's repository. */
@@ -38,36 +29,16 @@ async function appReads(...repos: string[]): Promise<void> {
   );
 }
 
-/** Deploy source `n` (from 1) of the settings tab `page` shows. */
-function source(page: Page, n: number) {
-  return page.getByRole("group", { name: `Deploy source ${n}` });
-}
-
 /** Fills deploy source `n`'s rule: its workflow, its production jobs and its PR checks workflow. */
 async function fillRule(
   page: Page,
   n: number,
   rule: { workflow: string; jobs: string; checks: string }
 ): Promise<void> {
-  await source(page, n).getByLabel("Deploy workflow", { exact: true }).fill(rule.workflow);
-  await source(page, n).getByLabel("Production jobs", { exact: true }).fill(rule.jobs);
-  await source(page, n).getByLabel("PR checks workflow", { exact: true }).fill(rule.checks);
-}
-
-/** Presses Save on `project`'s settings tab and waits for the server's 200 and the line that
- *  says so. */
-async function save(page: Page, project: string): Promise<void> {
-  const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "PUT" &&
-      response.url().endsWith(`/api/v1/projects/${project}/settings/delivery`) &&
-      response.ok()
-  );
-  await page.getByRole("button", { name: SAVE }).click();
-  await saved;
-  await expect(
-    page.getByRole("status").filter({ hasText: "Delivery settings saved" })
-  ).toBeVisible();
+  const source = deploySource(page, n);
+  await source.getByLabel("Deploy workflow", { exact: true }).fill(rule.workflow);
+  await source.getByLabel("Production jobs", { exact: true }).fill(rule.jobs);
+  await source.getByLabel("PR checks workflow", { exact: true }).fill(rule.checks);
 }
 
 test("two projects keep the settings saved on their own tabs, one with two deploy sources", async ({
@@ -93,7 +64,7 @@ test("two projects keep the settings saved on their own tabs, one with two deplo
       workflow: ".github/workflows/deploy.yml",
     });
     await page.getByRole("button", { name: "Add a GitHub workflow source" }).click();
-    await source(page, 2).getByLabel("Repository", { exact: true }).fill("acme/deploys");
+    await deploySource(page, 2).getByLabel("Repository", { exact: true }).fill("acme/deploys");
     await fillRule(page, 2, {
       checks: ".github/workflows/release-checks.yml",
       jobs: "release / apply",
@@ -102,7 +73,7 @@ test("two projects keep the settings saved on their own tabs, one with two deplo
     await page.getByLabel("Population authors", { exact: true }).fill("octocat");
     await page.getByLabel("Deploy frequency (deploys a day)", { exact: true }).fill("8");
     await page.getByLabel("Failed deployment recovery time (minutes)", { exact: true }).fill("120");
-    await save(page, "ACME");
+    await saveDeliverySettings(page, "ACME");
 
     // GADG: one source reading its own default repository, a failure source, other targets.
     await page.goto("/projects/GADG/settings");
@@ -116,7 +87,7 @@ test("two projects keep the settings saved on their own tabs, one with two deplo
     await page.getByLabel("Failures counted from", { exact: true }).fill("2026-11-01");
     await page.getByLabel("Deploy frequency (deploys a day)", { exact: true }).fill("3");
     await page.getByLabel("Change failure rate (a share from 0 to 1)", { exact: true }).fill("off");
-    await save(page, "GADG");
+    await saveDeliverySettings(page, "GADG");
 
     // Each project reads back its own settings through the route, the targets from its evals.
     const acme = await getProjectDeliverySettings("ACME");
@@ -152,10 +123,10 @@ test("two projects keep the settings saved on their own tabs, one with two deplo
 
     // And each tab, opened again, shows its own.
     await page.goto("/projects/ACME/settings");
-    await expect(source(page, 2).getByLabel("Repository", { exact: true })).toHaveValue(
+    await expect(deploySource(page, 2).getByLabel("Repository", { exact: true })).toHaveValue(
       "acme/deploys"
     );
-    await expect(source(page, 1).getByLabel("Repository", { exact: true })).toHaveValue("");
+    await expect(deploySource(page, 1).getByLabel("Repository", { exact: true })).toHaveValue("");
     await expect(page.getByLabel("Deploy frequency (deploys a day)", { exact: true })).toHaveValue(
       "8"
     );
@@ -209,7 +180,7 @@ test("a project turned off shows the switch alone, and the pipeline counts none 
     await expect(delivery).toBeChecked();
     await delivery.uncheck();
     await expect(page.getByRole("group", { name: "Deploy sources" })).toHaveCount(0);
-    await save(page, "ACME");
+    await saveDeliverySettings(page, "ACME");
 
     // The tab shows the switch alone, the stored source kept behind it.
     await page.reload();
@@ -230,15 +201,15 @@ test("a project turned off shows the switch alone, and the pipeline counts none 
   }
 });
 
-// T17's surface on the local stack: the editor driven by an agent, with the agent bearer on every
-// request to the stack's origin and no sign-in. Read in the code, it does not pass on this build,
-// for two causes outside the web app, which this row is the proof of once they are settled:
-// - GET /auth/whoami resolves the session cookie alone (`authWhoami` in
-//   internal/dispatch/routes/router.go, through identity.CookieIdentity.Login), so it answers the
-//   bearer 401 and the shell's AuthGate (web/src/app.tsx) draws the sign-in page, not the tab.
-// - PUT /api/v1/projects/{key}/settings/delivery takes its writer from `requireActor`, and a bearer
-//   whose credential proves no session must name one in the body (`bearerSessionActor` in
-//   internal/dispatch/api/server.go, 400 ACTOR_KIND), which the editor's save does not send.
+/** The session the agent's browser names as its writer: the one the harness's own agent writes
+ *  name (`seedActor` in e2e/api.ts), since the stack's shared token proves no session of its own. */
+const AGENT_SESSION = "e2e-seed";
+
+// The spec's check k5 on the local stack: the editor driven by an agent, with the agent bearer on
+// every request to the stack's origin and no sign-in. GET /auth/whoami answers the bearer as an
+// agent (`authWhoami` in internal/dispatch/routes/router.go), and the page opens on `?session=`,
+// the session its save names as its writer (`actor`), which a bearer whose credential proves none
+// must name (`bearerSessionActor` in internal/dispatch/api/server.go).
 test("the settings tab saves under the stack's agent bearer with no sign-in", async ({
   browser,
   baseURL,
@@ -257,7 +228,7 @@ test("the settings tab saves under the stack's agent bearer with no sign-in", as
   );
 
   try {
-    await page.goto("/projects/ACME/settings");
+    await page.goto(`/projects/ACME/settings?session=${AGENT_SESSION}`);
     await page.getByRole("switch", { name: "Delivery" }).check();
     await fillRule(page, 1, {
       checks: ".github/workflows/pr-checks.yml",
@@ -265,16 +236,18 @@ test("the settings tab saves under the stack's agent bearer with no sign-in", as
       workflow: ".github/workflows/deploy.yml",
     });
     await page.getByLabel("Deploy frequency (deploys a day)", { exact: true }).fill("5");
-    await save(page, "ACME");
+    await saveDeliverySettings(page, "ACME");
 
+    // Read back through the API: the settings as saved, written by the session the page named.
     const acme = await getProjectDeliverySettings("ACME");
     expect(acme?.delivery).toBe(true);
     expect(acme?.sources?.map(({ resolved_repo }) => resolved_repo)).toEqual(["acme/widgets"]);
     expect(acme?.targets?.["deploy-frequency"]).toBe(5);
+    expect(acme?.updated_by).toMatchObject({ id: AGENT_SESSION, kind: "session" });
 
     await page.reload();
     await expect(page.getByRole("switch", { name: "Delivery" })).toBeChecked();
-    await expect(source(page, 1).getByLabel("Deploy workflow", { exact: true })).toHaveValue(
+    await expect(deploySource(page, 1).getByLabel("Deploy workflow", { exact: true })).toHaveValue(
       ".github/workflows/deploy.yml"
     );
   } finally {

@@ -178,8 +178,10 @@ const (
 // start; CreatedAt is GitHub's created_at, which a re-run keeps, nil on a row stored before it was
 // (Created says what stands in for it).
 type DeliveryRun struct {
-	Repo         string                 `json:"repo"`
-	RunID        int64                  `json:"run_id"`
+	Repo  string `json:"repo"`
+	RunID int64  `json:"run_id"`
+	// RunAttempt is nil for an old row or a GitHub answer that supplies no attempt.
+	RunAttempt   *int                   `json:"run_attempt"`
 	Kind         DeliveryRunKind        `json:"kind"`
 	PRNumber     *int                   `json:"pr_number"`
 	HeadSHA      string                 `json:"head_sha"`
@@ -243,8 +245,8 @@ type DeliveryRunJobView struct {
 
 // DeliveryPRView is one population pull request on `GET /api/v1/delivery/timeline` -- LEGION-294's
 // facts plus what the server derives at read time from the stored facts: DeployedStatus, the
-// linked issue's title, priority and effective components (the nearest ancestor's attachment, as
-// the issue read resolves it), and (on DeliveryRunView) RootFailingJob. Mirrors
+// linked issue's title, priority and effective components (the nearest ancestor's attachment in
+// its own project, as the issue read resolves it), and (on DeliveryRunView) RootFailingJob. Mirrors
 // packages/contracts/src/dispatch-api.ts's DeliveryPR exactly. ParentAgent is the Parent agent of
 // the first of Sessions: its session group's `group:<id>`, else that session's title or id
 // (ParentAgents, parent_agent.go).

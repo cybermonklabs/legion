@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -92,7 +94,7 @@ type readingBody struct {
 }
 
 // writeReadings registers INFRA's logged evals and writes their readings.
-func writeReadings(ctx context.Context, database *store.Store, spec Spec, history infraHistory, logf func(string, ...any)) error {
+func writeReadings(ctx context.Context, database *store.Store, spec Spec, history projectHistory, logf func(string, ...any)) error {
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Settle: time.Hour})
 	defer func() {
@@ -100,7 +102,7 @@ func writeReadings(ctx context.Context, database *store.Store, spec Spec, histor
 			logf("the document service did not stop cleanly: %v", err)
 		}
 	}()
-	registry := evals.New(database, documents, broker)
+	registry := evals.New(database, documents, broker, delivery.NewAttributor(refs.Renames{}))
 	for _, eval := range loggedEvals {
 		if err := register(ctx, registry, eval); err != nil {
 			return err
@@ -225,7 +227,7 @@ func register(ctx context.Context, registry *evals.Store, eval loggedEval) error
 // with the index, its row key names a row of that kind (an INFRA issue, a pull request, one of the
 // history's runs, whose ids are firstRunID up to firstRunID+runs, a job of one of them, or the
 // day), its time falls in the day in index order, and one in a hundred has no value and says why.
-func drawReading(rng *rand.Rand, eval loggedEval, history infraHistory, runs int64, from time.Time, index, count int) readingBody {
+func drawReading(rng *rand.Rand, eval loggedEval, history projectHistory, runs int64, from time.Time, index, count int) readingBody {
 	kind := RowKinds[(index+from.YearDay())%len(RowKinds)]
 	body := readingBody{Series: "value", RowKind: kind, Unit: eval.unit, Source: "evalbench",
 		MeasuredAt: from.Add(time.Duration((float64(index) + rng.Float64()) / float64(count) * float64(24*time.Hour)))}

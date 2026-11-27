@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/live/* TestTheLiveFixturesAreWhatTheDiffWrites
+
 import (
 	"bytes"
 	"encoding/json"
@@ -25,8 +27,8 @@ import (
 
 // updateFixtures is this package's one -update flag: a test binary takes one flag of a name, and
 // three tests here write files the repository commits: packages/contracts/fixtures/live,
-// packages/contracts/fixtures/ask-reply-recipients.json and testdata/routes.txt.
-var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json and testdata/routes.txt")
+// packages/contracts/fixtures/ask-reply-recipients.json and testdata/status-change.
+var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json and testdata/status-change")
 
 // liveJSONField is one JSON field of a struct as encoding/json writes it: its name and type.
 type liveJSONField struct {
@@ -56,6 +58,7 @@ func liveJSONFields(t reflect.Type) []liveJSONField {
 }
 
 func TestEveryResponseFieldHasOneClass(t *testing.T) {
+	t.Parallel()
 	// Every kind the hub serves, so a kind added to deliveryLiveKinds is held to this at once.
 	for _, kind := range slices.Sorted(maps.Keys(deliveryLiveKinds)) {
 		classes, ok := deliveryLiveKinds[kind]
@@ -169,6 +172,7 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 // reach a nil call at the first subscription; a new kind that names nothing it reads would tell a
 // sub nothing when its deployment is not configured (viewReads.refusal).
 func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
+	t.Parallel()
 	for _, kind := range slices.Sorted(maps.Keys(deliveryLiveKinds)) {
 		classes := deliveryLiveKinds[kind]
 		if classes.parse == nil {
@@ -192,8 +196,8 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	if deliveryLiveKinds[legionBoardView].unownedP0 {
 		t.Error("the Legion board shows no unowned P0 list, so a P0 write must not mark it by itself")
 	}
-	// The Legion board is the one view that shows its daemon's state, which the sampler's read of
-	// that daemon marks by the board's project (dirtyLegionBoard), so the board names its project.
+	// The Legion board shows its daemon's state, which the sampler's read of that daemon marks by
+	// the board's project (dirtyLegionProject), so the board names its project.
 	if board := deliveryLiveKinds[legionBoardView]; board.reads != viewReadsLegion || !board.namesProject() {
 		t.Error("the Legion board does not read its project's daemon, so the sampler's read of that daemon marks no board")
 	}
@@ -323,7 +327,7 @@ func liveTimelineOf(to time.Time, prs []delivery.DeliveryPRView, waiting []deliv
 func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, deploys int) deliveryMeasuresResponse {
 	return deliveryMeasuresResponse{
 		Window: window, ComputedAt: computedAt,
-		Measures:  measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
+		Measures:  deliveryMeasuresOf(measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}}),
 		UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
 		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
@@ -675,6 +679,7 @@ func liveSections(delta DeliveryLiveDelta) (set, items, maps_, counts []string) 
 }
 
 func TestAnUnchangedBodyDiffsToNothing(t *testing.T) {
+	t.Parallel()
 	to := liveFrom.Add(48 * time.Hour)
 	body := liveTimelineOf(to, []delivery.DeliveryPRView{livePR(1), livePR(2)}, []delivery.DeliveryWaitingPRView{}, []delivery.DeliveryRunView{liveRun(7, 3)})
 	held := mustEncodeLive(t, deliveryLiveTimeline, body)
@@ -696,6 +701,7 @@ func TestAnUnchangedBodyDiffsToNothing(t *testing.T) {
 }
 
 func TestOneMergeSendsOnlyTheCountsItMoved(t *testing.T) {
+	t.Parallel()
 	to := liveFrom.Add(48 * time.Hour)
 	// A pull request of another repository, by another author in another session: the merge moves
 	// none of its counts.
@@ -751,6 +757,7 @@ func TestOneMergeSendsOnlyTheCountsItMoved(t *testing.T) {
 }
 
 func TestAKeyThatLeftIsNull(t *testing.T) {
+	t.Parallel()
 	to := liveFrom.Add(48 * time.Hour)
 	second := withIssue(livePR(2), "ACME-2", "Second issue")
 	second.Author = "hubot"
@@ -789,6 +796,7 @@ func TestAKeyThatLeftIsNull(t *testing.T) {
 }
 
 func TestAPullRequestThatLeftTheWindowIsRemoved(t *testing.T) {
+	t.Parallel()
 	heldTo := liveFrom.Add(48 * time.Hour)
 	held := mustEncodeLive(t, deliveryLiveTimeline, liveTimelineOf(heldTo, []delivery.DeliveryPRView{livePR(1), livePR(2), livePR(3)}, []delivery.DeliveryWaitingPRView{}, []delivery.DeliveryRunView{}))
 	// A preset's window moved past #1's merge: the window and its pull requests both moved.
@@ -815,6 +823,7 @@ func TestAPullRequestThatLeftTheWindowIsRemoved(t *testing.T) {
 }
 
 func TestADeployFlipsEveryWaitingPullRequestItShipped(t *testing.T) {
+	t.Parallel()
 	to := liveFrom.Add(72 * time.Hour)
 	prs := make([]delivery.DeliveryPRView, 20)
 	for i := range prs {
@@ -856,6 +865,7 @@ func TestADeployFlipsEveryWaitingPullRequestItShipped(t *testing.T) {
 }
 
 func TestAWindowThatMovedAloneSendsNothing(t *testing.T) {
+	t.Parallel()
 	prs := []delivery.DeliveryPRView{livePR(1), livePR(2)}
 	heldTo := liveFrom.Add(48 * time.Hour)
 	held := mustEncodeLive(t, deliveryLiveTimeline, liveTimelineOf(heldTo, prs, []delivery.DeliveryWaitingPRView{}, []delivery.DeliveryRunView{}))
@@ -897,6 +907,7 @@ func TestAWindowThatMovedAloneSendsNothing(t *testing.T) {
 }
 
 func TestComputedAtAndFreshnessAloneAreNoChange(t *testing.T) {
+	t.Parallel()
 	heldAt := liveFrom.Add(48 * time.Hour)
 	nextAt := heldAt.Add(5 * time.Minute)
 	window := delivery.DeliveryWindowView{From: liveFrom, To: heldAt}
@@ -927,6 +938,7 @@ func TestComputedAtAndFreshnessAloneAreNoChange(t *testing.T) {
 }
 
 func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
+	t.Parallel()
 	at := liveFrom.Add(48 * time.Hour)
 	window := delivery.DeliveryWindowView{From: liveFrom, To: at}
 	held := mustEncodeLive(t, deliveryLiveMeasures, liveMeasuresOf(window, at, 1))
@@ -939,7 +951,7 @@ func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
 	if set, items, mapNames, counts := liveSections(delta); !slices.Equal(set, []string{"measures"}) || len(items)+len(mapNames)+len(counts) != 0 {
 		t.Errorf("set %v, items %v, maps %v, counts %v; want the measures alone", set, items, mapNames, counts)
 	}
-	var sent measures.Result
+	var sent deliveryMeasures
 	if err := json.Unmarshal(delta.Set["measures"], &sent); err != nil || !reflect.DeepEqual(sent, nextBody.Measures) {
 		t.Errorf("set.measures = %s (%v), want the new measures whole", delta.Set["measures"], err)
 	}
@@ -970,6 +982,7 @@ func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
 }
 
 func TestAPipelineCardThatMovedIsTheOnlyField(t *testing.T) {
+	t.Parallel()
 	at := liveFrom.Add(12 * time.Hour)
 	held := mustEncodeLive(t, deliveryLivePipeline, livePipelineOf(at, 3))
 	next := mustEncodeLive(t, deliveryLivePipeline, livePipelineOf(at.Add(time.Minute), 4))
@@ -986,6 +999,7 @@ func TestAPipelineCardThatMovedIsTheOnlyField(t *testing.T) {
 }
 
 func TestDiffAgainstAPagesRevsAfterReconnect(t *testing.T) {
+	t.Parallel()
 	to := liveFrom.Add(48 * time.Hour)
 	page := mustEncodeLive(t, deliveryLiveTimeline, liveTimelineOf(to, []delivery.DeliveryPRView{livePR(1), livePR(2), livePR(3)}, []delivery.DeliveryWaitingPRView{}, []delivery.DeliveryRunView{}))
 
@@ -1022,6 +1036,7 @@ func TestDiffAgainstAPagesRevsAfterReconnect(t *testing.T) {
 }
 
 func TestAListWithARepeatedIDIsRefused(t *testing.T) {
+	t.Parallel()
 	body := liveTimelineOf(liveFrom.Add(time.Hour), []delivery.DeliveryPRView{livePR(1), livePR(1)}, []delivery.DeliveryWaitingPRView{}, []delivery.DeliveryRunView{})
 	if _, err := encodeDeliveryBody(deliveryLiveTimeline, body); err == nil || !strings.Contains(err.Error(), `"acme/widgets#1" twice`) {
 		t.Fatalf("encode = %v, want a refusal naming the repeated id", err)
@@ -1096,10 +1111,11 @@ func liveItemsOf(rows ...evalItemRow) evalItemsResponse {
 // TestAnEvalWhoseNumbersMovedIsTheOneItemSent: an evals view sends its list eval by eval, by id. A
 // reading that moves one eval's numbers sends that eval alone; a registered eval is upserted with
 // the total that counts it; a new version of a definition sends its eval whole; a day that turned
-// sends the window and the compare range with the numbers it moved. The refresher's age, which
-// every read measures afresh, sends nothing by itself, and goes with the freshness when the
-// folded rows' own age moves.
+// sends the window and the compare range with the eval whose numbers it moved, and no other. The
+// refresher's age, which every read measures afresh, sends nothing by itself, and goes with the
+// freshness when the folded rows' own age moves.
 func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
+	t.Parallel()
 	updated := liveEvalsWindow.To.Add(-time.Hour)
 	three := func(prSize float64, reviewVersion int) []evalListItem {
 		return []evalListItem{liveEval("deploy-frequency", 1, 3), liveEval("pr-size", 1, prSize), liveEval("review-time", reviewVersion, 30)}
@@ -1168,6 +1184,9 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 	if set, _, _, _ := liveSections(delta); !slices.Equal(set, []string{"compare", "window"}) {
 		t.Errorf("set = %v, want the window and the compare range", set)
 	}
+	if got := liveUpsertIDs(t, delta, "items"); !slices.Equal(got, []string{"ACME/pr-size"}) || len(delta.Items["items"].Remove) != 0 {
+		t.Errorf("items.items = upsert %v, remove %v; want ACME/pr-size alone upserted, the eval whose mean the turned day moved", got, delta.Items["items"].Remove)
+	}
 }
 
 // TestTheLiveFixturesAreWhatTheDiffWrites holds packages/contracts/fixtures/live, which the
@@ -1183,6 +1202,8 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 // `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator for the whole process
+	// (pmdoc.SetBlockIDGenerator in liveFixtureEventFrame).
 	heldTo := liveFrom.Add(48 * time.Hour)
 	second := withIssue(livePR(2), "ACME-2", "Second issue")
 	second.Author = "hubot"
@@ -1324,6 +1345,7 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 // server does not read fails here, rather than reaching every page as a member the server quietly
 // drops.
 func TestTheClientLiveFixturesAreFramesTheSocketReads(t *testing.T) {
+	t.Parallel()
 	read := func(name string) []byte {
 		t.Helper()
 		data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "live", name))

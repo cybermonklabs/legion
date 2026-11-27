@@ -4,12 +4,14 @@ import {
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   claimRoleAgainOnBusy,
+  claimStandsWithoutHandover,
   listenerAskedToClaimAgain,
 } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
@@ -29,6 +31,10 @@ import {
   requiredSecret,
 } from "./classify";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
+
+/** The daemon API contract this build speaks, which the controller's registration states as
+ * `pluginContract` (`daemonContract`, read once as the module loads). */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 type PersistedTranscript = (
   context: CommandContext | SessionContext
@@ -272,8 +278,8 @@ export function createControllerSession(deps: {
     const capability =
       controllerCapability ??
       (supervised
-        ? requiredSecret(process.env, "LEGION_BOOT_TOKEN")
-        : requiredControllerCapability(process.env));
+        ? await requiredSecret(process.env, "LEGION_BOOT_TOKEN")
+        : await requiredControllerCapability(process.env));
     controllerCapability = capability;
     const launched = classifySession(process.env).kind === "controller";
     // Read and validate before anything below mutates daemon-side state (the registration that
@@ -309,7 +315,7 @@ export function createControllerSession(deps: {
         sessionId: sessionID,
         ompSessionFile: sessionFile,
         agentId,
-        pluginContract: pkg.legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       })
       .catch((error: unknown) => {
         if (error instanceof LegionDaemonApiError) {
@@ -368,10 +374,13 @@ export function createControllerSession(deps: {
       startMessageSent = true;
     }
     // A claim the listener answered 503 wrote nothing - every try met a conflict, or the takeover
-    // record a claim writes first did not store - and is made again after a growing wait
-    // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer, and the
-    // claim widget shows that the controller holds no Envoy role yet until the claim lands (taken
-    // down below). The bound follows who started the claim. The daemon-launched controller's own
+    // record a claim writes first did not store - or landed and stands, with only the handover of
+    // the session it replaces not recorded (`claimStandsWithoutHandover`). Either is made again
+    // after a growing wait (claimRoleAgainOnBusy), each wait logged with its attempt and the
+    // listener's answer, and the claim widget shows which of the two it waits on - that the
+    // controller holds no Envoy role yet, or that it holds the role and claims again for the
+    // handover - until the claim lands (taken down below). The bound follows who started the
+    // claim. The daemon-launched controller's own
     // claim at `session_start` claims again, as the claim boot does, rather than exiting for a
     // relaunch that would meet the same 503; it is bounded by the daemon's registration deadline
     // (120 s x 3 by default), after which the daemon retires and relaunches a controller that never
@@ -384,12 +393,15 @@ export function createControllerSession(deps: {
     // session. A command a person typed (`/legion-claim-controller`, `/legion-controller-start`),
     // wherever it runs, and any claim of a controller the daemon did not launch, also shows each
     // wait as a notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where
-    // the person sees it, with the listener's answer; in the daemon-launched controller its process
+    // the person sees it, with the listener's answer (for a claim that stands, that it holds the
+    // role and only the handover is missing); in the daemon-launched controller its process
     // stays up, with the role and topics its first claim took, and its waits are in that log.
     const ui: SessionContext["ui"] = context.ui;
     let waitShown = false;
-    const showWaiting = (line: string): void => {
-      const shown = `legion: this controller holds no Envoy role yet: ${line}`;
+    const showWaiting = (line: string, error: unknown): void => {
+      const shown = claimStandsWithoutHandover(error)
+        ? `legion: this controller holds its Envoy role; the handover of the session it replaces is not recorded yet, so it claims again: ${line}`
+        : `legion: this controller holds no Envoy role yet: ${line}`;
       if (ui.setWidget === undefined) {
         ui.notify(shown, "warning");
         return;
@@ -399,23 +411,27 @@ export function createControllerSession(deps: {
       waitShown = true;
     };
     try {
+      // `replaces`, the session the registration says this one replaces (the controller session
+      // the daemon forgot), is the claim's `previous_session_id`: the listener hands that
+      // session's unread direct and role messages to this one once the claim lands.
       await claimRoleAgainOnBusy(
-        () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
+        () =>
+          claimEnvoyRole(sessionID, registration.claimToken, envoyContext, registration.replaces),
         registration.claimToken,
         supervised && startedBy === "daemon"
           ? {
-              log: (line) => {
+              log: (line, error) => {
                 logger.warn(`[legion] ${line}`);
-                showWaiting(line);
+                showWaiting(line, error);
               },
             }
           : {
-              log: (line) => {
+              log: (line, error) => {
                 logger.warn(`[legion] ${line}`);
                 const notice = `legion: ${line}`;
                 waitNotices.add(notice);
                 ui.notify(notice, "info");
-                if (ui.setWidget !== undefined) showWaiting(line);
+                if (ui.setWidget !== undefined) showWaiting(line, error);
               },
               maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
             }
@@ -429,8 +445,19 @@ export function createControllerSession(deps: {
       }
       // The listener's 503 thrown here is the bounded role claim giving up after its counted tries,
       // the one failure a typed claim of the daemon-launched controller is answered on screen for
-      // (`claimOnce`).
-      if (error instanceof Error && listenerAskedToClaimAgain(error)) roleClaimGaveUp.add(error);
+      // (`claimOnce`). One to a claim that stands is not a claim that holds nothing: what it says
+      // is that the controller holds the role, and only the handover of the session it replaces is
+      // missing.
+      if (error instanceof Error && listenerAskedToClaimAgain(error)) {
+        const gaveUp = claimStandsWithoutHandover(error)
+          ? new Error(
+              `this controller holds its Envoy role ${registration.claimToken}; only the handover of the session it replaces is missing, still not recorded after ${CONTROLLER_CLAIM_BUSY_ATTEMPTS} claims: ${messageFor(error)}`,
+              { cause: error }
+            )
+          : error;
+        roleClaimGaveUp.add(gaveUp);
+        throw gaveUp;
+      }
       throw error;
     }
     // The role is held: the waiting line comes down now, so a step after it that fails (the

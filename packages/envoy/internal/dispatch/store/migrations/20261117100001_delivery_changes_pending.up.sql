@@ -41,7 +41,9 @@
 -- delivery_changes_pending holds exactly the columns a delivery_changes row takes: kind, run_kind,
 -- repo, ref, t_old, t_new and at, set by clock_timestamp() when the pending row is written, which
 -- the move keeps. Its kinds are the five above, the ones the eval and Legion tables' triggers
--- write. Every other change
+-- write, beside the eval_days rows the eval day-row refresher logs itself (20261117100014): its
+-- folds' and a rebuild's flip's, its word that the day rows stand at the delivery settings, and
+-- its publishing of the default repositories. Every other change
 -- of the delivery intake is written into delivery_changes directly: pull_request, run, run_job and
 -- session_group, and the settings change of a delivery_settings write, which logs it last, in its
 -- one statement. Those writes are one statement each or transactions that take 6900 first or in

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -21,11 +22,26 @@ import (
 // named something the server cannot narrow to one thing, and the caller picks. The page that
 // lists the candidates is the dashboard's, rendered from this answer; there is no route of its
 // own to read them from.
-func writeAmbiguousID(w http.ResponseWriter, ambiguous *refs.ErrPrefixAmbiguous) {
+//
+// A caller that asked for the trees (wantsDisplayTrees) is given each candidate's first line with
+// its tree beside it, as every other stored text is given: the head of an ask's question, of a
+// comment's or a message's body, or of a block's text. A document's first line is its file's
+// name, which the dashboard draws as the characters it is, so it has none. A first line is a cut,
+// which the table holds no row of, so the ten candidates at most are read where they stand
+// (shapeBuilt).
+func writeAmbiguousID(w http.ResponseWriter, ambiguous *refs.ErrPrefixAmbiguous, trees bool) {
+	candidates := ambiguous.Candidates
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		for index := range candidates {
+			if candidate := &candidates[index]; candidate.Kind != "artifact" {
+				reader.text(&candidate.FirstLineTree, candidate.FirstLine)
+			}
+		}
+	})
 	WriteJSON(w, http.StatusConflict, map[string]any{
 		"error":      ambiguous.Error(),
 		"code":       contracts.IDAmbiguous,
-		"candidates": ambiguous.Candidates,
+		"candidates": candidates,
 	})
 }
 
@@ -61,8 +77,8 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // write is the caller's to make and the handler that then makes it read one value and cannot
 // disagree about which object the path named (project_scope.go). What each route's wildcards
 // name, which routes name none of the five kinds, and what 404 each route answers for an id it
-// does not hold is idRoutes; a route whose pattern carries no id is returned unwrapped and pays
-// nothing.
+// does not hold is its declaration's ID; a route that states none, whose pattern carries no id,
+// is returned unwrapped and pays nothing.
 //
 // A value that is no id written short (text.IsIDPrefix — at least eight hex digits and hyphens,
 // never a whole uuid) is left as written with no query, so a whole id, a slug, a numbered id, a
@@ -89,10 +105,10 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // an authenticated one, and its refusal is written further in, by the keyed layer for a keyed
 // write and by the handler for any other.
 func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
-	entry, named := idRoutes[route.Method+" "+route.Pattern]
-	if !named {
+	if route.ID == nil {
 		return handler
 	}
+	entry := *route.ID
 	return func(w http.ResponseWriter, r *http.Request) {
 		canonicalizeUUIDPath(r, "id")
 		var id, blockID string
@@ -120,16 +136,21 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		}
 		// The caller is resolved once a request: every layer below and the handler read this.
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
-		// Who asks, which decides only whether a direct message's first line is listed among
-		// the candidates: a person reads any, and a bearer the conversations the session it
-		// names in ?session= is in, the claim the message routes already read.
-		viewer := refs.Viewer{Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session"))}
+		// Who asks: the acting person decides which items a prefix may name at all, since an
+		// item reserved for another author is no candidate (refs.ResolvePrefix), and whether
+		// a direct message's first line is listed among the candidates: a person reads any,
+		// and a bearer the conversations the session it names in ?session= is in, the claim
+		// the message routes already read.
+		who := actor.Recorded()
+		viewer := refs.Viewer{
+			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), ServerURL: s.deps.ServerURL,
+		}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {
 				scope.IssueKey = r.PathValue("key")
 			}
-			if !s.resolvePathValue(w, r, "id", entry.Kind, scope, id, viewer, itemNotFound(entry.NotFound, id)) {
+			if !s.resolvePathValue(w, r, "id", entry.Kind, scope, id, who, viewer, itemNotFound(entry.NotFound, id)) {
 				return
 			}
 		}
@@ -145,7 +166,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			}
 			if document != "" {
 				scope := refs.Scope{Document: document}
-				if !s.resolvePathValue(w, r, "block_id", "block", scope, blockID, viewer, entry.BlockNotFound) {
+				if !s.resolvePathValue(w, r, "block_id", "block", scope, blockID, who, viewer, entry.BlockNotFound) {
 					return
 				}
 			}
@@ -155,10 +176,10 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 }
 
 // resolvePathValue rewrites the path value `name`, written as the prefix of an id of kind, to
-// the whole id it names within scope, and reports whether the request may go on: false once it
-// has written the answer itself. notFound is the 404 code this route answers for an id of that
-// kind it does not hold, and notFoundNone the route that answers no 404 for one, whose value is
-// then left as written for the handler to answer for. It is the one caller of wholeID that has
+// the whole id it names within scope for who, and reports whether the request may go on: false
+// once it has written the answer itself. notFound is the 404 code this route answers for an id of
+// that kind it does not hold, and notFoundNone the route that answers no 404 for one, whose value
+// is then left as written for the handler to answer for. It is the one caller of wholeID that has
 // a route code, so it is the one that writes a 404.
 func (s *server) resolvePathValue(
 	w http.ResponseWriter,
@@ -166,12 +187,13 @@ func (s *server) resolvePathValue(
 	name, kind string,
 	scope refs.Scope,
 	prefix string,
+	who model.Actor,
 	viewer refs.Viewer,
 	notFound string,
 ) bool {
-	whole, err := s.wholeID(r.Context(), kind, scope, prefix, viewer)
+	whole, err := s.wholeID(r.Context(), kind, scope, prefix, who, viewer)
 	if err != nil {
-		s.writeIDPrefixError(w, err)
+		s.writeIDPrefixError(w, r, err)
 		return false
 	}
 	if whole == "" {
@@ -185,20 +207,21 @@ func (s *server) resolvePathValue(
 	return true
 }
 
-// wholeID is the whole id prefix names within scope, and "" for a prefix nothing carries, which
-// each caller answers for itself: the prefix layer with the 404 its route answers for a whole id
-// of that kind (resolvePathValue), and the reference reads by leaving the reference as written.
-// An error is the answer the caller has to write rather than one it can go on from, and
-// writeIDPrefixError writes it: the 409 of a prefix two items or more carry, or a database that
-// could not be read.
+// wholeID is the whole id prefix names within scope, among the items who may see, and "" for a
+// prefix none of them carries, which each caller answers for itself: the prefix layer with the
+// 404 its route answers for a whole id of that kind (resolvePathValue), and the reference reads
+// by leaving the reference as written. An error is the answer the caller has to write rather than
+// one it can go on from, and writeIDPrefixError writes it: the 409 of a prefix two items or more
+// carry, or a database that could not be read.
 func (s *server) wholeID(
 	ctx context.Context,
 	kind string,
 	scope refs.Scope,
 	prefix string,
+	who model.Actor,
 	viewer refs.Viewer,
 ) (string, error) {
-	candidate, err := refs.ResolvePrefix(ctx, s.deps.Store.Pool, kind, scope, prefix, viewer)
+	candidate, err := refs.ResolvePrefix(ctx, s.deps.Store.Pool, who, kind, scope, prefix, viewer)
 	switch {
 	case err == nil:
 		return candidate.ID, nil
@@ -209,12 +232,12 @@ func (s *server) wholeID(
 }
 
 // writeIDPrefixError writes what wholeID could not resolve a prefix through: the 409 of a prefix
-// two items or more carry, listing them (writeAmbiguousID), and otherwise the 500 of a database
-// that could not be read.
-func (s *server) writeIDPrefixError(w http.ResponseWriter, err error) {
+// two items or more carry, listing them with the trees r asked for (writeAmbiguousID), and
+// otherwise the 500 of a database that could not be read.
+func (s *server) writeIDPrefixError(w http.ResponseWriter, r *http.Request, err error) {
 	var ambiguous *refs.ErrPrefixAmbiguous
 	if errors.As(err, &ambiguous) {
-		writeAmbiguousID(w, ambiguous)
+		writeAmbiguousID(w, ambiguous, wantsDisplayTrees(r))
 		return
 	}
 	s.writeHandlerError(w, err)

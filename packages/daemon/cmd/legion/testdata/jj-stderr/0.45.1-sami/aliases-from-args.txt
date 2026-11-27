@@ -1,0 +1,3 @@
+jj --config 'aliases.st=["log"]' --ignore-working-copy --color=never st
+Warning: Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments.
+--- exit 0

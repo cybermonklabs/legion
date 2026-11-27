@@ -1,12 +1,15 @@
 // Package measures is the delivery measures' pure computation (LEGION-567 slice 2): deploys a day,
-// lead time, rework share, deploy-run success and their per-UTC-day series, judged against Sami's
-// KPI targets, beside the three failure measures (change fail rate, failed deployment recovery time
-// and deployment rework rate, failures.go). It ports the prototype's web/src/lib/dora.ts formula
-// by formula, and each function cites the prototype lines it ports. It reads no settings, applies
-// no facet and filters no window: the caller hands it the population PRs that survived the facets
-// and the deploy runs its store query selected, and Compute counts exactly those. Each measure is
-// a day builder and a fold over day parts (parts.go), which the eval routes call over stored parts
-// too.
+// lead time, rework share, deploy-run success and their per-UTC-day series, beside the three
+// failure measures (change fail rate, failed deployment recovery time and deployment rework rate,
+// failures.go). It ports the prototype's web/src/lib/dora.ts formula by formula, and each function
+// cites the prototype lines it ports. It judges nothing: the targets a delivery answer states
+// (Targets) are those of the evals of the deploy repository's project
+// (evals.Store.DeployRepoEvals), its verdicts (Status) are evals.VerdictOf's, and DefaultTargets is
+// what the eval catalogue seeds those targets from. It reads no database, applies no facet and
+// filters no window: the caller hands it the population PRs that survived the facets, the deploy
+// runs its store query selected and the delivery settings the deploy cards follow (DeployCards),
+// and Compute counts exactly those. Each measure is a day builder and a fold over day parts
+// (parts.go), which the eval routes call over stored parts too.
 package measures
 
 import (
@@ -161,13 +164,13 @@ type Targets struct {
 	UnownedP0                  *Target `json:"unowned_p0"`                     // unowned-p0's
 }
 
-// DefaultTargets are Sami's engineering targets (the prototype's KPI_TARGETS, web/src/lib/dora.ts
-// 11-18, CONTRACT.md "KPI targets", set 2026-09-28), which the catalogue seeds each delivery eval's
-// target from: at least 20 deploys a day and 90% run success, under 5% failures per deploy, 45
-// minutes for every change to reach production and a 60-minute median from open to merge, and no
-// more than 0 unowned P0 issues. Each holds its value and inclusiveness alone: the catalogue
-// states each eval's direction and judges once, beside the target it seeds from here, and a
-// delivery answer's target takes them from the eval.
+// DefaultTargets are the engineering targets the prototype states (its KPI_TARGETS,
+// web/src/lib/dora.ts 11-18, CONTRACT.md "KPI targets", set 2026-09-28), which the catalogue seeds
+// each delivery eval's target from: at least 20 deploys a day and 90% run success, under 5%
+// failures per deploy, 45 minutes for every change to reach production and a 60-minute median from
+// open to merge, and no more than 0 unowned P0 issues. Each holds its value and inclusiveness
+// alone: the catalogue states each eval's direction and judges once, beside the target it seeds
+// from here, and a delivery answer's target takes them from the eval.
 var DefaultTargets = Targets{
 	DeploysPerDay:              &Target{Value: 20, Inclusive: true},
 	ChangeFailureRate:          &Target{Value: 0.05},
@@ -178,12 +181,12 @@ var DefaultTargets = Targets{
 }
 
 // Status is whether each KPI meets its target, its eval's verdict of the answer's figures
-// (evals.VerdictOf), null where the eval's target is off or no figure it judges has a value. Each
-// is its eval's verdict over every statistic its target judges (MergeToProduction
-// merge-to-production's, of the longest change and the median as the catalogue judges it), but
-// MergeToProductionMedian, the verdict of one statistic of an eval (the median merge to
-// production) against that eval's target, and null as well where that eval's target judges no
-// such statistic: the catalogue's judges give the median a verdict.
+// (evals.VerdictOf), null where the eval's target is off, and where no figure it judges misses the
+// target and one of them has no value. Each is its eval's verdict over every statistic its target
+// judges (MergeToProduction merge-to-production's, of the longest change and the median as the
+// catalogue judges it), but MergeToProductionMedian, the verdict of one statistic of an eval (the
+// median merge to production) against that eval's target, and null as well where that eval's
+// target judges no such statistic: the catalogue's judges give the median a verdict.
 type Status struct {
 	DeploysPerDay           *bool `json:"deploys_per_day"`
 	ChangeFailureRate       *bool `json:"change_failure_rate"`

@@ -1,19 +1,27 @@
 package evalfixture_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // failuresTables are the tables the Failures mode writes, each digested as its rows with the
@@ -56,23 +64,63 @@ func show(value *float64) string {
 	return fmt.Sprint(*value)
 }
 
-// TestTheFailuresModeLoadsTwiceIntoTheSameRows: -failures (dispatch://INFRA-978, T15) loaded twice
-// with one -now and one controller session writes the same rows of every table it writes and
-// answers the same result, so a check can load it again. What it prints is what the rows hold:
-// one failure row of each of the five signals, counted on arrival and naming the deploy it blames,
-// the revert restored by its own deploy; no row from the passing check, the commit no deploy holds
-// or the bug issue; a deploy row of each run a source's rule calls a deploy and none of the run
-// whose apply step failed or of the repository no source reads; and each project's controller the
-// session named. The evals the refresher then builds answer each project's three failure measures
-// and its deploy frequency over the window as the result states them, and each deploy counts in
-// deploy frequency for the projects the result names, through what it names (R12). The pull
-// requests and CI jobs among k12's rows count by INFRA-2916's attribution (R15), which
-// TestTheAttributionModeWritesK15sCase holds; the test logs what the evals count of them beside
-// what the result places, since a pull request or a job with no issue counts through a default
-// repository only on a head whose attribution reads default_repo.
+// serverSignals runs the production signals' loop beside the loads as a running server runs it
+// (cmd/dispatch's signals.Run): under the production-signals lease, woken through a pglisten.Hub by
+// the commit of each event, delivery change, settings save and revert, so it reads each input a
+// load writes as soon as that input commits, before the load's later writes, as it does where a
+// check loads -failures into a running dispatch:local. It returns once the hub listens, and answers
+// the stop that ends the loop and the hub and waits for both, which the test's cleanup calls too.
+func serverSignals(t *testing.T, pool *store.Pool) (stop func()) {
+	t.Helper()
+	callers, err := pool.Leases()
+	if err != nil {
+		t.Fatalf("the lease pool: %v", err)
+	}
+	leases, err := callers.For("evalfixture test server's production signals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := &pglisten.Hub{Owner: "evalfixture test server's production signals", Dial: pool.Listener}
+	deps := signals.Deps{
+		Pool: pool, Horizon: events.NewHorizon(pool), Leases: leases,
+		Events: hub.Wake(api.EventsChannel), Deliveries: hub.Wake(delivery.ChangesChannel),
+		Settings: hub.Wake(delivery.SettingsChannel), Reverts: hub.Wake(signals.RevertsChannel),
+	}
+	connected := make(chan struct{})
+	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
+	ctx, cancel := context.WithCancel(context.Background())
+	var running sync.WaitGroup
+	running.Go(func() { hub.Run(ctx) })
+	running.Go(func() { signals.Run(ctx, deps) })
+	stop = sync.OnceFunc(func() {
+		cancel()
+		running.Wait()
+	})
+	t.Cleanup(stop)
+	testwait.Receive(t, "the server's signals hub to listen", connected)
+	return stop
+}
+
+// TestTheFailuresModeLoadsTwiceIntoTheSameRows: -failures (dispatch://INFRA-978) loaded twice
+// with one -now and one controller session, beside a server's production signals' loop that reads
+// each input as it commits (serverSignals), writes the same rows of every table it writes and
+// answers the same result, so a check can load it again into a running server's database. What it
+// prints is what the rows hold: one failure row of each of the five signals, counted on arrival
+// and naming the deploy it blames, the revert restored by its own deploy; no row from the passing
+// check, the commit no deploy holds or the bug issue; a deploy row of each run a source's rule
+// calls a deploy and none of the run whose apply step failed or of the repository no source reads;
+// and each project's controller the session named. The evals the refresher then builds answer
+// each project's three failure measures and its deploy frequency over the window as the result
+// states them, and each deploy counts in deploy frequency for the projects the result names,
+// through what it names (R12). The pull requests and CI jobs among k12's rows count by
+// INFRA-2916's attribution (R15), which TestTheAttributionModeWritesK15sCase holds; the test logs
+// what the evals count of them beside what the result places, since a pull request or a job with
+// no issue counts through a default repository only on a head whose attribution reads
+// default_repo.
 func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
+	stopServer := serverSignals(t, database.Pool)
 	first, err := evalfixture.WriteFailures(ctx, database.Pool, "FAIL", now, "ses_controller")
 	if err != nil {
 		t.Fatalf("load the failures mode: %v", err)
@@ -82,6 +130,9 @@ func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load the failures mode again: %v", err)
 	}
+	// The server's loop stops before the second digest, so whatever it wrote of the second load's
+	// inputs is in it.
+	stopServer()
 	again := failuresDigests(t, database)
 	for _, table := range failuresTables {
 		if loaded[table] != again[table] {
@@ -197,11 +248,11 @@ func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 		if len(entries) != len(series) {
 			t.Fatalf("%s holds %d of the %d evals the test reads", project, len(entries), len(series))
 		}
-		firsts, err := registry.FirstDays(ctx, entries, deployRepos)
+		firsts, err := evals.FirstDaysIn(ctx, database.Pool, entries, deployRepos)
 		if err != nil {
 			t.Fatalf("read the first days of %s's evals: %v", project, err)
 		}
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepos, nil, window, nil)
+		rows, err := evals.DayWindowIn(ctx, database.Pool, []string{project}, entries, deployRepos, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s's day rows: %v", project, err)
 		}

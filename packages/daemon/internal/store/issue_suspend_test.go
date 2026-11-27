@@ -13,6 +13,7 @@ import (
 )
 
 func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		issue    string
@@ -42,6 +43,9 @@ func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T)
 		{name: "a queued check look start", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (11,'supervise','LEGION-208','{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"checkLook":1}',0,now(),'')`},
 		{name: "role stop still pending", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"suspend","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
 		{name: "issue close still pending", state: supervise.StateRetired, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"issue_close","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
+		// A stopped task's step stop is a role stop like a suspend (workflow's stopTask), so a close
+		// waits for it too, rather than deleting the Sandbox under the stop.
+		{name: "a stopped task's step stop still pending", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"step_stop","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
 		{name: "tree cleanup already reserved", state: supervise.StateSuspended, change: `update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208'`},
 		// The close deletes the issue's Sandbox in every case, so the state a stop left a claim in
 		// decides nothing beyond whether it may still hold a process: the suspended claim of the

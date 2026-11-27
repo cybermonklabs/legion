@@ -25,23 +25,25 @@ import (
 // one shape whatever its kind (R7), so a page draws each row kind with one renderer and a client
 // reads one type.
 //
-// Every eval answers its readings (evals.Store.Items, a reading logged under a computed eval's
-// slug among them, which its value never folds, R3) and its day rows (evals.Store.EvalDays,
-// `day`). A computed eval answers besides the rows its numbers count, by its source
-// (evalComputedItems): the issues a Legion eval counts, closed in the range, and the filings
-// legion-splitting counts (`issue`, from the stored facts and filings, legionfacts.ItemRows);
-// the pull requests and deploy runs a delivery eval counts (`pull_request`, `deploy`, from the
-// delivery reads the day rows are built with, delivery/measure_rows.go); the deploys and failures
-// of the record a failure measure counts (`deploy`, `failure`, from production_events, as the
-// failure rows count them, evals.FailureItemsIn), each with its relation to the measure's numbers;
-// the runs a CI eval times (`run`) and, for pr-ci, each job's figures (`job`); and the open P0
-// issues with no owner (`issue`, delivery.ListUnownedP0). A delivery or CI row is answered where
-// the project's day rows counted it (eval_day_members, evals.Store.CountedIn), so the items are the
-// rows the numbers fold, under the attribution the day rows made (evals' delivery_days.go,
-// "Attribution").
+// A computed eval answers first the rows its numbers count, by its source (evalComputedItems):
+// the issues a Legion eval counts, closed in the range, and before them the filings in it that
+// legion-splitting counts (`issue`, from the stored filings and facts,
+// legionfacts.FilingItemRows and legionfacts.ItemRows; an issue the range both filed and closed
+// answers one row, its closed row, which states its filing too); the pull requests and deploy runs
+// a delivery eval counts (`pull_request`, `deploy`, from the delivery reads the day rows are built
+// with, delivery/measure_rows.go); the deploys and failures of the record a failure measure counts
+// (`deploy`, `failure`, from production_events, as the failure rows count them,
+// evals.FailureRecordIn), each with its relation to the measure's numbers; the runs a CI eval times
+// (`run`) and, for pr-ci, each job's figures (`job`); and the open P0 issues with no owner
+// (`issue`, delivery.ListUnownedP0). A delivery or CI row is answered where the project's day rows
+// counted it (eval_day_members, evals.CountedIn), so the items are the rows the numbers fold, under
+// the attribution the day rows made (evals' delivery_days.go, "Attribution"). Every eval then
+// answers its readings (evals.ItemsIn, a reading logged under a computed eval's slug among them,
+// which its value never folds, R3) and last its day rows (evals.EvalDaysIn, `day`).
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
-// order above, each range's after the window's, and a row kind's rows in its own order.
+// order above, the compare range's rows after the window's, and a row kind's rows in its own
+// order.
 //
 // One answer, one snapshot (dispatch://INFRA-2916, point 6): every read an answer makes, the
 // project and the eval, the settings the rows stand built under, the day rows, the items they
@@ -150,29 +152,40 @@ type evalItemsRange struct {
 }
 
 // evalItemsRead is what a reader of one row kind reads for one range: the eval, the request and
-// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), whose
-// rules the delivery and CI rows of each are read under (repoRules), the reads the range's readers
-// share (evalRangeReads), and tx, the answer's one snapshot, which every read of the answer reads in.
+// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), the
+// reads every range of the request shares (evalRequestReads), the reads the range's readers share
+// (evalRangeReads), and tx, the answer's one snapshot, which every read of the answer reads in.
 type evalItemsRead struct {
 	project     string
 	entry       evals.Entry
 	request     evalItemsRequest
+	repos       []string // stored spellings for filters; request.repos is the spelling the caller named
 	rng         evalItemsRange
 	deployRepos *evals.DeployRepos
+	once        *evalRequestReads
 	shared      *evalRangeReads
 	tx          pgx.Tx
 }
 
-// evalRangeReads is the reads two readers of one range make alike, each made once a range and
-// kept for the other: a delivery eval's pull requests and deploys both read the items the delivery
-// family's day rows of the range counted and the pull requests merged in it, pr-ci's jobs and its
-// day rows both read the eval's day rows of the range, and a failure measure's deploys and failures
-// both read the record's rows behind it. failing is the pull-request checks runs pr-ci's failures
+// evalRequestReads is the reads of an items request its readers keep for every range, each made
+// once a request, since no range moves them: the rules of the deploy repositories its eval reads
+// (repoRules), whose delivery and CI rows each is read under, and the record behind a failure
+// measure (failureItemsOf), which each range filters.
+type evalRequestReads struct {
+	rules        []delivery.DeliverySettings
+	rulesRead    bool
+	failures     *evals.FailureRecord
+	failuresRead bool
+}
+
+// evalRangeReads is the reads of one range its readers keep, each made once a range: the items
+// each family's day rows of the range counted (counted), the eval's day rows of the range, which
+// pr-ci's jobs and its day rows both read, and the record's rows behind a failure measure, which
+// its deploys and its failures both read. failing is the pull-request checks runs pr-ci's failures
 // list of the range was read from (failingJobRows), which the items read answers beside its body
 // for the window (evalItemsAnswer).
 type evalRangeReads struct {
 	counted      map[string]map[string]bool
-	merged       map[string]delivery.MergedRows
 	days         []evals.DayRow
 	read         bool
 	failures     []evals.FailureItem
@@ -325,6 +338,10 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 // where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone. The
 // window's readers share window, the caller's, which holds what they read once they have read it.
 func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads) ([]evalItemSource, error) {
+	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
+	if err != nil {
+		return nil, err
+	}
 	ranges := []evalItemsRange{{days: request.ranges.window, start: request.ranges.from, end: request.ranges.to, label: evals.RangeWindow}}
 	if request.ranges.compare != nil {
 		ranges = append(ranges, evalItemsRange{
@@ -337,12 +354,13 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	}
 	definition := entry.Definition
 	var sources []evalItemSource
+	once := &evalRequestReads{}
 	for _, rng := range ranges {
 		shared := window
 		if rng.label != evals.RangeWindow {
 			shared = &evalRangeReads{}
 		}
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, shared: shared, tx: tx}
+		read := evalItemsRead{project: project, entry: entry, request: request, repos: repos, rng: rng, deployRepos: deployRepos, once: once, shared: shared, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !request.keeps(kind.kind) {
@@ -372,7 +390,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 		// A reading's row kind is the one its writer gave it, so row_kind keeps the readings of that
 		// kind, as the store reads them.
 		sources = append(sources, func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
-			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, request.repos, rng.days, max(want, 1), skip)
+			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, repos, rng.days, max(want, 1), skip)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -406,7 +424,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 // them.
 func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
 	if !read.shared.read {
-		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepos, read.request.series, read.request.repos, read.rng.days)
+		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepos, read.request.series, read.repos, read.rng.days)
 		if err != nil {
 			return nil, err
 		}
@@ -415,46 +433,36 @@ func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.Da
 	return read.shared.days, nil
 }
 
-// mergedRowsOf is the pull requests merged in read's range with the deploy runs of rule's
-// repository created from its start on (delivery.ReadMergedRows under rule, as the day builder
-// reads them), read once a range for each repository (evalRangeReads).
-func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead, rule delivery.DeliverySettings) (delivery.MergedRows, error) {
-	if merged, held := read.shared.merged[rule.DeployRepo]; held {
-		return merged, nil
-	}
-	merged, err := delivery.ReadMergedRows(ctx, read.tx, rule, read.rng.days.From, read.rng.days.To)
-	if err != nil {
-		return delivery.MergedRows{}, err
-	}
-	if read.shared.merged == nil {
-		read.shared.merged = map[string]delivery.MergedRows{}
-	}
-	read.shared.merged[rule.DeployRepo] = merged
-	return merged, nil
-}
-
 // repoRules is the rule of each deploy repository read's eval reads (evals.DeployRepoOf), as its
 // rows stand built under it (evals.BuiltSettingsIn), its DeployRepo that repository, in their
 // order: the rule the day builder counted that repository's rows by, whichever project's source
 // reads it, so a project with no source of its own reads the rows its pull requests' issues count
 // for it. An eval no deploy repository moves, and an events repository, whose posted deploys no
-// rule judges, have none.
+// rule judges, have none. They are read once a request (evalRequestReads), in one read of the
+// settings and the recorded rules.
 func (s *server) repoRules(ctx context.Context, read evalItemsRead) ([]delivery.DeliverySettings, error) {
-	var rules []delivery.DeliverySettings
+	if read.once.rulesRead {
+		return read.once.rules, nil
+	}
+	var repos []string
 	for _, repo := range evals.DeployRepoOf(read.entry.Definition, read.deployRepos) {
-		if repo == "" || strings.HasPrefix(repo, delivery.SourceKindEvents+":") {
-			continue
+		if repo != "" && !evals.IsEventsRepo(repo) {
+			repos = append(repos, repo)
 		}
-		rule, err := evals.BuiltSettingsIn(ctx, read.tx, repo)
-		if err != nil {
-			return nil, err
-		}
+	}
+	built, err := evals.BuiltSettingsIn(ctx, read.tx, repos)
+	if err != nil {
+		return nil, err
+	}
+	var rules []delivery.DeliverySettings
+	for i, rule := range built {
 		if rule != nil {
 			one := *rule
-			one.DeployRepo = repo
+			one.DeployRepo = repos[i]
 			rules = append(rules, one)
 		}
 	}
+	read.once.rules, read.once.rulesRead = rules, true
 	return rules, nil
 }
 
@@ -528,10 +536,13 @@ func evalItemsPath(project, slug string) string {
 // in it (legionfacts.ReadFilingsIn), the filings first; a `filed:<class>` series reads the filings
 // of that class alone, and any other series of legion-splitting the closed issues alone. A series'
 // cut keeps the issues of that cut, by the stored root (metrics.InCut), and row keeps the issue it
-// names. The repository each issue resolves to now (legionfacts.ReadRepos, the repository the day
-// rows cut by) is what a closed issue's row shows and what repo keeps the issues by, so a row
-// never shows one repository while it is kept by another. Each row carries its issue's title and
-// priority (legionfacts.WithIssues), and its facts as of the request (legionfacts.Row.At).
+// names. An issue the range both filed and closed answers one row (R24), its closed row, which
+// states its filing beside its facts (legionfacts.ItemRows), so its filing makes no row of its
+// own and each number the rows stand behind still finds its issue once. The repository each issue
+// resolves to now (legionfacts.ReadRepos, the repository the day rows cut by) is what a closed
+// issue's row shows and what repo keeps the issues by, so a row never shows one repository while
+// it is kept by another. Each row carries its issue's title and priority
+// (legionfacts.WithIssues), and its facts as of the request (legionfacts.Row.At).
 //
 // The source answers a page at a time: the stored rows of the range are read whole, since every
 // one of them is counted in the total, but the repositories are resolved (a walk of each issue's
@@ -563,6 +574,23 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 			return !metrics.InCut(cut, row.Root) || (read.request.row != "" && row.Issue != read.request.row)
 		})
 	}
+	// closedFilings is the filing of each issue the range both filed and closed, by issue: its
+	// closed row states it, and the filings' rows leave it out. Only a read of every series of
+	// legion-splitting reads both.
+	var closedFilings map[string]legionfacts.Filing
+	if len(filings) > 0 && len(closed) > 0 {
+		closedFilings = make(map[string]legionfacts.Filing)
+		closedIssues := make(map[string]bool, len(closed))
+		for _, row := range closed {
+			closedIssues[row.Issue] = true
+		}
+		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool {
+			if closedIssues[filing.Key] {
+				closedFilings[filing.Key] = filing
+			}
+			return closedIssues[filing.Key]
+		})
+	}
 	keysOf := func(filings []legionfacts.Filing, closed []legionfacts.Row) []string {
 		keys := make([]string, 0, len(filings)+len(closed))
 		for _, filing := range filings {
@@ -573,34 +601,15 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		}
 		return keys
 	}
-	// A row whose issue owns no repository is stored under legionfacts.DefaultRepo, which stands
-	// for the project's published default repository (evals.PublishedDefaultIn): the items read
-	// shows and filters that repository, so a default move moves the cut and rewrites no row.
-	published, err := evals.PublishedDefaultIn(ctx, read.tx, read.project)
-	if err != nil {
-		return nil, err
-	}
-	resolve := func(repos map[string]string) map[string]string {
-		for key, repo := range repos {
-			if repo == legionfacts.DefaultRepo {
-				if published == "" {
-					delete(repos, key)
-					continue
-				}
-				repos[key] = published
-			}
-		}
-		return repos
-	}
 	var repos map[string]string
-	if len(read.request.repos) > 0 {
-		stored, err := legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed))
+	if len(read.repos) > 0 {
+		resolved, err := issueReposIn(ctx, read.tx, read.project, keysOf(filings, closed))
 		if err != nil {
 			return nil, err
 		}
-		repos = resolve(stored)
-		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
-		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
+		repos = resolved
+		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.repos, repos[filing.Key]) })
+		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.repos, repos[row.Issue]) })
 	}
 	total := len(filings) + len(closed)
 	return func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
@@ -611,17 +620,17 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		keys := keysOf(pageFilings, pageClosed)
 		pageRepos := repos
 		if pageRepos == nil {
-			stored, err := legionfacts.ReadRepos(ctx, read.tx, keys)
+			resolved, err := issueReposIn(ctx, read.tx, read.project, keys)
 			if err != nil {
 				return nil, 0, err
 			}
-			pageRepos = resolve(stored)
+			pageRepos = resolved
 		}
 		issues, err := legionfacts.ReadItemIssues(ctx, read.tx, keys)
 		if err != nil {
 			return nil, 0, err
 		}
-		items := append(legionfacts.FilingItemRows(pageFilings), legionfacts.ItemRows(pageClosed, pageRepos)...)
+		items := append(legionfacts.FilingItemRows(pageFilings), legionfacts.ItemRows(pageClosed, pageRepos, closedFilings)...)
 		rows := make([]evalItemRow, len(items))
 		for index, item := range legionfacts.WithIssues(items, issues) {
 			rows[index] = evalItemRow{
@@ -633,9 +642,38 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 	}, nil
 }
 
+// issueReposIn is the repository each of keys, issues of project, resolves to now, read in tx: the
+// one the day rows cut it by (legionfacts.ReadRepos), where legionfacts.DefaultRepo, which a row of
+// an issue that owns no repository is stored under, stands for the project's published default
+// repository (evals.PublishedDefaultIn), so the items read shows and filters that repository and a
+// default move moves the cut and rewrites no row. An issue that resolves to none, or to the default
+// while the project publishes none, has no entry.
+func issueReposIn(ctx context.Context, tx pgx.Tx, project string, keys []string) (map[string]string, error) {
+	repos, err := legionfacts.ReadRepos(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	published, err := evals.PublishedDefaultIn(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	for key, repo := range repos {
+		if repo == legionfacts.DefaultRepo {
+			if published == "" {
+				delete(repos, key)
+				continue
+			}
+			repos[key] = published
+		}
+	}
+	return repos, nil
+}
+
 // unownedItemRows is unowned-p0's issues: the project's open P0 issues with no owner now
 // (delivery.ListUnownedP0), the count its day rows record, answered in the window alone since
-// the count is of the present.
+// the count is of the present; where the request names repositories, those of the issues that
+// resolve to one of them (issueReposIn), which those repositories' rows count
+// (evals.Store.WriteUnownedP0Day).
 func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	if read.rng.label != evals.RangeWindow {
 		return nil, nil
@@ -643,6 +681,17 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 	issues, err := delivery.ListUnownedP0(ctx, read.tx, read.project)
 	if err != nil {
 		return nil, err
+	}
+	if len(read.repos) > 0 {
+		keys := make([]string, len(issues))
+		for index, issue := range issues {
+			keys[index] = issue.Key
+		}
+		repos, err := issueReposIn(ctx, read.tx, read.project, keys)
+		if err != nil {
+			return nil, err
+		}
+		issues = slices.DeleteFunc(issues, func(issue delivery.UnownedIssue) bool { return !slices.Contains(read.repos, repos[issue.Key]) })
 	}
 	now := time.Now().UTC()
 	rows := make([]evalItemRow, len(issues))
@@ -665,7 +714,7 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
 	}
-	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepos), read.request.repos, days)
+	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepos), read.repos, days)
 	if err != nil {
 		return nil, err
 	}
@@ -685,9 +734,11 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 // pullRequestItemRows is the pull requests a delivery eval's day rows of the range counted: those
 // merged in it (delivery.ListPullRequestsInWindow, as the day builder reads them), each with the
 // first deploy that ships it among the deploy repositories the eval reads, each under its own rule
-// (repoRules, delivery.ContainingRun), none for an eval no deploy repository moves, and its four
-// lead times, each built by its eval's day builder over the one pull request
-// (measures.MergeToProductionDay and the rest), so a row's minutes are its part of that eval's day.
+// (repoRules, the apply runs delivery.ReadApplyRows reads of the range, as delivery.ReadMergedRows
+// reads them beside the same pull requests, and delivery.ContainingRun), none for an eval no
+// deploy repository moves, and its four lead times, each built by its eval's day builder over the
+// one pull request (measures.MergeToProductionDay and the rest), so a row's minutes are its part
+// of that eval's day.
 func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
@@ -703,11 +754,11 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 	}
 	shipping := map[string]*delivery.Apply{}
 	for _, rule := range rules {
-		merged, err := s.mergedRowsOf(ctx, read, rule)
+		applyRows, err := delivery.ReadApplyRows(ctx, read.tx, rule, read.rng.days.From)
 		if err != nil {
 			return nil, err
 		}
-		applies := delivery.ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, rule.Production()).Applies
+		applies := delivery.ProductionApplies(applyRows.Runs, applyRows.Jobs, rule.Production()).Applies
 		for _, pr := range prs {
 			key := evals.PullRequestMember(pr.Repo, pr.Number)
 			if apply := delivery.ContainingRun(pr, rule.DeployRepo, applies); apply != nil && (shipping[key] == nil || apply.CompletedAt.Before(shipping[key].CompletedAt)) {
@@ -757,13 +808,19 @@ func sampleOf(parts []measures.DayPart) *float64 {
 // deployItemRows is the deploy runs a delivery eval's day rows of the range counted: each deploy
 // repository's deploy workflow runs on main started in it (repoRules, delivery.ReadDeploys under
 // that repository's rule, as the day builder reads them), each with whether it reached production
-// and how many pull requests it ships (delivery.Deploys.ShippedBy, the rule with_prs counts by).
+// and how many pull requests it ships (delivery.Deploys.ShippedBy, the rule with_prs counts by,
+// over delivery.ReadMergedRows' rows: the pull requests merged in the range, read once, and the
+// repository's apply runs, delivery.ReadApplyRows).
 func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
 		return nil, err
 	}
 	rules, err := s.repoRules(ctx, read)
+	if err != nil || len(rules) == 0 {
+		return nil, err
+	}
+	prs, err := delivery.ListPullRequestsInWindow(ctx, read.tx, read.rng.days.From, read.rng.days.To)
 	if err != nil {
 		return nil, err
 	}
@@ -773,11 +830,11 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 		if err != nil {
 			return nil, err
 		}
-		merged, err := s.mergedRowsOf(ctx, read, rule)
+		applies, err := delivery.ReadApplyRows(ctx, read.tx, rule, read.rng.days.From)
 		if err != nil {
 			return nil, err
 		}
-		shipped := deploys.ShippedBy(merged, rule)
+		shipped := deploys.ShippedBy(delivery.MergedRows{PullRequests: prs, ApplyRuns: applies.Runs, ApplyJobs: applies.Jobs}, rule)
 		reached := map[int64]bool{}
 		for _, apply := range deploys.Applies {
 			reached[apply.RunID] = true
@@ -795,17 +852,22 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 }
 
 // failureItemsOf is the rows of the record behind read's eval, a failure measure, on the range's
-// days, as its day rows count them (evals.FailureItemsIn), read once a range (evalRangeReads): its
-// deploys and its failures both read them. Of a request naming repositories it keeps those counted
-// through a deploy of one of them, the rows of those repositories' day rows.
+// days, as its day rows count them (evals.FailureRecord.Items over the record evals.FailureRecordIn
+// reads once a request, evalRequestReads), kept once a range (evalRangeReads): its deploys and its
+// failures both read them. Of a request naming repositories it keeps those counted through a
+// deploy of one of them, the rows of those repositories' day rows.
 func (s *server) failureItemsOf(ctx context.Context, read evalItemsRead) ([]evals.FailureItem, error) {
-	if !read.shared.failuresRead {
-		items, err := evals.FailureItemsIn(ctx, read.tx, read.project, read.entry.Definition.Slug, read.rng.days)
+	if !read.once.failuresRead {
+		record, err := evals.FailureRecordIn(ctx, read.tx, s.deps.Attributor, read.project, read.entry.Definition.Slug)
 		if err != nil {
 			return nil, err
 		}
-		if len(read.request.repos) > 0 {
-			items = slices.DeleteFunc(items, func(item evals.FailureItem) bool { return !slices.Contains(read.request.repos, item.Repo) })
+		read.once.failures, read.once.failuresRead = record, true
+	}
+	if !read.shared.failuresRead {
+		items := read.once.failures.Items(read.rng.days)
+		if len(read.repos) > 0 {
+			items = slices.DeleteFunc(items, func(item evals.FailureItem) bool { return !slices.Contains(read.repos, item.Repo) })
 		}
 		read.shared.failures, read.shared.failuresRead = items, true
 	}
@@ -942,14 +1004,17 @@ func outcomeOf(parts []measures.DayPart) string {
 	return ""
 }
 
-// jobItemRows is pr-ci's jobs over the range, keyed by the job's name: with sort failures, the
-// jobs that failed in the 24 hours before the range's end, the Pipeline's own failing-jobs list
-// for the same from and to (failingJobRows), most failures first; otherwise each job's figures,
-// its unlisted `job:<name>` day rows of the range folded by measures.FoldTiming, by name, or with
-// sort median the one ranking the Pipeline's slowest-jobs table shows the first
+// jobItemRows is pr-ci's jobs over the range: with sort failures, the jobs of each deploy
+// repository that failed in the 24 hours before the range's end (failingJobRows, keyed by
+// repository and name), most failures first; otherwise, keyed by the job's name, each job's
+// figures, its unlisted `job:<name>` day rows of the range folded by measures.FoldTiming, by name,
+// or with sort median the one ranking the Pipeline's slowest-jobs table shows the first
 // measures.SlowestJobs of (measures.FoldSlowestJobs): every job with the job series' min_n timed
 // results over the range's days (eval_series `job:*`, evals.SlowestJobsMinN), slowest first. A
-// series filter names one job's series. An eval with no job series answers none.
+// series filter names one job's series. An eval with no job series answers none. Each job links
+// to its `job:<name>` day rows over the range as it was asked for (read.rng.start and end), which
+// the items route reads as the same days: the range's whole days are a day longer where it starts
+// inside one, and past the 84 days the route takes where it was 84 days long.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	index := slices.IndexFunc(read.entry.Series, func(series evals.Series) bool { return series.Series == evals.SeriesJobs })
 	if index < 0 {
@@ -1000,7 +1065,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	rows := make([]evalItemRow, len(cells))
 	for position, job := range cells {
 		behind := url.Values{
-			"from": {read.rng.days.From.Format(time.RFC3339)}, "to": {read.rng.days.To.Format(time.RFC3339)},
+			"from": {read.rng.start.Format(time.RFC3339Nano)}, "to": {read.rng.end.Format(time.RFC3339Nano)},
 			"series": {measures.JobSeriesPrefix + job.name}, "row_kind": {evalRowDay},
 		}
 		if len(read.request.repos) > 0 {
@@ -1024,20 +1089,21 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	return rows, nil
 }
 
-// failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end,
-// the list the Pipeline route's failing-jobs table answers for an `at` at that end when the range
-// starts on the first of the seven days that at shows: of each deploy repository the eval reads
-// (repoRules), of the pull-request checks runs started on the range's days, the runs
-// measures.FailingJobs picks, those that completed in the FailingWindow up to the end
-// (delivery.ReadPRChecksCompletedIn, which reads them by their completion and every job of each,
-// rather than every run of the range with every job), those the project's CI day rows counted,
-// through the same measures.FailingJobs under that repository's roll-up job. The day rows count a
+// failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end:
+// of each deploy repository the eval reads (repoRules), of the pull-request checks runs started on
+// the range's days, the runs measures.FailingJobs picks, those that completed in the FailingWindow
+// up to the end (delivery.ReadPRChecksCompletedIn, which reads them by their completion and every
+// job of each, rather than every run of the range with every job), those the project's CI day rows
+// counted, through measures.FailingJobs under that repository's roll-up job. The day rows count a
 // run on the day it started, so the items they counted are read on the days the runs read started
 // on alone. A job belongs to its repository's workflow, so each repository's jobs are rows of their
-// own, each keyed by its repository and its name (failingJobKey) and naming both, with its
-// failures, its results and its latest failed run, which it links to; most failures first. The
-// runs it counts, of every repository, are kept for the range (evalRangeReads.failing), so the
-// live view of the list expires as each run's failures leave the 24 hours (failingJobsNextExpiry).
+// own, keyed `<repo>/<name>` (failingJobKey) and naming their repository, each with its failures,
+// its results and its latest failed run, which it links to; most failures first. Of one repository
+// they are the list the Pipeline route's failing-jobs table answers for an `at` at the range's end
+// when the range starts on the first of the seven days that at shows; the Pipeline tallies the
+// jobs of one name of every repository as one. The runs it counts, of every repository, are kept
+// for the range (evalRangeReads.failing), so the live view of the list expires as each run's
+// failures leave the 24 hours (failingJobsNextExpiry).
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	end := read.rng.end
 	span := read.rng.days

@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
+import { inboxQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import type {
   Actor,
   Anchor,
@@ -28,6 +28,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
@@ -75,6 +76,10 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: Decision;
+  /** The artifact id of the issue's `decisions.md`, the record the decision's text is, which a
+   *  `#id` in that text names a question block of; undefined until the issue's documents are
+   *  read. */
+  readonly documentId: string | undefined;
   /** `decision:<decision heading block>:<spec block>`. */
   readonly id: string;
   readonly kind: "decision";
@@ -106,16 +111,27 @@ export interface Thread {
 }
 
 /** A Conversation card the reader pinned, as the Pinned tab shows it: who opened it, when, and
- *  its text - an ask's question, a comment's or a message's body. */
+ *  its text - an ask's question, a comment's or a message's body. A flattened view model, so
+ *  the two marks a corrected post carries are read here and not from the row. */
 export interface PinnedConversationCard {
   readonly at: string;
   readonly author: Actor;
   readonly body: string;
+  /** The post's deletion, null for an ask and for a post nobody deleted. */
+  readonly deleted: PostDeletion | null;
+  /** When the post's author last replaced its body; null for an ask and for one nobody
+   *  edited. */
+  readonly edited: string | null;
   /** The reading Go made of `body`, which the card draws (`MarkdownBody`). */
   readonly tree?: DisplayTree;
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
   readonly id: string;
   readonly kind: ConversationPinKind;
+  /** The record's own id, without the kind the pin marker spells before it: what names the
+   *  record this card's text is (`textSourceOf`). */
+  readonly recordId: string;
+  /** The issue that record is on. */
+  readonly issue: string | null;
 }
 
 const NO_PINS: string[] = [];
@@ -310,9 +326,13 @@ export function useMarginItems(
   blockPlacements: ReadonlyMap<string, MarkPlacement>,
   blockFilterId: string | undefined,
   {
+    decisionsDocumentId,
     documentShown = false,
     held = NO_THREADS,
   }: {
+    /** The artifact id of the issue's `decisions.md`, from the issue read the margin already
+     *  holds: the record each decision card's text is drawn as. */
+    readonly decisionsDocumentId?: string;
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
      *  of every issue page would be read where nothing shows them. */
@@ -331,7 +351,10 @@ export function useMarginItems(
       : owner?.kind === "document"
         ? ["artifact", owner.artifactId, "comments"]
         : ["comments", undefined];
-  const asks = useQuery(inboxQuery());
+  // The margin is mounted on every route, so this read is made on every page; it needs the
+  // `person` scope, which an agent viewer's bearer may not hold, so nothing is asked for one.
+  const agentViewer = useQuery(whoAmIQuery()).data?.kind === "agent";
+  const asks = useQuery({ ...inboxQuery(), enabled: !agentViewer });
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(
@@ -403,14 +426,19 @@ export function useMarginItems(
         return [];
       }
       const row = "message" in record ? record.message : record;
+      const post = "question" in row ? undefined : row;
       return [
         {
           at: row.created_at,
           author: row.author,
           body: "question" in row ? row.question : row.body,
+          deleted: postDeletion(post),
+          edited: post?.edited_at ?? null,
           tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,
+          recordId: id,
+          issue: row.issue_key,
         },
       ];
     });
@@ -508,6 +536,7 @@ export function useMarginItems(
         .map((blockId) => ({
           blockId,
           decision,
+          documentId: decisionsDocumentId,
           id: `decision:${decision.block_id}:${blockId}`,
           kind: "decision" as const,
         }));
@@ -518,7 +547,14 @@ export function useMarginItems(
         placedItem(right, markPlacements, blockPlacements)
       )
     );
-  }, [blockFilterId, blockPlacements, decisionsView.data, markPlacements, showsDecisions]);
+  }, [
+    blockFilterId,
+    blockPlacements,
+    decisionsDocumentId,
+    decisionsView.data,
+    markPlacements,
+    showsDecisions,
+  ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({
       comment: root.comment,

@@ -63,9 +63,11 @@ var schemaNames = map[reflect.Type]string{
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go
 	// names say that this package shaped them; the names here are the TypeScript names a client
-	// imports. The eleven `WithTrees` names are new with this change, which
-	// packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml announces; the last
-	// two below are names main already exports. Declared under their Go names, every one of these
+	// imports. The eleven `WithTrees` names from AskWithTrees to ArtifactApprovalWithTrees are
+	// announced by packages/contracts/.changes/unreleased/pr2712-Added-20261104-000317.yaml, and
+	// the two after them, a backlink's excerpt and its edge, by
+	// packages/contracts/.changes/unreleased/pr3125-Added-20261116-081717.yaml; the ones after
+	// them are names main already exports. Declared under their Go names, every one of these
 	// shapes would reach a client under two exported names at once.
 	reflect.TypeOf(shapedAsk{}):               "AskWithTrees",
 	reflect.TypeOf(askOptionRead{}):           "AskOptionWithTrees",
@@ -78,11 +80,20 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(replyBlockRead{}):          "ReplyBlockWithTrees",
 	reflect.TypeOf(artifactRead{}):            "ArtifactWithTrees",
 	reflect.TypeOf(artifactApprovalRead{}):    "ArtifactApprovalWithTrees",
-	// The two whose published name is the model's own rather than a `WithTrees` of it: the
-	// shaping is the whole body either route answers, so a client that reads an architecture
-	// tree or a node's references reads one of these and never the model behind it.
+	reflect.TypeOf(graphExcerptRead{}):        "GraphExcerptWithTrees",
+	reflect.TypeOf(graphEdgeRead{}):           "GraphEdgeWithTrees",
+	// The ones whose published name is the model's own rather than a `WithTrees` of it: the
+	// shaping is the whole body each route answers, so a client that reads an architecture tree,
+	// a node's references, an issue's references or a handoff with its body reads one of these
+	// and never the model behind it. An architecture tree's components and Not architectural rows
+	// are published under their Go names (ArchitectureComponentRead, ArchitectureTreeNoneRead)
+	// beside the model's own, which the tree still embeds (architectureTreeRead). An issue's
+	// references row is published as the model's ReferenceLink, which no other shape names.
 	reflect.TypeOf(architectureTreeRead{}): "ArchitectureTree",
 	reflect.TypeOf(graphReferencesRead{}):  "GraphReferences",
+	reflect.TypeOf(handoffRead{}):          "Handoff",
+	reflect.TypeOf(issueReferencesRead{}):  "IssueReferences",
+	reflect.TypeOf(referenceLinkRead{}):    "ReferenceLink",
 
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports
@@ -109,7 +120,6 @@ var schemaNames = map[reflect.Type]string{
 	// of what a client imports, and the measures its pages carry, whose one-word names
 	// (Status, Timing, Cell, Day) belong to delivery alone.
 	reflect.TypeOf(delivery.DeliveryComponentView{}):     "DeliveryComponent",
-	reflect.TypeOf(measures.ChangeFailRate{}):            "DeliveryChangeFailRate",
 	reflect.TypeOf(measures.DailyPoint{}):                "DeliveryDailyPoint",
 	reflect.TypeOf(measures.DeployJobTiming{}):           "DeliveryDeployJobTiming",
 	reflect.TypeOf(measures.FailingJob{}):                "DeliveryFailingJob",
@@ -124,7 +134,6 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.DeliveryRunJobView{}):        "DeliveryRunJob",
 	reflect.TypeOf(delivery.DeliveryRunJobDetailView{}):  "DeliveryRunJobDetail",
 	reflect.TypeOf(delivery.DeliveryRunProductionView{}): "DeliveryRunProduction",
-	reflect.TypeOf(measures.Result{}):                    "DeliveryMeasures",
 	reflect.TypeOf(measures.Recovery{}):                  "DeliveryRecovery",
 	reflect.TypeOf(measures.ReworkRate{}):                "DeliveryReworkRate",
 	reflect.TypeOf(delivery.SessionGroup{}):              "DeliverySessionGroup",
@@ -138,11 +147,13 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
 
-	// The Legion daemon setting's shape, whose Go package carries the word `Legion` in its import
-	// path and not in its type name: `Settings` is what legion calls it, and `LegionSetting` is
-	// what a client imports. The board's own types (legionBoardResponse and its members) already
-	// carry the word and take their Go names.
-	reflect.TypeOf(legion.Settings{}): "LegionSetting",
+	// The Legion package's shapes an answer carries, whose Go package carries the word `Legion` in
+	// its import path and not in their type names: `Settings` and `RoleClaim` are what legion calls
+	// them, and `LegionSetting` and `LegionRoleClaim` are what a client imports. The board's own
+	// types (legionBoardResponse and its members) and one issue's (legionIssueResponse and its
+	// members) already carry the word and take their Go names.
+	reflect.TypeOf(legion.Settings{}):  "LegionSetting",
+	reflect.TypeOf(legion.RoleClaim{}): "LegionRoleClaim",
 
 	// The eval registry's shapes, whose one-word Go names (Definition, Series, Link, Reading,
 	// Error) the evals package can carry because its import path says `evals`, and whose names
@@ -250,6 +261,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// and the answer names each eval the project holds.
 	{reflect.TypeOf(projectDeliverySettingsInput{}), "targets"}: rawField{Fragment: openAPIDeliveryTargets},
 	{reflect.TypeOf(projectDeliverySettings{}), "targets"}:      rawField{Fragment: openAPIDeliveryTargets},
+	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits
+	// on nothing, and an object is the daemon's own as the sampler stored it, which the answer
+	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
+	// fields the daemon writes today and leaves the object open, so the generated type has them.
+	// The answer always carries the field, which its `required:"true"` says.
+	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -295,6 +312,43 @@ var (
 			"description": `each eval's target, a number or "off" for none`,
 		}
 	}()
+	// The daemon's api.WaitingOnView (packages/daemon/internal/api/state.go), what a root in
+	// awaiting_person waits on from a person: kind is `ask`, with the ask's id, or `gate`, with the
+	// spec version of a document no person reviewed; since is when the wait began; answeredAt and
+	// answeredBy come once the wait was answered. The daemon writes kind on every wait and each
+	// other field only where it has a value, and the object is open: a field a later daemon adds
+	// is sent as stored.
+	openAPILegionWaitingOn = map[string]any{
+		"type": "object",
+		"description": "what the issue waits on from a person, the Legion daemon's waitingOn " +
+			"object exactly as Dispatch stored it; a field a later daemon adds is sent too",
+		"properties": map[string]any{
+			"kind": map[string]any{
+				"type":        "string",
+				"description": "the kind of wait: ask, gate, or a kind a later daemon names",
+			},
+			"ask": map[string]any{
+				"type":        "string",
+				"description": "for an ask, the id of the oldest question of the issue's tree still with a person",
+			},
+			"gateVersion": map[string]any{
+				"type":        "integer",
+				"description": "for a gate, the spec version no person has reviewed",
+			},
+			"artifactId": map[string]any{
+				"type":        "string",
+				"description": "for a gate, the id of the document whose version no person has reviewed",
+			},
+			"since":      openAPITimestamp,
+			"answeredAt": openAPITimestamp,
+			"answeredBy": map[string]any{
+				"type":        "string",
+				"description": "how the wait was answered, once it was, and not always by a person",
+			},
+		},
+		"required":             []string{"kind"},
+		"additionalProperties": true,
+	}
 )
 
 // openAPIMultipartSchema is the multipart/form-data body the three upload routes take beside

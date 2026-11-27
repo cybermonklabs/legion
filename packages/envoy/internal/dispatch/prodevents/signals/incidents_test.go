@@ -127,3 +127,20 @@ func TestTheIncidentLinkParseReadsGitHubsOwnURLs(t *testing.T) {
 		}
 	}
 }
+
+// TestAnIncidentLinkNamesAPullRequestNumberOfAtMostNineDigits: a pull request's number is read
+// against an integer column (delivery_pull_requests.number), so a link names one of at most nine
+// digits, as a linked pull request does (delivery's linked_pull_requests.go): a nine-digit number
+// is read, and a ten-digit one is no pull request's link, whose read would fail every pass and
+// hold the incidents cursor where it stands.
+func TestAnIncidentLinkNamesAPullRequestNumberOfAtMostNineDigits(t *testing.T) {
+	t.Parallel()
+	if got, ok := parseLink("https://github.com/acme/widgets/pull/999999999"); !ok || got != (linkTarget{repo: "acme/widgets", pull: 999999999}) {
+		t.Errorf("parseLink of a nine-digit pull request = %+v, %v; want acme/widgets #999999999", got, ok)
+	}
+	for _, link := range []string{"https://github.com/acme/widgets/pull/1000000000", "https://github.com/acme/widgets/pull/99999999999999999999/files"} {
+		if got, ok := parseLink(link); ok {
+			t.Errorf("parseLink(%q) = %+v, want no target", link, got)
+		}
+	}
+}

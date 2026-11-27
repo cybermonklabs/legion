@@ -23,16 +23,15 @@ import (
 // clone costs an issue — a jj that answers nothing but "Could not acquire lock for index file"
 // until someone removes the file, which in a running pod is this sweep and nothing else.
 //
-// The clone is built the way an issue pod's `workspace-init provision` builds one, out of the
-// commands that provisioning itself runs (workspace.feedClone, workspace.createWorkspace and
-// Provision's checkout, with fixturegit holding the init argv): a bare feed, `git clone
-// --no-checkout`, `jj git init --colocate` with the clone's sparse patterns cleared and its first
-// snapshot abandoned, then `jj workspace add --sparse-patterns empty` and the workspace's own `jj
-// sparse reset`. A shorter fixture would prove nothing about the file jj takes, because the lock
-// these rows plant is the index of this workspace's own git worktree entry, which exists only in a
-// colocated clone that has a workspace added to it.
+// The clone is built in the same jj shape as an issue pod's workspace-init provision makes: a
+// checkout-less clone, jj's import of every commit, sparse patterns cleared, the snapshot
+// `jj git init` took abandoned, then `jj workspace add --sparse-patterns empty` and the workspace's
+// own `jj sparse reset`. A shorter fixture would prove nothing about the file jj takes, because the
+// lock these rows plant is the index of this workspace's own git worktree entry, which exists only
+// in a colocated clone that has a workspace added to it.
 //
-// Neither row calls t.Parallel, as no row of this package may (gitlocks_test.go).
+// Both rows run in parallel: each works a clone of its own, and its pass reads a /proc root that
+// holds only the row's own process (procRoot).
 
 // jjWorkspaceName is the name the workspace is added under, which is also the base name of its
 // directory: `jj workspace add --name` names the jj workspace, and git names the worktree entry
@@ -78,7 +77,7 @@ func newJJClone(t *testing.T) *jjClone {
 	// same reason, since jj searches upward from the directory it is started in for the closest
 	// .jj and a command with none would open the workspace the test process stands in.
 	run := fixturegit.Isolated(t, home)
-	feed, seed := filepath.Join(root, "feed"), filepath.Join(root, "seed")
+	remote, seed := filepath.Join(root, "remote"), filepath.Join(root, "seed")
 	// The clone and the workspace sit where provisioning puts them under a state directory,
 	// which is where the launcher's sweep derives the clone from, so both come from the call
 	// that lays them out rather than from a layout this fixture writes out again.
@@ -92,20 +91,19 @@ func newJJClone(t *testing.T) *jjClone {
 			t.Fatal(err)
 		}
 	}
-	// The feed is the bare repository a pod's workspace-fetch leaves on the issue's volume, with
-	// one commit on the default branch, which is what the clone below is made from.
-	run.Run(root, fixturegit.InitBare(feed, "main")...)
+	// The remote is a bare repository with one commit on the default branch.
+	run.Run(root, fixturegit.InitBare(remote, "main")...)
 	run.Run(root, fixturegit.InitWorkTree(seed, "main")...)
 	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	run.Run(seed, "git", "add", "base.txt")
 	run.Run(seed, "git", "commit", "--quiet", "-m", "base")
-	run.Run(seed, "git", "push", "--quiet", feed, "main")
-	// The pod's shared clone, in provisioning's own order, which is load-bearing (workspace's
-	// feedClone says why): the checkout-less clone, jj's import of every commit, the sparse clear
-	// that leaves the clone no working tree, and the abandon of the snapshot `jj git init` took.
-	run.Run(root, "git", "clone", "--quiet", "--no-checkout", feed, clone)
+	run.Run(seed, "git", "push", "--quiet", remote, "main")
+	// The pod's clone has no working tree. jj imports every commit, clears its sparse patterns and
+	// abandons the snapshot `jj git init` took. The worktree entry whose index these rows lock is the
+	// same in both the fixture and a pod.
+	run.Run(root, "git", "clone", "--quiet", "--no-checkout", remote, clone)
 	run.Run(clone, fixturegit.JJInit(clone, true)...)
 	run.Run(clone, "jj", "sparse", "set", "--clear", "--color=never", "-R", clone)
 	run.Run(clone, "jj", "abandon", "@", "--color=never", "-R", clone)
@@ -208,6 +206,7 @@ func holdsOpen(t *testing.T, lock string) int {
 // jj is read before the lock's own removal is, which is this row's point: a pass that removed
 // nothing fails here on jj's real refusal rather than on a missing file.
 func TestAStaleIndexLockBlocksJJUntilTheSweepRemovesIt(t *testing.T) {
+	t.Parallel()
 	c := newJJClone(t)
 	// jj takes the index lock only when it has something to snapshot, so the workspace is given a
 	// changed file first: measured against the jj this machine runs (0.45.1-sami), with this lock
@@ -236,6 +235,7 @@ func TestAStaleIndexLockBlocksJJUntilTheSweepRemovesIt(t *testing.T) {
 // deleting a file. A lock some process still holds must never be removed, whatever its age: two
 // writers would then replace one file, and the loser's write would be the one the clone kept.
 func TestAHeldIndexLockStaysAndJJStaysBlocked(t *testing.T) {
+	t.Parallel()
 	c := newJJClone(t)
 	c.write(filepath.Join(c.dir, "work.txt"), "a role's unsnapshotted work\n")
 	lock := c.worktreeLock("index.lock", "", time.Hour)

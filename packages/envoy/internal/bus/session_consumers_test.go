@@ -14,10 +14,13 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/shapetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestReduceFilterSubjects(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		subjects []string
@@ -96,7 +99,75 @@ func TestReduceFilterSubjects(t *testing.T) {
 	}
 }
 
+// INFRA-1555. A registration reduces its topics to its consumer's filters (SessionConsumerFilters)
+// inside its own 3.5 s budget, and its role claim renewal runs on what that leaves. At the largest
+// registration production had seen, the reduction spent that budget: it went back to the first
+// pair after every subject it dropped, so the renewal's claim read ran out of time on every
+// heartbeat and the holder's claim was never renewed. The reduction now goes on from a drop
+// (reduceFilterPairs), so between merges it weighs no pair twice. A merge does start the scan
+// again, by design: the merged subject is new and must be weighed against every other.
+//
+// This case holds that by the pairs the reduction weighs, which are the same on every machine, and
+// not by a clock. cmd/listener's TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair
+// counts the allocations of a registration's reductions. Those see a split of both subjects of
+// every pair weighed, the other half of INFRA-1555, and not a scan started again on tokens already
+// split, which allocates nothing: this count sees that scan.
+//
+// The bound, n(n-1)/2 for n subjects, is the pairs there are, and it holds only within one pass, a
+// scan of the pairs that ends in no merge. So the case runs one pass of the reduction
+// (reduceFilterPairs) over the forms as reduceFilters sorts and compacts them, and fails as
+// UNKNOWN when that pass ends on a merge. It reads the merge from the pass itself and not from the
+// filters, since a merged subject can be one of the forms already (`notifications.x.*.c` and
+// `notifications.x.1.*` merge into `notifications.x.>`), which compactFilters then folds into that
+// form, leaving every filter a form. It also fails as UNKNOWN when nothing was dropped, where a
+// restarted scan weighs no pair twice either. A pass that ends in no merge is the whole reduction,
+// so its filters are SessionConsumerFilters', which the case checks.
+//
+// The list is shapetest.Planned, the topics a registration of the largest shape plans, in the
+// forms SessionConsumerFilters gives them: 1,610 topics, the role lane and the agent subject
+// among them, in 1,612 forms, which reduce to 1,604 filters. A registration reduces another list
+// (cmd/listener's sessionFilter): it leaves the role lane out, and puts the session's agent subject
+// first, so the agent subject is in its list twice. That list is 1,610 subjects in 1,612 forms, the
+// agent subject's two forms counted twice; held once each, 1,609 topics in 1,610 forms, which
+// reduce to the 1,602 filters that cmd/listener's
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim counts on the server. The two
+// forms more here are the role lane's. They sort last and overlap nothing, so they add pairs that
+// are each weighed once and change neither the bound's meaning nor a drop.
+func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce(t *testing.T) {
+	t.Parallel()
+	topics := shapetest.Planned("legion-controller", "ses_largest_holder")
+	forms, _ := sessionConsumerForms(topics, false)
+	pass := make([]filterSubject, 0, len(forms))
+	for _, form := range forms {
+		pass = append(pass, filterSubject{subject: form, tokens: strings.Split(form, ".")})
+	}
+	slices.SortFunc(pass, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
+	pass = compactFilters(pass)
+	subjects := len(pass)
+	reduced, merged, weighed := reduceFilterPairs(pass)
+	if merged {
+		t.Fatalf("UNKNOWN: the pass over the %d subjects of the %d topics ended on a merge; a merge starts the scan again by design, and the bound of the pairs there are holds only within one pass", subjects, len(topics))
+	}
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
+	if want := SessionConsumerFilters(topics); !slices.Equal(filters, want) {
+		t.Fatalf("the pass reduced here gives %d filters and SessionConsumerFilters %d: this case is not weighing the list SessionConsumerFilters reduces", len(filters), len(want))
+	}
+	if subjects == len(filters) {
+		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", subjects)
+	}
+	pairs := subjects * (subjects - 1) / 2
+	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the pass ended in no merge, dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
+	if weighed > pairs {
+		t.Fatalf("one pass over %d subjects, ending in no merge, weighed %d pairs, %.1f times the %d pairs there are: it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
+			subjects, weighed, float64(weighed)/float64(pairs), pairs)
+	}
+}
+
 func TestSessionConsumerName(t *testing.T) {
+	t.Parallel()
 	if name, ok := SessionConsumerName("ses_abc-123"); !ok || name != "s-ses_abc-123" {
 		t.Fatalf(`SessionConsumerName("ses_abc-123") = %q, %t, want "s-ses_abc-123", true`, name, ok)
 	}
@@ -110,6 +181,7 @@ func TestSessionConsumerName(t *testing.T) {
 // The relay subject travels over core NATS: no stream subject captures it, so a relay frame is
 // never stored a second time.
 func TestDeliverSubjectIsNotStored(t *testing.T) {
+	t.Parallel()
 	subject := DeliverSubject("ses_abc")
 	if subject != "notifications.envoy.deliver.ses_abc" {
 		t.Fatalf("DeliverSubject = %q", subject)
@@ -122,6 +194,7 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 // An edge listener's relay receipt travels over core NATS as the relay frame does: no stream
 // subject captures the receipt family, so no receipt is stored.
 func TestARelayReceiptIsNotStored(t *testing.T) {
+	t.Parallel()
 	if RelayReplyPrefix != "notifications.envoy.relayreply." {
 		t.Fatalf("RelayReplyPrefix = %q", RelayReplyPrefix)
 	}
@@ -179,16 +252,59 @@ func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *S
 	return pull
 }
 
-// next returns the next message pull holds within 5 s.
+// next returns the next message pull holds. The wait has no span of its own, since the hand-over
+// can come late on a loaded machine with nothing wrong: it ends at the test binary's deadline.
 func next(t *testing.T, pull *SessionPull) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := pull.Next(ctx)
+	msg, err := pull.Next(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("next message: %v", err)
 	}
 	return msg
+}
+
+// nextBefore returns the next message pull holds, and fails the row naming why if none comes
+// before end. A row that requires a message back by its own cause -- a nak, a shortened ack wait
+// -- rather than by the consumer's ack wait passes end from beforeAckWait. The server sends a
+// message nobody answered again once its ack wait has passed since it delivered it, as delivery 2,
+// the same count a nak gives, so only this bound tells the two apart; a read bounded by the test's
+// deadline alone takes the ack wait's redelivery as the nak's.
+func nextBefore(t *testing.T, pull *SessionPull, end time.Time, why string) SessionMessage {
+	t.Helper()
+	// The bound under test, not a wait: end tells a message back by the row's own cause from the
+	// ack wait's redelivery (above), so it stays the row's.
+	ctx, cancel := context.WithDeadline(testwait.Context(t), end)
+	defer cancel()
+	msg, err := pull.Next(ctx)
+	if err != nil {
+		t.Fatalf("next message %s: %v", why, err)
+	}
+	return msg
+}
+
+// beforeAckWait is the end nextBefore takes for a message delivered after this call: half of
+// ackWait from now. The server cannot send that message again on its ack wait before ackWait from
+// its delivery, which comes after this call, so a message back by then came back by the row's own
+// cause, and a redelivery on the ack wait misses the end by half an ack wait, not by a timer's
+// latency.
+func beforeAckWait(ackWait time.Duration) time.Time {
+	// The bound under test, not a wait: half the ack wait, which a redelivery on it misses (above).
+	return time.Now().Add(ackWait / 2)
+}
+
+// requireAckWait requires the consumer of sessionID to carry want as its ack wait, for a row
+// whose redelivery is meant to come on a shortened one. Its read waits until the test's deadline
+// (forgedWait): a read with no deadline of its own takes the product's storedMessageWait, 10 s
+// (requestConfirmed), which a slow answer on a loaded machine outlasts with nothing wrong.
+func requireAckWait(t *testing.T, consumers *SessionConsumers, sessionID string, want time.Duration) {
+	t.Helper()
+	info, err := consumers.Info(forgedWait(t), sessionID)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if info.Config.AckWait != want {
+		t.Fatalf("the consumer of %s carries an ack wait of %s, want %s", sessionID, info.Config.AckWait, want)
+	}
 }
 
 // requireNoMessage requires pull to hold no message for window.
@@ -204,6 +320,7 @@ func requireNoMessage(t *testing.T, pull *SessionPull, window time.Duration) {
 // A consumer as Ensure creates it carries the session consumer settings, its reduced filters, and
 // replicas left to the stream's.
 func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
+	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	start, err := consumers.Ensure(ctx, "ses_settings", []string{
@@ -273,6 +390,7 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 // (Ensure, dispatch://INFRA-771). A followed topic's history from before the session is not the
 // session's, and this is the test that it is never delivered.
 func TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_fresh"
@@ -404,6 +522,7 @@ func TestRestartAtFloorRedeliversTheUnackedInStreamOrder(t *testing.T) {
 // (the consumer's creation time stays, and a create would fail), its filters change in place, the
 // start is the sequence it examines next, and it delivers the next message once.
 func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_kept"
@@ -468,6 +587,7 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 // order. The restart waits until the delivery is in the consumer's state file
 // (waitForStoredState), and until then the delete could race the server's own write of it.
 func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_recreated"
@@ -538,6 +658,7 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 // so the floor stays at 1 below a last delivery of 3, and the restart creates the consumer at 2
 // and delivers the unanswered message first and the acked one after it.
 func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = time.Second
 	ctx := context.Background()
@@ -550,6 +671,10 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
+	// The redelivery the row reads below as the ack wait's own comes a second after the delivery
+	// only on the ack wait the row set; on the default it would come a minute later, which that
+	// read, bounded only by the test's deadline, would take as this one.
+	requireAckWait(t, consumers, session, consumers.ackWait)
 	unanswered := publishStored(t, owner, agent, "never answered")
 	pull := pullSession(t, consumers, session)
 	if msg := next(t, pull); msg.StreamSeq != unanswered || msg.Delivered != 1 {
@@ -625,25 +750,23 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	}
 }
 
-// waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
-// want, which is what the caller waited for, and the reading ready last took. One bound serves
-// every caller: each waits on a state that follows a publish the server answers nothing to -- an
-// ack, a nak, a delivery -- so the state arrives a moment after the call that caused it rather
-// than with it, and the server it arrives at is in this process.
+// waitUntil polls ready every waitUntilPoll until it reports true, and fails the test naming want,
+// which is what the caller waited for, and the reading ready last took. The wait ends on that
+// state, bounded only by the test binary's deadline (testwait.UntilPolling): each caller waits on
+// a state that follows a publish the server answers nothing to -- an ack, a nak, a delivery -- or
+// a timer of the server's own, so the state arrives a moment after the call that caused it rather
+// than with it, and a loaded machine stretches that moment without anything being wrong. A fixed
+// span (5 s, before) failed rows whose state arrived late.
 func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, waitUntilPoll, want, func() (string, bool) {
 		done, got := ready()
-		if done {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waited 5s for %s; %s", want, got)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return got, done
+	})
 }
+
+// waitUntilPoll is how often waitUntil asks: the 20 ms its fixed-span loop asked at before.
+const waitUntilPoll = 20 * time.Millisecond
 
 // waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
 // floor.
@@ -676,6 +799,7 @@ func waitForStoredState(t *testing.T, owner *Client, sessionID string) {
 // from the stream as aged-out ones are, and a consumer seeded at a sequence the stream no longer
 // holds, are both a gap; one seeded at the sequence the stream stores next is not.
 func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_gap"
@@ -717,6 +841,7 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 // Restarts made at once share their reads of the stream's state, and each still reports a gap
 // exactly when the consumer it kept goes on below the stream's first sequence.
 func TestRestartsAtOnceReportEachGap(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const sessions, gone = 24, 10
@@ -752,6 +877,9 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	}
 }
 
+// Serial: it holds a wall-clock bound close to what it waits for, the pull's own expiry (1 s) and
+// idle heartbeat (400 ms), which parallel load pushed past (#5217).
+//
 // A pull sends its next pull request once the server has delivered the last one's whole batch or
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
@@ -791,6 +919,8 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	// A request that outlives two heartbeats is kept alive by them.
 	consumers.pullExpires, consumers.pullHeartbeat = 5*time.Second, 500*time.Millisecond
 	quiet := pullSession(t, consumers, session)
+	// A window, not a wait: nothing is published, so the idle pull must hand over nothing and its
+	// Next must wait out these 2 s, four heartbeats, and answer context.DeadlineExceeded.
 	idle, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if msg, err := quiet.Next(idle); !errors.Is(err, context.DeadlineExceeded) {
@@ -810,6 +940,7 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 // being a subset of another (v2.15.1 server/consumer.go:909, subjectIsSubsetMatch), was never
 // ours to rely on.
 func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	disjoint := []string{contracts.LegacyAgentSubject("ses_filters"), "notifications.github.o.r.>"}
@@ -844,6 +975,7 @@ func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
 // the new subject before a message the consumer has since delivered is not delivered, one stored
 // after the update is.
 func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_follow"
@@ -881,7 +1013,10 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 }
 
 // InProgress restarts a message's ack wait: a message kept in progress past several ack waits is
-// not delivered again, and once InProgress stops it is, a wait later.
+// not delivered again, and once InProgress stops it is, a wait later. The consumer must carry the
+// shortened ack wait the row sets (requireAckWait): on the default SessionConsumerAckWait, the
+// redelivery after InProgress stops would come a minute later, which the read below, bounded only
+// by the test's deadline, would take as this one.
 func TestInProgressExtendsTheAckWait(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = 2 * time.Second
@@ -891,6 +1026,7 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
+	requireAckWait(t, consumers, session, consumers.ackWait)
 	seq := publishStored(t, owner, agent, "held")
 	pull := pullSession(t, consumers, session)
 	msg := next(t, pull)
@@ -909,8 +1045,11 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 	}
 }
 
-// A NAK with a delay has the message delivered again once the delay has passed.
+// A NAK with a delay has the message delivered again once the delay has passed, by the nak and not
+// by the consumer's own ack wait, which the row tells apart by reading it before half that ack
+// wait has passed (nextBefore). It does not time the delay: a nak that asked 20 s would pass too.
 func TestNakWithDelayRedelivers(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_nak"
@@ -919,11 +1058,12 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 	seq := publishStored(t, owner, agent, "refused")
+	end := beforeAckWait(consumers.ackWait)
 	pull := pullSession(t, consumers, session)
 	if err := next(t, pull).NakWithDelay(200 * time.Millisecond); err != nil {
 		t.Fatalf("nak: %v", err)
 	}
-	if again := next(t, pull); again.StreamSeq != seq || again.Delivered != 2 {
+	if again := nextBefore(t, pull, end, "after the NAK, before the ack wait could send it again"); again.StreamSeq != seq || again.Delivered != 2 {
 		t.Fatalf("after the NAK got seq %d delivery %d, want %d delivery 2", again.StreamSeq, again.Delivered, seq)
 	}
 }
@@ -934,6 +1074,7 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 // (SessionResumeSubject), and the create at the sequence after it delivers nothing the session
 // took and acked.
 func TestAConsumerCreatedAgainAtTheRecordedFloorHandsBackNothingTheSessionAcked(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_acked_everything"
@@ -1000,18 +1141,21 @@ func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID stri
 	return info
 }
 
-// Release gives the server back, at once, every message the pull holds that its caller never
-// read: the next pull of that consumer is delivered both of them straight away, each as a second
-// delivery, rather than after SessionConsumerAckWait. Stop in its place drops them, and the next
-// pull waits out that ack wait for them. A returned message is still awaiting an ack -- a nak
-// schedules a redelivery, it does not undo the delivery it answers -- so the consumer holds
-// nothing for an ack only once the next owner has taken and acked them, which is the state this
-// row ends on. The order the two come back in is the server's, not this row's to assert: with no
-// pull request that still has interest, the server's first redelivery attempt puts that message
-// behind the other in its redelivery queue. A relay's next owner is pulling by then, and one that
-// is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
-// comes from.
+// Release gives the server back every message the pull holds that its caller never read, by a nak
+// with no delay: the next pull of that consumer is delivered both of them, each as a second
+// delivery, by that nak and not after SessionConsumerAckWait, which the row tells apart by reading
+// them before half that ack wait has passed (nextBefore). It proves the nak returned them, not how
+// soon the server acted on it: a nak that asked a delay under that half, 20 s say, passes too.
+// Stop in its place drops them, and the next pull waits out that ack wait for them. A returned
+// message is still awaiting an ack -- a nak schedules a redelivery, it does not undo the delivery
+// it answers -- so the consumer holds nothing for an ack only once the next owner has taken and
+// acked them, which is the state this row ends on. The order the two come back in is the server's,
+// not this row's to assert: with no pull request that still has interest, the server's first
+// redelivery attempt puts that message behind the other in its redelivery queue. A relay's next
+// owner is pulling by then, and one that is not restarts the consumer at its ack floor
+// (RestartAtFloor), which is where stream order comes from.
 func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_released"
@@ -1023,6 +1167,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	for i := range 3 {
 		stored = append(stored, publishStored(t, owner, agent, strconv.Itoa(i)))
 	}
+	end := beforeAckWait(consumers.ackWait)
 	pull := pullSession(t, consumers, session)
 	first := next(t, pull)
 	if first.StreamSeq != stored[0] {
@@ -1032,7 +1177,12 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them. The row waits for the pull to hold both (waitForQueued), which is the state Release
+	// gives back from. The server's count of the two awaiting an ack is no wait for that: the
+	// server counts a message delivered before the message reaches the pull, and a Release run in
+	// between returned the one the pull held.
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned, err := pull.Release(); returned != 2 || err != nil {
@@ -1041,7 +1191,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	again := pullSession(t, consumers, session)
 	back := map[uint64]uint64{}
 	for range stored[1:] {
-		msg := next(t, again)
+		msg := nextBefore(t, again, end, "returned by Release, before the ack wait could send it again")
 		back[msg.StreamSeq] = msg.Delivered
 		if err := msg.Ack(); err != nil {
 			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
@@ -1075,6 +1225,7 @@ func waitForQueued(t *testing.T, pull *SessionPull, want int) {
 // counts nothing returned, so the caller's hand-over line cannot claim messages reached the
 // server that never left the process.
 func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_closed"
@@ -1127,6 +1278,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all
 // report it missing; a session id that names no consumer is refused before anything is sent.
 func TestSessionsWithoutAConsumer(t *testing.T) {
+	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	if _, err := consumers.Info(ctx, "ses_absent"); !errors.Is(err, ErrSessionConsumerNotFound) {
@@ -1137,9 +1289,8 @@ func TestSessionsWithoutAConsumer(t *testing.T) {
 	}
 	// A pull reads nothing before it starts: its first Next reports the consumer missing.
 	pull := pullSession(t, consumers, "ses_absent")
-	nextCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if msg, err := pull.Next(nextCtx); !errors.Is(err, ErrSessionConsumerNotFound) {
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	if msg, err := pull.Next(testwait.Context(t)); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("Next of a pull of a missing consumer = %+v, %v, want ErrSessionConsumerNotFound", msg, err)
 	}
 	if _, err := consumers.Ensure(ctx, "ses.dotted", []string{"notifications.agent.ses.dotted"}, 0); !errors.Is(err, ErrNoSessionConsumerName) {
@@ -1149,6 +1300,7 @@ func TestSessionsWithoutAConsumer(t *testing.T) {
 
 // StreamID reads the identity the stream's owner gave it.
 func TestSessionConsumersStreamID(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	info, err := owner.JS().StreamInfo(Stream)
 	if err != nil {
@@ -1203,6 +1355,7 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 // restart would keep unchanged is kept with no call, at the start RestartAtFloor's keep returns;
 // one with a message awaiting an ack, or whose filter no longer matches, is left to RestartAtFloor.
 func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const sessions = 300 // more than one page of 256
@@ -1263,6 +1416,7 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 // holds is no error, and nor is one of a session id that names no consumer, which costs no call
 // at all; neither records a floor, so both answer 0.
 func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
+	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_deleted"
@@ -1290,6 +1444,7 @@ func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
 // resume point past the floor is lowered to the floor plus one (create), which hands the session
 // everything the dropped start held.
 func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_pending"
@@ -1338,6 +1493,7 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 // restarts the clock, and a consumer on a replicated stream outlives its threshold many times
 // over. The server here is one in-process member that elects a leader once.
 func TestTheServerRemovesAConsumerIdlePastTheInactiveThreshold(t *testing.T) {
+	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
 	consumers.inactiveThreshold = 2 * time.Second
 	ctx := context.Background()
@@ -1367,6 +1523,7 @@ func TestTheServerRemovesAConsumerIdlePastTheInactiveThreshold(t *testing.T) {
 // once, and none below it. Without the record the consumer would be created at the stream's end
 // and the messages stored while the session was away would never reach it.
 func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_resume"
@@ -1414,6 +1571,7 @@ func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
 // a session what was stored for it before it could register (create, dispatch://INFRA-771), and
 // at the stream's end only where it holds none.
 func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_other_stream"
@@ -1437,6 +1595,7 @@ func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
 // With that record of another stream and nothing stored on the session's own agent subject, the
 // consumer starts at the stream's end, as a session the stream holds nothing of does.
 func TestAResumeRecordOfAnotherStreamWithNothingStoredStartsAtTheStreamsEnd(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_other_stream_empty"
@@ -1457,6 +1616,7 @@ func TestAResumeRecordOfAnotherStreamWithNothingStoredStartsAtTheStreamsEnd(t *t
 // through a wildcard, so no replay hands out another session's resume floor; the stream carries
 // the lane where the consumer list every filter takes does not, so no consumer delivers a record.
 func TestTheResumeLaneIsTheListenersOwn(t *testing.T) {
+	t.Parallel()
 	if subject := SessionResumeSubject("ses_abc"); subject != "notifications.envoy.resume.ses_abc" {
 		t.Fatalf("SessionResumeSubject = %q", subject)
 	}
@@ -1491,6 +1651,7 @@ func TestTheResumeLaneIsTheListenersOwn(t *testing.T) {
 // floor it answers, is the listed info's, so the session comes back where its delivery stopped
 // either way.
 func TestADeleteFromListedInfoRecordsAndAnswersThatInfosFloor(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_listed"
@@ -1539,6 +1700,7 @@ func TestADeleteFromListedInfoRecordsAndAnswersThatInfosFloor(t *testing.T) {
 // that gives the consumer back gives it back there. A session that never had a consumer has no
 // position to record, and that delete is still no error, writes nothing and answers 0.
 func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_missing"
@@ -1622,6 +1784,7 @@ func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
 // backstop alone fails is a session bucket whose MaxAge stands well above the gone horizon,
 // since the sweep waits for the record to leave the bucket.
 func TestInactiveThresholdForStandsAboveTheSweepsBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                                    string
 		recordLife, reapInterval, sweepInterval time.Duration
@@ -1648,6 +1811,7 @@ func TestInactiveThresholdForStandsAboveTheSweepsBound(t *testing.T) {
 // It is total: a window the caller passes as zero or negative counts as zero, so no
 // configuration derives a threshold below the floor the constant sets.
 func TestInactiveThresholdForIsNeverBelowItsFloor(t *testing.T) {
+	t.Parallel()
 	if got := InactiveThresholdFor(0, 0, 0); got != SessionConsumerInactiveThreshold {
 		t.Errorf("InactiveThresholdFor(0, 0, 0) = %s, want the floor %s", got, SessionConsumerInactiveThreshold)
 	}
@@ -1672,6 +1836,7 @@ func TestInactiveThresholdForIsNeverBelowItsFloor(t *testing.T) {
 // is given at the connection and never set after it, so no consumer is created before the
 // deployment's threshold is in hand.
 func TestAConsumerCarriesTheInactiveThresholdItsHandleWasOpenedWith(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	owner, err := ConnectOwningStream([]string{uri})
 	if err != nil {

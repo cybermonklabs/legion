@@ -127,7 +127,7 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	const failedJob = "paint / failed"
 	failed := writeFailedChecksRun(t, database, fixture.DeployRepo, projectPullRequest(t, fixture, fixture.DeployRepo), 991_000_101,
 		now.Add(-3*time.Hour), now.Add(-2*time.Hour), failedJob)
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, now)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, now)
 
 	// The header's 84-day preset, and the compare range it defaults to (the web's compareRange):
 	// the window covers the whole UTC days from the one 84 days back to today, and the compare range

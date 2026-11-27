@@ -36,13 +36,14 @@ import (
 // the consumer's delivery count rather than by its pending count, because a message is pending
 // while its handler runs, and what is under test is what happens after the handler returns.
 func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -129,7 +130,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	process.intake = newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
+	process.intake = newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -299,6 +300,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 // sequence cannot separate, since an intake stops delivering within intakeHoldMargin of
 // reporting its hold lost.
 func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	hold, err := duty.TryHold(ctx, deliveryTestLeases(t, pool), "delivery-test-lapsing-hold", uuid.New(),
 		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin})

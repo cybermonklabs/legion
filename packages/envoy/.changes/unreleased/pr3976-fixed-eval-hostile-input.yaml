@@ -14,16 +14,34 @@ body: |-
   that names `from`, `to`, `q` or `at` more than once is `400 INVALID_QUERY` naming the key, as
   an eval read is, where it was answered the first value's window or search; a facet such as
   `repo` or `priority` still takes any number of values. So that no statement that writes a
-  logged eval's stored rows passes 256 KiB, a logged eval holds at most 234 series and a day row
-  of it at most 21,626 values: a register or readings write that would leave an eval holding more
+  logged eval's stored rows passes 256 KiB, an eval holds at most 234 series, listed or not, and a
+  day row of a logged eval at most 21,626 values: a register or readings write that would leave an eval holding more
   series is `400 EVAL_SERIES_LIMIT`, and a reading that would put more values on its day row
   `400 READING_DAY_SAMPLES_LIMIT`, each naming the bound. A readings write sends every list that
   grows with its batch (its readings, the ids it corrects, its day rows' insert, lock and update,
   and the standing readings it reads) in statements of at most 256 KiB, and logs one
   `eval_readings` change of its eval however many it takes; a reading whose fields alone would
-  pass that is `400 READING_TOO_LARGE`, naming its largest field. The list read sends its day rows'
-  read in statements of at most 256 KiB too. A refused readings batch answers
-  `{code, error, rows, rows_omitted?}`: `rows` lists the first 206 refused rows by index and the
-  new `rows_omitted` counts the rest, and every refusal of the eval writes bounds its texts (an
-  error 1,024 bytes, a field 128), so the answer an `Idempotency-Key` keeps stays under 256 KiB
-  whatever the body.
+  pass that is `400 READING_TOO_LARGE`, naming its largest field. It counts each reading as the
+  bytes its insert sends, a null number as its length alone, so a batch whose readings fit one
+  statement goes in one. A version of an eval's definition, or of one of its series, takes at
+  most 32 KiB as JSON once the fields a write leaves out are copied forward: a register write
+  that would store a larger one, or a readings write that would register one, is
+  `400 EVAL_VERSION_TOO_LARGE` naming its largest field. The list read sends its day rows' read
+  in statements of at most 256 KiB too, and an eval read's `repo`, which every
+  statement of the read sends, names at most 100 repositories of at most 512 bytes each, a
+  repeated one counted once: a read naming more, or a longer name, is `400 INVALID_QUERY` naming
+  the bound. A refused readings batch answers `{code, error, rows, rows_omitted?}`: `rows` lists
+  the first 206 errors of the refused rows by row index and the new `rows_omitted` counts the
+  rest, and every refusal of the eval writes bounds its texts (an error 1,024 bytes, a field 128),
+  so the answer an `Idempotency-Key` keeps stays under 256 KiB whatever the body. So does each
+  write's success: the readings write's `201` lists in `items` the first of the readings it
+  stored, in the batch's order, as many as keep the answer within 258,048 bytes, with `total`
+  counting every one and `limit` those listed (the rest are read by id from the eval's items), and
+  the register write's answer lists the eval's series by name the same way beside a new
+  `series_total`, so a repeat under the key is answered the first answer rather than
+  `ANSWER_NOT_KEPT`. A body the register write cannot decode is refused `400 INVALID_JSON` with its
+  error cut to 1,024 bytes, the number it could not read cut first, so the answer still names the
+  field. A register write names each series once: one named twice is `400 EVAL_SERIES_INVALID`
+  naming the second. A `doc_block` that names no block of the project's `evals-md` is
+  `400 EVAL_FIELD_INVALID`, since the eval would have no method and the seed would replace the
+  field at the next boot.

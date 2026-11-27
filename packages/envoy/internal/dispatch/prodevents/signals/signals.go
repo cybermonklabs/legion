@@ -1,5 +1,5 @@
 // Package signals writes the record's rows that no person and no system posts
-// (dispatch://INFRA-978, T11 and T12): the GitHub adapter's deploy rows, one per deploy run of a
+// (dispatch://INFRA-978, R6 and R7): the GitHub adapter's deploy rows, one per deploy run of a
 // deploy repository that the repository's rule calls a deploy, and the failures of the three
 // automatic signals: a failed after-merge check (check_fail), a merged revert (revert), and an issue
 // labelled incident that links the pull request or the run it blames (incident_issue).
@@ -21,10 +21,11 @@
 // Every write is a transaction of its own that takes the delivery change log's lock nowhere
 // (prodevents), after the write that caused it has committed, so no transaction that takes that
 // lock locks a production_events row. A feed's cursor moves after the rows of its page are written,
-// and every write is idempotent by its source_ref, so a page read again after a crash writes
-// nothing twice. The record route's handlers write check_fail and its retraction's reject at once
-// as well (api's recordCheckResult and retractCheckResult); the loop is what a write lost to a
-// crash, or a result that came before its deploy, waits on.
+// and every write is idempotent by its source_ref, a check_fail by its result's binding as well
+// (check_fail_bindings), so a page read again after a crash writes nothing twice. The record
+// route's handlers write check_fail and its retraction's reject at once as well (api's
+// recordCheckResult and retractCheckResult); the loop is what a write lost to a crash, or a result
+// that came before its deploy, waits on.
 package signals
 
 import (
@@ -43,10 +44,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Actor writes every row the loop writes but a check_fail and an incident_issue, which carry the
-// actor of their result and of their event: the deploy rows, a revert's failure and its restore,
-// and the reject of a failure on a deploy a rule change dropped.
-var Actor = model.Actor{Kind: "system", ID: "production-signals"}
+// loopActor writes every row the loop writes but a check_fail and an incident_issue, which carry
+// the actor of their result and of their event: the deploy rows, a revert's failure and its
+// restore, and the reject of a failure on a deploy a rule change dropped.
+var loopActor = model.Actor{Kind: "system", ID: "production-signals"}
 
 // Lease names the lease every pass takes (duty.Exclusive with no period): two processes woken by
 // one commit would otherwise derive the same repository's rows at once.
@@ -129,7 +130,7 @@ func Run(ctx context.Context, deps Deps) {
 // blames is there when it is read, then the two event feeds up to the safe horizon the pass reads
 // once. It answers whether that horizon held an event back.
 func pass(ctx context.Context, deps Deps) (bool, error) {
-	if err := passDeploys(ctx, deps.Pool, time.Now); err != nil {
+	if err := passDeploys(ctx, deps.Pool); err != nil {
 		return false, fmt.Errorf("the deploys feed: %w", err)
 	}
 	safe, err := deps.Horizon.SafeOrAwait(ctx)

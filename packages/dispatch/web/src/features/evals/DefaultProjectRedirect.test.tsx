@@ -18,7 +18,14 @@ afterEach(() => {
 });
 
 function project(key: string): Project {
-  return { created_at: "2026-09-10T00:00:00Z", gated_steps: [], key, name: key, open_asks: 0 };
+  return {
+    created_at: "2026-09-10T00:00:00Z",
+    gated_steps: [],
+    key,
+    name: key,
+    open_asks: 0,
+    proven_sessions: false,
+  };
 }
 
 function daemon(key: string): LegionSetting {

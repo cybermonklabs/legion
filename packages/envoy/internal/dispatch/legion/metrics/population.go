@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // askTurnEventTypes are the ask events a person's turn starts and ends with: the two that hand an
@@ -52,6 +54,15 @@ type Handoff struct {
 	Phase   string
 	Version int
 	At      time.Time
+}
+
+// RunPlan is one version of the plan a run of the issue ran from, as Dispatch holds it
+// (workflowstore's plan node): when that version was written, and the roles of its one
+// task's steps, in the task's order (`acceptance` for `acceptance:owner`). Steps is empty for a
+// plan whose tasks are not exactly one, which the fallback timeline reads as the default steps.
+type RunPlan struct {
+	Made  time.Time
+	Steps []string
 }
 
 // Issue is one issue of the population with every fact the rules read of it.
@@ -82,6 +93,11 @@ type Issue struct {
 
 	// StatusMarks is every status the issue's own events snapshotted, oldest first.
 	StatusMarks []Mark
+
+	// Plans is each version of the plan of each run of the issue, oldest first: what the fallback timeline reads
+	// the order of the task's steps from (phaseLine). An issue Legion ran before it recorded
+	// plans has none.
+	Plans []RunPlan
 
 	// Observed is every value a read found changed, by legion_observations field (legion's
 	// FieldPhase, FieldSlot, ClaimFieldPrefix+role and the rest), oldest first within a field.
@@ -115,8 +131,9 @@ type Filed struct {
 	Ancestors []string
 }
 
-// Population is every fact one computation of the facts reads, from the project's beginning
-// (From, the zero time for both reads) to To, the moment an open issue's hours run to.
+// Population is every fact one computation of the facts reads, from the project's beginning to
+// To, the moment an open issue's hours run to. From is the zero time for ReadProject and
+// ReadIssues, and is set only by test fixtures that narrow windowOf.
 type Population struct {
 	Project string
 	From    time.Time
@@ -162,7 +179,7 @@ type Population struct {
 // it is the read a build makes once per project, and its walks may ask about any issue.
 func ReadProject(ctx context.Context, pool *store.Pool, project string, now time.Time) (*Population, error) {
 	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
-		return p.readFiled(ctx, pool, project, time.Time{}, now)
+		return p.readFiled(ctx, pool, project, now)
 	}, func(p *Population) []string {
 		return p.Keys
 	}, func(ctx context.Context, _ *Population, _ []string) (map[string]struct{}, error) {
@@ -244,8 +261,8 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 	}
 	population.fillReportedTrees()
 	keys := scope(population)
-	// The seven reads below write disjoint fields — six take the keys above and write fields of
-	// those issues, the seventh the population's phase work — so they run together rather than
+	// The eight reads below write disjoint fields — seven take the keys above and write fields of
+	// those issues, the eighth the population's phase work — so they run together rather than
 	// one after another, as the delivery population's independent reads do (api/delivery.go).
 	// store.ReadSideBySide answers the first error recorded, so which of two failing reads names
 	// the failure is no longer fixed.
@@ -254,6 +271,7 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
+		func(ctx context.Context) error { return population.readPlans(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, tx, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, keys) },
 		func(ctx context.Context) (err error) {
@@ -303,7 +321,7 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 // readFiled reads every `issue.created` event before `to` a session wrote, whatever project
 // the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
 // classes — and keeps the ones a Legion session of this project filed.
-func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {
+func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, to time.Time) error {
 	return p.readFilings(ctx, pool, project, `
 		select coalesce(events.issue_key, ''), events.created_at,
 			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
@@ -311,9 +329,9 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 		from events
 		where events.type = 'issue.created'
 			and events.actor->>'kind' = 'session'
-			and events.created_at >= $1 and events.created_at < $2
+			and events.created_at < $1
 		order by events.created_at, events.id
-	`, from, to)
+	`, to)
 }
 
 // readFiledIssues reads the `issue.created` event a session wrote of each named issue, whatever
@@ -768,6 +786,33 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	return nil
 }
 
+// readPlans reads each version of the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
+// what the fallback timeline reads the order of a task's steps from (Issue.phaseLine). A plan
+// whose tasks are not exactly one keeps no steps, which reads as the default steps.
+func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []string) error {
+	plans, err := workflowstore.IssuesPlans(ctx, pool, keys)
+	if err != nil {
+		return err
+	}
+	for key, held := range plans {
+		issue := p.Issues[key]
+		if issue == nil {
+			continue
+		}
+		for _, made := range held {
+			var steps []string
+			if len(made.Plan.Tasks) == 1 {
+				for _, step := range made.Plan.Tasks[0].Steps {
+					role, _, _ := strings.Cut(step, ":")
+					steps = append(steps, role)
+				}
+			}
+			issue.Plans = append(issue.Plans, RunPlan{Made: made.Made, Steps: steps})
+		}
+	}
+	return nil
+}
+
 // readSampled reads the scope's observations (readObservations) in the repeatable-read,
 // read-only transaction read opened for the project's reported set (readReported), and commits
 // it, so the timelines and the trees answer one moment. The reported set is read first and alone,
@@ -834,7 +879,7 @@ func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string
 		}
 		// A value of another shape leaves the block unread: the daemon owns the wire shape,
 		// and a reader of one names what it expects, as the board does (observeProject).
-		if admission, read := legion.ParseAdmission(one.Value); read {
+		if admission := legion.AdmissionOf(one.Value); admission != nil {
 			p.Admission = admission
 		}
 	}

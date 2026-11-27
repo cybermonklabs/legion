@@ -25,8 +25,9 @@ func freshnessJSON(t *testing.T, freshness any) string {
 // sameFreshness is whether got states want: the same instants, error and count.
 func sameFreshness(got *delivery.DeliveryFreshnessView, want delivery.DeliveryFreshnessView) bool {
 	sameTime := func(a, b *time.Time) bool { return (a == nil) == (b == nil) && (a == nil || a.Equal(*b)) }
+	sameText := func(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 	return got != nil && sameTime(got.LastEventAt, want.LastEventAt) && sameTime(got.LastReconcileAt, want.LastReconcileAt) &&
-		equalStringPointers(got.LastError, want.LastError) && got.UnfetchableCount == want.UnfetchableCount
+		sameText(got.LastError, want.LastError) && got.UnfetchableCount == want.UnfetchableCount
 }
 
 // TestTheDeliveryEvalsAnswerCarriesTheProjectsFreshness: the list read of a project's delivery
@@ -184,7 +185,7 @@ func TestASourcesBookkeepingMovesItsProjectsDeliveryEvalsView(t *testing.T) {
 	for _, sub := range []string{"d", "l"} {
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		snapshots[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
+		snapshots[sub] = conns[sub].snapshot(t, sub).Body
 	}
 	rig.waitConnected(t)
 	var held evalListResponse
@@ -198,7 +199,7 @@ func TestASourcesBookkeepingMovesItsProjectsDeliveryEvalsView(t *testing.T) {
 	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "acme/widgets", "GitHub answered 502"); err != nil {
 		t.Fatalf("record a reconcile error: %v", err)
 	}
-	delta := conns["d"].delta(t, 5*time.Second, "d")
+	delta := conns["d"].delta(t, "d")
 	if _, set := delta.Set["delivery_freshness"]; !set {
 		t.Fatalf("the bookkeeping's delta sets %v, want delivery_freshness among them", delta.Set)
 	}

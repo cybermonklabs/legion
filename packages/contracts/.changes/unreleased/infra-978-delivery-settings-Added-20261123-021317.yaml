@@ -2,8 +2,17 @@ kind: Added
 body: |-
   The contract carries the per-project delivery settings route (`/api/v1/projects/{key}/settings/delivery`,
   with its deploy sources and each source's `reconciled_through`) and the record of deploys and
-  failed changes (`/api/v1/projects/{key}/production-events`, `ProductionEvent`). The change
-  fail rate's `upper_bound` and `per_pr` parts and the pending flag counts are removed.
+  failed changes (`/api/v1/projects/{key}/production-events`, `ProductionEvent`). The delivery
+  measures' `change_failure_rate` is `{failed, total, rate}`, an object that is never null whose
+  leaves are each null where no day part of it was folded; `failed_deployment_recovery`
+  (`{n, median_minutes, not_restored}`) and `deployment_rework_rate` (`{restoring, total, rate}`)
+  are added beside it, each null alike. For the Delivery page of the earlier release, which reads
+  them with no null guard while the two releases roll, `change_failure_rate.per_pr` and
+  `.per_deploy` (`DeliveryRetiredPRFlagCounts`, `DeliveryRetiredDeployFlagCounts`) and
+  `time_to_restore` (`DeliveryRetiredTimeToRestore`, its `median_minutes` null) stay with every
+  leaf null in every window, and go with the old delivery settings routes in the next release.
+  The change fail rate's `upper_bound` and `per_pr` figures, the pending flag counts, the
+  measures answer's `flags_source` and `status.change_failure_rate_upper_bound` are removed.
 time: 2026-11-23T02:13:17Z
 custom:
     Issue: INFRA-978

@@ -86,7 +86,8 @@ type deliveryOracleFixture struct {
 // failed-change flags it never stored, and answered flags_source none, an object of zero flag
 // counts and rates over the window's totals, time to restore with no median, and verdicts of the
 // rate and of its upper bound; this head folds the three failure measures from their evals' day
-// rows, which no builder writes here, so each is null with a null verdict, and flags_source and
+// rows, which no builder writes here, so each is null with a null verdict, the flag counts and the
+// time_to_restore a page of the base head's build reads stay with every leaf null, flags_source and
 // the upper bound are gone (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a
 // series' min_n is a person's to set, and every reader uses it): the base head ranked by the
 // constant 50 and stated nothing, this head ranks by the min_n of pr-ci's job series in the
@@ -95,6 +96,7 @@ type deliveryOracleFixture struct {
 // the base head's answer must not hold (takeSlowestMinResults). Those fields are then left out of
 // the value-for-value comparison, and every other field it reads must be the base head's.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join("testdata", "golden_delivery")
 	var recorded deliveryOracleFixture
 	readDeliveryOracleFile(t, filepath.Join(dir, "fixture.json"), &recorded)
@@ -282,14 +284,15 @@ func takeWithPRs(t *testing.T, got, want any, earlier, days int) (string, string
 }
 
 // takeFailureMeasures checks got's failure measures and their verdict against want's, a measures
-// answer's and the base head's, and takes them out of both. got's measures.change_failure_rate,
-// measures.time_to_restore, measures.deployment_rework_rate and status.change_failure_rate must
-// each be null, since no day row of the three evals is written here, and got must hold no
-// flags_source and no status.change_failure_rate_upper_bound. want's must be the base head's
-// stand-ins: flags_source none, each change_failure_rate count and rate 0 over a total that is a
-// count, time_to_restore with no median, no deployment_rework_rate, and each of its two verdicts a
-// boolean or null. It answers how many of the base head's values the check named and, where any
-// is off, what is.
+// answer's and the base head's, and takes them out of both. Since no day row of the three evals is
+// written here, each of got's failure members (modernFailureMembers) and status.change_failure_rate
+// must be null; each container a page of the base head's build reads (legacyMeasureReads) an
+// object of exactly the leaves that page reads, each null; and got must hold no flags_source and
+// no status.change_failure_rate_upper_bound. want's must be the base head's stand-ins: flags_source
+// none, each change_failure_rate count and rate 0 over a total that is a count, time_to_restore
+// with no median, no deployment_rework_rate or failed_deployment_recovery, and each of its two
+// verdicts a boolean or null. It answers how many of the base head's values the check named and,
+// where any is off, what is.
 func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 	t.Helper()
 	field := func(tree any, path ...string) (map[string]any, string) {
@@ -299,11 +302,18 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 		}
 		return parent, path[len(path)-1]
 	}
-	for _, path := range [][]string{{"measures", "change_failure_rate"}, {"measures", "time_to_restore"}, {"measures", "deployment_rework_rate"}, {"status", "change_failure_rate"}} {
+	written := got.(map[string]any)["measures"].(map[string]any)
+	if problems := append(nullMemberProblems(written, modernFailureMembers...), legacyReadProblems(written)...); len(problems) > 0 {
+		return 0, problems[0] + ", with no day row of the failure measures"
+	}
+	if value, held := got.(map[string]any)["status"].(map[string]any)["change_failure_rate"]; !held || value != nil {
+		return 0, fmt.Sprintf("status.change_failure_rate is %v (held %t) with no day row of the failure measures, want null", value, held)
+	}
+	for _, path := range [][]string{
+		{"measures", "change_failure_rate"}, {"measures", "time_to_restore"}, {"measures", "failed_deployment_recovery"},
+		{"measures", "deployment_rework_rate"}, {"status", "change_failure_rate"},
+	} {
 		parent, key := field(got, path...)
-		if value, held := parent[key]; !held || value != nil {
-			return 0, fmt.Sprintf("%s is %v (held %t) with no day row of the failure measures, want null", strings.Join(path, "."), value, held)
-		}
 		delete(parent, key)
 	}
 	for _, path := range [][]string{{"flags_source"}, {"status", "change_failure_rate_upper_bound"}} {
@@ -312,10 +322,11 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 			return 0, fmt.Sprintf("this answer holds %s %v, which went with the pending state", strings.Join(path, "."), value)
 		}
 	}
-	if value, held := want.(map[string]any)["measures"].(map[string]any)["deployment_rework_rate"]; held {
-		return 0, fmt.Sprintf("the base head's answer holds measures.deployment_rework_rate %v, which it never measured", value)
+	for _, name := range []string{"deployment_rework_rate", "failed_deployment_recovery"} {
+		if value, held := want.(map[string]any)["measures"].(map[string]any)[name]; held {
+			return 0, fmt.Sprintf("the base head's answer holds measures.%s %v, which it never measured", name, value)
+		}
 	}
-
 	named := 0
 	if source := want.(map[string]any)["flags_source"]; source != "none" {
 		return named, fmt.Sprintf("the base head's flags_source is %v, want none", source)

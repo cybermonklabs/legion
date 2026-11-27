@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -43,6 +44,7 @@ import (
 // edges with the ones it built from the text it read: the stored edge is the old text's, and each
 // assertion below names it.
 func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	source := resolverSource(2)
@@ -64,7 +66,7 @@ func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
 	edit := func(tx pgx.Tx) {
 		lockOwnerOrFail(t, ctx, tx, owner)
 		editText(t, ctx, tx,
-			`update comments set body = $2 where id = $1::uuid`, "comment", source, editedComment)
+			`update comments set body = $2 where id = $1::uuid`, "comment", source, editedComment, prefixAuthor)
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -75,6 +77,7 @@ func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
 // reads, and holds its owner's lock while it inserts the next one, the issue's here, the
 // artifact's for a project document.
 func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var document string
@@ -102,7 +105,7 @@ func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 		`, document, editedDocument); err != nil {
 			t.Fatalf("write the edited document version: %v", err)
 		}
-		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument, model.Actor{})
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -114,6 +117,7 @@ func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 // project document stands under no issue, so a writer of it takes the artifact's owner lock
 // (lockArtifactOwner's `issue_key is null` arm), and that is the lock this probe asks about.
 func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var document string
@@ -142,7 +146,7 @@ func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T)
 		`, document, editedDocument); err != nil {
 			t.Fatalf("write the edited project document version: %v", err)
 		}
-		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument, model.Actor{})
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -262,20 +266,21 @@ func probeRefused(t *testing.T, ctx context.Context, probe pgx.Tx, gate *readGat
 }
 
 // editText writes new text with one statement and then the edges of that text, as a live writer
-// of an ask, a comment or a message does.
-func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body string) {
+// of an ask, a comment or a message does, for writer, the author the source's row records.
+func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body string, writer model.Actor) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, sql, id, body); err != nil {
 		t.Fatalf("write the edited text: %v", err)
 	}
-	writeEdges(t, ctx, tx, kind, id, body)
+	writeEdges(t, ctx, tx, kind, id, body, writer)
 }
 
-// writeEdges stores the edges of one text, as every writer does after it writes.
-func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string) {
+// writeEdges stores the edges of one text, as every writer does after it writes, its short ids
+// resolved for writer, the author the source records.
+func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string, writer model.Actor) {
 	t.Helper()
-	located := NewReader(ctx, tx, kind, id, resolverServer).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil); err != nil {
+	located := NewReader(ctx, tx, writer, kind, id, resolverServer).Mentions(body)
+	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}
 }

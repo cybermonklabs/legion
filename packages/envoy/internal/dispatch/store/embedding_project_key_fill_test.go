@@ -351,6 +351,7 @@ const fillEmbeddingProjectKeysCursorCTEQuery = `
 // table, which is where a pass spends nearly the whole of its life, and the control is read at
 // both of them.
 func TestTheEmbeddingProjectKeyBatchReadsOneBoundedIndexScan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, _ := openFillTestStore(t, embeddingProjectKeyPlanRows)
 	// A plan is chosen on the statistics of the table, and a table just filled by a test has
@@ -419,6 +420,7 @@ func TestTheEmbeddingProjectKeyBatchReadsOneBoundedIndexScan(t *testing.T) {
 // cannot push into the index - which is the whole of the defect this change ends - so the
 // generic plan is held to the index condition too.
 func TestTheEmbeddingProjectKeyBatchKeepsItsIndexConditionWhenPlannedWithoutTheCursor(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, _ := openFillTestStore(t, embeddingProjectKeyPlanRows)
 	if _, err := database.Pool.Exec(ctx, "analyze embeddings"); err != nil {

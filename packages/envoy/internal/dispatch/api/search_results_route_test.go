@@ -20,7 +20,7 @@ import (
 // filters a person chose.
 var searchNarrowingMembers = []string{"number_project", "status", "author", "updated_since", "keywords_only"}
 
-// The two paths one handler serves (routes_table.go).
+// The two paths one handler serves (their route files).
 const (
 	searchPath        = "/api/v1/search"
 	searchResultsPath = "/api/v1/search/results"
@@ -127,6 +127,7 @@ func seedSearchResultsCorpus(t *testing.T, handler http.Handler, database *store
 // what keeps a page served by an earlier release correct, and it fails the moment anyone takes
 // the reads out of the handler because the declaration moved.
 func TestSearchResultsRouteAppliesEveryMemberAndTheOldPathAnswersTheSame(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchResultsCorpus(t, handler, database)
@@ -247,6 +248,7 @@ func TestSearchResultsRouteAppliesEveryMemberAndTheOldPathAnswersTheSame(t *test
 // back on the old route's declared contract, where an older build would drop it and answer
 // unnarrowed rows 200.
 func TestTheCommittedDocumentOffersTheFiveMembersOnTheResultsRouteAlone(t *testing.T) {
+	t.Parallel()
 	var document struct {
 		Paths map[string]map[string]struct {
 			Parameters []struct {

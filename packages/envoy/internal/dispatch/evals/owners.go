@@ -12,67 +12,116 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
-// owners.go is where what a repository attributes is kept (dispatch://INFRA-2916, R15, plan D1 and
-// the architect's rulings of 14:08Z and 18:38Z): a pull request that names no issue the issues
-// table holds, a CI run of such a pull request or of none, and a deploy run where it ships such a
-// pull request or ships none, with each job of it a deploy card follows, count for each project
-// whose default repository is their repository, a selection made at read time. So their day rows,
-// members and owed days are written once, whatever the defaults are, under the repository's owner
-// key (OwnerKey) in eval_days, eval_day_members and eval_days_owed, where a project's rows stand
-// under its key (migration 20261117100006): the refresher's delivery family treats an owner key as
-// one more project, its walks, pages, spans, settings rewrites and rebuilds alike, and every read of
-// a project folds its own rows with those of the owner keys of the repositories it publishes as its
-// default (eval_project_owners), less the ones it shares.
+// owners.go is where what a repository attributes is kept (dispatch://INFRA-2916, R15 and plan
+// D1): what counts for each project whose default
+// repository is its repository, and what counts for a project only as long as that project's
+// default repository is its repository, are selections made at read time. A pull request whose
+// attribution list (delivery_days.go's attributionList) is not constant, a CI run of such a pull
+// request, of a pull request no issue attributes or of none, and a deploy run where it ships such
+// a pull request or ships none, with each job of it a deploy card follows, have their day rows,
+// members and owed days written once, whatever the defaults are, under an owner key of their
+// repository (OwnerKey) in eval_days, eval_day_members and eval_days_owed, where a project's rows
+// stand under its key (migration 20261117100006): the refresher's delivery family treats an owner
+// key as one more project, its walks, pages, spans, settings rewrites and rebuilds alike, and every
+// read of a project folds its own rows with those of the owner keys it reads under the published
+// defaults (eval_project_owners, which eval_owner_readers decides for a key that carries lists), so
+// a move of a default repository moves what each project reads and rewrites no day row: the commit
+// that publishes it marks stale every cut of the stored figures it moves rows into or out of, the
+// project's own cut ('') as much as a repository's, and folds only each marked cut's first paint
+// (foldMarkedFirstPaints); the refresher folds the rest of each marked cut again (publishDefaults,
+// refoldStaleCuts, figures.go).
 //
-// A deploy run that ships pull requests of projects through their issues counts for those projects
-// in their own rows. Where it also ships a pull request that names no issue, its repository's row
-// of it names those projects as its sharers, which skip it, so a project whose default repository
-// is the run's repository counts the run once, through its issue (plan D1 (iii)). One owner key
-// stands for each distinct sharers set, so sharers is part of the rows' key: two deploys of one
-// day with different sharers are two rows.
+// An owner key carries what decides its readers. Its sharers: a deploy run that ships pull
+// requests that count for projects whatever the defaults are (a constant list's terminal) counts
+// for those projects in their own rows, and its repository's row of it names them as its sharers,
+// which skip it, so such a project counts the run once, through its issue (plan D1 (iii)). And its
+// lists: each attribution list of a pull request it counts that is not constant, as its rows count
+// for whichever project the list picks under the published defaults (its first condition whose
+// default is the key's repository, else its terminal), and, where some list picks none, or the key
+// carries none (a plain key), for each project whose default is the key's repository. One owner key
+// stands for each distinct set of sharers and lists, so both are part of the rows' key: two deploys
+// of one day with different sharers, or pull requests of one day with different lists, are rows
+// of two keys. A deploy run that ships no pull request is a row of its repository's source key
+// (sourceKey, dispatch://INFRA-978 R12), whose one list names no project and which the project whose
+// deploy source reads the repository reads, as the refresher records it with the repository's rule
+// (eval_days_rules): which repositories a project's sources read is a selection made at read time
+// too, so a source move rewrites no day row.
 
 // ownerPrefix begins every owner key, and no project key (projects_key_check,
 // ^[A-Z][A-Z0-9]{1,9}$, migration 0001): an owner key never names a project.
 const ownerPrefix = ":"
 
-// OwnerKey is the owner key of the rows repo attributes and the projects of sharers count through
-// their own issues already: ':' + repo + '|' + the sorted, distinct keys of sharers joined by ','.
-// repo is the repository's canonical name, as every delivery table keeps it. It is the one place
-// the key is made (and parseOwner the one place it is read), beside the change trigger's reading of
-// it (eval_days_change_log, migration 20261117100014). No repository name holds '|' and no project
-// key ',', so the key reads back as it was made.
-func OwnerKey(repo string, sharers []string) string {
-	sorted := slices.Compact(slices.Sorted(slices.Values(sharers)))
-	return ownerPrefix + repo + "|" + strings.Join(sorted, ",")
+// OwnerKey is the owner key of the rows repo attributes, the projects of sharers count in their own
+// rows already and lists decide the readers of: ':' + repo + '|' + the sorted, distinct keys of
+// sharers joined by ',', and, where some list holds a condition or a terminal, '|' + the sorted,
+// distinct lists (attributionList.String) joined by ';'. A key whose every list is none (a pull
+// request no issue attributes, a deploy that ships only such pull requests or ships none) is the
+// plain key ':' + repo + '|' + sharers, which every project whose default is repo reads. repo is the
+// repository's canonical name, as every delivery table keeps it. It is the one place the key is
+// made (and parseOwner the one place it is read), beside the change trigger's reading of it
+// (eval_days_change_log, migration 20261117100014). No repository name holds '|', and no project
+// key ',', ';' or '>', so the key reads back as it was made.
+func OwnerKey(repo string, sharers []string, lists []attributionList) string {
+	key := ownerPrefix + repo + "|" + strings.Join(slices.Compact(slices.Sorted(slices.Values(sharers))), ",")
+	encoded := make([]string, 0, len(lists))
+	carried := false
+	for _, list := range lists {
+		encoded = append(encoded, list.String())
+		carried = carried || !list.none()
+	}
+	if !carried {
+		return key
+	}
+	slices.Sort(encoded)
+	return key + "|" + strings.Join(slices.Compact(encoded), ";")
 }
 
-// legionfactsDefault is the repository a Legion row of an issue whose own chain names none is
-// stored under (legionfacts.DefaultRepo): a project's cut of a repository reads those rows too
-// where that repository is the one it publishes as its default, so a default move moves the cut
-// and rewrites no row (dispatch://INFRA-2916, plan D1 (vi)).
-const legionfactsDefault = legionfacts.DefaultRepo
+// sourceTerminal is the terminal of a source key's one list (sourceKey): no project's key
+// (projects_key_check, ^[A-Z][A-Z0-9]{1,9}$), and no character a project key or a repository name
+// holds, so the list names no project, and no other list is it.
+const sourceTerminal = "~"
+
+// sourceKey is repo's source key: the owner key (OwnerKey) of the rows of repo's deploy runs that
+// ship no pull request (dispatch://INFRA-978, R12), each with its push run and that run's jobs a
+// deploy card follows, ':' + repo + '||>~', with no sharer and one list of its own, whose terminal
+// is sourceTerminal. Its rows are written once, whichever project's deploy source reads repo, and
+// read by that project alone, the delivery-on project eval_days_rules records for repo
+// (eval_project_owners' arm for a key whose lists are {>~}, migration 20261126090000), through the
+// repository (via true): so a source moved away from repo and back, or repo's source moved to
+// another project, moves the key's reader and rewrites no day row. The release before's
+// eval_project_owners reads a key that carries lists through eval_owner_readers alone, which picks
+// the terminal '~', a project no row of projects holds: under it the key has no reader.
+func sourceKey(repo string) string {
+	return OwnerKey(repo, nil, []attributionList{{terminal: sourceTerminal}})
+}
 
 // isOwner reports whether key is an owner key (OwnerKey) rather than a project's.
 func isOwner(key string) bool {
 	return strings.HasPrefix(key, ownerPrefix)
 }
 
-// parseOwner is the repository and the sharers of the owner key key, false where key is none.
-func parseOwner(key string) (string, []string, bool) {
+// parseOwner is the repository, the sharers and the lists (each as attributionList.String writes
+// it, as eval_day_owners.lists keeps it) of the owner key key, false where key is none.
+func parseOwner(key string) (string, []string, []string, bool) {
 	rest, ok := strings.CutPrefix(key, ownerPrefix)
-	repo, joined, found := strings.Cut(rest, "|")
+	repo, rest, found := strings.Cut(rest, "|")
 	if !ok || !found || repo == "" {
-		return "", nil, false
+		return "", nil, nil, false
 	}
-	var sharers []string
+	joined, carried, _ := strings.Cut(rest, "|")
+	var sharers, lists []string
 	if joined != "" {
 		sharers = strings.Split(joined, ",")
 	}
-	return repo, sharers, true
+	if carried != "" {
+		lists = strings.Split(carried, ";")
+	}
+	return repo, sharers, lists, true
 }
 
-// readOwners reads every owner key eval_days has held a row of (eval_day_owners), in key order:
-// the owners the delivery walk writes the days of beside the projects.
+// readOwners reads every owner key eval_days has held a row of (eval_day_owners), in key order,
+// each repository's source key (sourceKey) among them: the owners the delivery walk writes the days
+// of beside the projects.
 func readOwners(ctx context.Context, q delivery.Querier) ([]string, error) {
 	rows, err := q.Query(ctx, `select owner from eval_day_owners order by owner collate "C"`)
 	if err != nil {
@@ -85,61 +134,151 @@ func readOwners(ctx context.Context, q delivery.Querier) ([]string, error) {
 	return owners, nil
 }
 
-// recordOwners records in eval_day_owners, in tx, each owner key of keys it does not hold yet, as
-// the eval_days change trigger records a key the first time a statement writes a row of it
-// (migration 20261117100014): a rebuild stages its rows aside first (stageRows), and its fold of
-// the stored figures reads the staged rows through eval_project_owners before the flip writes
-// them, so a key whose first rows it stages is read by the projects that publish its repository.
-// A key whose staged rows the rebuild abandons stands with no row, as one whose rows all went.
+// recordOwners records in eval_day_owners, in tx, each owner key of keys it does not hold yet, with
+// its repository, its sharers and its lists, as the eval_days change trigger records a key the
+// first time a statement writes a row of it (migration 20261117100014): a rebuild stages its rows
+// aside first (stageRows), and its fold of the stored figures reads the staged rows through
+// eval_project_owners before the flip writes them, so a key whose first rows it stages is read by
+// the projects its readers are. A source key (sourceKey) is recorded with its one list, '{>~}',
+// which eval_project_owners reads it by. A key whose staged rows the rebuild abandons stands with
+// no row, as one whose rows all went. Failure writes also register keys to make their readers'
+// changes visible to a later publication, even if the delivery walk has not reached a key yet.
 func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
-	var owners, repos, sharers []string
+	type owner struct{ key, repo, sharers, lists string }
+	var owners []owner
 	for _, key := range slices.Compact(slices.Sorted(slices.Values(keys))) {
-		if repo, shared, ok := parseOwner(key); ok {
-			owners, repos, sharers = append(owners, key), append(repos, repo), append(sharers, strings.Join(shared, ","))
+		if repo, shared, carried, ok := parseOwner(key); ok {
+			owners = append(owners, owner{key: key, repo: repo, sharers: strings.Join(shared, ","), lists: strings.Join(carried, ";")})
 		}
 	}
-	if len(owners) == 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into eval_day_owners (owner, repo, sharers)
-		select given.owner, given.repo, coalesce(string_to_array(nullif(given.sharers, ''), ','), '{}')
-		from unnest($1::text[], $2::text[], $3::text[]) as given(owner, repo, sharers)
-		order by given.owner collate "C"
-		on conflict do nothing
-	`, owners, repos, sharers); err != nil {
-		return fmt.Errorf("record %d owner keys a rebuild stages rows of: %w", len(owners), err)
+	// The keys grow with the history a rebuild stages, so they go in statements of at most
+	// statementBytes, in key order, the order each inserts them in.
+	size := func(one *owner) int { return 4*4 + len(one.key) + len(one.repo) + len(one.sharers) + len(one.lists) }
+	for chunk := range statementChunks(owners, paramBytes(4), size) {
+		owned, repos, sharers, lists := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for i, one := range chunk {
+			owned[i], repos[i], sharers[i], lists[i] = one.key, one.repo, one.sharers, one.lists
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into eval_day_owners (owner, repo, sharers, lists)
+			select given.owner, given.repo, coalesce(string_to_array(nullif(given.sharers, ''), ','), '{}'),
+				coalesce(string_to_array(nullif(given.lists, ''), ';'), '{}')
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(owner, repo, sharers, lists)
+			order by given.owner collate "C"
+			on conflict do nothing
+		`, owned, repos, sharers, lists); err != nil {
+			return fmt.Errorf("record %d eval owner keys: %w", len(chunk), err)
+		}
 	}
 	return nil
 }
 
-// readersOf reads in q the projects whose reads fold the rows of owner (eval_project_owners): the
-// projects whose published default is its repository, less its sharers, in key order.
-func readersOf(ctx context.Context, q delivery.Querier, owner string) ([]string, error) {
-	rows, err := q.Query(ctx, `select project_key from eval_project_owners where owner = $1 order by project_key collate "C"`, owner)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects that read %s: %w", owner, err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the projects that read %s: %w", owner, err)
-	}
-	return projects, nil
+// readersOf reads in q the projects whose reads fold the rows of each of owners
+// (eval_project_owners), by owner, each owner's in key order: for a plain key, the projects whose
+// published default is its repository, less its sharers; for a source key (sourceKey), the project
+// eval_days_rules records as the one whose deploy source reads its repository, none while no
+// source reads it; for any other key that carries lists, the projects eval_owner_readers picks.
+// One read for every owner, in statements of at most statementBytes; an owner no project reads has
+// none.
+func readersOf(ctx context.Context, q delivery.Querier, owners []string) (map[string][]string, error) {
+	readers := map[string][]string{}
+	err := readOwnerReaders(ctx, q, owners, func(owner string, reader counted) {
+		readers[owner] = append(readers[owner], reader.project)
+	})
+	return readers, err
 }
 
-// ownersIn reads in q the keys whose rows each of projects' reads fold (eval_project_owners): the
-// project's own, and the owner keys of the repository it publishes as its default, less those it
-// shares, each project's in key order. The read-time path builds each of them (ComputeAtRead).
-func ownersIn(ctx context.Context, q delivery.Querier, projects []string) (map[string][]string, error) {
+// ownerReadersIn is readersOf with the via_repository decision for each reader.
+func ownerReadersIn(ctx context.Context, q delivery.Querier, owners []string) (map[string][]counted, error) {
+	readers := map[string][]counted{}
+	err := readOwnerReaders(ctx, q, owners, func(owner string, reader counted) {
+		readers[owner] = append(readers[owner], reader)
+	})
+	return readers, err
+}
+
+// readOwnerReaders visits each reader the published owner view gives to the supplied keys.
+func readOwnerReaders(ctx context.Context, q delivery.Querier, owners []string, visit func(string, counted)) error {
+	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
+		rows, err := q.Query(ctx, `
+			select owner, project_key, via from eval_project_owners where owner = any($1) order by project_key collate "C"
+		`, chunk)
+		if err != nil {
+			return fmt.Errorf("read the projects that read %d owner keys: %w", len(chunk), err)
+		}
+		var owner string
+		var reader counted
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &reader.project, &reader.via}, func() error {
+			visit(owner, reader)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("read the projects that read %d owner keys: %w", len(chunk), err)
+		}
+	}
+	return nil
+}
+
+// readUnrecordedOwners adds readers of keys the production record names before delivery has
+// registered them. It uses the same published inputs as the owner view: eval_owner_readers for
+// attribution lists (a plain key is one empty pick) and eval_days_rules for the source key.
+// It returns the missing keys, including keys with no current reader.
+func readUnrecordedOwners(ctx context.Context, q delivery.Querier, owners []string, readers map[string][]counted) ([]string, error) {
+	var missing []string
+	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
+		rows, err := q.Query(ctx, `
+			with missing as materialized (
+				select given.owner, split_part(given.owner, '|', 1) as repo_key,
+					string_to_array(split_part(given.owner, '|', 2), ',') as sharers,
+					coalesce(string_to_array(nullif(split_part(given.owner, '|', 3), ''), ';'), array['>']) as lists
+				from unnest($1::text[]) as given(owner)
+				where not exists (select 1 from eval_day_owners o where o.owner = given.owner)
+			)
+			select owner, null::text, false from missing
+			union all
+			select m.owner, r.project_key, r.via from missing m
+			cross join lateral eval_owner_readers(substr(m.repo_key, 2), m.sharers, m.lists) r
+			where m.lists <> '{>`+sourceTerminal+`}'
+			union all
+			select m.owner, p.key, true from missing m
+			join eval_days_rules rule on lower(rule.repo) = lower(substr(m.repo_key, 2))
+			join projects p on p.key = rule.project_key
+			where m.lists = '{>`+sourceTerminal+`}'`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read unrecorded owner keys of the production record: %w", err)
+		}
+		var owner string
+		var project *string
+		var via bool
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &project, &via}, func() error {
+			if project == nil {
+				missing = append(missing, owner)
+			} else {
+				readers[owner] = append(readers[owner], counted{project: *project, via: via})
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read unrecorded owner keys of the production record: %w", err)
+		}
+	}
+	return missing, nil
+}
+
+// ownersIn reads in q the keys whose rows each of projects' reads fold (eval_project_owners), each
+// with whether the project reads it through the repository (via, viaAsRead): the project's own,
+// the owner keys its published default picks, and the source keys of the repositories its deploy
+// sources read, each project's in key order. The read-time path builds each of them
+// (ComputeAtRead).
+func ownersIn(ctx context.Context, q delivery.Querier, projects []string) (map[string][]counted, error) {
 	rows, err := q.Query(ctx, `
-		select project_key, owner from eval_project_owners where project_key = any($1::text[])
+		select project_key, owner, via from eval_project_owners where project_key = any($1::text[])
 		order by project_key, owner collate "C"`, projects)
 	if err != nil {
 		return nil, fmt.Errorf("read the owners of the day rows of %v: %w", projects, err)
 	}
-	owners := map[string][]string{}
-	var project, owner string
-	if _, err := pgx.ForEachRow(rows, []any{&project, &owner}, func() error {
+	owners := map[string][]counted{}
+	var project string
+	var owner counted
+	if _, err := pgx.ForEachRow(rows, []any{&project, &owner.project, &owner.via}, func() error {
 		owners[project] = append(owners[project], owner)
 		return nil
 	}); err != nil {
@@ -166,11 +305,65 @@ func asReader(owner, project, evalID string) string {
 	return EvalID(project, slugOf(owner, evalID))
 }
 
-// ownedDayColumns is dayColumns of a day row d read through eval_project_owners o: the row as the
-// project o names reads it, under its own key and its eval id of the row's slug.
-const ownedDayColumns = `o.project_key, o.project_key || substr(d.eval_id, length(o.owner) + 1), d.deploy_repo, d.series, d.repo,
-	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at,
-	coalesce(d.last_reading::text, ''), d.counts, d.via_repository, d.built_by, d.updated_at`
+// evalIDAs is asReader's rule in SQL: the eval id evalID, of the key of, under key, the same slug
+// (key || substr(evalID, length(of) + 1)), each argument an expression of the statement: an owner
+// key's eval id as a project reads it, or a project's eval id as an owner key stores it.
+func evalIDAs(key, evalID, of string) string {
+	return key + ` || substr(` + evalID + `, length(` + of + `) + 1)`
+}
+
+// viaAsRead is via, the via_repository column of a day row of the owner o of eval_project_owners
+// names, as the project o names reads it: the rows a project reads through an issue of its own
+// count none through a repository (o.via false: its own rows, and an owner key's whose list picks
+// it), and an owner key's rows it reads through the repository count every row (o.via true), as
+// their via_repository does: a plain key's, a key's no list of which picks the project, and a
+// source key's (sourceKey), whose deploys ship no pull request and reach the project of the source
+// that reads their repository through that repository (dispatch://INFRA-978, R12). Every read of a
+// project's day rows through eval_project_owners reads via_repository through it.
+func viaAsRead(via string) string {
+	return `case when o.via then ` + via + ` else 0 end`
+}
+
+// ownedKeys is the condition that a row of eval_days or eval_day_members (alias) stands under one of
+// the keys the projects read (eval_project_owners: a project's own key, the owner keys its published
+// default picks, and the source keys of the repositories its deploy sources read, as eval_days_rules
+// records them), where projects is the condition on
+// eval_project_owners.project_key that names them (`= $1`, `= any($1::text[])`). A read joins
+// eval_project_owners o on alias.project_key = o.owner, and the planner joins the view by a hash,
+// which carries that equality into no index condition of the table: without this condition a read
+// of a repository's rows takes every project's rows of that repository and of the days through its
+// index on (project_key, repo, day), and the items read of one eval merges every project's rows of
+// it. The array is one InitPlan, so each index range of the read is bounded by the keys. Measured at
+// INFRA's size on the build farm, the eval list's 84-day read of one repository with a compare
+// range took 93 to 132 ms (median 125, 8 fresh connections) of execution without it and 92 to
+// 131 ms (median 99) with it and its values in the plan (DayWindowIn); on the pod, at a tenth of
+// that size, it reads 8,985 + 9,272 heap rows for the 8,985 + 9,272 it keeps where it read
+// 13,417 + 9,372, and the items read of one eval takes 3.4 ms where it took 455 ms.
+func ownedKeys(alias, projects string) string {
+	return alias + `.project_key = any(array(select owner from eval_project_owners where project_key ` + projects + `))`
+}
+
+// repoCut is the condition that a row (alias) read through eval_project_owners o is one of the
+// repositories repos (a text[] expression) names: a row of one of them, or a row of the project's
+// own stored under legionfacts.DefaultRepo (a Legion row of an issue whose own chain names no
+// repository) where project (an expression of its key) publishes one of them as its default
+// (eval_project_repos), since such a row is one of that repository: a move of the default moves the
+// cut and rewrites no row (dispatch://INFRA-2916, plan D1 (vi)), and marks the stored figures of
+// the two defaults' cuts stale until they are folded again (publishDefaults). The stored figures
+// keep the fold of each cut a read of one repository reads by cutOf, the same rule read the other
+// way. A read that names no repository adds none of it.
+func repoCut(alias, repos, project string) string {
+	return `(` + alias + `.repo = any(` + repos + `) or (` + alias + `.repo = '` + legionfacts.DefaultRepo + `' and ` + alias + `.project_key = o.project_key and exists (
+		select 1 from eval_project_repos p where p.project_key = ` + project + ` and p.repo = any(` + repos + `))))`
+}
+
+// ownedDayColumns selects the day as the project reads it, with repo its cut and samples the list
+// the items read needs, or SQL null when it needs none.
+func ownedDayColumns(repo, samples string) string {
+	return `o.project_key, ` + evalIDAs("o.project_key", "d.eval_id", "o.owner") + `, d.deploy_repo, d.series, ` + repo + ` as cut_repo,
+	d.day, d.listed, d.n, d.sum, d.num, d.den, d.max, ` + samples + `, d.last_value, d.last_at, d.last_recorded_at,
+	coalesce(d.last_reading::text, ''), d.counts, ` + viaAsRead("d.via_repository") + `, d.built_by, d.updated_at`
+}
 
 // addOwnedRows is days, ordered by day, then series and repository, of one eval and deploy
 // repository, with the rows of one series, repository and day that several owners hold (a

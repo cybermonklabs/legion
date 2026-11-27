@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,15 +12,19 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // refresher_reads.go holds the refresher's reads of where each item a change names stands, each
-// one statement, and its fill of the logged evals' zero rows (fillLoggedZeros).
+// one statement, or one for each cut of a list that grows past statementBytes (statementChunks),
+// and its fill of the logged evals' zero rows (fillLoggedZeros).
 
 // eventPage is what one page of the event log names: where the events cursor now stands, whether
-// the page was full, the projects whose count of unowned P0 issues an event can have moved, and
-// the issues whose repository or parent an event moved.
+// the page was full, the projects whose unowned-p0 rows (the count of unowned P0 issues, and its
+// repositories' counts) an event can have moved, and the issues whose repository or parent an
+// event moved.
 type eventPage struct {
 	position   int64
 	full       bool
@@ -43,7 +48,10 @@ var refresherEventTypes = []string{"issue.created", "issue.updated", "issue.clos
 // whose `changed` names its priority, status or route - and the issue is a P0 now or its priority
 // moved, which may have made it one or taken it off: the project's row of today is then written
 // again. An event whose `changed` names the repository or the parent moves the repository every
-// issue below it resolves to.
+// issue below it resolves to, and so the repository an unowned P0 issue below it is counted under
+// (WriteUnownedP0Day): the project's rows of today are then written again where it holds such an
+// issue now (delivery.CountUnownedP0), since a project that holds none has every repository's
+// count at 0 already, from the write that followed the event that took its last one off.
 func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limit int) (eventPage, error) {
 	page := eventPage{position: after}
 	if safe <= after {
@@ -65,7 +73,7 @@ func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limi
 	if err != nil {
 		return eventPage{}, fmt.Errorf("read the events after %d: %w", after, err)
 	}
-	unowned, reparented := map[string]bool{}, map[string]bool{}
+	unowned, reparented, movedIn := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	count := 0
 	var id int64
 	var project, issue string
@@ -77,11 +85,23 @@ func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limi
 			unowned[project] = true
 		}
 		if moved {
-			reparented[issue] = true
+			reparented[issue], movedIn[project] = true, true
 		}
 		return nil
 	}); err != nil {
 		return eventPage{}, fmt.Errorf("read the events after %d: %w", after, err)
+	}
+	for project := range movedIn {
+		if unowned[project] {
+			continue
+		}
+		held, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
+		if err != nil {
+			return eventPage{}, fmt.Errorf("count the unowned P0 issues of %s: %w", project, err)
+		}
+		if held > 0 {
+			unowned[project] = true
+		}
 	}
 	page.full = count == limit
 	if !page.full {
@@ -188,22 +208,27 @@ type owedDay struct {
 
 // owedDays is every day of projects that a write left owing a rewrite and no write of the day
 // has cleared (eval_days_owed, by its primary key): an item moved off it, or off the deploy run
-// whose day it is, by a write of another day; those a failed pass left among them.
+// whose day it is, by a write of another day; those a failed pass left among them. projects is
+// every project and owner key (refresh.owners), whose keys grow with the history, so it goes in
+// statements of at most statementBytes: a project's days are all in the one statement that names
+// it, in the order of its family and its day.
 func (s *Store) owedDays(ctx context.Context, projects []string) ([]owedDay, error) {
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, family, day from eval_days_owed where project_key = any($1) order by project_key, family, day
-	`, projects)
-	if err != nil {
-		return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
-	}
 	var owed []owedDay
-	var one owedDay
-	if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.family, &one.day}, func() error {
-		one.day = measures.Midnight(one.day)
-		owed = append(owed, one)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+	for chunk := range statementChunks(projects, paramBytes(1), textBytes) {
+		rows, err := s.database.Pool.Query(ctx, `
+			select project_key, family, day from eval_days_owed where project_key = any($1) order by project_key, family, day
+		`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+		}
+		var one owedDay
+		if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.family, &one.day}, func() error {
+			one.day = measures.Midnight(one.day)
+			owed = append(owed, one)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+		}
 	}
 	return owed, nil
 }
@@ -220,17 +245,44 @@ type heldMember struct {
 // heldMembers is where each of members was last counted in each of projects, under families and
 // deployRepos (the kept repositories and "", every deploy repository a member is counted under),
 // with the deploy run that shipped it then: the primary key's range of each project, family,
-// deploy repository and key.
+// deploy repository and key. projects (every project and owner key) and members (a page's items)
+// grow with the history and the page, so each goes in cuts (statementChunks): the projects in
+// cuts of at most half of statementBytes, all in one where they fit, and the members in cuts of
+// what the rest of a statement holds, each statement one cut of each.
 func (s *Store) heldMembers(ctx context.Context, projects, families, deployRepos, members []string) ([]heldMember, error) {
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, row_key, day, shipped_by from eval_day_members
-		where project_key = any($1) and family = any($2) and deploy_repo = any($3) and row_key = any($4)
-		order by project_key, row_key, day
-	`, projects, families, deployRepos, members)
-	if err != nil {
-		return nil, fmt.Errorf("read where %d items were counted: %w", len(members), err)
+	projectBytes := 0
+	for i := range projects {
+		projectBytes += textBytes(&projects[i])
 	}
-	return collectHeld(rows, fmt.Sprintf("where %d items were counted", len(members)))
+	// A cut of the projects takes at most reserve bytes, the rest of a statement its other lists:
+	// statementChunks closes a cut at statementBytes, counted from statementBytes-reserve.
+	reserve := min(projectBytes, statementBytes/2)
+	base := paramBytes(4) + reserve
+	for _, list := range [][]string{families, deployRepos} {
+		for i := range list {
+			base += textBytes(&list[i])
+		}
+	}
+	what := fmt.Sprintf("where %d items were counted", len(members))
+	var held []heldMember
+	for named := range statementChunks(projects, statementBytes-reserve, textBytes) {
+		for keys := range statementChunks(members, base, textBytes) {
+			rows, err := s.database.Pool.Query(ctx, `
+				select project_key, row_key, day, shipped_by from eval_day_members
+				where project_key = any($1) and family = any($2) and deploy_repo = any($3) and row_key = any($4)
+				order by project_key, row_key, day
+			`, named, families, deployRepos, keys)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", what, err)
+			}
+			found, err := collectHeld(rows, what)
+			if err != nil {
+				return nil, err
+			}
+			held = append(held, found...)
+		}
+	}
+	return held, nil
 }
 
 // shippedMembersQuery is shippedMembers' statement. It carries eval_day_members_shipped's predicate
@@ -246,13 +298,33 @@ const shippedMembersQuery = `
 
 // shippedMembers is where each pull request that one of runs shipped when it was last counted was
 // counted, in each of projects (eval_day_members_shipped): the merge days whose rows hold a run's
-// completion as their deploy time.
+// completion as their deploy time. projects (every project and owner key) and runs (a page's
+// items) grow with the history and the page, so each goes in cuts as heldMembers cuts them: the
+// projects in cuts of at most half of statementBytes, all in one where they fit, and the runs in
+// cuts of what the rest of a statement holds, each statement one cut of each.
 func (s *Store) shippedMembers(ctx context.Context, projects, runs []string) ([]heldMember, error) {
-	rows, err := s.database.Pool.Query(ctx, shippedMembersQuery, projects, runs, KindDelivery)
-	if err != nil {
-		return nil, fmt.Errorf("read the pull requests %d runs shipped: %w", len(runs), err)
+	projectBytes := 0
+	for i := range projects {
+		projectBytes += textBytes(&projects[i])
 	}
-	return collectHeld(rows, fmt.Sprintf("the pull requests %d runs shipped", len(runs)))
+	reserve := min(projectBytes, statementBytes/2)
+	base := paramBytes(2, KindDelivery) + reserve
+	what := fmt.Sprintf("the pull requests %d runs shipped", len(runs))
+	var held []heldMember
+	for named := range statementChunks(projects, statementBytes-reserve, textBytes) {
+		for shipped := range statementChunks(runs, base, textBytes) {
+			rows, err := s.database.Pool.Query(ctx, shippedMembersQuery, named, shipped, KindDelivery)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", what, err)
+			}
+			found, err := collectHeld(rows, what)
+			if err != nil {
+				return nil, err
+			}
+			held = append(held, found...)
+		}
+	}
+	return held, nil
 }
 
 // collectHeld reads rows of (project, row key, day, shipped by).
@@ -343,48 +415,68 @@ func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectD
 }
 
 // firstDays is firstDaysIn on the pool.
-func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow, before *time.Time) (map[evalKey]time.Time, error) {
-	return firstDaysIn(ctx, s.database.Pool, project, rows, before)
+func (s *Store) firstDays(ctx context.Context, zeros map[string][]DayRow, before *time.Time) (map[string]map[evalKey]time.Time, error) {
+	return firstDaysIn(ctx, s.database.Pool, zeros, before)
 }
 
-// firstDaysIn reads in q the first day of project's all-repositories rows of each eval rows names,
-// by eval and deploy repository (evalKey), among the computation's rows before before (every row,
-// where before is nil): the earliest over the series rows names of the eval and deploy repository
-// (a zero day's rows, which name each series an eval's builder writes on every day it has input,
-// for each deploy repository whose rows are kept), each the first entry of one range of the
-// primary key, which the bound ends. An eval with no such row has no entry. The refresher reads it
-// on the pool (firstDays), and the read-time path in its read's snapshot (ComputeAtRead).
-func firstDaysIn(ctx context.Context, q delivery.Querier, project string, rows []DayRow, before *time.Time) (map[evalKey]time.Time, error) {
-	first := map[evalKey]time.Time{}
-	if len(rows) == 0 {
-		return first, nil
+// firstDaysIn reads in q, for each project of zeros, the first day of its all-repositories rows of
+// each eval its rows name, by eval and deploy repository (evalKey), among the computation's rows
+// before before (every row, where before is nil): the earliest over the series the project's rows
+// name of the eval and deploy repository (a zero day's rows, which name each series an eval's
+// builder writes on every day it has input, for each deploy repository whose rows are kept), each
+// the first entry of one range of the primary key, which the bound ends. An eval with no such row
+// has no entry, and a project with none an empty map. One read for every project, the rows in
+// statements of at most statementBytes (statementChunks): a project's rows of one eval and deploy
+// repository that two statements share are the earliest of both. The refresher reads it on the
+// pool (firstDays), and the read-time path in its read's snapshot (ComputeAtRead).
+func firstDaysIn(ctx context.Context, q delivery.Querier, zeros map[string][]DayRow, before *time.Time) (map[string]map[evalKey]time.Time, error) {
+	type given struct {
+		project string
+		row     *DayRow
 	}
-	evals, deployRepos, series := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
-	for i, row := range rows {
-		evals[i], deployRepos[i], series[i] = row.EvalID, row.DeployRepo, row.Series
+	first := make(map[string]map[evalKey]time.Time, len(zeros))
+	var named []given
+	for _, project := range slices.Sorted(maps.Keys(zeros)) {
+		first[project] = map[evalKey]time.Time{}
+		for i := range zeros[project] {
+			named = append(named, given{project: project, row: &zeros[project][i]})
+		}
 	}
-	read, err := q.Query(ctx, `
-		select given.eval_id, given.deploy_repo, min(stored.day)
-		from unnest($2::text[], $5::text[], $3::text[]) as given(eval_id, deploy_repo, series)
-		cross join lateral (
-			select day from eval_days
-			where project_key = $1 and eval_id = given.eval_id and writer = $4 and deploy_repo = given.deploy_repo
-				and series = given.series and repo = '' and day < coalesce($6::date, 'infinity'::date)
-			order by day
-			limit 1
-		) stored
-		group by given.eval_id, given.deploy_repo
-	`, project, evals, series, writerComputation, deployRepos, before)
-	if err != nil {
-		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
+	size := func(one *given) int {
+		return 4*4 + len(one.project) + len(one.row.EvalID) + len(one.row.DeployRepo) + len(one.row.Series)
 	}
-	var key evalKey
-	var day time.Time
-	if _, err := pgx.ForEachRow(read, []any{&key.eval, &key.deployRepo, &day}, func() error {
-		first[key] = measures.Midnight(day)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
+	for chunk := range statementChunks(named, paramBytes(4, writerComputation)+4+8, size) {
+		projects, evals, deployRepos, series := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for i, one := range chunk {
+			projects[i], evals[i], deployRepos[i], series[i] = one.project, one.row.EvalID, one.row.DeployRepo, one.row.Series
+		}
+		read, err := q.Query(ctx, `
+			select given.project_key, given.eval_id, given.deploy_repo, min(stored.day)
+			from unnest($1::text[], $2::text[], $5::text[], $3::text[]) as given(project_key, eval_id, deploy_repo, series)
+			cross join lateral (
+				select day from eval_days
+				where project_key = given.project_key and eval_id = given.eval_id and writer = $4 and deploy_repo = given.deploy_repo
+					and series = given.series and repo = '' and day < coalesce($6::date, 'infinity'::date)
+				order by day
+				limit 1
+			) stored
+			group by given.project_key, given.eval_id, given.deploy_repo
+		`, projects, evals, series, writerComputation, deployRepos, before)
+		if err != nil {
+			return nil, fmt.Errorf("read the first days of %d projects' series: %w", len(zeros), err)
+		}
+		var project string
+		var key evalKey
+		var day time.Time
+		if _, err := pgx.ForEachRow(read, []any{&project, &key.eval, &key.deployRepo, &day}, func() error {
+			day = measures.Midnight(day)
+			if since, held := first[project][key]; !held || day.Before(since) {
+				first[project][key] = day
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the first days of %d projects' series: %w", len(zeros), err)
+		}
 	}
 	return first, nil
 }
@@ -394,32 +486,34 @@ func firstDaysIn(ctx context.Context, q delivery.Querier, project string, rows [
 // walk's batch writes whether or not it builds a row of them, so a day whose input left keeps no
 // row a whole walk would not hold (refresh.walkDays). One read of eval_days_window (project, repo,
 // day, over the listed rows) for the batch: every series of a computed eval is listed but a job
-// series, which a day holds only beside its eval's listed series.
+// series, which a day holds only beside its eval's listed series. Its evals are named by their
+// slugs, a row's eval id being its project's key, a `/` and its slug (eval_days_eval_of_project),
+// which a filter of the index range reads as the eval ids of every project would be, and the
+// projects, every project and owner key, which grow with the history, go in statements of at most
+// statementBytes.
 func (s *Store) heldDays(ctx context.Context, family string, projects, slugs []string, from, through time.Time) (map[builtDay]bool, error) {
 	held := map[builtDay]bool{}
-	if len(projects) == 0 {
-		return held, nil
+	base := paramBytes(2, writerComputation) + 2*(4+8)
+	for i := range slugs {
+		base += textBytes(&slugs[i])
 	}
-	evalIDs := make([]string, 0, len(projects)*len(slugs))
-	for _, project := range projects {
-		for _, slug := range slugs {
-			evalIDs = append(evalIDs, EvalID(project, slug))
+	for chunk := range statementChunks(projects, base, textBytes) {
+		rows, err := s.database.Pool.Query(ctx, `
+			select distinct project_key, day from eval_days
+			where project_key = any($1) and repo = '' and listed and day >= $2 and day <= $3
+				and substr(eval_id, length(project_key) + 2) = any($4) and writer = $5
+		`, chunk, from, through, slugs, writerComputation)
+		if err != nil {
+			return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
 		}
-	}
-	rows, err := s.database.Pool.Query(ctx, `
-		select distinct project_key, day from eval_days
-		where project_key = any($1) and repo = '' and listed and day >= $2 and day <= $3 and eval_id = any($4) and writer = $5
-	`, projects, from, through, evalIDs, writerComputation)
-	if err != nil {
-		return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
-	}
-	var project string
-	var day time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
-		held[builtDay{family: family, project: project, day: measures.Midnight(day)}] = true
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
+		var project string
+		var day time.Time
+		if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
+			held[builtDay{family: family, project: project, day: measures.Midnight(day)}] = true
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
+		}
 	}
 	return held, nil
 }
@@ -433,7 +527,7 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time
 	var earliest *time.Time
 	names := []string{}
 	for _, repo := range repos {
-		if _, posted := eventsProject(repo.name); !posted {
+		if !IsEventsRepo(repo.name) {
 			names = append(names, repo.name)
 		}
 	}
@@ -448,7 +542,7 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time
 		return nil, fmt.Errorf("read the first delivery input: %w", err)
 	}
 	for _, repo := range repos {
-		if _, posted := eventsProject(repo.name); posted && (earliest == nil || repo.since.Before(*earliest)) {
+		if IsEventsRepo(repo.name) && (earliest == nil || repo.since.Before(*earliest)) {
 			since := repo.since
 			earliest = &since
 		}
@@ -471,46 +565,52 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 	return earliest, nil
 }
 
-// fillLoggedZeros writes, for each series of project's logged evals (every one where ids is nil,
-// else those of ids that are logged), the zero row of every day from the series' first day to the
-// pass's today that holds no all-repositories row of it, in one insert, and answers how many it
-// wrote. Its rows are the readings write's (writer `readings`), since a logged eval's fold reads
-// those alone: a series' first day is its first such row's, which a readings write made
-// (days.go), and the zero row is the row that write leaves where every value is taken away: n 0,
-// a zero sum, numerator and denominator, no sample, no maximum and no last value, so a later
-// reading of that day adds to it as to any row. A day that holds a row keeps it. The zero row
-// takes the listing of the series' newest row.
+// fillLoggedZeros writes, for each series of project's logged evals, the zero row of every day from
+// the series' first day to the pass's today that holds no all-repositories row of it, in one insert
+// (loggedZeros, the statement the readings write sends for the days its rows leave owed), and
+// answers how many it wrote. Its rows are the readings write's (writer `readings`), since a logged
+// eval's fold reads those alone: a series' first day is its first such row's, which a readings
+// write made and which holds a value (days.go, dropEmptiedRows). A day that holds a row keeps
+// it, and the zero row takes the listing of the series' newest row.
 //
 // The days it writes are the gaps between a series' stored rows, each row followed by the days up
-// to the next one's (lead), and after its newest row the days up to today: so it generates and
-// probes the missing days alone, where the whole span from the first day would cost a probe of
-// every day the series holds on every readings write that reaches it.
+// to the next one's (lead), and after its newest row the days up to today. It reads every stored
+// all-repositories row of each eval it fills, once and under the evals' locks (a window over each
+// series' rows answers each row's next), and generates and probes the missing days alone, where
+// the whole span from the first day would cost a probe of every day the series holds.
+//
+// The readings write writes the zero rows its rows leave owed through its own today
+// (writeLoggedZeros), so what is left to the fill is the turn of each new day, which no write
+// makes, and a walk begun again (walkDaily). At a midnight, a write that read the day before as its
+// today and the fill of the new day leave every day of the eval its row, and write none twice: a
+// row both would write is the same zero row, inserted once (on conflict do nothing), each under
+// the eval's lock. Of a write of an eval the fill reads as logged, either the write commits first,
+// and the fill's insert, which reads the rows once the fill holds the eval's lock, fills after the
+// write's rows; or the fill commits first, and the write, which reads its today once it holds the
+// eval's lock, reads the new day. A write that registers its eval, which no read of the fill's
+// finds until it commits, holds the lock of the project's `evals-md` from before it stores the eval
+// to its commit (lockDocument), so the fill first waits out every such write that is running
+// (awaitRegistrations): either the eval is stored when the fill reads the project's evals, or the
+// write takes that lock after the wait and reads its today after it, the new day. Each reading of
+// the new day holds while the database's clock and the refresher's agree to within the time a pass
+// takes to reach its fill.
 //
 // It takes the lock of every eval it fills first (lockEvals), as every other writer of these rows
 // takes its eval's (lockEval), and reads the listings after it: so the listing it copies is the
 // one the last register write of the eval left on every stored row (relistDays), and no register
-// write moves it until the fill commits. The insert takes its rows in the byte order of their keys
-// (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
-// them in (writeDays); left to the database's collation, a series `latency` and a series `Queue`
-// would be taken in the other order. Its change rows wait in the change log's outbox (migration
-// 20261117100014), so it takes no change log lock; a batch of them is moved into the log once it
-// has committed (drainChanges).
-func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
-	// loggedEvals is project's logged evals ($1 the project, $2 SourceLogged), which the fill reads
-	// twice, each read ending in the ids it keeps.
-	const loggedEvals = `select eval_id from evals_current where project_key = $1 and source = $2`
-	logged := loggedEvals
-	args := []any{project, SourceLogged}
-	if ids != nil {
-		logged += ` and eval_id = any($3)`
-		args = append(args, ids)
+// write moves it until the fill commits. Its change rows wait in the change log's outbox
+// (migration 20261117100014), so it takes no change log lock; a batch of them is moved into the
+// log once it has committed (drainChanges).
+func (r *refresh) fillLoggedZeros(ctx context.Context, project string) (int64, error) {
+	if err := r.awaitRegistrations(ctx, project); err != nil {
+		return 0, err
 	}
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin the zero rows of %s's logged evals: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, logged, args...)
+	rows, err := tx.Query(ctx, `select eval_id from evals_current where project_key = $1 and source = $2`, project, SourceLogged)
 	if err != nil {
 		return 0, fmt.Errorf("read %s's logged evals: %w", project, err)
 	}
@@ -525,42 +625,23 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 		return 0, err
 	}
 	// An eval read logged above that the seed took over before its lock was taken is computed now,
-	// so the insert reads which of them are logged again, under their locks.
-	inserted, err := tx.Query(ctx, `
-		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, samples, built_by)
-		select stored.project_key, stored.eval_id, $5::text, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
-		from (
-			select project_key, eval_id, series, day,
-			       lead(day) over series_days as next_day,
-			       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
-			from eval_days
-			where project_key = $1 and writer = $5 and repo = ''
-			  and eval_id = any(array(`+loggedEvals+` and eval_id = any($6)))
-			window series_days as (partition by eval_id, series order by day)
-		) stored
-		cross join generate_series((stored.day + 1)::timestamp,
-			least(coalesce(stored.next_day - 1, $3::date), $3::date)::timestamp, interval '1 day') as gap(day)
-		order by stored.eval_id collate "C", stored.series collate "C", gap.day
-		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
-		returning eval_id, day
-	`, project, SourceLogged, r.today, r.build, writerReadings, evalIDs)
+	// so the insert reads which of them are logged again, under their locks. The days it writes,
+	// each run apart (daySpans), are the days whose stored figures it may have moved, folded again
+	// in its transaction (foldFiguresInTx) under the locks it holds.
+	spans := daySpans{}
+	written, err := writeZeroRows(ctx, tx, `
+		select project_key, eval_id, series, day,
+		       lead(day) over series_days as next_day,
+		       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
+		from eval_days
+		where project_key = $1 and writer = $3 and repo = ''
+		  and eval_id = any(array(select eval_id from evals_current where project_key = $1 and source = $5 and eval_id = any($6)))
+		window series_days as (partition by eval_id, series order by day)
+	`, spans, project, r.today, writerReadings, r.build, SourceLogged, evalIDs)
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}
-	// The days it wrote are the days whose stored figures it may have moved, folded again in its
-	// transaction (foldFiguresInTx) under the locks it holds.
-	spans := map[string]daySpan{}
-	var written int64
-	var evalID string
-	var day time.Time
-	if _, err := pgx.ForEachRow(inserted, []any{&evalID, &day}, func() error {
-		written++
-		addSpan(spans, evalID, measures.Midnight(day), measures.Midnight(day))
-		return nil
-	}); err != nil {
-		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
-	}
-	if err := foldFiguresInTx(ctx, tx, r.build, project, spans); err != nil {
+	if err := foldFiguresInTx(ctx, tx, r.build, writtenSpans{project: spans}.sets()...); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -568,4 +649,37 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 	}
 	r.store.drainChanges(ctx)
 	return written, nil
+}
+
+// awaitRegistrations waits until no write that registers an eval of project is running. Each takes
+// the lock of the project's `evals-md` before it stores the eval and holds it to its commit
+// (lockDocument): the document's owner lock, or, where the project has none yet, the project's
+// documents' lock (docs.LockProjectArtifacts), under which it creates the document. This takes the
+// second and then the first, the order every taker of both takes them in, in a transaction of its
+// own that takes nothing else and commits at once, so it joins no lock cycle.
+func (r *refresh) awaitRegistrations(ctx context.Context, project string) error {
+	tx, err := r.store.database.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the wait for %s's registrations: %w", project, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := docs.LockProjectArtifacts(ctx, tx, project); err != nil {
+		return err
+	}
+	var document string
+	switch err := tx.QueryRow(ctx, `
+		select id::text from artifacts where project_key = $1 and issue_key is null and session_id is null and slug = $2
+	`, project, DocumentSlug).Scan(&document); {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("read the %s document of %s: %w", DocumentSlug, project, err)
+	default:
+		if err := store.LockOwner(ctx, tx, store.ArtifactOwner(document)); err != nil {
+			return fmt.Errorf("wait for the registrations of %s: %w", project, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("end the wait for %s's registrations: %w", project, err)
+	}
+	return nil
 }

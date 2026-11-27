@@ -68,12 +68,12 @@ type productionEventList struct {
 	Offset int                `json:"offset"`
 }
 
-// productionEventInput is the body POST /api/v1/projects/{key}/production-events takes: one
-// event. Where OpenTelemetry names a field (the deployment and CI/CD semantic conventions), the
-// body may carry that name instead of the plain one, or both alike.
 // productionEventNoteBytes is the most a note may hold: a paragraph, not a log.
 const productionEventNoteBytes = 4096
 
+// productionEventInput is the body POST /api/v1/projects/{key}/production-events takes: one
+// event. Where OpenTelemetry names a field (the deployment and CI/CD semantic conventions), the
+// body may carry that name instead of the plain one, or both alike.
 type productionEventInput struct {
 	// Kind is deploy or failure.
 	Kind string `json:"kind" required:"true" enum:"deploy,failure"`
@@ -248,7 +248,7 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		event.DeployID = &deploy
 		if person {
-			event.SourceRef = "person:" + deploy + ":" + actor.ID
+			event.SourceRef = prodevents.PersonSourceRef(deploy, actor.ID)
 			if supplied := strings.TrimSpace(input.SourceRef); supplied != "" && supplied != event.SourceRef {
 				writeError(w, prodevents.CodeInput, http.StatusBadRequest, fmt.Sprintf(
 					"a person's flag is keyed by the server, %s, so a second flag of one deploy writes nothing; send no source_ref, or that one",
@@ -270,15 +270,23 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // event is the row input asks for, before its project, its actor and a failure's deploy are
-// known: the plain and the OTel name of one field taken as one, a system's source_ref required,
-// the fields of a failure's deploy refused on a deploy, a failure's signal and source the
-// caller's (person or api), and its detected_at the server's time where the body names none.
+// known: the plain and the OTel name of one field taken as one, a system's source_ref required and
+// refused where it starts with an automatic source's prefix (prodevents.AutomaticSourceRefPrefix),
+// the fields of a failure's deploy refused on a deploy, a failure's signal and source the caller's
+// (person or api), and its detected_at the server's time where the body names none.
 func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 	if input.Kind != prodevents.KindDeploy && input.Kind != prodevents.KindFailure {
 		return prodevents.Event{}, productionEventInputError("kind must be deploy or failure, not %q", input.Kind)
 	}
 	if !person && strings.TrimSpace(input.SourceRef) == "" {
 		return prodevents.Event{}, productionEventInputError("source_ref is required: it is the system's own key for the event, which makes a repeat write no second row")
+	}
+	// A person's flag is keyed by the server (postProductionEvent), under the person prefix, so the
+	// refusal is a system's alone.
+	if prefix, automatic := prodevents.AutomaticSourceRefPrefix(input.SourceRef); !person && automatic {
+		return prodevents.Event{}, productionEventInputError(
+			"source_ref %q starts with %s, the prefix an automatic source writes its own rows under, whose write a post under its key would leave writing nothing; send a key of the system's own",
+			input.SourceRef, prefix)
 	}
 	environment, err := otelField("environment", input.Environment, "deployment.environment.name", input.DeploymentEnvironmentName)
 	if err != nil {
@@ -297,7 +305,7 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 		commits[index] = strings.ToLower(strings.TrimSpace(commit))
 	}
 	event := prodevents.Event{
-		Kind: input.Kind, Environment: environment, Status: status, SourceRef: input.SourceRef,
+		Kind: input.Kind, Source: prodevents.SourceAPI, Environment: environment, Status: status, SourceRef: input.SourceRef,
 		StartedAt: input.StartedAt, FinishedAt: input.FinishedAt, Repo: input.Repo, Commits: commits,
 		PullRequests: input.PullRequests, URL: link, Note: input.Note,
 	}
@@ -309,11 +317,9 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 			return prodevents.Event{}, productionEventInputError(
 				"deploy_id, cicd.pipeline.run.id, commit_sha and detected_at name a failure's deploy and its detection; a deploy's own run is its source_ref and url")
 		}
-		event.Source = prodevents.SourceAPI
 		return event, nil
 	}
 	signal := prodevents.SignalAPI
-	event.Source = prodevents.SourceAPI
 	if person {
 		signal = prodevents.SignalPerson
 		event.Source = prodevents.SourcePerson
@@ -339,9 +345,11 @@ func otelField(plainName, plain, otelName, otel string) (string, error) {
 	return otel, nil
 }
 
-// blamedDeploy is the id of the deploy a failure blames, named exactly one way: its row's id,
-// which the store holds to a deploy row as it writes (409 PRODUCTION_EVENT_NO_DEPLOY otherwise);
-// the GitHub run it was (prodevents.DeployForRun); or a commit it shipped
+// blamedDeploy is the id of the deploy a failure blames, named exactly one way: its row's id, in
+// its canonical spelling where it is a uuid, so a person's flag keys one deploy one way
+// (person:<deploy id>:<login>) however the body spells it, and which the store holds to a deploy
+// row as it writes (409 PRODUCTION_EVENT_NO_DEPLOY otherwise, a body's id that is no uuid
+// included); the GitHub run it was (prodevents.DeployForRun); or a commit it shipped
 // (prodevents.DeployForCommit). A run or a commit no deploy row holds is 409
 // PRODUCTION_EVENT_NO_DEPLOY, and the deploy may be another project's.
 func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (string, error) {
@@ -357,6 +365,9 @@ func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (
 	case named > 1:
 		return "", productionEventInputError("a failure names the deploy it blames one way: deploy_id, cicd.pipeline.run.id or commit_sha, not two of them")
 	case input.DeployID != nil:
+		if id, err := uuid.Parse(*input.DeployID); err == nil {
+			return id.String(), nil
+		}
 		return *input.DeployID, nil
 	case input.PipelineRunID != "":
 		run, err := strconv.ParseInt(input.PipelineRunID, 10, 64)

@@ -4,9 +4,10 @@
 // (`FACET_KEYS`), the search `q`, `colorBy`, `lanes=1`, `mode=list` and each `agents` value. The
 // Repository facet's key, `repo`, is the header's repository filter too (`evals-url.ts`), so a
 // pick of it sets the repository every number reads (decision 3).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { useSettled } from "../../hooks/useSettled";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
 import { COLOR_FACET_OPTIONS, type ColorFacet } from "../delivery/lib/colorScale";
 import {
@@ -65,16 +66,6 @@ export function narrowingQuery(filters: Filters, search: string): string {
 
 /** How long the search waits after the last keystroke before a view is subscribed again. */
 const SEARCH_DEBOUNCE_MS = 250;
-
-/** `value`, once it has held still for `delayMs`. */
-function useSettled<T>(value: T, delayMs: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSettled(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-  return settled;
-}
 
 /** The search `filters` holds, trimmed, once it has held still for SEARCH_DEBOUNCE_MS, which the
  *  views the search narrows are read by, so a view is not subscribed again at each keystroke. A

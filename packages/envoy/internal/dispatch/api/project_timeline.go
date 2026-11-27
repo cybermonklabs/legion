@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
 const (
@@ -206,9 +207,10 @@ func (s *server) readProjectTimeline(ctx context.Context, project string, from, 
 // projectTimelinePopulation is the project's population of [from, to): the delivery timeline's read
 // of the window (readDeliveryPopulation, with its waiting line and the pull requests each of its
 // deploys ships first), kept to the rows project counts by root R27, by the rule the eval
-// registry's day rows count them by (evals.Attribution, read for every issue those rows name): a
-// pull request merged in the window or waiting at its start that counts for project, through its
-// issue or, naming none, through its repository as project's published default; and a deploy run
+// registry's day rows count them by (evals.Attribution, read for every pull request and deploy of
+// the window those rows name): a pull request merged in the window or waiting at its start that
+// counts for project, through the terminal of its attribution list or through the owner key of its
+// repository that project reads under the published defaults; and a deploy run
 // started in the window that counts for it by the pull requests it ships first, or, shipping none
 // (a failed run among them), as the project whose deploy source reads its repository. The runs
 // started outside the window stay, since a pull request of the window can ship with one; a run of
@@ -218,24 +220,17 @@ func (s *server) projectTimelinePopulation(ctx context.Context, rules *delivery.
 	if err != nil {
 		return deliveryPopulation{}, err
 	}
-	var keys []string
-	name := func(pr delivery.DeliveryPullRequest) {
-		if pr.IssueKey != nil {
-			keys = append(keys, *pr.IssueKey)
-		}
-	}
-	for _, pr := range pop.prs {
-		name(pr)
-	}
+	prs := slices.Clone(pop.prs)
 	for _, pr := range pop.waiting {
-		name(pr.DeliveryPullRequest)
+		prs = append(prs, pr.DeliveryPullRequest)
 	}
-	for _, shipped := range pop.windowShipped {
-		for _, pr := range shipped {
-			name(*pr)
+	var deploys []evals.AttributedDeploy
+	for _, run := range pop.applyRuns {
+		if !run.StartedAt.Before(from) && run.StartedAt.Before(to) {
+			deploys = append(deploys, evals.AttributedDeploy{Repo: run.Repo, Shipped: pop.windowShipped[run.RunID]})
 		}
 	}
-	attribution, err := s.registry().ReadAttribution(ctx, keys)
+	attribution, err := s.registry().ReadAttribution(ctx, prs, deploys, rules.All())
 	if err != nil {
 		return deliveryPopulation{}, fmt.Errorf("read the projects the timeline's rows count for: %w", err)
 	}

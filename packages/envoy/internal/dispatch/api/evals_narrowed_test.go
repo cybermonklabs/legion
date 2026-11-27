@@ -77,14 +77,17 @@ type narrowedEvalsRig struct {
 func newNarrowedEvalsRig(t *testing.T, options testServerOptions) *narrowedEvalsRig {
 	t.Helper()
 	handler, database, deps, served := newRegisteredTestServer(t, options)
-	fixture, windows := seedEvalHistories(t, database, deps, 30)
+	// INFRA-2916's attribution rule (attributionListOf) holds an issue to the repository its chain
+	// names, and the history's issues name none while their pull requests are in three repositories:
+	// read by the issue alone (seedEvalHistoriesByIssue), every pull request counts for DELIV.
+	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 30)
 	end := windows[0].Spec.Now
 	if fixture.To.After(end) {
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
 	return &narrowedEvalsRig{
-		handler: handler, served: served, database: database, registry: evals.New(database, deps.Docs, deps.Events),
+		handler: handler, served: served, database: database, registry: evals.New(database, deps.Docs, deps.Events, deps.Attributor),
 		fixture: fixture, legion: windows[0].Spec.Project, now: now, today: measures.Midnight(now),
 	}
 }
@@ -109,7 +112,8 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 	if err != nil {
 		t.Fatalf("read the first days: %v", err)
 	}
-	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare, Now: r.now})
+	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare, Now: r.now,
+		Attributor: r.served.deps.Attributor})
 	if err != nil {
 		t.Fatalf("build the rows at read time: %v", err)
 	}
@@ -588,7 +592,9 @@ func TestANarrowedViewIsMarkedByAPullRequestChangeInItsWindow(t *testing.T) {
 	}
 
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
-	fixture, _ := seedEvalHistories(t, database, deps, 30)
+	// INFRA-2916's attribution rule (attributionListOf) counts no project for a pull request of a
+	// repository its issue does not name; read by the issue alone, the moved merge counts for DELIV.
+	fixture, _ := seedEvalHistoriesByIssue(t, database, deps, 30)
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
 	end := measures.Midnight(fixture.To)
 	window := evalsDays(end.AddDate(0, 0, -28), end)
@@ -608,7 +614,7 @@ func TestANarrowedViewIsMarkedByAPullRequestChangeInItsWindow(t *testing.T) {
 	held := map[string]json.RawMessage{}
 	for _, sub := range []string{"n", "p"} {
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		held[sub] = conns[sub].snapshot(t, 10*time.Second, sub).Body
+		held[sub] = conns[sub].snapshot(t, sub).Body
 	}
 	rig.settle(t)
 
@@ -618,7 +624,7 @@ func TestANarrowedViewIsMarkedByAPullRequestChangeInItsWindow(t *testing.T) {
 		moved.Repo, moved.Number, mergedAt); err != nil {
 		t.Fatalf("move the merge of %s#%d: %v", moved.Repo, moved.Number, err)
 	}
-	delta := conns["n"].delta(t, 2*time.Second, "n")
+	delta := conns["n"].delta(t, "n")
 	took := time.Since(written)
 	upserted := liveUpsertIDs(t, delta, "items")
 	if !slices.Contains(upserted, evals.EvalID(fixture.Project, evals.SlugPROpenToMerge)) {

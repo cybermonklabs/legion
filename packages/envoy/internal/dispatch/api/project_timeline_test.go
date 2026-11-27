@@ -218,6 +218,11 @@ func checkProjectTimelinePages(t *testing.T, pages []map[string]any, limit int, 
 func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, Days: 30, OneProject: true})
+	// INFRA-2916's attribution rule (attributionListOf) holds an issue to the repository its chain
+	// names, and these issues name none while their pull requests are in all three repositories,
+	// one issue's in several: with the stored inputs cleared, as deliverytest's OneProject says, each
+	// pull request is read by its issue_key alone, so every one counts for DELIV.
+	leaveAttributionInputsUnread(t, database.Pool)
 	publishDefaultRepos(t, database.Pool)
 	to := fixture.To.AddDate(0, 0, -1)
 	from := to.AddDate(0, 0, -8)
@@ -273,16 +278,20 @@ func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 // requests name issues of DELIV, one in twenty of DELIVX, and some none, and whose deploy
 // repository is DELIV's default repository and the one its deploy source reads, over seven whole
 // UTC days holding a deploy that ships pull requests of both, with the default repositories
-// published as the refresher publishes them: a merge with an issue is on its issue's project's
-// timeline alone, and one with no issue on that of each project whose default repository holds it
-// (INFRA-2916 R15), DELIV's for the deploy repository's and none for another repository's; each
-// project's merges are the pull requests its pr-open-to-merge day rows count for the window, and
-// those its pr-open-to-merge items list, DELIVX's too, which has no deploy source of its own; a deploy
-// is on the timeline of each project whose pull request it ships first, whenever that merged, the
-// one shipping both on both, and on DELIV's where it ships one with no issue; a deploy that ships
-// no pull request, and a failed run, are on the timeline of DELIV alone, whose deploy source reads
-// their repository (INFRA-978 R12); and a deploy in DELIV's repository that ships none of DELIVX's
-// pull requests is not on DELIVX's.
+// published as the refresher publishes them, and each DELIVX issue naming the repository of the
+// one pull request that names it: a merge is on the timeline of the project INFRA-2916's
+// attribution list picks (R15), DELIVX's for a pull request whose DELIVX issue names its
+// repository (the list's terminal), DELIV's for one of the deploy repository whose DELIV issue
+// names no repository (a condition held there, DELIV's published default being that repository)
+// or that names no issue (that repository's owners), and none for one of another repository whose
+// DELIV issue names no repository or that names no issue; each project's merges are the pull
+// requests its pr-open-to-merge day rows count for the window, and those its pr-open-to-merge
+// items list, DELIVX's too, which has no deploy source of its own; a deploy is on the timeline of
+// each project whose pull request it ships first, whenever that merged, the one shipping both on
+// both, and on DELIV's where it ships one with no issue; a deploy that ships no pull request, and a
+// failed run, are on the timeline of DELIV alone, whose deploy source reads their repository
+// (INFRA-978 R12); and a deploy in DELIV's repository that ships none of DELIVX's pull requests is
+// not on DELIVX's.
 func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, Days: 40})
@@ -323,19 +332,29 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 
 	// The refresher writes the day rows each project's pr-open-to-merge items are read from, and
 	// its page publishes the projects' default repositories, which a row with no issue counts under.
-	registry := evals.New(database, deps.Docs, deps.Events)
+	// INFRA-2916's attribution rule (attributionListOf) makes an issue's project the terminal of a
+	// pull request whose issue names that pull request's repository: each DELIVX issue, named by one
+	// pull request, names that pull request's repository, so DELIVX counts its pull requests.
+	if _, err := database.Pool.Exec(t.Context(), `
+		update issues i set repo = p.repo from delivery_pull_requests p
+		where p.issue_key = i.key and i.project_key = $1`, fixture.SecondProject); err != nil {
+		t.Fatalf("name each %s issue's pull request's repository on the issue: %v", fixture.SecondProject, err)
+	}
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	for _, project := range projects {
 		seededEntries(t, registry, project)
 	}
 	refreshEvalDays(t, registry, database, fixture.To.Add(-time.Minute))
 
-	// What each project counts in the window, by the fixture's own rows: its merges by issue, and
-	// DELIV the deploy repository's merges with no issue; the deploy runs on main GitHub created and
-	// started in it that ship one of its pull requests, and DELIV those that ship one with no issue,
-	// every one of them being of the deploy repository, or ship none.
+	// What each project counts in the window, by the fixture's own rows and the attribution list's
+	// rule: DELIVX the merges of its issues; DELIV the deploy repository's merges of its issues and
+	// with no issue; no project another repository's merges of DELIV's issues or of none (unheld);
+	// the deploy runs on main GitHub created and started in it that ship one of its pull requests,
+	// and DELIV those that ship one with no issue, every one of them being of the deploy repository,
+	// or ship none.
 	wantMerges := map[string][]string{}
 	var noIssue []string
-	owned := 0
+	owned, unheld := 0, 0
 	for _, pr := range fixture.PullRequests {
 		if pr.MergedAt.Before(from) || !pr.MergedAt.Before(to) {
 			continue
@@ -344,10 +363,18 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 		project := projectOf(pr)
 		if project == "" {
 			noIssue = append(noIssue, id)
+		}
+		if project != fixture.SecondProject {
 			if pr.Repo != fixture.DeployRepo {
+				if project != "" {
+					unheld++
+				}
 				continue
 			}
-			project, owned = fixture.Project, owned+1
+			if project == "" {
+				owned++
+			}
+			project = fixture.Project
 		}
 		wantMerges[project] = append(wantMerges[project], id)
 	}
@@ -405,9 +432,9 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 			onlyFirst++
 		}
 	}
-	if onlyFirst == 0 || owned == 0 || len(noIssue) == owned || len(shipNone) == 0 {
-		t.Fatalf("the window holds %d deploys of %s alone, %d merges naming no issue, %d of them of the deploy repository, and %d deploys shipping none; want some of each, and some merges naming no issue of another repository",
-			onlyFirst, fixture.Project, len(noIssue), owned, len(shipNone))
+	if onlyFirst == 0 || owned == 0 || len(noIssue) == owned || len(shipNone) == 0 || unheld == 0 || len(wantMerges[fixture.SecondProject]) == 0 {
+		t.Fatalf("the window holds %d deploys of %s alone, %d merges naming no issue, %d of them of the deploy repository, %d deploys shipping none, %d merges of %s issues outside the deploy repository and %d of %s; want some of each, and some merges naming no issue of another repository",
+			onlyFirst, fixture.Project, len(noIssue), owned, len(shipNone), unheld, fixture.Project, len(wantMerges[fixture.SecondProject]), fixture.SecondProject)
 	}
 
 	// Each project's merges are the pull requests its pr-open-to-merge day rows count for the window:
@@ -588,7 +615,11 @@ func TestTheProjectTimelineAnswersNoMeasures(t *testing.T) {
 		}
 	}
 	walk(deliveryLiveKinds[deliveryLiveProjectTimeline].body, "project-timeline", map[reflect.Type]bool{})
-	walk(reflect.TypeOf(routeShapes["GET /api/v1/projects/{key}/timeline"].Response), "GET /api/v1/projects/{key}/timeline", map[reflect.Type]bool{})
+	timeline, declared := declaredRoute("GET /api/v1/projects/{key}/timeline")
+	if !declared {
+		t.Fatal("GET /api/v1/projects/{key}/timeline is not declared")
+	}
+	walk(reflect.TypeOf(timeline.Shape.Response), "GET /api/v1/projects/{key}/timeline", map[reflect.Type]bool{})
 
 	rig := newHubRig(t, nil)
 	from, to := timelineRig(t, rig.handler, rig.database)
@@ -599,7 +630,7 @@ func TestTheProjectTimelineAnswersNoMeasures(t *testing.T) {
 	page := projectTimelineBody(t, getBody(t, rig.handler, projectTimelineTarget("HUB", from, to, nil)))
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", projectTimelineRange("HUB", from, to, "")))
-	snapshot := projectTimelineBody(t, conn.snapshot(t, 10*time.Second, "t").Body)
+	snapshot := projectTimelineBody(t, conn.snapshot(t, "t").Body)
 	for what, body := range map[string]map[string]any{"the route's page": page, "the view's snapshot": snapshot} {
 		if _, measured := body["measures"]; measured {
 			t.Errorf("%s carries measures", what)
@@ -736,7 +767,7 @@ func TestTheProjectTimelineViewParsesAsItsRoute(t *testing.T) {
 	conn := newFakeLiveConn()
 	missing := dispatchRequest(t, rig.handler, http.MethodGet, projectTimelineTarget("NOPE", from, to, nil), nil, "alice")
 	rig.hub.Subscribe(conn, subscribeFrame("missing", projectTimelineRange("NOPE", from, to, "")))
-	if refusal, body := conn.refusal(t, 10*time.Second, "missing", "PROJECT_NOT_FOUND"), decodeBody[errorBody](t, missing); missing.Code != http.StatusNotFound || body.Code != refusal.Code || body.Error != refusal.Message {
+	if refusal, body := conn.refusal(t, "missing", "PROJECT_NOT_FOUND"), decodeBody[errorBody](t, missing); missing.Code != http.StatusNotFound || body.Code != refusal.Code || body.Error != refusal.Message {
 		t.Errorf("a project no row holds: the route answers %d %s %q, the view %s %q", missing.Code, body.Code, body.Error, refusal.Code, refusal.Message)
 	}
 
@@ -746,7 +777,7 @@ func TestTheProjectTimelineViewParsesAsItsRoute(t *testing.T) {
 		rig.hub.Subscribe(conn, subscribeFrame("q", projectTimelineRange("HUB", from, to, query)))
 		var snapshot DeliveryLiveSnapshot
 		for {
-			frame := conn.next(t, 10*time.Second, "the snapshot of "+query)
+			frame := conn.next(t, "the snapshot of "+query)
 			if got, ok := frame.(DeliveryLiveSnapshot); ok {
 				snapshot = got
 				break
@@ -764,7 +795,9 @@ func TestTheProjectTimelineViewParsesAsItsRoute(t *testing.T) {
 // (evals.Attribution), so the refresher's commit that publishes them marks its views: the commit's
 // change for a project whose default it moved marks that project's timeline views and no other
 // project's, and its change for a deploy repository whose judging project it moved marks every
-// timeline view. The settings applied, and an eval's day rows, readings or versions, mark none.
+// timeline view. The settings applied mark every timeline view too, since the timeline answers
+// under the rules the rows stand recorded under (readDeliveryRules) as every delivery view does
+// (INFRA-978), and an eval's day rows, readings or versions mark none.
 func TestTheDefaultsPublishingMarksTheProjectTimeline(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	today := now.Truncate(24 * time.Hour)
@@ -784,7 +817,9 @@ func TestTheDefaultsPublishingMarksTheProjectTimeline(t *testing.T) {
 	}{
 		{"DELIV's default published", published("DELIV", ""), []string{"DELIV"}},
 		{"the judging project of acme/widgets moved", published("acme/widgets", delivery.DefaultsJudgingRef), []string{"DELIV", "OTHER"}},
-		{"the settings applied", delivery.Change{Seq: 1, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}, nil},
+		// INFRA-978's delivery views answer under the recorded rules, which the settings rewrite's
+		// commit moves, so its changes mark every view that reads the delivery rows.
+		{"the settings applied", delivery.Change{Seq: 1, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}, []string{"DELIV", "OTHER"}},
 		{"DELIV's merge-to-production day rows", evalsChange("eval_days", "DELIV", evals.SlugMergeToProduction, &today, &today), nil},
 		{"a version of DELIV's merge-to-production", evalsChange("eval_versions", "DELIV", evals.SlugMergeToProduction, nil, nil), nil},
 		{"a reading of DELIV's pr-ci", evalsChange("eval_readings", "DELIV", evals.SlugPRCI, &today, &today), nil},
@@ -803,7 +838,7 @@ func TestTheDefaultsPublishingMarksTheProjectTimeline(t *testing.T) {
 func nextProjectTimelineFrame(t *testing.T, conn *fakeLiveConn, sub string) any {
 	t.Helper()
 	for {
-		switch frame := conn.next(t, 30*time.Second, "a frame of "+sub).(type) {
+		switch frame := conn.next(t, "a frame of "+sub).(type) {
 		case DeliveryLiveFreshness:
 		case DeliveryLiveSnapshot:
 			if frame.Sub == sub {
@@ -831,6 +866,9 @@ func nextProjectTimelineFrame(t *testing.T, conn *fakeLiveConn, sub string) any 
 func TestTheProjectTimelineViewGrowsWithItsLimit(t *testing.T) {
 	rig := newHubRig(t, nil)
 	fixture := deliverytest.Seed(t, rig.database.Pool, deliverytest.Spec{Seed: 2918, Days: 70, OneProject: true})
+	// INFRA-2916's attribution rule (attributionListOf) holds an issue to the repository its chain
+	// names, and these issues name none: read by the issue alone, every pull request counts for DELIV.
+	leaveAttributionInputsUnread(t, rig.database.Pool)
 	to := fixture.To.AddDate(0, 0, -1)
 	from := to.AddDate(0, 0, -56)
 	project := fixture.Project

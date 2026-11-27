@@ -7,10 +7,18 @@ import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
  * one of them moved.
  */
 
-/** `GET /auth/whoami`'s answer for a person signed in to the dashboard. */
+/** `GET /auth/whoami`'s answer: who the dashboard is drawn for. A person signed in to it is
+ *  `kind: "user"`, `login` their lowercase email, and their answer carries no `session`. A request
+ *  with no sign-in whose bearer Dispatch takes for an agent is `kind: "agent"`, and `login` is then
+ *  the label the dashboard keeps that viewer's own state under: the lowercase email of the person
+ *  its credential acts for where it names one, else `agent:<session>` where it proved a session,
+ *  else `agent`. A Dispatch older than agent viewers answers a person alone, as it always did. */
 export interface AuthenticatedUser {
-  readonly kind: "user";
+  readonly kind: "user" | "agent";
   readonly login: string;
+  /** The session an agent's credential proved (an access token the secrets broker issued), or
+   *  `null` where it proved none: present for an agent, absent for a person. */
+  readonly session?: string | null;
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered. Every read the page makes after this answer holds every event at or
    *  below it, so the event feed resumes from it on its first
@@ -25,18 +33,42 @@ export interface AuthenticatedUser {
 
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
- *  and that service token's subject (`service`), null unless one authenticated the request.
+ *  and that service token's subject (`service`), or for a broker-issued token naming no person the
+ *  fleet its machine belongs to, the Kubernetes account an exchange entry lists or a job's identity
+ *  as its job entry lists it, null otherwise.
  *  `session` is the session the credential itself proved, which only an access token the secrets
- *  broker issued does, and `project` the one project key that credential lets the caller write,
- *  null where it names none. A client reads an absent `service`, `session` or `project` as a
- *  Dispatch older than that field, not as null: `service` is absent from one older than verified
- *  service tokens, and the other two from one older than broker-issued tokens.
+ *  broker issued does, and `project` the project key that credential's token names, null where
+ *  it names none. Such a token writes other projects' objects as a credential that names none
+ *  does, a private project it does not name excepted. `sign_in_required` is whether Dispatch
+ *  refuses every write of the credential until a person signs in on its machine
+ *  (`SIGN_IN_REQUIRED`), the decision its write check makes, and false for a read-only
+ *  credential, which no sign-in lets write. A client reads an absent `service`, `session`,
+ *  `project` or `sign_in_required` as a Dispatch older than that field, not as null or false:
+ *  `service` is absent from one older than verified service tokens, `session` and `project` from
+ *  one older than broker-issued tokens, and `sign_in_required` from one older than the field,
+ *  whose rule the client then reads from the owner, the service and the session.
+ *
+ *  `project_scope` is a broker-issued token's project scope, absent for every other credential:
+ *  `named` for a token an operator's or a job's entry mapped to its project, and for an exchange
+ *  account entry's token naming no person and no project, `public` for a job's token, and `person`
+ *  for a person's own token and for a machine's. Of the tokens that name a service and no person,
+ *  a job's (`named` or `public`) and an exchange account entry's (`named`) write as that service,
+ *  and Dispatch refuses a machine's (`person`) every write with `SIGN_IN_REQUIRED`. A Dispatch
+ *  older than the field leaves it out for every credential, and refuses a job's token outright.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
- *  call: both of them for a person at a browser, the set its row names for a personal token, and
- *  `[]` for the shared token and a verified service token, which act as nobody. The kind stays
- *  `agent` for a personal token holding `person`, because the kind names the credential and not
- *  the act; the person it acts for is `owner`. */
+ *  call and whether it may make an issue's own priority 0: all three (`person`, `approve`, `p0`)
+ *  for a person at a browser, the set its row names for a personal token, `["person"]` for a
+ *  broker-issued token acting for its person, and `[]` for the shared token, a verified service
+ *  token and every other broker-issued token. A read-only
+ *  credential, a broker's or a person's, is answered `read` after the scopes it holds
+ *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
+ *  every credential that writes. A Dispatch older than read-only tokens names neither. A Legion
+ *  daemon's own broker token answers `["legion-status"]`: where Dispatch runs with
+ *  `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential write a Legion
+ *  issue's status, take its `legion` label off, and move it out from under every labelled issue.
+ *  The kind stays `agent` for a personal token holding `person`, because the kind names the
+ *  credential and not the act; the person it acts for is `owner`. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z

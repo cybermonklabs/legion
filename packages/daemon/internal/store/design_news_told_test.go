@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -129,6 +130,7 @@ func (r *toldRig) seedTold() {
 // is read back carrying the news it was written with. The write that records that the turn ran
 // makes the credit final, and folds it into the told rows at the confirmation's moment.
 func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -160,8 +162,8 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	confirmed := task
 	confirmed.ConfirmedAt = r.at.Add(time.Minute)
 	refused := errors.New("the transaction that confirms fails after the delivery's write")
-	if err := r.store.Tx(r.ctx, func(tx pgx.Tx) error {
-		if err := putDelivery(r.ctx, tx, r.reviewer.Token, confirmed); err != nil {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := putDelivery(ctx, tx, r.reviewer.Token, confirmed); err != nil {
 			return err
 		}
 		return refused
@@ -194,6 +196,7 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 // A raise never lowers: a confirmation whose item tells a version below the one the row holds —
 // a later delivery's confirmation raised it first — leaves the row where it stands.
 func TestAConfirmationNeverLowersAToldVersion(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	r.tell(toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 6}, true)
@@ -212,6 +215,7 @@ func TestAConfirmationNeverLowersAToldVersion(t *testing.T) {
 // held before, unknown where the row knew none, and the opening owed again. The resend's own
 // confirmation credits it then.
 func TestATakenBackConfirmationPutsBackWhatItRaised(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -248,6 +252,7 @@ func TestATakenBackConfirmationPutsBackWhatItRaised(t *testing.T) {
 // holding the issue took that version from somebody else. Only a fold or the gate settles the
 // row's owed opening, so the raise leaves it owed, and the take-back reads it owed again.
 func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -276,6 +281,7 @@ func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
 // fold is started while the other transaction holds the row, and that transaction commits only
 // once Postgres shows the fold waiting on it, so the two always meet in this order.
 func TestAFoldKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -288,7 +294,7 @@ func TestAFoldKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
 	}
 	r.wantTold("after the confirmation", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 
-	fill, err := r.store.Pool().Begin(r.ctx)
+	fill, err := r.store.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the fill: %v", err)
 	}
@@ -342,6 +348,7 @@ func TestAFoldKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
 // with nothing to say — was never read, so it raises nothing and clears no opening: the news stays
 // owed, and the next start or the reconcile tells it.
 func TestARetirementRaisesNothing(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -360,6 +367,7 @@ func TestARetirementRaisesNothing(t *testing.T) {
 // nothing: an opening the gate owes the holder again since the first write (a close and a reopening
 // settle it, design_news_opening_settled) stays owed.
 func TestASecondConfirmedWriteRaisesNothingAgain(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	confirmed := r.newsTask("outbox:7")
@@ -386,6 +394,7 @@ func TestASecondConfirmedWriteRaisesNothingAgain(t *testing.T) {
 // prompt carried rises, and the opening stays owed. A delivery whose copy is empty — no prompt of
 // it was ever acknowledged — raises nothing at all.
 func TestAConfirmationRaisesWhatItsPromptCarriedAndNotWhatTheTaskSaysNow(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -432,6 +441,7 @@ func TestAConfirmationRaisesWhatItsPromptCarriedAndNotWhatTheTaskSaysNow(t *test
 // take-back of that confirmation owes nothing the reopening has not owed already. A prompt that
 // carried the opening under the row's own number clears it, and its take-back owes it again.
 func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -502,6 +512,7 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 // the turn ran (supervise.Delivery.Ran) folded its credit into the told rows when that was written,
 // and its retirement takes nothing back.
 func TestARetirementOfAConfirmedTaskGivesBackWhatItsTurnHasNotMadeFinal(t *testing.T) {
+	t.Parallel()
 	r := newToldRig(t)
 	r.seedTold()
 	confirmed := r.newsTask("outbox:7")

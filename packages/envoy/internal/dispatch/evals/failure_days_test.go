@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
@@ -53,7 +54,7 @@ func (r *refresherRig) seedFailureProjects(t *testing.T) {
 func (r *refresherRig) putFailures(t *testing.T, project, job string, sources []string, since time.Time, extra ...delivery.SourceInput) {
 	t.Helper()
 	input := delivery.ProjectSettingsInput{
-		Project: project, Delivery: true, Sources: append([]delivery.SourceInput{sourceOf(ruleOfJob(job), nil)}, extra...),
+		Project: project, Delivery: true, Sources: append([]delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(job), nil)}, extra...),
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: sources,
 	}
 	if len(sources) > 0 {
@@ -99,7 +100,7 @@ func (r *refresherRig) failure(t *testing.T, project, ref, source, signal string
 }
 
 // failureValues is project's three failure measures over window as an eval read states them: the
-// stored rows folded with each series' first day (FirstDays, DayWindow, SeriesValuesOf), each
+// stored rows folded with each series' first day (FirstDaysIn, DayWindowIn, SeriesValuesOf), each
 // eval's one series by its slug.
 func (r *refresherRig) failureValues(t *testing.T, project string, window Range) map[string]SeriesValues {
 	t.Helper()
@@ -109,14 +110,14 @@ func (r *refresherRig) failureValues(t *testing.T, project string, window Range)
 		t.Fatalf("read the evals of %s: %v", project, err)
 	}
 	entries := slices.DeleteFunc(page.Items, func(entry Entry) bool { return !isFailureMeasure(entry.Definition) })
-	if len(entries) != len(failureDaySlugs) {
-		t.Fatalf("%s holds %d failure measures, want %d", project, len(entries), len(failureDaySlugs))
+	if len(entries) != len(FailureDaySlugs) {
+		t.Fatalf("%s holds %d failure measures, want %d", project, len(entries), len(FailureDaySlugs))
 	}
-	firsts, err := r.registry.FirstDays(ctx, entries, nil)
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, entries, nil)
 	if err != nil {
 		t.Fatalf("read the first days of %s's failure measures: %v", project, err)
 	}
-	rows, err := r.registry.DayWindow(ctx, []string{project}, entries, nil, nil, window, nil)
+	rows, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, nil, nil, window, nil)
 	if err != nil {
 		t.Fatalf("read %s's failure measures: %v", project, err)
 	}
@@ -210,6 +211,7 @@ func TestAWindowOfDeploysAndFailuresFoldsToTheDORAValuesThroughTheStoredRows(t *
 		EvalID("ALPHA", SlugChangeFailRate), alphaApp, failureDay); n != 1 {
 		t.Errorf("acme/alpha-app's change-fail-rate row of %s does not count 1 failed deploy of 2", failureDay.Format(time.DateOnly))
 	}
+	expectTruth(t, "after settling the failure window", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestARejectMovesChangeFailRateByThatDeploysShare: rejecting F1, the one failure that blames D1,
@@ -240,6 +242,49 @@ func TestARejectMovesChangeFailRateByThatDeploysShare(t *testing.T) {
 	if share := 1 / *after["total"]; math.Abs(*before["rate"]-*after["rate"]-share) > 1e-12 {
 		t.Errorf("the reject moved change fail rate from %g to %g, want by exactly D1's share %g", *before["rate"], *after["rate"], share)
 	}
+	expectTruth(t, "after rejecting F1", r.storedFigures(t), r.truthFigures(t))
+
+	// F3's restore and restoring deploy fall on a different day from the deploy it blames.
+	// Neither day may be left stale when a reject or re-count changes only the failure's state.
+	for _, step := range []struct {
+		state             string
+		restored, reworks float64
+	}{{prodevents.StateRejected, 0, 0}, {prodevents.StateCounted, 1, 1}} {
+		if _, err := prodevents.SetState(t.Context(), r.database.Pool, "ALPHA", w.failures["F3"].ID, prodevents.StateChange{
+			State: step.state, Reason: "reviewed the flag", Actor: alice, At: refresherNow,
+		}); err != nil {
+			t.Fatalf("set F3 to %s: %v", step.state, err)
+		}
+		r.refreshIn(t.Context(), t, nil)
+		wantFigures(t, "F3 "+step.state, r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
+			"failed-deploy-recovery.n": &step.restored, "deployment-rework-rate.restoring": &step.reworks,
+		})
+		expectTruth(t, "F3 "+step.state, r.storedFigures(t), r.truthFigures(t))
+	}
+	restorer := r.githubDeploy(t, "ALPHA", alphaApp, "github:7", failureAt(2, 15, 0), "")
+	throughToday := Range{From: failureDay, To: refresherToday.AddDate(0, 0, 1)}
+	if _, err := prodevents.SetState(t.Context(), r.database.Pool, "ALPHA", w.failures["F2"].ID, prodevents.StateChange{
+		State: prodevents.StateRestored, RestoredByDeploy: new(restorer.ID), Actor: alice, At: failureAt(3, 10, 0),
+	}); err != nil {
+		t.Fatalf("restore F2: %v", err)
+	}
+	r.refreshIn(t.Context(), t, nil)
+	wantFigures(t, "F2 restored", r.failureValues(t, "ALPHA", throughToday), map[string]*float64{
+		"failed-deploy-recovery.n": new(2.0), "deployment-rework-rate.restoring": new(2.0),
+	})
+	expectTruth(t, "F2 restored", r.storedFigures(t), r.truthFigures(t))
+	// Removing the restoring deploy still changes its finish day, even when neither the
+	// blamed deploy nor the old and new restore times fall on it.
+	if _, err := prodevents.SetState(t.Context(), r.database.Pool, "ALPHA", w.failures["F2"].ID, prodevents.StateChange{
+		State: prodevents.StateRestored, Actor: alice, At: failureAt(3, 11, 0),
+	}); err != nil {
+		t.Fatalf("clear F2's restoring deploy: %v", err)
+	}
+	r.refreshIn(t.Context(), t, nil)
+	wantFigures(t, "F2 restored without a deploy", r.failureValues(t, "ALPHA", throughToday), map[string]*float64{
+		"failed-deploy-recovery.n": new(2.0), "deployment-rework-rate.restoring": new(1.0),
+	})
+	expectTruth(t, "F2 restored without a deploy", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAWindowBeforeFailuresMeasuredSinceReadsNoDataAndNamesTheDay (R9): with ALPHA's
@@ -261,7 +306,7 @@ func TestAWindowBeforeFailuresMeasuredSinceReadsNoDataAndNamesTheDay(t *testing.
 	}
 	named := func(what string, values map[string]SeriesValues, day time.Time) {
 		t.Helper()
-		for _, slug := range failureDaySlugs {
+		for _, slug := range FailureDaySlugs {
 			if since := values[slug].DataSince; since == nil || *since != day.Format(time.DateOnly) {
 				t.Errorf("%s: %s's data_since is %v, want %s", what, slug, since, day.Format(time.DateOnly))
 			}
@@ -295,6 +340,7 @@ func TestAWindowBeforeFailuresMeasuredSinceReadsNoDataAndNamesTheDay(t *testing.
 		"change-fail-rate.rate": new(0.5), "failed-deploy-recovery.median": new(26 * 60.0),
 		"failed-deploy-recovery.not_restored": new(0.0), "deployment-rework-rate.rate": new(0.5),
 	})
+	expectTruth(t, "after one failure restored", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAFailureCountsForEachProjectItsDeployCountsForWhoseSourcesIncludeItsSignal (D7, decision 7):
@@ -325,6 +371,7 @@ func TestAFailureCountsForEachProjectItsDeployCountsForWhoseSourcesIncludeItsSig
 			"failed-deploy-recovery.not_restored": new(want[0]),
 		})
 	}
+	expectTruth(t, "after the revert on D", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAPostedDeployThatShipsNoPullRequestCountsForItsRoutesProjectAlone (R12, k12): a deploy posted
@@ -347,6 +394,7 @@ func TestAPostedDeployThatShipsNoPullRequestCountsForItsRoutesProjectAlone(t *te
 			"change-fail-rate.failed": new(want[0]), "change-fail-rate.total": new(want[1]), "deployment-rework-rate.total": new(want[1]),
 		})
 	}
+	expectTruth(t, "after the posted deploys and failures", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestAPersonsFlagCountsUnderAnySource: ALPHA counts reverts alone, and a person's flag of D1
@@ -363,6 +411,7 @@ func TestAPersonsFlagCountsUnderAnySource(t *testing.T) {
 	wantFigures(t, "a person's flag under reverts alone", r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
 		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(2.0), "failed-deploy-recovery.not_restored": new(1.0),
 	})
+	expectTruth(t, "after the person's flag", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestASettingsChangeOfTheFailureSourcesRebuildsTheRows: ALPHA's deploy D1 carries a posted
@@ -388,6 +437,7 @@ func TestASettingsChangeOfTheFailureSourcesRebuildsTheRows(t *testing.T) {
 	wantFigures(t, "events turned on", r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
 		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0),
 	})
+	expectTruth(t, "after turning events on", r.storedFigures(t), r.truthFigures(t))
 
 	r.putFailures(t, "ALPHA", alphaJob, nil, time.Time{})
 	r.pass(t)
@@ -397,9 +447,317 @@ func TestASettingsChangeOfTheFailureSourcesRebuildsTheRows(t *testing.T) {
 	}
 	off := r.failureValues(t, "ALPHA", threeDays)
 	wantFigures(t, "failure sources off", off, map[string]*float64{"change-fail-rate.rate": nil, "deployment-rework-rate.rate": nil})
-	for _, slug := range failureDaySlugs {
+	for _, slug := range FailureDaySlugs {
 		if since := off[slug].DataSince; since != nil {
 			t.Errorf("with failure sources off %s's data_since is %s, want none", slug, *since)
 		}
 	}
+	expectTruth(t, "after turning failure sources off", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestTheStoredDaysReadAsTheirDayInASessionEastOfUTC: a date the evals read, a repository's
+// kept_since in eval_days_rules (builtUnderIn) and a project's failures_measured_since
+// (failuresSinceIn, for its project and for every project), reads as its own UTC midnight in a
+// session whose time zone is east of UTC (Pacific/Kiritimati, UTC+14), where a cast to timestamptz
+// would read the day before.
+func TestTheStoredDaysReadAsTheirDayInASessionEastOfUTC(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.seedFailureProjects(t)
+	r.putFailures(t, "ALPHA", alphaJob, []string{delivery.FailureSourceCheckResults}, failureDay)
+	r.exec(t, "a repository's rule with its start", `insert into eval_days_rules (repo, project_key, production_job_names, kept_since)
+		values ($1, 'ALPHA', '{}', $2::date)`, alphaApp, failureDay)
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `set local timezone = 'Pacific/Kiritimati'`); err != nil {
+		t.Fatalf("set the session's time zone: %v", err)
+	}
+	built, err := builtUnderIn(ctx, tx)
+	if err != nil {
+		t.Fatalf("read the rules the rows stand built under: %v", err)
+	}
+	if since := built[delivery.RuleKey(alphaApp)].since; since == nil || !since.Equal(failureDay) {
+		t.Errorf("%s's kept_since %s reads as %v, want that day", alphaApp, failureDay.Format(time.DateOnly), since)
+	}
+	for _, projects := range [][]string{{"ALPHA"}, nil} {
+		since, err := failuresSinceIn(ctx, tx, projects)
+		if err != nil {
+			t.Fatalf("read the failure measures' first days of %v: %v", projects, err)
+		}
+		if day := since["ALPHA"]; day == nil || !day.Equal(failureDay) {
+			t.Errorf("ALPHA's failures_measured_since %s reads as %v (projects %v), want that day", failureDay.Format(time.DateOnly), day, projects)
+		}
+	}
+}
+
+// TestASaveOfTheFailureFieldsRefoldsTheFailureEvalsInEveryCut (dispatch://INFRA-978, plan T19
+// path 5): after a save moves ALPHA's failures_measured_since back 30 days, the pass that reads
+// the settings change writes ALPHA's failure rows in one transaction marked a settings rewrite
+// (delivery.EvalDaysWrittenBySettingsRewrite), refolding every cut of the three failure evals
+// before commit so each cut's stored figures equal the fold of their day rows, while every other
+// eval's stored figures are unchanged.
+func TestASaveOfTheFailureFieldsRefoldsTheFailureEvalsInEveryCut(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.seedFailureProjects(t)
+	r.putFailures(t, "ALPHA", alphaJob, []string{delivery.FailureSourceCheckResults}, failureDay)
+	early := failureDay.AddDate(0, 0, -20)
+	r.deployRun(t, alphaApp, 1001, failureAt(0, 10, 0), alphaJob)
+	dEarly := r.githubDeploy(t, "ALPHA", alphaApp, "github:early", early.Add(10*time.Hour), "")
+	dLater := r.githubDeploy(t, "ALPHA", alphaApp, "github:later", failureAt(0, 10, 0), "")
+	r.failure(t, "ALPHA", "check:early", prodevents.SourceCheckResults, prodevents.SignalCheckFail, dEarly, early.Add(11*time.Hour), new(early.Add(13*time.Hour)), &dLater)
+	r.settle(t)
+	expectTruth(t, "before moving failures_measured_since", r.storedFigures(t), r.truthFigures(t))
+
+	before := r.storedFigures(t)
+	seq := r.latestSeq(t)
+	since := failureDay.AddDate(0, 0, -30)
+	r.putFailures(t, "ALPHA", alphaJob, []string{delivery.FailureSourceCheckResults}, since)
+	r.pass(t)
+
+	after := r.storedFigures(t)
+	expectTruth(t, "after moving failures_measured_since back 30 days", after, r.truthFigures(t))
+	failureIDs := map[string]bool{
+		EvalID("ALPHA", SlugChangeFailRate):       true,
+		EvalID("ALPHA", SlugFailedDeployRecovery): true,
+		EvalID("ALPHA", SlugDeploymentReworkRate): true,
+	}
+	for _, line := range writtenFigures(before, after) {
+		parts := strings.Fields(line)
+		evalID := parts[len(parts)-1]
+		if !failureIDs[evalID] {
+			t.Errorf("moving failures_measured_since wrote a non-failure eval's stored figure: %s", line)
+		}
+	}
+	if _, err := delivery.DrainPending(ctx, pool); err != nil {
+		t.Fatalf("drain pending changes: %v", err)
+	}
+	changes, err := delivery.ChangesSince(ctx, pool, seq, 200)
+	if err != nil {
+		t.Fatalf("read changes after moving failures_measured_since: %v", err)
+	}
+	var marked []string
+	for _, change := range changes {
+		if change.Kind != delivery.ChangeKindEvalDays || !failureIDs[change.Ref] {
+			continue
+		}
+		if change.RunKind != delivery.EvalDaysWrittenBySettingsRewrite {
+			t.Errorf("the failure settings rewrite logged %s with run_kind %q, want %q",
+				change.Ref, change.RunKind, delivery.EvalDaysWrittenBySettingsRewrite)
+		}
+		marked = append(marked, change.Ref)
+	}
+	slices.Sort(marked)
+	wantMarked := slices.Sorted(maps.Keys(failureIDs))
+	if !slices.Equal(marked, wantMarked) {
+		t.Errorf("the failure settings rewrite logged %v, want each of %v once", marked, wantMarked)
+	}
+}
+
+// TestAFailureCountsForEachProjectItsDeployCountsForUnderThePublishedDefaults
+// (dispatch://INFRA-978, plan T19 path 6): a failure on a deploy that ships a pull request with no
+// issue in a repository that is the default of two projects (ALPHA and BETA) counts for both when
+// both have the signal's source on; after BETA's default moves away and the move is published, for
+// ALPHA alone; a pull request whose issue (PIER-1, owning no repository) is held only through its
+// project's published default counts there and not by the default repository once PIER's default
+// matches, and a pull request whose issue owns the repository (OMEGA-1) counts for OMEGA and not by
+// the default repository; a deploy that ships no pull request counts for its source key's reader
+// (ALPHA, whose deploy source reads the repository) and not for BETA even while BETA shares the
+// default repository; and change-fail-rate's deploys equal deploy-frequency's for each project.
+func TestAFailureCountsForEachProjectItsDeployCountsForUnderThePublishedDefaults(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	shared, other := alphaApp, "acme/beta-other"
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('ALPHA', 'Alpha', 'alice', 2, $1), ('BETA', 'Beta', 'alice', 2, $1),
+		       ('OMEGA', 'Omega', 'alice', 2, $2), ('PIER', 'Pier', 'alice', 2, $3)`,
+		shared, omegaApp, pierRepo)
+	r.exec(t, "the issues", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('OMEGA-1', 'OMEGA', 1, 'Omega work', 'in_progress', '00000001', $1, '{"kind":"system","id":"failures-test"}', $2),
+		       ('PIER-1', 'PIER', 1, 'Pier work', 'in_progress', '00000001', null, '{"kind":"system","id":"failures-test"}', $2)`,
+		shared, failureDay.AddDate(0, 0, -10))
+
+	allFailureSources := []string{delivery.FailureSourceCheckResults}
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), new(shared))},
+		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
+	})
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: "BETA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob("beta / apply"), new(other))},
+		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
+	})
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: "OMEGA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(omegaJob), new(omegaApp))},
+		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
+	})
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: "PIER", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob("pier / apply"), new(pierRepo))},
+		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
+	})
+
+	for _, pr := range []struct {
+		number int
+		merged time.Time
+		issue  *string
+		attrs  *delivery.AttributionInputs
+	}{
+		{1, failureAt(0, 9, 0), nil, &delivery.AttributionInputs{TitleKeys: []string{}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}}},
+		{2, failureAt(0, 11, 0), new("OMEGA-1"), &delivery.AttributionInputs{TitleKeys: []string{"OMEGA-1"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}}},
+		{3, failureAt(0, 13, 0), nil, &delivery.AttributionInputs{TitleKeys: []string{"PIER-1"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}}},
+	} {
+		if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+			Repo: shared, Number: pr.number, Title: fmt.Sprintf("Change %d", pr.number),
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", shared, pr.number), Author: "dev-ana",
+			CreatedAt: new(pr.merged.Add(-time.Hour)), MergedAt: new(pr.merged), IssueKey: pr.issue,
+			Sessions: []string{}, Attribution: pr.attrs,
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", shared, pr.number, err)
+		}
+	}
+	r.deployRun(t, shared, 101, failureAt(0, 10, 0), alphaJob)
+	r.deployRun(t, shared, 102, failureAt(0, 12, 0), alphaJob)
+	r.deployRun(t, shared, 103, failureAt(0, 14, 0), alphaJob)
+	r.deployRun(t, shared, 104, failureAt(0, 16, 0), alphaJob)
+	d1 := r.githubDeploy(t, "ALPHA", shared, "github:101", failureAt(0, 10, 20), "", shared+"#1")
+	d2 := r.githubDeploy(t, "ALPHA", shared, "github:102", failureAt(0, 12, 20), "", shared+"#2")
+	d3 := r.githubDeploy(t, "ALPHA", shared, "github:103", failureAt(0, 14, 20), "", shared+"#3")
+	// The production record still names a previous source owner; the published source key
+	// reader is ALPHA, not OMEGA and not BETA, which only shares the default.
+	d4 := r.githubDeploy(t, "OMEGA", shared, "github:104", failureAt(0, 16, 20), "")
+	r.failure(t, "ALPHA", "check:101", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d1, failureAt(0, 10, 30), nil, nil)
+	r.failure(t, "ALPHA", "check:102", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d2, failureAt(0, 12, 30), nil, nil)
+	r.failure(t, "ALPHA", "check:103", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d3, failureAt(0, 14, 30), nil, nil)
+	r.failure(t, "ALPHA", "check:104", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d4, failureAt(0, 16, 30), nil, nil)
+	r.settle(t)
+
+	check := func(what string, want map[string][2]float64) {
+		t.Helper()
+		for _, project := range []string{"ALPHA", "BETA", "OMEGA", "PIER"} {
+			values := r.failureValues(t, project, threeDays)
+			wantFigures(t, what+" "+project, values, map[string]*float64{
+				"change-fail-rate.failed": new(want[project][0]), "change-fail-rate.total": new(want[project][1]),
+			})
+			deploys := r.deploysOn(t, project, failureDay)
+			if float64(deploys.n) != want[project][1] {
+				t.Errorf("%s: %s deploy-frequency counts %d deploys, change-fail-rate wants %g", what, project, deploys.n, want[project][1])
+			}
+			tx, err := r.registry.BeginSnapshot(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := FailureRecordIn(ctx, tx, r.registry.attributor, project, SlugChangeFailRate)
+			_ = tx.Rollback(ctx)
+			if err != nil {
+				t.Fatalf("%s: FailureRecordIn(%s): %v", what, project, err)
+			}
+			items := record.Items(threeDays)
+			deployItems := 0
+			for _, item := range items {
+				if item.Event.Kind == prodevents.KindDeploy {
+					deployItems++
+				}
+			}
+			if float64(deployItems) != want[project][1] {
+				t.Errorf("%s: %s FailureRecordIn answers %d deploy items, want %g", what, project, deployItems, want[project][1])
+			}
+		}
+		expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
+	}
+
+	check("shared default", map[string][2]float64{
+		"ALPHA": {3, 3}, "BETA": {2, 2}, "OMEGA": {1, 1}, "PIER": {0, 0},
+	})
+
+	r.exec(t, "move BETA's default away", `update projects set default_repo = $1 where key = 'BETA'`, other)
+	r.exec(t, "move PIER's default to shared", `update projects set default_repo = $1 where key = 'PIER'`, shared)
+	check("before publishing default moves", map[string][2]float64{
+		"ALPHA": {3, 3}, "BETA": {2, 2}, "OMEGA": {1, 1}, "PIER": {0, 0},
+	})
+
+	r.settle(t)
+	check("after BETA moves away and PIER moves to shared", map[string][2]float64{
+		"ALPHA": {2, 2}, "BETA": {0, 0}, "OMEGA": {1, 1}, "PIER": {2, 2},
+	})
+}
+
+// TestTheFailureRowsOfAMovedProjectAreWrittenUnderThePublishedDefaults (dispatch://INFRA-978, plan
+// T19 path 6): moving a project's default writes the moved projects' failure rows after the commit
+// that publishes the move, in the same pass, under the published defaults, with each cut's stored
+// figures of the three failure evals equal to their day rows (and every eval once the pass finishes
+// its stale-cut refold). The test also covers a project whose own default did not move (ALPHA)
+// losing a deploy whose pull request's issue is held through another project's default (PIER-1),
+// so publishDefaults' full moved set is written under the published defaults.
+func TestTheFailureRowsOfAMovedProjectAreWrittenUnderThePublishedDefaults(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.seedFailureProjects(t)
+	r.exec(t, "add PIER", `insert into projects (key, name, default_assignee, next_number, default_repo) values ('PIER', 'Pier', 'alice', 2, $1)`, pierRepo)
+	r.exec(t, "add PIER-1", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('PIER-1', 'PIER', 1, 'Pier work', 'in_progress', '00000001', null, '{"kind":"system","id":"failures-test"}', $1)`, failureDay.AddDate(0, 0, -10))
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), new(alphaApp))},
+		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: []string{delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &failureDay,
+	})
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: "PIER", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob("pier / apply"), new(pierRepo))},
+		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: []string{delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &failureDay,
+	})
+	if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+		Repo: alphaApp, Number: 10, Title: "PIER-1: conditional change", URL: "https://github.com/" + alphaApp + "/pull/10",
+		Author: "dev-ana", CreatedAt: new(failureAt(0, 8, 0)), MergedAt: new(failureAt(0, 9, 0)), Sessions: []string{},
+		Attribution: &delivery.AttributionInputs{TitleKeys: []string{"PIER-1"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{}},
+	}); err != nil {
+		t.Fatalf("write conditional PR: %v", err)
+	}
+	r.deployRun(t, alphaApp, 110, failureAt(0, 10, 0), alphaJob)
+	d1 := r.githubDeploy(t, "ALPHA", alphaApp, "github:110", failureAt(0, 10, 20), "", alphaApp+"#10")
+	r.failure(t, "ALPHA", "check:110", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d1, failureAt(0, 11, 0), nil, nil)
+	r.settle(t)
+	wantFigures(t, "ALPHA before moving PIER's default", r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
+		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0),
+	})
+	wantFigures(t, "PIER before moving PIER's default", r.failureValues(t, "PIER", threeDays), map[string]*float64{
+		"change-fail-rate.failed": new(0.0), "change-fail-rate.total": new(0.0),
+	})
+
+	// Move PIER's default to alphaApp: PIER-1 now resolves to alphaApp, moving d1 from ALPHA to PIER.
+	// One woken pass (no walk) publishes the move, writes ALPHA's and PIER's failure rows after the
+	// commit under the published defaults, and finishes the stale-cut refold.
+	r.exec(t, "move PIER's default to alphaApp", `update projects set default_repo = $1 where key = 'PIER'`, alphaApp)
+	report, _ := r.refreshIn(t.Context(), t, nil)
+	for _, project := range []string{"ALPHA", "PIER"} {
+		if !report.days[builtDay{family: failureFamily, project: project, day: failureDay}] {
+			t.Errorf("the publishing pass wrote %v, want %s's failure day %s written in the same pass",
+				report.sorted(), project, failureDay.Format(time.DateOnly))
+		}
+	}
+	// The failure rows were written after the publishing commit: their xmin must be strictly later
+	// than eval_days_defaults' xmin.
+	var defaultsXmin, pierFailureXmin uint32
+	if err := pool.QueryRow(ctx, `select xmin::text::bigint from eval_days_defaults where project_key = 'PIER'`).Scan(&defaultsXmin); err != nil {
+		t.Fatalf("read eval_days_defaults xmin: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		select xmin::text::bigint from eval_days
+		where project_key = 'PIER' and eval_id = $1 and repo = '' and day = $2
+	`, EvalID("PIER", SlugChangeFailRate), failureDay).Scan(&pierFailureXmin); err != nil {
+		t.Fatalf("read PIER failure row xmin: %v", err)
+	}
+	if pierFailureXmin <= defaultsXmin {
+		t.Errorf("PIER's failure row xmin %d <= eval_days_defaults xmin %d; want the failure rows written after the publishing commit",
+			pierFailureXmin, defaultsXmin)
+	}
+	wantFigures(t, "ALPHA right after publishing pass", r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
+		"change-fail-rate.failed": new(0.0), "change-fail-rate.total": new(0.0),
+	})
+	wantFigures(t, "PIER right after publishing pass", r.failureValues(t, "PIER", threeDays), map[string]*float64{
+		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0),
+	})
+	expectTruth(t, "after publishing PIER's default move", r.storedFigures(t), r.truthFigures(t))
 }

@@ -17,11 +17,12 @@ import (
 )
 
 // The computed day rows' write (dispatch://INFRA-2916, R12), shared by every family of computed
-// evals: one project's rows of one UTC day and the items they counted (ProjectDay), written in one
-// transaction (writeProjectDay) for the delivery and CI evals (writeDeliveryDay, delivery_days.go)
-// and for the Legion evals (writeLegionDay, legion_days.go), and the statements that write
-// the rows themselves (upsertDays, deleteStaleDays), which the unowned-p0 write (WriteUnownedP0Day)
-// writes its row through too.
+// evals: projects' rows of UTC days and the items they counted (ProjectDay), written in one
+// transaction (writeProjectDays), as a walk writes one day of the delivery and CI evals of every
+// project and owner key (delivery_days.go) or of one project's Legion evals (legion_days.go) with
+// the walk's records (writeDays, refresh.walkWrite), and a page the days it names, of every
+// project, and the statements that write the rows themselves (upsertDays, deleteStaleDays), which
+// the unowned-p0 write (WriteUnownedP0Day) writes its row through too.
 
 // Member is one item a project's day counted, as eval_day_members records it beside the day: its
 // family (KindDelivery, KindCI or KindLegion), the deploy repository it was counted under ("" for
@@ -37,8 +38,8 @@ type Member struct {
 	ShippedBy  string
 }
 
-// ProjectDay is one project's computed rows of one UTC day, as writeDeliveryDay and
-// writeLegionDay write them: the day rows (their built_by is the write's, and their
+// ProjectDay is one project's computed rows of one UTC day, as writeProjectDay and
+// writeProjectDays write them: the day rows (their built_by is the write's, and their
 // updated_at its moment where a value moved) and the items they counted.
 type ProjectDay struct {
 	Project string
@@ -65,51 +66,141 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 	return p
 }
 
+// repositoryRows is rows, one repository's cut of a day as a family's day builders build it
+// (DeliveryDay.Rows, LegionDay.Rows), less each row whose part is empty (emptyPart): R12 writes no
+// zero row for a repository, so a repository's day with no input of a series holds no row of it and
+// reads "no data", where the project's own row of the series (repo "") holds its zero row from the
+// series' first input day on (ProjectDay.WithZeros). A lead time of pull requests no deploy has
+// shipped yet, a Legion cut (the roots or the children) that none of the repository's issues of the
+// day is in, and a filing class the repository's filings of the day hold none of are such parts. An
+// empty part adds nothing to a fold, so the repositories' rows that stand still partition the
+// all-repositories row. Every writer of a day takes its rows from those builders, a walk, a page,
+// a span, a settings rewrite and a rebuild alike, and deletes each stored row of the day it does
+// not hold, so a rewrite that leaves a repository's part empty deletes its row, and the delete logs
+// its change and moves the stored figures of its cut as any other. unowned-p0's rows, whose 0 is a
+// count, are WriteUnownedP0Day's, and never pass through here.
+func repositoryRows(rows []DayRow) []DayRow {
+	return slices.DeleteFunc(rows, func(row DayRow) bool { return emptyPart(row.DayPart) })
+}
+
+// emptyPart reports whether part is a zero part, as a day builder builds it of a cut that holds no
+// input of its series (measures/parts.go): no sample, n 0, via_repository 0, and its sum,
+// numerator, denominator, largest value, last value and every count 0 or none, as a fold adds them
+// (measures.ValueOrZero). Beside other parts it adds nothing to their fold; alone it folds to zero
+// counts, where a fold of no part of the series reads no value.
+func emptyPart(part measures.DayPart) bool {
+	if part.N != 0 || len(part.Samples) != 0 || part.ViaRepository != 0 {
+		return false
+	}
+	for _, value := range []*float64{part.Sum, part.Num, part.Den, part.Max, part.LastValue} {
+		if measures.ValueOrZero(value) != 0 {
+			return false
+		}
+	}
+	for _, count := range part.Counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // writeProjectDay is the write of one project's computed rows of one day: day's rows of family's
 // evals, of every deploy repository the day holds rows of, and its members of family's families,
-// written as writeDeliveryDay says. The stale rows it deletes are those of family's evals alone and
-// the stale members it deletes those of its families alone, so the delivery and the Legion writes
-// of one day leave each other's rows and members as they are. A row of an eval keyed by the deploy
-// repository names the repository it is computed as if it were it, and every other row none
-// (deploy_repos.go). family.what names the rows in a refusal. Its change rows wait in the change
-// log's outbox (migration 20261117100014), so the transaction takes no change log lock, and they
-// are moved into the log once it has committed (drainChanges). Where figures is set, the same
-// transaction folds again the stored figures of the day whose rows it moved (foldFiguresInTx); a
-// walk's day leaves them to the end of its batch (refresh.foldWalked). It writes the rows, then
-// the members, then the figures, the order every writer of the three takes (checkProjectDay,
-// writeDayRowsIn, writeDayMembersIn), which a page that writes several days in its one commit
-// takes over all of them (rebuild). Where a rebuild is building, the triggers of eval_days and
-// eval_day_members queue the day for it to build again (migration 20261117100021).
+// written as writeDayRowsIn and writeDayMembersIn write them, in a transaction of its own
+// (writeProjectDays of one day).
 func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day ProjectDay, builtBy string, figures bool) error {
-	date := measures.Midnight(day.Day)
-	if err := checkProjectDay(family.what, day, family.slugs, family.families); err != nil {
-		return err
+	return s.writeProjectDays(ctx, family, []ProjectDay{day}, builtBy, figures)
+}
+
+// writeProjectDays is the write of days, each one project's computed rows of one day, in one
+// transaction: each day's rows of family's evals, of every deploy repository the day holds rows
+// of, and its members of family's families, written by writeDayRowsIn and writeDayMembersIn, the
+// statements of every day at once, each cut at statementBytes. Each row is upserted where a value
+// moved (upsertDays), so a row whose every value is what it holds is left as it is and logs no
+// change, recording builtBy, the running build, as the build that wrote it; each project's rows of
+// each of its days of family's evals that the day does not hold are deleted, such as a
+// repository's whose last row moved to another day or project (deleteStaleDays); and each day's
+// members are recorded in eval_day_members on its day, and the project's members of family's
+// families recorded on that day that the day does not hold deleted, so each item's row there says
+// where it was last counted. The stale rows it deletes are those of family's evals alone and the
+// stale members it deletes those of its families alone, so the delivery and the Legion writes of
+// one day leave each other's rows and members as they are. A row of an eval keyed by the deploy
+// repository names the repository it is computed as if it were it, and every other row none
+// (deploy_repos.go). A row of another project, another day or an eval family does not name, and an
+// item of another family, is refused before anything is written (checkProjectDay), family.what
+// naming the rows in the refusal. It moves no walk: a page whose changes move what other days hold
+// writes those days with it, in its one commit (span.go). Its change rows wait in the change log's
+// outbox (migration 20261117100014), so the transaction takes no change log lock, and they are
+// moved into the log once it has committed, in one drain (drainChanges): every statement of a
+// transaction widens the one change it logs of an eval, so the days a page writes log one change of
+// each eval they moved, and a view of the rows is sent one delta of them. Where figures is set, as
+// the refresher's write of days outside a walk sets it, the same transaction folds again, once for
+// each project, the stored figures of its days whose rows it moved, each run of them apart and no
+// day between two runs, where builtBy writes them (foldFiguresInTx); a walk's day leaves them to
+// the end of its batch (refresh.foldWalked). It writes the rows, then the members, then the
+// figures, the order every writer of the three takes (writeDayRowsIn, writeDayMembersIn,
+// foldFiguresInTx), which a page whose days move other days takes in its one commit too
+// (spanWrite). Where a rebuild is building, the triggers of eval_days and eval_day_members queue
+// the days for it to build again (migration 20261117100021).
+func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool) error {
+	return s.writeDays(ctx, family, days, builtBy, figures, nil)
+}
+
+// writeDays is writeProjectDays with then, where it is not nil, written in the same transaction
+// after the rows, the members and the figures: a walk's records of the day it wrote
+// (refresh.walkWrite, recordWalkIn), so the commit that writes a day of every key a project reads
+// is the one that says the stored rows are whole through it (eval_days_serving).
+func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool, then func(tx pgx.Tx) error) error {
+	if len(days) == 0 {
+		return nil
 	}
-	tx, err := s.database.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)
-	}
-	defer tx.Rollback(ctx)
-	if err := writeDayRowsIn(ctx, tx, day, family.slugs, builtBy); err != nil {
-		return err
-	}
-	if err := writeDayMembersIn(ctx, tx, day, family.families); err != nil {
-		return err
-	}
-	if figures {
-		spans := make(map[string]daySpan, len(family.slugs))
-		for _, slug := range family.slugs {
-			spans[EvalID(day.Project, slug)] = daySpan{first: date, last: date}
-		}
-		if err := foldFiguresInTx(ctx, tx, builtBy, day.Project, spans); err != nil {
+	for _, day := range days {
+		if err := checkProjectDay(family.what, day, family.slugs, family.families); err != nil {
 			return err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)
+	if err := s.inTx(ctx, "the day rows of "+daysNamed(days), func(tx pgx.Tx) error {
+		if err := writeDayRowsIn(ctx, tx, days, family.slugs, builtBy); err != nil {
+			return err
+		}
+		if err := writeDayMembersIn(ctx, tx, days, family.families); err != nil {
+			return err
+		}
+		if figures {
+			written := writtenSpans{}
+			for _, day := range days {
+				date := measures.Midnight(day.Day)
+				for _, slug := range family.slugs {
+					written.add(day.Project, EvalID(day.Project, slug), date, date)
+				}
+			}
+			if err := foldFiguresInTx(ctx, tx, builtBy, written.sets()...); err != nil {
+				return err
+			}
+		}
+		if then == nil {
+			return nil
+		}
+		return then(tx)
+	}); err != nil {
+		return err
 	}
 	s.drainChanges(ctx)
 	return nil
+}
+
+// daysNamed names days in an error: the one day's project and date, or how many days of how many
+// projects.
+func daysNamed(days []ProjectDay) string {
+	if len(days) == 1 {
+		return days[0].Project + " on " + measures.Midnight(days[0].Day).Format(time.DateOnly)
+	}
+	projects := map[string]bool{}
+	for _, day := range days {
+		projects[day.Project] = true
+	}
+	return fmt.Sprintf("%d days of %d projects", len(days), len(projects))
 }
 
 // checkProjectDay refuses day before anything of it is written: a row of another project, another
@@ -137,44 +228,163 @@ func checkProjectDay(what string, day ProjectDay, slugs, families []string) erro
 	return nil
 }
 
-// writeDayRowsIn writes, in tx, day's rows of the evals slugs names as writeProjectDay writes them:
-// each upserted where a value moved (upsertDays), and the project's stored rows of that day of
-// those evals that day does not hold deleted (deleteStaleDays).
-func writeDayRowsIn(ctx context.Context, tx pgx.Tx, day ProjectDay, slugs []string, builtBy string) error {
-	evalIDs := make([]string, len(slugs))
-	for i, slug := range slugs {
-		evalIDs[i] = EvalID(day.Project, slug)
+// writeDayRowsIn writes, in tx, days' rows of the evals slugs names as writeProjectDay writes them:
+// each upserted where a value moved (upsertDays), and each project's stored rows of each of its
+// days of those evals that day does not hold deleted (deleteStaleDays), the statements of every
+// day at once.
+func writeDayRowsIn(ctx context.Context, tx pgx.Tx, days []ProjectDay, slugs []string, builtBy string) error {
+	if len(days) == 0 {
+		return nil
 	}
-	if err := upsertDays(ctx, tx, day.Rows, builtBy); err != nil {
+	var rows []DayRow
+	for _, day := range days {
+		rows = append(rows, day.Rows...)
+	}
+	if err := upsertDays(ctx, tx, rows, builtBy); err != nil {
 		return err
 	}
-	return deleteStaleDays(ctx, tx, day.Project, measures.Midnight(day.Day), evalIDs, day.Rows)
+	return deleteStaleDays(ctx, tx, days, slugs)
 }
 
-// memberRun is one statement's part of a day's members: its members, in the byte order of their
-// keys (family, deploy repository, row key), and the range of keys whose stored members the
-// statements that find what the day no longer holds read, from its first member's key (from, nil
-// for the first run, which reads from the first key) up to the next run's first member's (until,
-// nil for the last, which reads to the last).
+// writtenDays is the projects and the days of days, pairwise: the days a write's statements that
+// find what the days no longer hold read the stored rows and members of.
+func writtenDays(days []ProjectDay) (projects []string, dates []time.Time) {
+	projects, dates = make([]string, len(days)), make([]time.Time, len(days))
+	for i, day := range days {
+		projects[i], dates[i] = day.Project, measures.Midnight(day.Day)
+	}
+	return projects, dates
+}
+
+// writtenBytes is the most bytes the projects and days of writtenDays add to a statement's
+// parameters, as pgx encodes them in binary: in each of the two arrays 4 bytes of length and the
+// element, a date at most 8; and, where slugs names evals, the id of each of those evals of each
+// project, once, with its 4 bytes of length (writtenCut.evalIDs).
+func writtenBytes(projects, slugs []string) int {
+	bytes := 0
+	held := map[string]bool{}
+	for _, project := range projects {
+		bytes += 4 + len(project) + 4 + 8
+		if !held[project] {
+			held[project] = true
+			bytes += evalIDsBytes(project, slugs)
+		}
+	}
+	return bytes
+}
+
+// evalIDsBytes is the bytes the ids of slugs' evals of project take in an array's parameter, each
+// with its 4 bytes of length.
+func evalIDsBytes(project string, slugs []string) int {
+	bytes := 0
+	for _, slug := range slugs {
+		bytes += 4 + len(EvalID(project, slug))
+	}
+	return bytes
+}
+
+// writtenReserve is the most bytes the days written of projects (writtenDays), with the ids of
+// slugs' evals of their projects, take of the parameters of one statement of a run (memberRuns,
+// staleRuns): all of them, where they take at most half of statementBytes; and otherwise half,
+// which each cut of them then takes at most (writtenCuts). The days a page writes grow with its
+// changes and their projects, and every owner key's days with them.
+func writtenReserve(projects, slugs []string) int {
+	return min(writtenBytes(projects, slugs), statementBytes/2)
+}
+
+// writtenCut is one statement's part of the days written: their projects and days, pairwise, and
+// the ids of the write's evals of those projects, where it names evals.
+type writtenCut struct {
+	projects []string
+	dates    []time.Time
+	evalIDs  []string
+}
+
+// writtenCuts is the days written (projects and dates, pairwise, as writtenDays answers them)
+// whose project a run's range of keys can hold keys of, from the project of its first key through
+// that of its bound (first and last, nil for no bound: every key orders by its project first), cut
+// in their order into parts of at most limit bytes (writtenBytes), each with the ids of slugs'
+// evals of its projects: one part where they fit, which a run whose range holds every key is sent
+// whole. A statement of a run reads the stored keys of its range of the days it is sent alone, so
+// a day of a project outside the range would read keys the range then filters out, and the parts
+// of the days of one run together read what all of them would.
+func writtenCuts(projects []string, dates []time.Time, first, last *string, slugs []string, limit int) []writtenCut {
+	var cuts []writtenCut
+	var cut writtenCut
+	bytes, held := 0, map[string]bool{}
+	for i, project := range projects {
+		if first != nil && project < *first || last != nil && project > *last {
+			continue
+		}
+		n := 4 + len(project) + 4 + 8
+		if !held[project] {
+			n += evalIDsBytes(project, slugs)
+		}
+		if len(cut.projects) > 0 && bytes+n > limit {
+			cuts = append(cuts, cut)
+			cut, bytes, held = writtenCut{}, 0, map[string]bool{}
+			n = 4 + len(project) + 4 + 8 + evalIDsBytes(project, slugs)
+		}
+		if !held[project] {
+			held[project] = true
+			for _, slug := range slugs {
+				cut.evalIDs = append(cut.evalIDs, EvalID(project, slug))
+			}
+		}
+		cut.projects, cut.dates, bytes = append(cut.projects, project), append(cut.dates, dates[i]), bytes+n
+	}
+	if len(cut.projects) > 0 {
+		cuts = append(cuts, cut)
+	}
+	return cuts
+}
+
+// dayMember is one item a project's day counted, with the project and the day, as a write of
+// several days takes the items of all of them (memberRuns).
+type dayMember struct {
+	project string
+	day     time.Time
+	Member
+}
+
+// key is the member's key in eval_day_members: its project, family, deploy repository and row
+// key.
+func (m dayMember) key() memberKey {
+	return memberKey{project: m.project, family: m.Family, deployRepo: m.DeployRepo, rowKey: m.RowKey}
+}
+
+// memberRun is one statement's part of days' members: its members, in the byte order of their
+// keys (project, family, deploy repository, row key), and the range of keys whose stored members
+// the statements that find what the days no longer hold read, from its first member's key (from,
+// nil for the first run, which reads from the first key) up to the next run's first member's
+// (until, nil for the last, which reads to the last).
 type memberRun struct {
-	members     []Member
+	members     []dayMember
 	from, until []string
 }
 
-// memberRuns is members, in the byte order of their keys, cut into the runs one statement each
-// takes, as staleRuns cuts the rows of a day: each run's parameters take at most statementBytes in
-// any of the statements of a day's members (leftDays, the upsert and goneMembersDeleteStatement),
-// with project and families as their other parameters. The runs' ranges cover every key once, so
-// a stored member the day no longer holds is in one run's range and among that run's members
-// nowhere, and the statements of the runs together find what one statement would. With no member
-// it is one run of none over every key: the day holds no item any more.
-func memberRuns(project string, members []Member, families []string) []memberRun {
-	ordered := slices.Clone(members)
-	slices.SortFunc(ordered, compareMembers)
-	size := func(member *Member) int {
-		return 5*4 + len(member.Family) + len(member.DeployRepo) + len(member.RowKey) + len(member.Repo) + len(member.ShippedBy)
+// memberRuns is the members of days, in the byte order of their keys, cut into the runs one
+// statement each takes, as staleRuns cuts the rows of the days: each run's parameters take at most
+// statementBytes in any of the statements of the days' members (leftDays, upsertMembersStatement
+// and goneMembersDeleteStatement), with a cut of the days written (writtenReserve, writtenCuts) and
+// families as their other parameters. The runs' ranges cover every key once, so a stored member a
+// day no longer holds is in one run's range and among that run's members of that day nowhere, and
+// the statements of the runs together find what one statement would. With no member it is one run
+// of none over every key: the days hold no item any more.
+func memberRuns(days []ProjectDay, families []string) []memberRun {
+	var ordered []dayMember
+	for _, day := range days {
+		date := measures.Midnight(day.Day)
+		for _, member := range day.Members {
+			ordered = append(ordered, dayMember{project: day.Project, day: date, Member: member})
+		}
 	}
-	base, widest := paramBytes(8, project, KindDelivery)+8, 0
+	slices.SortFunc(ordered, func(a, b dayMember) int { return compareMemberKeys(a.key(), b.key()) })
+	size := func(member *dayMember) int {
+		return 7*4 + len(member.project) + 8 + len(member.Family) + len(member.DeployRepo) + len(member.RowKey) + len(member.Repo) + len(member.ShippedBy)
+	}
+	projects, _ := writtenDays(days)
+	base, widest := paramBytes(11, KindDelivery)+writtenReserve(projects, nil), 0
 	for _, family := range families {
 		base += 4 + len(family)
 	}
@@ -185,7 +395,9 @@ func memberRuns(project string, members []Member, families []string) []memberRun
 	if len(chunks) == 0 {
 		return []memberRun{{}}
 	}
-	key := func(member Member) []string { return []string{member.Family, member.DeployRepo, member.RowKey} }
+	key := func(member dayMember) []string {
+		return []string{member.project, member.Family, member.DeployRepo, member.RowKey}
+	}
 	runs := make([]memberRun, len(chunks))
 	for i, chunk := range chunks {
 		runs[i].members = chunk
@@ -199,32 +411,110 @@ func memberRuns(project string, members []Member, families []string) []memberRun
 	return runs
 }
 
-// compareMembers orders members by the bytes of their keys: family, deploy repository and row key.
-func compareMembers(a, b Member) int {
-	return cmp.Or(strings.Compare(a.Family, b.Family), strings.Compare(a.DeployRepo, b.DeployRepo), strings.Compare(a.RowKey, b.RowKey))
+// written is the cuts of the days written (projects and dates, pairwise) whose project the run's
+// range of keys can hold keys of (writtenCuts), each of at most limit bytes: the days a statement
+// of the run is sent, one cut a statement.
+func (run memberRun) written(projects []string, dates []time.Time, limit int) []writtenCut {
+	var first, last *string
+	if run.from != nil {
+		first = &run.from[0]
+	}
+	if run.until != nil {
+		last = &run.until[0]
+	}
+	return writtenCuts(projects, dates, first, last, nil, limit)
 }
 
-// leftDaysArgs is the arguments leftDaysOwedStatement and leftDaysStatement take of one run of
-// project's day of members, under families.
-func leftDaysArgs(project string, day time.Time, run memberRun, families []string) []any {
+// countedTwice reports whether one project's two days of days count one item: a page's reads of
+// two days of a project made either side of a write that moved the item from one to the other.
+// Every member a statement upserts is one row of eval_day_members, which holds an item on one day.
+func countedTwice(days []ProjectDay) bool {
+	seen := map[memberKey]bool{}
+	for _, day := range days {
+		for _, member := range day.Members {
+			key := dayMember{project: day.Project, Member: member}.key()
+			if seen[key] {
+				return true
+			}
+			seen[key] = true
+		}
+	}
+	return false
+}
+
+// leftDaysArgs is the arguments leftDaysOwedStatement and leftDaysStatement take of one run of the
+// members of the days written (projects and dates, pairwise), under families.
+func leftDaysArgs(projects []string, dates []time.Time, run memberRun, families []string) []any {
 	count := len(run.members)
+	memberProjects, memberDays := make([]string, count), make([]time.Time, count)
 	memberFamilies, deployRepos, keys, shippedBy := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
 	for i, member := range run.members {
+		memberProjects[i], memberDays[i] = member.project, member.day
 		memberFamilies[i], deployRepos[i], keys[i], shippedBy[i] = member.Family, member.DeployRepo, member.RowKey, member.ShippedBy
 	}
-	return []any{project, measures.Midnight(day), memberFamilies, deployRepos, keys, shippedBy, families, KindDelivery, run.from, run.until}
+	return []any{projects, dates, memberProjects, memberDays, memberFamilies, deployRepos, keys, shippedBy, families, KindDelivery, run.from, run.until}
 }
 
-// writeDayMembersIn writes, in tx, after the day's rows, day's members of families as
-// writeProjectDay writes them: the days its items leave recorded owed, the members upserted where
-// their day, repository or shipping run moved, those of the day it no longer holds deleted, and
-// what the day owed of families cleared. Each of the three takes the members a run at a time
-// (memberRuns), so no statement's parameters pass statementBytes however many items the day
-// counts: every run's left days are recorded before any member moves, then every run is upserted,
-// then every run's range loses what the day no longer holds.
-func writeDayMembersIn(ctx context.Context, tx pgx.Tx, day ProjectDay, families []string) error {
-	date := measures.Midnight(day.Day)
-	runs := memberRuns(day.Project, day.Members, families)
+// leftDays reads each day an item of days would leave were they written (leftDaysStatement), as
+// the stored members stand: the days a page writes with them (refresh.nameLeft), every project's
+// in one statement a run of their members (memberRuns) and a cut of the days written of its range
+// (memberRun.written).
+func (s *Store) leftDays(ctx context.Context, days []ProjectDay, families []string) ([]projectDay, error) {
+	if len(days) == 0 {
+		return nil, nil
+	}
+	projects, dates := writtenDays(days)
+	limit := writtenReserve(projects, nil)
+	var left []projectDay
+	for _, run := range memberRuns(days, families) {
+		for _, cut := range run.written(projects, dates, limit) {
+			rows, err := s.database.Pool.Query(ctx, leftDaysStatement, leftDaysArgs(cut.projects, cut.dates, run, families)...)
+			if err != nil {
+				return nil, fmt.Errorf("read the days the items of %s left: %w", daysNamed(days), err)
+			}
+			var one projectDay
+			if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.day}, func() error {
+				left = append(left, projectDay{project: one.project, day: measures.Midnight(one.day)})
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("read the days the items of %s left: %w", daysNamed(days), err)
+			}
+		}
+	}
+	slices.SortFunc(left, func(a, b projectDay) int {
+		return cmp.Or(strings.Compare(a.project, b.project), a.day.Compare(b.day))
+	})
+	return slices.Compact(left), nil
+}
+
+// writeDayMembersIn writes, in tx, after the days' rows, days' members of families as
+// writeProjectDay writes them: the days their items leave recorded owed, the members upserted
+// where their day, repository or shipping run moved, those of each day it no longer holds deleted,
+// and what the days owed of families cleared. Each of the three takes the members of every day a
+// run at a time (memberRuns), with the days written of the run's range, in cuts where they would
+// pass their reserve (memberRun.written), so no statement's parameters pass statementBytes however
+// many items and days the write holds: every run's left days are recorded before any member
+// moves, then every run is upserted, then every run's range loses what each day no longer holds.
+// A day the write's other days took an item from is among them, and their write clears what it
+// owed with theirs. Where two days of one project count one item (countedTwice), which one
+// statement cannot upsert twice, the days are written one after another in tx, the later in the
+// days' order taking the item, as writes of the days in transactions of their own leave it.
+func writeDayMembersIn(ctx context.Context, tx pgx.Tx, days []ProjectDay, families []string) error {
+	if len(days) == 0 {
+		return nil
+	}
+	if len(days) > 1 && countedTwice(days) {
+		for _, day := range days {
+			if err := writeDayMembersIn(ctx, tx, []ProjectDay{day}, families); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	named := daysNamed(days)
+	projects, dates := writtenDays(days)
+	limit := writtenReserve(projects, nil)
+	runs := memberRuns(days, families)
 	// An item this write takes from another day leaves that day's rows counting it until the day
 	// is written again: one it moves here from the day it was counted on, and, for a pull request
 	// it moves to another deploy run or stops counting, the day of the run that shipped it, which
@@ -233,16 +523,23 @@ func writeDayMembersIn(ctx context.Context, tx pgx.Tx, day ProjectDay, families 
 	// pass that fails before it rewrites that day still finds it (owedDays) where no stored member
 	// names it any more.
 	for _, run := range runs {
-		if _, err := tx.Exec(ctx, leftDaysOwedStatement, leftDaysArgs(day.Project, date, run, families)...); err != nil {
-			return fmt.Errorf("record the days %s's items left for %s: %w", day.Project, date.Format(time.DateOnly), err)
+		for _, cut := range run.written(projects, dates, limit) {
+			if _, err := tx.Exec(ctx, leftDaysOwedStatement, leftDaysArgs(cut.projects, cut.dates, run, families)...); err != nil {
+				return fmt.Errorf("record the days the items of %s left: %w", named, err)
+			}
 		}
 	}
-	type columns struct{ families, deployRepos, keys, repos, shippedBy []string }
+	type columns struct {
+		projects, families, deployRepos, keys, repos, shippedBy []string
+		days                                                    []time.Time
+	}
 	of := func(run memberRun) columns {
 		count := len(run.members)
-		c := columns{make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count)}
+		c := columns{make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count),
+			make([]string, count), make([]time.Time, count)}
 		for i, member := range run.members {
-			c.families[i], c.deployRepos[i], c.keys[i], c.repos[i], c.shippedBy[i] = member.Family, member.DeployRepo, member.RowKey, member.Repo, member.ShippedBy
+			c.projects[i], c.families[i], c.deployRepos[i], c.keys[i] = member.project, member.Family, member.DeployRepo, member.RowKey
+			c.repos[i], c.shippedBy[i], c.days[i] = member.Repo, member.ShippedBy, member.day
 		}
 		return c
 	}
@@ -252,116 +549,182 @@ func writeDayMembersIn(ctx context.Context, tx pgx.Tx, day ProjectDay, families 
 			continue
 		}
 		c := of(run)
-		if _, err := tx.Exec(ctx, `
-			insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
-			select $1, member.family, member.deploy_repo, member.row_key, $2, member.repo, member.shipped_by
-			from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) as member(family, deploy_repo, row_key, repo, shipped_by)
-			order by member.family collate "C", member.deploy_repo collate "C", member.row_key collate "C"
-			on conflict (project_key, family, deploy_repo, row_key) do update
-			set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
-			where (eval_day_members.day, eval_day_members.repo, eval_day_members.shipped_by)
-				is distinct from (excluded.day, excluded.repo, excluded.shipped_by)
-		`, day.Project, date, c.families, c.deployRepos, c.keys, c.repos, c.shippedBy); err != nil {
-			return fmt.Errorf("record the items %s counted on %s: %w", day.Project, date.Format(time.DateOnly), err)
+		if _, err := tx.Exec(ctx, upsertMembersStatement, c.projects, c.families, c.deployRepos, c.keys, c.days, c.repos, c.shippedBy); err != nil {
+			return fmt.Errorf("record the items %s counted: %w", named, err)
 		}
 	}
 	for _, run := range runs {
 		c := of(run)
-		if _, err := tx.Exec(ctx, goneMembersDeleteStatement, day.Project, families, date, c.families, c.deployRepos, c.keys, run.from, run.until); err != nil {
-			return fmt.Errorf("delete the items %s no longer counts on %s: %w", day.Project, date.Format(time.DateOnly), err)
+		for _, cut := range run.written(projects, dates, limit) {
+			if _, err := tx.Exec(ctx, goneMembersDeleteStatement, cut.projects, cut.dates, families, c.projects, c.families, c.deployRepos, c.keys, c.days,
+				run.from, run.until); err != nil {
+				return fmt.Errorf("delete the items %s no longer counts: %w", named, err)
+			}
 		}
 	}
-	// This write is the rewrite a day owed of its families.
-	if _, err := tx.Exec(ctx, `delete from eval_days_owed where project_key = $1 and family = any($2) and day = $3`, day.Project, families, date); err != nil {
-		return fmt.Errorf("clear what %s owed %s: %w", day.Project, date.Format(time.DateOnly), err)
+	// This write is the rewrite the days owed of its families, in cuts of the days written where
+	// they pass a statement's bound.
+	base := paramBytes(3)
+	for i := range families {
+		base += textBytes(&families[i])
+	}
+	for _, cut := range writtenCuts(projects, dates, nil, nil, nil, statementBytes-base) {
+		if _, err := tx.Exec(ctx, `
+			delete from eval_days_owed owed
+			using unnest($1::text[], $2::date[]) as written(project_key, day)
+			where owed.project_key = written.project_key and owed.family = any($3) and owed.day = written.day
+		`, cut.projects, cut.dates, families); err != nil {
+			return fmt.Errorf("clear what %s owed: %w", named, err)
+		}
 	}
 	return nil
 }
 
-// The statements of a day's write that find what the day no longer holds (leftDaysOwedStatement's
-// and goneMembersDeleteStatement's members, deleteStaleDaysStatement's and
-// deleteStaleSettingsDaysStatement's rows) each find it as the stored keys except the given ones
-// (`gone`), materialized, so the set operation runs once whatever plan the statement is given,
-// and joined back to the table by its primary key: a set operation reads each side once, and the
-// join back probes the key once per row that left. Written as `not in (…)` over the given list,
-// the filter ran the list again for each stored row once the list outgrew work_mem: one day's
-// write of k20's load at INFRA's size held eval_days for 13 minutes, and a day of 80,000 items
-// took more than 180 s. Written as `not exists`, the generic plan a statement pgx caches can
-// settle on after its fifth run estimates the list at 10 rows, and can run it again for each
-// stored row as a nested-loop anti-join. TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce
-// holds each to its plan.
+// upsertMembersStatement records members in eval_day_members, $1 to $7 one run of them (project,
+// family, deploy repository, row key, day, repository, shipping run), taken in the byte order of
+// their keys whatever the database's collation: a member is inserted, or its stored row moved where
+// its day, repository or shipping run differs, and one whose three stand is not written again.
+// writeDayMembersIn and writeMovedMembers send it.
+const upsertMembersStatement = `
+	insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
+	select member.* from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::date[], $6::text[], $7::text[])
+		as member(project_key, family, deploy_repo, row_key, day, repo, shipped_by)
+	order by member.project_key collate "C", member.family collate "C", member.deploy_repo collate "C", member.row_key collate "C"
+	on conflict (project_key, family, deploy_repo, row_key) do update
+	set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
+	where (eval_day_members.day, eval_day_members.repo, eval_day_members.shipped_by)
+		is distinct from (excluded.day, excluded.repo, excluded.shipped_by)
+`
 
-// leftDays is the days other than the project's day $2 that an item of a write of that day
-// leaves, as writeProjectDay says, the common table left_days: $1 the project, $3 to $6 one run of
-// the day's items (family, deploy repository, row key, shipping run; memberRuns), $7 the write's
-// families, $8 KindDelivery, and $9 and $10 the run's range of keys, from $9 up to $10 in the
-// byte order of the keys, null for no bound. held is every item that moves: each given item
-// stored anywhere, read by its primary key, and each item of $7 stored on the day, within the
-// run's range, that the day no longer holds (gone).
+// The statements of a write of days that find what the days no longer hold (leftDaysOwedStatement's
+// and goneMembersDeleteStatement's members, deleteStaleDaysStatement's rows) each find it as the
+// stored keys of the days written except the given ones (`gone`), materialized, so the set
+// operation runs once whatever plan the
+// statement is given, and joined back to the table by its primary key: a set operation reads each
+// side once, and the join back probes the key once per row that left. Written as `not in (…)` over
+// the given list, the filter ran the list again for each stored row once the list outgrew
+// work_mem: one day's write of k20's load at INFRA's size held eval_days for 13 minutes, and a day
+// of 80,000 items took more than 180 s. Written as `not exists`, the generic plan a statement pgx
+// caches can settle on after its fifth run estimates the list at 10 rows, and can run it again for
+// each stored row as a nested-loop anti-join. TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce
+// holds each to its plan. Each takes the days written as two lists, their projects and days
+// pairwise (writtenDays), the days a page writes in one transaction (writeProjectDays), and one
+// day for a write of one. Each reads the table by its keys from those lists as a lateral read of
+// an index fenced from the planner's joins (`offset 0`, or `limit 1` for a read of one primary key):
+// the project and the day are no constant of the statement any more, and joined as tables the
+// planner merged the stored members with a run's items on their project and family alone, testing
+// each of the 80,000 members of TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce's day
+// against each of the 2,700 items of a run (a minute a statement), and read eval_days whole for
+// each day written.
+
+// leftDays is the days an item of a write of days leaves, each other than the day of the write
+// that leaves it (written_day), as writeProjectDay says, the common table left_days: $1 and $2 the
+// days written (writtenDays), $3 to $8 one run of their items (project, day, family, deploy
+// repository, row key, shipping run; memberRuns), $9 the write's families, $10 KindDelivery, and
+// $11 and $12 the run's range of keys, from $11 up to $12 in the byte order of the keys (project,
+// family, deploy repository, row key), null for no bound. held is every item that moves: each
+// given item stored anywhere, read by its primary key, and each item of $9 stored on a day written,
+// within the run's range, that the day no longer holds (gone), each with the day of the write that
+// moves it.
 const leftDays = `
-	with given as (
-		select * from unnest($3::text[], $4::text[], $5::text[], $6::text[]) as given(family, deploy_repo, row_key, shipped_by)
+	with written as materialized (
+		select * from unnest($1::text[], $2::date[]) as written(project_key, day)
+	), given as (
+		select * from unnest($3::text[], $4::date[], $5::text[], $6::text[], $7::text[], $8::text[])
+			as given(project_key, day, family, deploy_repo, row_key, shipped_by)
 	), gone as materialized (
-		select family, deploy_repo, row_key from eval_day_members
-		where project_key = $1 and family = any($7) and day = $2
-			and ($9::text[] is null or (family collate "C", deploy_repo collate "C", row_key collate "C") >= ($9[1], $9[2], $9[3]))
-			and ($10::text[] is null or (family collate "C", deploy_repo collate "C", row_key collate "C") < ($10[1], $10[2], $10[3]))
+		select stored.project_key, stored.family, stored.deploy_repo, stored.row_key, stored.day
+		from written cross join lateral (
+			select stored.project_key, stored.family, stored.deploy_repo, stored.row_key, stored.day
+			from eval_day_members stored
+			where stored.project_key = written.project_key and stored.family = any($9) and stored.day = written.day
+				and ($11::text[] is null or (stored.project_key collate "C", stored.family collate "C", stored.deploy_repo collate "C",
+					stored.row_key collate "C") >= ($11[1], $11[2], $11[3], $11[4]))
+				and ($12::text[] is null or (stored.project_key collate "C", stored.family collate "C", stored.deploy_repo collate "C",
+					stored.row_key collate "C") < ($12[1], $12[2], $12[3], $12[4]))
+			offset 0
+		) as stored
 		except
-		select family, deploy_repo, row_key from given
+		select project_key, family, deploy_repo, row_key, day from given
 	), held as (
-		select stored.family, stored.deploy_repo, stored.row_key, stored.day, stored.shipped_by, given.shipped_by as shipped_now
-		from given join eval_day_members stored
-			on stored.project_key = $1 and stored.family = given.family and stored.deploy_repo = given.deploy_repo
+		select given.project_key, given.family, given.deploy_repo, given.row_key, stored.day, stored.shipped_by,
+			given.shipped_by as shipped_now, given.day as written_day
+		from given cross join lateral (
+			select stored.day, stored.shipped_by from eval_day_members stored
+			where stored.project_key = given.project_key and stored.family = given.family and stored.deploy_repo = given.deploy_repo
 				and stored.row_key = given.row_key
+			limit 1
+		) as stored
 		union all
-		select stored.family, stored.deploy_repo, stored.row_key, stored.day, stored.shipped_by, null
-		from gone join eval_day_members stored
-			on stored.project_key = $1 and stored.family = gone.family and stored.deploy_repo = gone.deploy_repo
+		select gone.project_key, gone.family, gone.deploy_repo, gone.row_key, stored.day, stored.shipped_by, null, gone.day
+		from gone cross join lateral (
+			select stored.day, stored.shipped_by from eval_day_members stored
+			where stored.project_key = gone.project_key and stored.family = gone.family and stored.deploy_repo = gone.deploy_repo
 				and stored.row_key = gone.row_key
+			limit 1
+		) as stored
 	), left_days as (
-		select family, day from held where day <> $2
+		select project_key, family, day, written_day from held where day <> written_day
 		union
-		select run.family, run.day from held
-		join eval_day_members run on run.project_key = $1 and run.family = $8 and run.deploy_repo = held.deploy_repo
-			and run.row_key = held.shipped_by
+		select run.project_key, run.family, run.day, held.written_day
+		from held cross join lateral (
+			select run.project_key, run.family, run.day from eval_day_members run
+			where run.project_key = any(array(
+				select held.project_key
+				union all
+				select owner from eval_day_owners where lower(repo) = lower(held.deploy_repo)
+			)) and run.family = $10 and run.deploy_repo = held.deploy_repo and run.row_key = held.shipped_by
+			offset 0
+		) as run
 		where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
 	)
 `
 
 // leftDaysOwedStatement records owed (eval_days_owed) each day an item of the write leaves
-// (leftDays).
+// (leftDays). A day the write writes too is cleared again by its own part of the write
+// (writeDayMembersIn).
 const leftDaysOwedStatement = leftDays + `
 	insert into eval_days_owed (project_key, family, day)
-	select $1, family, day from left_days where day <> $2
+	select distinct project_key, family, day from left_days where day <> written_day
 	on conflict do nothing
 `
 
-// leftDaysStatement reads each day an item of a write of the project's day would leave (leftDays),
-// as the stored members stand: the days a page that writes several days in one commit writes with
-// them (refresh.nameLeft).
+// leftDaysStatement reads each day an item of a write of the days would leave (leftDays), each
+// project's by its key, as the stored members stand: the days a page writes with them
+// (refresh.nameLeft).
 const leftDaysStatement = leftDays + `
-	select distinct day from left_days where day <> $2
+	select distinct project_key, day from left_days where day <> written_day
 `
 
-// goneMembersDeleteStatement deletes the items of the families $2 that project $1 records on day
-// $3 and that the day no longer holds, one run of the day's items being $4 to $6 (family, deploy
-// repository, row key; memberRuns) and $7 and $8 the run's range of keys, from $7 up to $8 in the
-// byte order of the keys, null for no bound. The deleted row is held to the day again, so an item
-// another write moved to another day while this one waited for its row lock stays where that
+// goneMembersDeleteStatement deletes the items of the families $3 that a project records on one of
+// its days written ($1 and $2, writtenDays) and that the day no longer holds, one run of the days'
+// items being $4 to $8 (project, family, deploy repository, row key, day; memberRuns) and $9 and
+// $10 the run's range of keys, from $9 up to $10 in the byte order of the keys (project, family,
+// deploy repository, row key), null for no bound. The deleted row is held to its day again, so an
+// item another write moved to another day while this one waited for its row lock stays where that
 // write put it.
 const goneMembersDeleteStatement = `
-	with gone as materialized (
-		select family, deploy_repo, row_key from eval_day_members
-		where project_key = $1 and family = any($2) and day = $3
-			and ($7::text[] is null or (family collate "C", deploy_repo collate "C", row_key collate "C") >= ($7[1], $7[2], $7[3]))
-			and ($8::text[] is null or (family collate "C", deploy_repo collate "C", row_key collate "C") < ($8[1], $8[2], $8[3]))
+	with written as materialized (
+		select * from unnest($1::text[], $2::date[]) as written(project_key, day)
+	), gone as materialized (
+		select stored.project_key, stored.family, stored.deploy_repo, stored.row_key, stored.day
+		from written cross join lateral (
+			select stored.project_key, stored.family, stored.deploy_repo, stored.row_key, stored.day
+			from eval_day_members stored
+			where stored.project_key = written.project_key and stored.family = any($3) and stored.day = written.day
+				and ($9::text[] is null or (stored.project_key collate "C", stored.family collate "C", stored.deploy_repo collate "C",
+					stored.row_key collate "C") >= ($9[1], $9[2], $9[3], $9[4]))
+				and ($10::text[] is null or (stored.project_key collate "C", stored.family collate "C", stored.deploy_repo collate "C",
+					stored.row_key collate "C") < ($10[1], $10[2], $10[3], $10[4]))
+			offset 0
+		) as stored
 		except
-		select * from unnest($4::text[], $5::text[], $6::text[]) as given(family, deploy_repo, row_key)
+		select * from unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::date[]) as given(project_key, family, deploy_repo, row_key, day)
 	)
 	delete from eval_day_members stored
 	using gone
-	where stored.project_key = $1 and stored.family = gone.family and stored.deploy_repo = gone.deploy_repo
-		and stored.row_key = gone.row_key and stored.day = $3
+	where stored.project_key = gone.project_key and stored.family = gone.family and stored.deploy_repo = gone.deploy_repo
+		and stored.row_key = gone.row_key and stored.day = gone.day
 `
 
 // upsertDays writes rows in key order, in one statement where they fit and otherwise in several
@@ -387,80 +750,83 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 				excluded.last_reading, excluded.counts, excluded.via_repository)`)
 }
 
-// deleteStaleDays deletes each of the computation's stored rows of project's day of the evals
-// evalIDs names, of every deploy repository, that held is not among: the rows the day no longer
-// builds. A day holds exactly the rows its builders build from its input, beside the zero row of
-// each all-repositories series it has no input of from that series' first input day on
-// (refresh.writeDelivery), so a row whose input left (a repository whose last pull request moved
-// away, a card the settings no longer make, a job no run reports any more) goes, as a whole walk
-// over the same inputs and settings holds no such row; the all-repositories zero rows the day
-// keeps are among held (ProjectDay.WithZeros). The eval_days trigger logs the delete (migration
-// 20261117100014), so a view of the row's numbers wakes to it. The readings write's rows of those
-// evals (an eval a register write made logged for a while) are its own, and stay as they are.
-// held grows with the day, so it goes in statements of at most statementBytes of parameters
-// (staleRuns), all in tx, each reading the stored rows of its own range of keys: the statements
-// together delete what one would.
-func deleteStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time, evalIDs []string, held []DayRow) error {
-	base := paramBytes(7, project, writerComputation) + 4 + 8
-	for _, evalID := range evalIDs {
-		base += 4 + len(evalID)
-	}
-	ordered := make([]*DayRow, len(held))
-	for i := range held {
-		ordered[i] = &held[i]
-	}
-	for _, run := range staleRuns(ordered, base, staleKeyBytes) {
-		count := len(run.rows)
-		evals, deployRepos, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
-		for i, row := range run.rows {
-			evals[i], deployRepos[i], series[i], repos[i] = row.EvalID, row.DeployRepo, row.Series, row.Repo
+// deleteStaleDays deletes each of the computation's stored rows of each project's day of days of
+// the evals slugs names, of every deploy repository, that the day does not hold: the rows the day
+// no longer builds. A day holds exactly the rows its builders build from its input, beside the
+// zero row of each all-repositories series it has no input of from that series' first input day on
+// (refresh.buildDelivery), and no repository's row whose part is empty (repositoryRows), so a row
+// whose input left (a repository whose last pull request moved away, or whose pull requests of the
+// day no deploy ships any more, a card the settings no longer make, a job no run reports any more)
+// goes, as a whole walk over the same inputs and settings holds no such row; the all-repositories
+// zero rows the day keeps are among its rows (ProjectDay.WithZeros). The eval_days trigger logs the
+// delete (migration 20261117100014), so a view of the row's numbers wakes to it. The readings
+// write's rows of those evals (an eval a register write made logged for a while) are its own, and
+// stay as they are. The rows held grow with the days, so they go in statements of at most
+// statementBytes of parameters (staleRuns), all in tx, each reading the stored rows of its own
+// range of keys of the days written whose project the range can hold, with the ids of the evals of
+// those projects alone, in cuts where those would pass their reserve (writtenReserve,
+// writtenCuts): the statements together delete what one would.
+func deleteStaleDays(ctx context.Context, tx pgx.Tx, days []ProjectDay, slugs []string) error {
+	projects, dates := writtenDays(days)
+	limit := writtenReserve(projects, slugs)
+	var held []*DayRow
+	for i := range days {
+		for j := range days[i].Rows {
+			held = append(held, &days[i].Rows[j])
 		}
-		if _, err := tx.Exec(ctx, deleteStaleDaysStatement, project, day, evalIDs, writerComputation, evals, deployRepos, series, repos,
-			staleKey(run.from), staleKey(run.until)); err != nil {
-			return fmt.Errorf("delete the day rows %s no longer holds on %s: %w", project, day.Format(time.DateOnly), err)
+	}
+	for _, run := range staleRuns(held, paramBytes(11, writerComputation)+limit, dayRowKeyBytes) {
+		heldProjects, heldEvals, heldDeployRepos, heldSeries, heldRepos, heldDays := dayRowKeys(run.rows)
+		var first, last *string
+		if run.from != nil {
+			first = &run.from.ProjectKey
+		}
+		if run.until != nil {
+			last = &run.until.ProjectKey
+		}
+		for _, cut := range writtenCuts(projects, dates, first, last, slugs, limit) {
+			if _, err := tx.Exec(ctx, deleteStaleDaysStatement, cut.projects, cut.dates, cut.evalIDs, writerComputation, heldProjects, heldEvals,
+				heldDeployRepos, heldSeries, heldRepos, heldDays, dayRowKey(run.from), dayRowKey(run.until)); err != nil {
+				return fmt.Errorf("delete the day rows %s no longer holds: %w", daysNamed(days), err)
+			}
 		}
 	}
 	return nil
 }
 
-// deleteStaleDaysStatement is deleteStaleDays' statement: $1 the project, $2 the day, $3 the evals,
-// $4 writerComputation, $5 to $8 the rows the day holds of the statement's range of keys (eval,
-// deploy repository, series, repository), and $9 and $10 that range, from $9 up to $10 in the byte
-// order of the keys (staleKey), null for no bound. gone is the stored rows' keys of the range
-// except the given ones.
+// deleteStaleDaysStatement is deleteStaleDays' statement: $1 and $2 the days written
+// (writtenDays), $3 the evals, $4 writerComputation, $5 to $10 the rows the days hold of the
+// statement's range of keys (project, eval, deploy repository, series, repository, day), and $11
+// and $12 that range, from $11 up to $12 in the byte order of the keys (dayRowKey), null for no
+// bound. gone is the stored rows' keys of the days written of the range except the given ones,
+// each day's read by its project, evals and day from eval_days' primary key, as the write of one
+// day reads them.
 const deleteStaleDaysStatement = `
-	with gone as materialized (
-		select eval_id, deploy_repo, series, repo from eval_days
-		where project_key = $1 and day = $2 and eval_id = any($3) and writer = $4
-			and ($9::text[] is null
-				or (eval_id collate "C", deploy_repo collate "C", series collate "C", repo collate "C") >= ($9[1], $9[2], $9[3], $9[4]))
-			and ($10::text[] is null
-				or (eval_id collate "C", deploy_repo collate "C", series collate "C", repo collate "C") < ($10[1], $10[2], $10[3], $10[4]))
+	with written as materialized (
+		select * from unnest($1::text[], $2::date[]) as written(project_key, day)
+	), gone as materialized (
+		select e.project_key, e.eval_id, e.deploy_repo, e.series, e.repo, e.day
+		from written cross join lateral (
+			select e.project_key, e.eval_id, e.deploy_repo, e.series, e.repo, e.day
+			from eval_days e
+			where e.project_key = written.project_key and e.eval_id = any($3) and e.writer = $4 and e.day = written.day
+				and ($11::text[] is null
+					or (e.project_key collate "C", e.eval_id collate "C", e.deploy_repo collate "C", e.series collate "C", e.repo collate "C", e.day)
+						>= ($11[1], $11[2], $11[3], $11[4], $11[5], $11[6]::date))
+				and ($12::text[] is null
+					or (e.project_key collate "C", e.eval_id collate "C", e.deploy_repo collate "C", e.series collate "C", e.repo collate "C", e.day)
+						< ($12[1], $12[2], $12[3], $12[4], $12[5], $12[6]::date))
+			offset 0
+		) as e
 		except
-		select * from unnest($5::text[], $6::text[], $7::text[], $8::text[]) as given(eval_id, deploy_repo, series, repo)
+		select * from unnest($5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::date[])
+			as held(project_key, eval_id, deploy_repo, series, repo, day)
 	)
-	delete from eval_days stored
+	delete from eval_days e
 	using gone
-	where stored.project_key = $1 and stored.eval_id = gone.eval_id and stored.writer = $4
-		and stored.deploy_repo = gone.deploy_repo and stored.series = gone.series and stored.repo = gone.repo
-		and stored.day = $2
+	where e.project_key = gone.project_key and e.eval_id = gone.eval_id and e.writer = $4
+		and e.deploy_repo = gone.deploy_repo and e.series = gone.series and e.repo = gone.repo and e.day = gone.day
 `
-
-// staleKeyBytes is the most bytes row adds to the given keys of deleteStaleDays' statement, as pgx
-// encodes them in binary: in each of its four arrays 4 bytes of length and the element. A bound of
-// the statement's range (staleKey) takes as many.
-func staleKeyBytes(row *DayRow) int {
-	return 4*4 + len(row.EvalID) + len(row.DeployRepo) + len(row.Series) + len(row.Repo)
-}
-
-// staleKey is row's key as a bound of deleteStaleDays' range (eval, deploy repository, series,
-// repository), nil for no bound.
-func staleKey(row *DayRow) []string {
-	if row == nil {
-		return nil
-	}
-	return []string{row.EvalID, row.DeployRepo, row.Series, row.Repo}
-}
 
 // staleRun is one statement's part of a delete of what days no longer hold: its rows of the held
 // ones, in the byte order of their keys, and the range of keys whose stored rows it reads, from
@@ -499,6 +865,35 @@ func staleRuns(held []*DayRow, base int, size func(*DayRow) int) []staleRun {
 		}
 	}
 	return runs
+}
+
+// dayRowKeyBytes is the most bytes row's key adds to a statement's parameters, as pgx encodes them
+// in binary: in each of the six arrays of keys (dayRowKeys) 4 bytes of length and the element, the
+// day at most 10 (its text in a bound, dayRowKey). A bound takes as many.
+func dayRowKeyBytes(row *DayRow) int {
+	return 6*4 + len(row.ProjectKey) + len(row.EvalID) + len(row.DeployRepo) + len(row.Series) + len(row.Repo) + 10
+}
+
+// dayRowKey is row's key among the computation's rows (project, eval, deploy repository, series,
+// repository, day) as a bound of a statement's range of keys, nil for no bound.
+func dayRowKey(row *DayRow) []string {
+	if row == nil {
+		return nil
+	}
+	return []string{row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo, measures.Midnight(row.Day).Format(time.DateOnly)}
+}
+
+// dayRowKeys is the keys of rows as the six arrays a statement takes them in, index-aligned: their
+// projects, evals, deploy repositories, series, repositories and days.
+func dayRowKeys(rows []*DayRow) (projects, evals, deployRepos, series, repos []string, days []time.Time) {
+	count := len(rows)
+	projects, evals, deployRepos = make([]string, count), make([]string, count), make([]string, count)
+	series, repos, days = make([]string, count), make([]string, count), make([]time.Time, count)
+	for i, row := range rows {
+		projects[i], evals[i], deployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
+		series[i], repos[i], days[i] = row.Series, row.Repo, measures.Midnight(row.Day)
+	}
+	return projects, evals, deployRepos, series, repos, days
 }
 
 // writeDayRows inserts rows, each the computation's (writer `computation`) with built_by builtBy,

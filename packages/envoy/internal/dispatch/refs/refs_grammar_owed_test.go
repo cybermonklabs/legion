@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -47,6 +48,7 @@ func seedRefsGrammarIssue(t *testing.T, database *store.Store) {
 // write's index of its text, in the same transaction, settles it. Only a write of a build without
 // the whole grammar is left owed.
 func TestAWriteLeavesNothingOwed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -61,8 +63,8 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 		t.Fatalf("the comment's own write owes %v, want the comment alone", owed)
 	}
 
-	located := NewReader(ctx, tx, "comment", comment, refsGrammarServer).Mentions("Blocked on CORE-1.")
-	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil); err != nil {
+	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, refsGrammarServer).Mentions("Blocked on CORE-1.")
+	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil, false); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 
@@ -81,6 +83,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 // version's own text is indexed by the write, while the `#id`s written around the document resolve
 // against the question blocks this version declares, which only a re-read of those texts stores.
 func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -102,7 +105,8 @@ func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
 		t.Fatalf("the version's write owes %v, want %v", owed, wantOwed)
 	}
 
-	reader := NewReader(ctx, tx, "artifact", document, refsGrammarServer)
+	// The version records no author, so its writer is nobody, as the version's own write reads it.
+	reader := NewReader(ctx, tx, model.Actor{}, "artifact", document, refsGrammarServer)
 	replacement, err := PlanReplace(ctx, tx, "artifact", document,
 		text.Refs(reader.Mentions("Blocked on CORE-1.")), &versionAt)
 	if err != nil {
@@ -125,6 +129,7 @@ func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
 // between the listing and the re-index moves that time, and the source is left owed, with nothing
 // written from the text the drain read, for the next pass to read its newer text.
 func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)
@@ -197,6 +202,7 @@ func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
 // candidate takes its owner's lock, the lock an edit of that text holds: a source whose owner an
 // edit holds is passed over at once rather than waited for.
 func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)
@@ -247,6 +253,7 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 // the comment's `#id`: under the lock the drain reads the edited text, finds nothing to move and
 // writes nothing; read before the lock it would index the text the edit replaced.
 func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)
@@ -304,6 +311,7 @@ func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
 // for; the block grammar's index carries enqueued_at alone, so that queue sorts the tie group,
 // by the table's uuid rather than by a text cast per row.
 func TestTheDrainSortsEachQueueByItsTablesID(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, queue := range []OwedQueue{BlockGrammarOwed, RefsGrammarOwed} {

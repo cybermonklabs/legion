@@ -10,8 +10,9 @@ const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
 /** The statements that give `project` the delivery settings every delivery fixture reads: the
  *  project (made, under `name`, where it does not exist yet) with `acme/widgets` as its default
  *  repository, its settings row with delivery on, and one `github_workflow` source that names no
- *  repository, so it reads the default. */
-export function deliverySettingsSql(project = "ACME", name = "Acme"): string[] {
+ *  repository, so it reads the default. Every project names a default assignee: alice, the person
+ *  every row of these fixtures is read as. */
+function deliverySettingsSql(project = "ACME", name = "Acme"): string[] {
   return [
     `INSERT INTO projects (key, name, default_assignee, default_repo)
      VALUES ('${project}', '${name}', 'alice', 'acme/widgets')
@@ -25,7 +26,16 @@ export function deliverySettingsSql(project = "ACME", name = "Acme"): string[] {
      ) VALUES (
        '${project}', 0, 'github_workflow', null, '.github/workflows/deploy.yml',
        ARRAY['widgets-release / widgets-release'], '.github/workflows/pr-checks.yml'
-     )`,
+    )`,
+    // Kept for the previous build's server during the two-builds roll (`cross-build.multiprocess.e2e.ts`),
+    // which reads the singleton row while this build reads `project_delivery_settings` and its sources.
+    `INSERT INTO delivery_settings (
+      singleton, deploy_repo, deploy_workflow_path, production_job_names,
+      pr_checks_workflow_path, population_authors, excluded_repos, updated_by
+    ) VALUES (
+      true, 'acme/widgets', '.github/workflows/deploy.yml', ARRAY['widgets-release / widgets-release'],
+      '.github/workflows/pr-checks.yml', ARRAY['octocat'], ARRAY[]::text[], ${SEED_ACTOR}
+    ) ON CONFLICT (singleton) DO NOTHING`,
   ];
 }
 
@@ -37,9 +47,6 @@ const SETTINGS = deliverySettingsSql();
 export async function seedDeliveryFixture(): Promise<void> {
   await sql(
     ...SETTINGS,
-    // Every project names a default assignee, so the column takes none of these rows without
-    // one; alice is the person every row of this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-1', 'ACME', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -81,7 +88,6 @@ export const TIMELINE_FIXTURE_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-
 export async function seedSessionGroupsFixture(): Promise<void> {
   await sql(
     ...SETTINGS,
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-7', 'ACME', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -115,7 +121,6 @@ export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20
 export async function seedMeasuresFixture(): Promise<void> {
   await sql(
     ...SETTINGS,
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, route, claimed_by, claimed_at, created_by, rank) VALUES
        ('ACME-100', 'ACME', 100, 'Build timeline UI', 'in_progress', 1, null,
         '{"kind":"session","id":"01a1-e2e-session"}', now(), ${SEED_ACTOR}, 'U100'),

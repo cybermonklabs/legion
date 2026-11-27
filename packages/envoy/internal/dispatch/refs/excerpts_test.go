@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A document's mentions are owed an excerpt until one is recorded at its latest version; once
@@ -19,6 +22,7 @@ import (
 // predating the excerpts wrote leaves its mentions' excerpts behind, and MarkStaleExcerpts makes
 // them owed again without dropping the excerpt the route still serves.
 func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -30,7 +34,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1 and dispatch://CORE-2", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -54,10 +58,10 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 0 {
 		t.Fatalf("drift after recording = %#v, %v; want none", drifted, err)
 	}
-	if stored, err := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
+	if stored, err := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
 		t.Fatalf("stored = %#v, %v; want %#v", stored, err, excerpt)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-2"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-2"); len(stored) != 0 {
 		t.Fatalf("a mention in no block stored %#v; want none", stored)
 	}
 
@@ -100,7 +104,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 1 || drifted[0].Version != 2 {
 		t.Fatalf("drift after an older binary's version = %#v, %v; want the document at version 2", drifted, err)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); len(stored) != 0 {
 		t.Fatalf("a mention owed an excerpt serves %#v; want no stored excerpt", stored)
 	}
 	if marked, err := MarkStaleExcerpts(ctx, database.Pool); err != nil || marked != 0 {
@@ -124,7 +128,7 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, 'v1', '[]')`, document); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -153,6 +157,7 @@ func backoffOf(t *testing.T, database *store.Store, document string) (version, a
 // precision. The earliest due time is the reconciliation's next retry. A deferral at a version
 // the document has since replaced holds nothing back, and the next failure counts from one.
 func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	document := owedDocument(t, database, "design")
@@ -224,6 +229,7 @@ func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T)
 // A backoff row outlives its failure when a later version write cuts the document's excerpts
 // itself; reading the next retry drops it, and a document that owes nothing sets no retry.
 func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	settled, owed := owedDocument(t, database, "settled"), owedDocument(t, database, "owed")
@@ -266,11 +272,22 @@ func TestTheNextRetryDropsTheBackoffOfADocumentThatOwesNothing(t *testing.T) {
 	}
 }
 
+// owedChannel is the channel a mention left owed an excerpt announces itself on, written out here
+// rather than read from internal/dispatch/docs's ExcerptsOwedChannel: the name is the contract
+// between migration 0153's trigger and every reader of it, and a test that took it from one reader
+// would still pass if the trigger and that reader moved together. probeChannel is this test's own,
+// which no migration and no production reader knows.
+const (
+	owedChannel  = "dispatch_excerpts_owed"
+	probeChannel = "refs_excerpt_probe"
+)
+
 // Every artifact mention left owed an excerpt announces itself on dispatch_excerpts_owed at
 // commit, however it got there - inserted with none, or cleared by ClearExcerpts or a direct
 // update as the previous release's code does - and nothing else does: recording an excerpt, or a
 // mention another kind of node writes, which holds no excerpt.
 func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	listener, err := database.Pool.Listener(ctx)
@@ -278,35 +295,47 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		t.Fatalf("open a listener: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close(context.Background()) })
-	if _, err := listener.Exec(ctx, `listen dispatch_excerpts_owed`); err != nil {
-		t.Fatalf("listen: %v", err)
+	for _, channel := range []string{owedChannel, probeChannel} {
+		if _, err := listener.Exec(ctx, "listen "+channel); err != nil {
+			t.Fatalf("listen on %s: %v", channel, err)
+		}
 	}
-	notified := func() bool {
+	// next is the channel of the next notification this session is sent. Postgres hands a
+	// listening session its notifications in the order the transactions that queued them
+	// committed, so a write that must announce nothing is proved by the probe committed after it
+	// arriving next (silent): the test waits for an event rather than for a stretch of clock in
+	// which no event came, which a loaded machine stretches past any bound.
+	waited := testwait.Context(t)
+	next := func() string {
 		t.Helper()
-		waitCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-		defer cancel()
-		_, err := listener.WaitForNotification(waitCtx)
-		return err == nil
+		notification, err := listener.WaitForNotification(waited)
+		if err != nil {
+			t.Fatalf("wait for the next notification: %v", err)
+		}
+		return notification.Channel
 	}
-
-	document := owedDocument(t, database, "design")
-	if !notified() {
-		t.Fatal("an inserted mention owed an excerpt sent no notification")
-	}
-	for name, write := range map[string]func() error{
-		"recording its excerpt": func() error { _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); return err },
-		"a comment's mention": func() error {
-			_, err := database.Pool.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id) values ('comment', gen_random_uuid()::text, 'issue', 'CORE-1')`)
-			return err
-		},
-	} {
+	silent := func(name string, write func() error) {
+		t.Helper()
 		if err := write(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if notified() {
-			t.Fatalf("%s sent a notification; want none", name)
+		if _, err := database.Pool.Exec(ctx, `select pg_notify($1, '')`, probeChannel); err != nil {
+			t.Fatalf("send the probe after %s: %v", name, err)
+		}
+		if channel := next(); channel != probeChannel {
+			t.Fatalf("%s announced itself on %s; want nothing before the probe", name, channel)
 		}
 	}
+	document := owedDocument(t, database, "design")
+	record := func() error { _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); return err }
+	if channel := next(); channel != owedChannel {
+		t.Fatalf("an inserted mention owed an excerpt announced itself on %s, want %s", channel, owedChannel)
+	}
+	silent("recording its excerpt", record)
+	silent("a comment's mention", func() error {
+		_, err := database.Pool.Exec(ctx, `insert into refs (from_kind, from_id, to_kind, to_id) values ('comment', gen_random_uuid()::text, 'issue', 'CORE-1')`)
+		return err
+	})
 	for name, clear := range map[string]func() error{
 		"ClearExcerpts": func() error { return clearExcerptsOnPool(ctx, database.Pool, document) },
 		"a direct update": func() error {
@@ -314,14 +343,12 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 			return err
 		},
 	} {
-		if _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); err != nil {
-			t.Fatalf("record before %s: %v", name, err)
-		}
+		silent("recording its excerpt before "+name, record)
 		if err := clear(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if !notified() {
-			t.Fatalf("%s left a mention owed and sent no notification", name)
+		if channel := next(); channel != owedChannel {
+			t.Fatalf("%s left a mention owed and announced itself on %s, want %s", name, channel, owedChannel)
 		}
 	}
 }
@@ -330,6 +357,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 // that rewrites the block a kept mention sits in moves that mention's excerpt and no other's, and
 // one that writes the same excerpts again moves nothing.
 func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -338,7 +366,7 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	}
 	createReferenceProject(t, tx, "CORE")
 	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract("see dispatch://CORE-1, later dispatch://CORE-2", "https://dispatch.example"), nil, true); err != nil {
 		t.Fatalf("index mentions: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -377,6 +405,117 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	}
 	if moved := record(4, reblocked); !slices.Equal(moved, []Target{core2}) {
 		t.Fatalf("moved by a mention's new block = %#v, want CORE-2 alone", moved)
+	}
+}
+
+// A mention's excerpt is written when it is owed (excerpt_version null) or older than the version
+// recorded, and kept when it already holds that version's: a re-index of a version already
+// indexed - the block index of a document owed one, the forms drain - reads the same text, and the
+// excerpt that version's write stored was cut as the block's own row was, so a cut that moved
+// since never rewrites the mention's excerpt and leaves the block's as it was.
+func TestRecordExcerptsKeepsAnExcerptOfTheSameVersion(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
+	if _, err := tx.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, excerpt_version, excerpt_block_id, excerpt_text) values
+			('artifact', $1, 'issue', 'CORE-1', null, null, null),
+			('artifact', $1, 'issue', 'CORE-2', 1, 'b2', 'the cut of version 1'),
+			('artifact', $1, 'issue', 'CORE-3', 2, 'b3', 'the cut version 2 stored')
+	`, document); err != nil {
+		t.Fatalf("write the document's mentions: %v", err)
+	}
+
+	moved, err := RecordExcerpts(ctx, tx, document, 2, map[Target]model.GraphExcerpt{
+		{Kind: "issue", ID: "CORE-1"}: {BlockID: "b1", Text: "a new cut"},
+		{Kind: "issue", ID: "CORE-2"}: {BlockID: "b2", Text: "a new cut"},
+		{Kind: "issue", ID: "CORE-3"}: {BlockID: "b3", Text: "a new cut"},
+	})
+	if err != nil {
+		t.Fatalf("record version 2: %v", err)
+	}
+
+	if want := []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "issue", ID: "CORE-2"}}; !slices.Equal(moved, want) {
+		t.Fatalf("moved = %#v, want the owed mention and the older one, %#v", moved, want)
+	}
+	rows, err := tx.Query(ctx, `
+		select to_id || ' v' || excerpt_version || ' ' || excerpt_text from refs
+		where from_kind = 'artifact' and from_id = $1 order by to_id
+	`, document)
+	if err != nil {
+		t.Fatalf("read the excerpts: %v", err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the excerpts: %v", err)
+	}
+	if want := []string{"CORE-1 v2 a new cut", "CORE-2 v2 a new cut", "CORE-3 v2 the cut version 2 stored"}; !slices.Equal(stored, want) {
+		t.Fatalf("the excerpts are %q, want %q", stored, want)
+	}
+}
+
+// The write phase's two halves of RecordExcerpts keep its guard: ExcerptsMoved names the owed
+// mention and the older one, and the update QueueRecordExcerpts queues writes those two and keeps
+// the one already holding this version's excerpt.
+func TestQueuedExcerptsKeepAnExcerptOfTheSameVersion(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
+	if _, err := tx.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, excerpt_version, excerpt_block_id, excerpt_text) values
+			('artifact', $1, 'issue', 'CORE-1', null, null, null),
+			('artifact', $1, 'issue', 'CORE-2', 1, 'b2', 'the cut of version 1'),
+			('artifact', $1, 'issue', 'CORE-3', 2, 'b3', 'the cut version 2 stored')
+	`, document); err != nil {
+		t.Fatalf("write the document's mentions: %v", err)
+	}
+	held := []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "issue", ID: "CORE-2"}, {Kind: "issue", ID: "CORE-3"}}
+	excerpts := map[Target]model.GraphExcerpt{
+		held[0]: {BlockID: "b1", Text: "a new cut"},
+		held[1]: {BlockID: "b2", Text: "a new cut"},
+		held[2]: {BlockID: "b3", Text: "a new cut"},
+	}
+
+	moved, err := ExcerptsMoved(ctx, tx, document, 2, held, excerpts)
+	if err != nil {
+		t.Fatalf("work out what version 2 moves: %v", err)
+	}
+	if want := held[:2]; !slices.Equal(moved, want) {
+		t.Fatalf("moved = %#v, want the owed mention and the older one, %#v", moved, want)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueRecordExcerpts(b, document, 2, excerpts)
+		return nil
+	}); err != nil {
+		t.Fatalf("record version 2: %v", err)
+	}
+	rows, err := tx.Query(ctx, `
+		select to_id || ' v' || excerpt_version || ' ' || excerpt_text from refs
+		where from_kind = 'artifact' and from_id = $1 order by to_id
+	`, document)
+	if err != nil {
+		t.Fatalf("read the excerpts: %v", err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the excerpts: %v", err)
+	}
+	if want := []string{"CORE-1 v2 a new cut", "CORE-2 v2 a new cut", "CORE-3 v2 the cut version 2 stored"}; !slices.Equal(stored, want) {
+		t.Fatalf("the excerpts are %q, want %q", stored, want)
 	}
 }
 

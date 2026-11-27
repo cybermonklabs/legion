@@ -140,6 +140,7 @@ function Line({
       {line.map((part) => {
         // A line's words differ from each other, and its numbers are each of their own statistic.
         if (part.statistic === null) {
+          // Its definition's words, drawn as plain text: `eval-chart-cell-text`
           return <span key={`${part.range}:${part.text}`}>{part.text}</span>;
         }
         const values =
@@ -159,6 +160,7 @@ function Line({
             data-x={point.x}
             key={`${part.range}:${part.statistic}`}
           >
+            {/* The number as its line writes it, drawn as plain text: `eval-chart-cell-text` */}
             {part.text}
           </span>
         );

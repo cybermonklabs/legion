@@ -144,14 +144,14 @@ const smokeTimeout = 30 * time.Minute
 // it covers, and the seed of every random draw. A zero field takes its default: DefaultProject,
 // DefaultNow, DefaultDays; a zero Seed is a seed like any other.
 //
-// OneProject, off by default, names an issue of the project on every pull request: a new issue
-// wherever the history would name one of the second project, and one of the issues Write adds
-// after its draws (oneProjectIssues) wherever it would name none. Every pull request then counts
-// for the project, and so does every PR-checks run and every deploy that ships one: the eval
-// registry's day rows of the project then hold every row the deployment-wide delivery routes count
-// but the deploys that ship none, which count for no project (evals' attribution). It takes the
-// same random draws, so the history is the default one with those issues moved to the project and
-// added to it (and the project's issues numbered to match).
+// OneProject, off by default, names an issue of the project on every pull request (issue_key,
+// Title and Attribution.TitleKeys): a new issue wherever the history would name one of the second
+// project, and a new plain issue (plainIssue) wherever it would name none. Because Write sets
+// default_repo only on Project (to DeployRepo) and leaves the other two repositories unowned,
+// callers that want issue_key alone to attribute every repository's pull requests to Project
+// clear the stored attribution inputs themselves. OneProject takes the same random draws, so the
+// history is the default one with those issues moved to the project and added to it (and the
+// project's issues numbered to match).
 //
 // IssueOffset, zero by default, is how many of the project's issue numbers another history took
 // already: the project's issues are numbered from IssueOffset+1, so this history can be written
@@ -188,8 +188,8 @@ type Fixture struct {
 	// Spec is the spec Write was given, with every default filled in.
 	Spec Spec
 	// Project is the project whose issues most pull requests name, and whose default repository
-	// is the deploy repository; SecondProject is the project of the few pull requests that name
-	// an issue elsewhere, which count for it.
+	// is the deploy repository; SecondProject is the project (with no default repository of its
+	// own) whose issues a few pull requests name on their rows.
 	Project, SecondProject string
 	// DeployRepo is the repository the settings name; Repos is the three repositories, the
 	// deploy repository first.
@@ -713,12 +713,11 @@ func (s *seeding) numberRuns() {
 		for j := range seeded.jobs {
 			seeded.jobs[j].Repo, seeded.jobs[j].RunID = repo, id
 		}
-		jobs := slices.Clone(seeded.jobs)
-		slices.SortStableFunc(jobs, func(a, b delivery.DeliveryRunJob) int {
+		slices.SortStableFunc(seeded.jobs, func(a, b delivery.DeliveryRunJob) int {
 			return cmp.Or(a.StartedAt.Compare(*b.StartedAt), strings.Compare(a.Name, b.Name))
 		})
 		s.fixture.Runs = append(s.fixture.Runs, seeded.run)
-		s.fixture.Jobs[id] = jobs
+		s.fixture.Jobs[id] = seeded.jobs
 	}
 }
 
@@ -799,13 +798,8 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 // The project must exist. Two projects saved with a rule each give two repositories two rules (a
 // repository is the source of one delivery-on project at most, delivery.PutProjectSettings).
 func SaveRules(ctx context.Context, pool *store.Pool, project string, rules ...delivery.DeliverySettings) (delivery.ProjectSettings, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return delivery.ProjectSettings{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
 		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
 	input := delivery.ProjectSettingsInput{Project: project, Delivery: true}
@@ -813,18 +807,35 @@ func SaveRules(ctx context.Context, pool *store.Pool, project string, rules ...d
 		input.PopulationAuthors, input.ExcludedRepos = rules[0].PopulationAuthors, rules[0].ExcludedRepos
 	}
 	for _, rule := range rules {
-		source := delivery.SourceInput{
-			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(rule.DeployWorkflowPath),
-			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
-			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
-			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
-		}
+		var repo *string
 		if defaultRepo == nil || !strings.EqualFold(*defaultRepo, rule.DeployRepo) {
-			source.Repo = new(rule.DeployRepo)
+			repo = new(rule.DeployRepo)
 		}
-		input.Sources = append(input.Sources, source)
+		input.Sources = append(input.Sources, SourceOf(rule, repo))
 	}
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, system)
+	return SaveSettings(ctx, pool, input, system)
+}
+
+// SourceOf is a github_workflow source holding rule's workflow, its production jobs, its apply
+// step and its staging and roll-up jobs, naming repo (nil: the project's default repository).
+func SourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput {
+	return delivery.SourceInput{
+		Kind: delivery.SourceKindGitHubWorkflow, Repo: repo, DeployWorkflowPath: new(rule.DeployWorkflowPath),
+		ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+		StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+		PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+	}
+}
+
+// SaveSettings saves input as its project's delivery settings, as actor, through
+// delivery.PutProjectSettings in a transaction of its own, and answers what it stored.
+func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, actor model.Actor) (delivery.ProjectSettings, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	saved, err := delivery.PutProjectSettings(ctx, tx, input, actor)
 	if err != nil {
 		return delivery.ProjectSettings{}, err
 	}

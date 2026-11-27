@@ -120,6 +120,29 @@ export class FakeNats implements ChannelConnection {
     if (this.closedForGood) throw connectionClosedError()
     this.order.push("publish")
     this.published.push({ subject, data })
+    const body = new TextDecoder().decode(data)
+    if (body !== "done" && body !== "nak") return
+    for (const waiter of this.settledWaiters.filter((one) => one.subject === subject)) {
+      this.settledWaiters.splice(this.settledWaiters.indexOf(waiter), 1)
+      waiter.resolve(body)
+    }
+  }
+
+  private readonly settledWaiters: Array<{
+    readonly subject: string
+    readonly resolve: (body: string) => void
+  }> = []
+
+  /** Settles with the answer that ends the relay frame whose inbox is `subject` (`done` or
+   *  `nak`), when the channel publishes it, or at once if it already has. The channel answers a
+   *  frame only after it is through with it (a rejected frame's reply posted, a card written), so
+   *  a row reads what the channel did with the frame from this event, not after a wait. */
+  settled(subject: string): Promise<string> {
+    const ended = this.repliesOn(subject).find((body) => body === "done" || body === "nak")
+    if (ended !== undefined) return Promise.resolve(ended)
+    const waiter = Promise.withResolvers<string>()
+    this.settledWaiters.push({ subject, resolve: waiter.resolve })
+    return waiter.promise
   }
 
   /** The server ends `subject`'s subscription with `error`, as nats.js ends one the server refused
@@ -375,14 +398,6 @@ export function settled(): Promise<void> {
 }
 
 /**
- * How long a test waits for a channel-server process it spawned to start: its first stderr line,
- * or its first dial. Most of a start is Bun loading and compiling this package, which a loaded
- * machine slows most: a server once wrote nothing for 15 s at a load of 700 on 288 cores, and
- * another had not dialed after 8 s at a load of 450, so a start gets 30 s.
- */
-export const SERVER_START_MS = 30_000
-
-/**
  * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming
  * `what`, followed by what `state` reports at that moment (an `observedClient`'s `describe`, the
  * test's own fakes). Real time on purpose: the awaited conditions are filesystem writes the
@@ -525,7 +540,7 @@ export function recordingClient(calls: string[], overrides: Partial<FakeClient> 
       calls.push(
         `setRole ${input.sessionID} ${input.role}${input.soft ? " soft" : ""}${input.previousSessionID === undefined ? "" : ` previous=${input.previousSessionID}`}`,
       )
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder: "ses_claude", last_seen: 1, state: "live" }),
     getInterest: async (sessionID) => {

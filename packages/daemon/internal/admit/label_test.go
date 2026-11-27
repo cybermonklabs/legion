@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -166,7 +167,7 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-1", ""), Entry: 1}},
+			Task: architectStart(t, pool, admission, "LEGION-1", ""), Entry: 1, Decided: true}},
 	})
 }
 
@@ -278,17 +279,15 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 		listed[0].LabelSetter, listed[1].LabelSetter = "user", "session"
 		// idle true: caught up whatever the target, so every summary applies now, as the listing of
 		// a daemon booted after the person's label — its consumer positioned past that event — does.
-		scoped, committed := intake.WithCommitHooks(context.Background())
-		scoped, settle := intake.OpenSettlers(scoped, admission)
-		inTx(t, pool, func(tx pgx.Tx) {
-			if _, err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
-				t.Fatalf("Reconcile: %v", err)
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			ctx, settle := intake.OpenSettlers(ctx, admission)
+			if _, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
+				return err
 			}
-			if err := settle(scoped, tx); err != nil {
-				t.Fatalf("settle the reconcile: %v", err)
-			}
-		})
-		committed()
+			return settle(ctx, tx)
+		}); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
 	}
 
 	boot()

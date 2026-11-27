@@ -64,14 +64,17 @@ func (r rig) legionFacts(t *testing.T, project string, day time.Time) (map[strin
 // in acme/api, and a root that owns no repository, which the ':default' cut holds,
 // legionfacts.DefaultRepo), one that closes the next day, and two filings of the first day (one
 // into acme/api, one of an issue that owns none), the day's write, as the refresher's walk writes
-// it, holds every Legion eval with input in every cut, in the
-// all-repositories row and in each repository its input is in: idle time from the first whole day
-// after the first claim observation, slot wait not before the first whole day after the first slot
-// observation, and the splitting root figures with no children cut. It records the three issues on
-// their close day, and leaves the day's delivery row and item alone. Written again unchanged it
-// rewrites nothing; after one issue's close moves to the next day, both days are written again and
-// the issue's rows and item move with it.
+// it, holds every Legion eval with input in every cut of the all-repositories row, and in each
+// repository its input is in, every part of it that counts something: a repository's part that
+// counts nothing (a cut none of its issues of the day is in, a filing class none of its filings is
+// of) is no row, as R12 writes no zero row for a repository (repositoryRows). Idle time has rows
+// from the first whole day after the first claim observation, slot wait none before the first
+// whole day after the first slot observation, and the splitting root figures no children cut. It
+// records the three issues on their close day, and leaves the day's delivery row and item alone.
+// Written again unchanged it rewrites nothing; after one issue's close moves to the next day, both
+// days are written again and the issue's rows and item move with it.
 func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	pool := r.database.Pool
@@ -83,8 +86,9 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		}
 	}
 	actor := `{"kind":"system","id":"legion-day-test"}`
-	// The project has no default repository, so an issue that names none resolves to none. Each
-	// issue's repository is its own, which the day resolves when it is built.
+	// An issue whose chain names no repository resolves to legionfacts.DefaultRepo, which stands
+	// for the project's default repository. Each other issue's repository is its own, which the day
+	// resolves when it is built.
 	for _, issue := range []struct {
 		number int
 		repo   any
@@ -97,7 +101,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	exec("the first claim and slot observations", `
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('EVAL', 'EVAL-1', 'claim.implementer', '"working"', $1), ('EVAL', 'EVAL-1', 'slot', '0', $2)
-	`, at(2, 10, 0), at(3, 6, 0))
+	`, day, at(3, 6, 0))
 
 	bar := func(hours float64, segments metrics.Segments) metrics.BarPart {
 		return metrics.BarPart{Hours: hours, HoldsHours: true, Segments: segments}
@@ -141,7 +145,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), DeployRepo: "acme/web", Listed: true,
 		DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
 	}}, Members: []Member{{Family: KindDelivery, DeployRepo: "acme/web", RowKey: RunMember("acme/web", 7), Repo: "acme/web"}}}
-	if err := r.registry.writeDeliveryDay(ctx, delivery, testBuild, true); err != nil {
+	if err := r.registry.writeProjectDay(ctx, deliveryFamily, delivery, testBuild, true); err != nil {
 		t.Fatalf("write the day's delivery row: %v", err)
 	}
 
@@ -150,18 +154,27 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		t.Fatalf("read the first observations: %v", err)
 	}
 	if since.Claims == nil || !since.Claims.Equal(day) || since.Slots == nil || !since.Slots.Equal(next) {
-		t.Fatalf("since = claims %v, slots %v, want %s (the first claim was the day before) and %s (the first slot was that day)",
+		t.Fatalf("since = claims %v, slots %v, want %s (claim exactly at midnight) and %s (slot after midnight)",
 			since.Claims, since.Slots, day.Format(time.DateOnly), next.Format(time.DateOnly))
 	}
 	r.refreshDays(t, []string{"EVAL"}, day)
 	facts, groups := r.legionFacts(t, "EVAL", day)
 	// Each eval with input holds 3 rows of work time, 21 of phase time (seven bars), 18 of idle
 	// time (six roles), 9 of rework and 21 of splitting (four classes and the finished issues in
-	// three cuts, and three root figures in two), in every cut its input is in.
+	// three cuts, and three root figures in two) in the all-repositories row. A repository holds
+	// the rows of the two cuts its issues are in alone, the all cut and one more: the roots cut for
+	// acme/web's EVAL-1 and the ':default' cut's EVAL-3, the children cut for acme/api's EVAL-2. Its
+	// splitting holds the class of each of its filings in their cuts (acme/api's EVAL-10 in the
+	// children cut, the ':default' cut's EVAL-11 in the roots cut), its finished issues, and the
+	// root figures of its roots: acme/web's root has children, and the ':default' cut's has none.
 	wantGroups := map[string]int{}
-	for _, repo := range []string{"all", "acme/web", "acme/api", legionfactsDefault} {
+	for repo, splitting := range map[string]int{"all": 21, "acme/web": 6, "acme/api": 4, legionfacts.DefaultRepo: 8} {
+		cuts := 2
+		if repo == "all" {
+			cuts = 3
+		}
 		for slug, count := range map[string]int{
-			SlugLegionWorkTime: 3, SlugLegionPhaseTime: 21, SlugLegionIdleTime: 18, SlugLegionRework: 9, SlugLegionSplitting: 21,
+			SlugLegionWorkTime: cuts, SlugLegionPhaseTime: cuts * 7, SlugLegionIdleTime: cuts * 6, SlugLegionRework: cuts * 3, SlugLegionSplitting: splitting,
 		} {
 			wantGroups[slug+" "+repo] = count
 		}
@@ -174,7 +187,6 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		"legion-work-time hours:roots all: n=2 via=0 samples=[2 10]",
 		"legion-work-time hours:children all: n=1 via=0 samples=[4]",
 		"legion-work-time hours acme/web: n=1 via=0 samples=[10]",
-		"legion-work-time hours:children acme/web: n=0 via=0 samples=[]",
 		"legion-work-time hours:children acme/api: n=1 via=0 samples=[4]",
 		"legion-phase-time implementer all: n=3 via=0 samples=[0 4 6] idle=2 in_a_turn=8 issues=2",
 		"legion-phase-time reviewer:roots all: n=2 via=0 samples=[0 4] in_a_turn=4 issues=1",
@@ -189,7 +201,6 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		"legion-splitting filed:in_tree_at_design:children all: n=1 via=0 sum=1",
 		"legion-splitting filed:out_of_tree:roots all: n=1 via=0 sum=1",
 		"legion-splitting filed:in_tree_at_design acme/api: n=1 via=0 sum=1",
-		"legion-splitting filed:out_of_tree acme/api: n=0 via=0 sum=0",
 		"legion-splitting finished all: n=3 via=0 sum=3",
 		"legion-splitting finished:children all: n=1 via=0 sum=1",
 		"legion-splitting finished acme/api: n=1 via=0 sum=1",
@@ -197,10 +208,20 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		"legion-splitting roots:roots all: n=2 via=0 sum=2 children=2",
 		"legion-splitting hours_with_children all: n=1 via=0 samples=[10]",
 		"legion-splitting hours_without_children:roots all: n=1 via=0 samples=[2]",
-		"legion-splitting roots acme/api: n=0 via=0 sum=0",
+		"legion-splitting roots acme/web: n=1 via=0 sum=1 children=2",
 	} {
 		if !facts[want] {
 			t.Errorf("the day's rows lack %q", want)
+		}
+	}
+	// Each repository's part that counts nothing is no row: a repository has no zero row (R12).
+	for _, none := range []string{
+		"legion-work-time hours:children acme/web: n=0 via=0 samples=[]",
+		"legion-splitting filed:out_of_tree acme/api: n=0 via=0 sum=0",
+		"legion-splitting roots acme/api: n=0 via=0 sum=0",
+	} {
+		if facts[none] {
+			t.Errorf("the day holds %q, want no row: its repository's part counts nothing", none)
 		}
 	}
 	for fact := range facts {
@@ -211,7 +232,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	wantMembers := []string{
 		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
-		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3 " + legionfactsDefault + " 2026-11-03",
+		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3 " + legionfacts.DefaultRepo + " 2026-11-03",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {
 		t.Errorf("the items of the day: %v, want %v", got, wantMembers)
@@ -231,8 +252,9 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 
 	// EVAL-2 closes again on the next day: its first day's rows in acme/api, which held EVAL-2
-	// alone, are deleted but for splitting's, whose filing is still there, as a whole walk over the
-	// moved close holds none, and the next day, which slot wait now has input on, gains them.
+	// alone, are deleted but for splitting's of its filing, which is still there (its class in the
+	// all and the children cuts), as a whole walk over the moved close holds none, and the next day,
+	// which slot wait now has input on, gains them.
 	exec("EVAL-2's new close", `update issue_facts set closed_at = $1 where issue_key = 'EVAL-2'`, at(4, 11, 0))
 	r.refreshDays(t, []string{"EVAL"}, day, next)
 	firstFacts, firstGroups := r.legionFacts(t, "EVAL", day)
@@ -240,8 +262,9 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	for _, slug := range []string{SlugLegionWorkTime, SlugLegionPhaseTime, SlugLegionIdleTime, SlugLegionRework} {
 		delete(kept, slug+" acme/api")
 	}
+	kept[SlugLegionSplitting+" acme/api"] = 2
 	if !maps.Equal(firstGroups, kept) {
-		t.Errorf("the first day after EVAL-2 left it: %v, want every row it held but acme/api's of the evals EVAL-2 alone was input of there, %v", firstGroups, kept)
+		t.Errorf("the first day after EVAL-2 left it: %v, want every row it held but acme/api's of what EVAL-2 alone was input of there, %v", firstGroups, kept)
 	}
 	for fact := range firstFacts {
 		if strings.Contains(fact, " acme/api: ") && !strings.HasPrefix(fact, SlugLegionSplitting+" ") {
@@ -262,12 +285,12 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 			t.Errorf("the next day's rows lack %q", want)
 		}
 	}
-	if nextGroups[SlugLegionSlotWait+" all"] != 3 || nextGroups[SlugLegionSlotWait+" acme/api"] != 3 {
-		t.Errorf("the next day's rows by eval and repository: %v, want slot wait in every cut of all and acme/api", nextGroups)
+	if nextGroups[SlugLegionSlotWait+" all"] != 3 || nextGroups[SlugLegionSlotWait+" acme/api"] != 2 {
+		t.Errorf("the next day's rows by eval and repository: %v, want slot wait in every cut of all and in acme/api's all and children cuts, which EVAL-2 is in", nextGroups)
 	}
 	wantMembers = []string{
 		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
-		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3 " + legionfactsDefault + " 2026-11-03",
+		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3 " + legionfacts.DefaultRepo + " 2026-11-03",
 		"legion EVAL-4 acme/web 2026-11-04",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {
@@ -283,6 +306,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 // of no Legion eval; and the Legion write refuses a row of a delivery eval before writing
 // anything.
 func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
+	t.Parallel()
 	day := at(5, 0, 0)
 	zero := ZeroLegionDay("EVAL", day, legionDaySlugs...)
 	series := 0
@@ -296,7 +320,10 @@ func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	for _, row := range zero.Rows {
 		fact := legionFact(row)
 		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
-		if row.N != 0 || row.Repo != "" || !row.Listed || !row.Day.Equal(day) || strings.Contains(fact, "=1") ||
+		nonzero := func(value *float64) bool { return value != nil && *value != 0 }
+		if row.N != 0 || row.ViaRepository != 0 || row.Repo != "" || !row.Listed || !row.Day.Equal(day) ||
+			nonzero(row.Sum) || nonzero(row.Num) || nonzero(row.Den) || nonzero(row.Max) || nonzero(row.LastValue) || len(row.Samples) != 0 ||
+			slices.ContainsFunc(slices.Collect(maps.Values(row.Counts)), func(value float64) bool { return value != 0 }) ||
 			strings.HasSuffix(row.Series, ":children") && slices.ContainsFunc(metrics.RootFigures, func(figure string) bool { return strings.HasPrefix(row.Series, figure+":") }) ||
 			!slices.Contains(seriesNames(entryOf(t, slug)), row.Series) {
 			t.Errorf("a zero row is %s (repo %q, listed %t, %s), want n 0 and a zero value in the all-repositories row of %s of a series the catalogue names",
@@ -318,7 +345,7 @@ func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	refused := ProjectDay{Project: "EVAL", Day: day, Rows: []DayRow{{
 		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), Listed: true, DayPart: measures.DayPart{Series: "deploys", Day: day},
 	}}}
-	if err := r.registry.writeLegionDay(t.Context(), refused, testBuild, true); err == nil {
+	if err := r.registry.writeProjectDay(t.Context(), legionFamily, refused, testBuild, true); err == nil {
 		t.Errorf("the Legion write took a deploy-frequency row, want it refused")
 	}
 	if got := r.count(t, `select count(*) from eval_days`); got != 0 {

@@ -19,16 +19,20 @@ import (
 // (legionfacts.ReadClosedIn, through issue_facts_closed), every one an issue with Legion phase
 // work since only such an issue has a row, and the filings its Legion sessions made that day
 // (legionfacts.ReadFilingsIn, through issue_filings_day). The legion/metrics day builders turn
-// them into parts (LegionDay.Rows), and the refresher's write of the day (refresh.writeLegion,
-// through writeLegionDay) writes the parts as the project's rows of the day, which the eval
-// routes fold through the six legion/metrics folds the evals' source names.
+// them into parts (LegionDay.Rows), and the refresher writes the parts as the project's rows of
+// the day (a walk's day through refresh.writeLegion and walkWrite, writeProjectDay, or staged by a
+// rebuild; a page's days through writeNamed, writeProjectDays), which the eval routes fold through
+// the six legion/metrics folds the evals' source names.
 //
 // A project's Legion rows of a day are, for each eval with input that day, every series its
 // builder builds in each of its cuts (metrics.CutSeries; every series of the catalogue but the
 // root figures' children cut, which no day holds): the all-repositories row (repo ''),
 // built from every issue and filing of the day, and one row per repository the eval's input is
-// in, built from that repository's alone. An issue's repository, and a filing's, is the one the
-// issue (the filed issue) resolves to by the rule that fills issue_facts.repo
+// in, built from that repository's alone, where it counts something: a repository's part that is
+// empty (a cut none of the repository's issues of the day is in, a filing class none of its
+// filings is of) is no row (repositoryRows), since R12 writes no zero row for a repository, and
+// that repository's day reads "no data" for the series. An issue's repository, and a filing's, is
+// the one the issue (the filed issue) resolves to by the rule that fills issue_facts.repo
 // (legionfacts.ReadRepos: its own, an ancestor's, else its project's default repository,
 // refs.IssueRepoTerms), resolved when the day is built rather than read from the stored row. An
 // issue or a filing that resolves to no repository is in the all-repositories row alone, so the
@@ -41,8 +45,8 @@ import (
 // first slot observation (LegionSince): R6 has each read "no data" for a window that starts before
 // that observation, and a row of an earlier day would hold hours read with no claim observed,
 // every one of them idle, or with no slot observed. A day with no input of an eval writes no row
-// of it: the explicit zero rows of a series from its first input day on are the refresher's
-// (ZeroLegionDay, ProjectDay.WithZeros).
+// of it: the explicit zero rows of a series from its first input day on are the refresher's, in
+// the all-repositories row alone (ZeroLegionDay, ProjectDay.WithZeros).
 //
 // Each issue counted is an item of the family `legion` in eval_day_members, keyed by its issue
 // key, on its close day with its repository. The day an issue leaves when it closes again on
@@ -63,8 +67,8 @@ const (
 	SlugLegionSplitting = "legion-splitting"
 )
 
-// legionDaySlugs is every eval a Legion day's rows are of, and so every eval writeLegionDay
-// writes the rows of that a day no longer holds as zero rows.
+// legionDaySlugs is every eval a Legion day's rows are of, and so every eval whose rows a day no
+// longer holds the write of the day deletes (deleteStaleDays).
 var legionDaySlugs = []string{
 	SlugLegionWorkTime, SlugLegionPhaseTime, SlugLegionIdleTime, SlugLegionSlotWait, SlugLegionRework,
 	SlugLegionSplitting,
@@ -189,7 +193,8 @@ type legionInput struct {
 }
 
 // Rows is the project's Legion rows of the day under since, built by the legion/metrics day
-// builders, and the issues they count; no row and no item for a day with no input.
+// builders, and the issues they count; no row and no item for a day with no input. A repository's
+// row stands only where its part counts something (repositoryRows).
 func (d LegionDay) Rows(since LegionSince) ProjectDay {
 	result := ProjectDay{Project: d.Project, Day: d.Day}
 	var all legionInput
@@ -216,7 +221,7 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 	}
 	result.Rows = d.build("", all, since)
 	for _, repo := range slices.Sorted(maps.Keys(byRepo)) {
-		result.Rows = append(result.Rows, d.build(repo, *byRepo[repo], since)...)
+		result.Rows = append(result.Rows, repositoryRows(d.build(repo, *byRepo[repo], since))...)
 	}
 	slices.SortFunc(result.Members, func(a, b Member) int { return cmp.Compare(a.RowKey, b.RowKey) })
 	return result
@@ -273,16 +278,4 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 		}
 	}
 	return result
-}
-
-// writeLegionDay writes day as its project's Legion rows of its day, as writeDeliveryDay writes a
-// delivery day: each row upserted, recording builtBy, the running build; the project's rows of
-// that day of the Legion evals (legionDaySlugs) that day does not hold deleted (deleteStaleDays);
-// its issues recorded in eval_day_members on its day under the family `legion`, whose items
-// recorded on that day that it does not hold are deleted; and where figures is set, the stored
-// figures of the day where its rows moved folded again, where builtBy writes them (figures.go).
-// A row of another project, another day or an eval that is not a Legion one, and an item of
-// another family, is refused before anything is written.
-func (s *Store) writeLegionDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
-	return s.writeProjectDay(ctx, legionFamily, day, builtBy, figures)
 }

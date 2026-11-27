@@ -73,6 +73,29 @@ func TestTheFailuresModeRefusesTheModesThatWriteItsSettings(t *testing.T) {
 	}
 }
 
+// TestCheckRefusesNoDatabaseNoModeAndModesThatCannotRunTogether: with a project named, a run that
+// names no -database, one that names no mode, -base beside another mode, and -attribution beside
+// -delivery are each refused, naming what is wrong; -attribution beside -legion is not.
+func TestCheckRefusesNoDatabaseNoModeAndModesThatCannotRunTogether(t *testing.T) {
+	for _, refused := range []struct {
+		name, reason string
+		o            options
+	}{
+		{"-legion with no -database", "-database", options{project: "LEGK", legion: true}},
+		{"no mode", "at least one mode", options{database: "postgres://unused", project: "LEGK"}},
+		{"-base -legion", "-base writes the Legion history alone", options{database: "postgres://unused", project: "LEGK", base: true, legion: true}},
+		{"-base -merge-pr", "-base writes the Legion history alone", options{database: "postgres://unused", project: "LEGK", base: true, mergePR: "acme/api#1"}},
+		{"-attribution -delivery", "each write the project's delivery settings", options{database: "postgres://unused", project: "LEGK", attribution: true, delivery: true}},
+	} {
+		if err := check(refused.o); err == nil || !strings.Contains(err.Error(), refused.reason) {
+			t.Errorf("%s was answered %v, want a refusal naming %q", refused.name, err, refused.reason)
+		}
+	}
+	if err := check(options{database: "postgres://unused", project: "LEGK", attribution: true, legion: true}); err != nil {
+		t.Errorf("-attribution -legion was refused: %v", err)
+	}
+}
+
 // TestTheReportNamesTheSeedOfASeededModeAlone: -delivery, the one mode a seed draws, reports the
 // project and the seed it wrote with; -merge-pr alone, with no project, merges the pull request it
 // names and reports neither, since it wrote into no project and drew nothing.

@@ -398,6 +398,9 @@ function DeployRecord({ project, run }: { project: string; run: DrillDownRun }):
                 >
                   <label className={`flex flex-col gap-1 ${textMutedOnSurface}`}>
                     Reason
+                    {/* A rejection's reason is stored on the production event, which the
+                        reference graph does not read, so this box takes no reference picker:
+                        `delivery-reject-reason` in `DISPATCH_WRITING_BOXES` says why. */}
                     <textarea
                       className={fieldClass}
                       onChange={(event) => setForm({ ...form, reason: event.target.value })}
@@ -491,6 +494,9 @@ function DeployRecord({ project, run }: { project: string; run: DrillDownRun }):
           </fieldset>
           <label className={`flex flex-col gap-1 text-sm ${textMutedOnSurface}`}>
             Note
+            {/* A failure's note is stored on the production event, which the reference graph
+                does not read, so this box takes no reference picker: `delivery-flag-note` in
+                `DISPATCH_WRITING_BOXES` says why. */}
             <textarea
               className={fieldClass}
               onChange={(event) => setForm({ ...form, note: event.target.value })}

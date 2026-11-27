@@ -29,10 +29,13 @@ type mockPublisher struct {
 	err       error
 }
 
-func (m *mockPublisher) PublishWithin(_ context.Context, item contracts.Envelope) error {
+func (m *mockPublisher) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.published = append(m.published, item)
+	if m.err == nil && published != nil {
+		published(item.Topic, false, false)
+	}
 	return m.err
 }
 
@@ -98,21 +101,27 @@ func TestAWebhookDeliveryStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T)
 		handler func(Publisher) http.Handler
 		request func() *http.Request
 	}{
-		{"github", func(p Publisher) http.Handler { return GitHubHandler(secret, "@legion", "", p, &mockRecorder{}) }, func() *http.Request {
+		{"github", func(p Publisher) http.Handler {
+			return GitHubHandler(secret, "@legion", "", "", p, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
+		}, func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(push))
 			req.Header.Set("X-GitHub-Delivery", "d-in-process")
 			req.Header.Set("X-GitHub-Event", "push")
 			req.Header.Set("X-Hub-Signature-256", githubSign(secret, push))
 			return req
 		}},
-		{"slack", func(p Publisher) http.Handler { return SlackHandler(secret, p) }, func() *http.Request {
+		{"slack", func(p Publisher) http.Handler {
+			return SlackHandler(secret, p, NewBodyBudget(DefaultBodyBudget, nil))
+		}, func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/slack", bytes.NewReader(slackEvent))
 			ts := strconv.FormatInt(time.Now().Unix(), 10)
 			req.Header.Set("X-Slack-Request-Timestamp", ts)
 			req.Header.Set("X-Slack-Signature", slackSign(secret, ts, slackEvent))
 			return req
 		}},
-		{"ghostwispr", func(p Publisher) http.Handler { return GhostWisprHandler(secret, p) }, func() *http.Request {
+		{"ghostwispr", func(p Publisher) http.Handler {
+			return GhostWisprHandler(secret, p, NewBodyBudget(DefaultBodyBudget, nil))
+		}, func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/ghostwispr", bytes.NewReader(summary))
 			req.Header.Set("X-GhostWispr-Delivery", "d-in-process")
 			req.Header.Set("X-GhostWispr-Event", "summary_ready")

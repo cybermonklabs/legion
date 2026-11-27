@@ -581,6 +581,7 @@ function cellValue(
     if (drawn.value === null) {
       const reason = drawn.reason;
       return {
+        // A reading's own words, which the chart draws as plain text: `eval-reading-reason`
         label: reason === "" ? "not measured" : `not measured: ${reason}`,
         note: reason === "" ? measured : reason,
         state: "absent",

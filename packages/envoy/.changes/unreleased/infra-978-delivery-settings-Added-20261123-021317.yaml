@@ -6,13 +6,25 @@ body: |-
   A `github_workflow` source names the repository of its workflow, or none, and then reads the
   project's default repository. An `events` source reads the deploys a system posts. A
   repository is the deploy source of one project with delivery on at most (`409
-  DELIVERY_REPOSITORY_SHARED`). The answer gives each source its `reconciled_through`. The
-  project settings tab edits them. `GET` and `PUT /api/v1/settings/delivery` keep answering in
-  this release and are removed in the next one. Each deploy and each failed change is a row of
+  DELIVERY_REPOSITORY_SHARED`). The answer gives each source its `reconciled_through`. A `PUT`
+  keeps the stored value of every top-level field its body leaves out (`null` clears a field that
+  may be empty, `sources` present replaces the list, and a `targets` key changes that target
+  alone), and the project settings tab edits them while sending back every field it does not edit.
+  `GET` and `PUT /api/v1/settings/delivery` keep answering in this release and are removed in the
+  next one. Each deploy and each failed change is a row of
   `production_events`, read, posted and judged at `GET` and `POST
   /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. Change fail rate, failed
   deployment recovery time and the new deployment rework rate read those rows; the pending
   state, the upper bound and change fail rate's `per_pr` series are removed.
+  The measures answer (`GET /api/v1/delivery/measures`, the timeline's `measures` and the live
+  measures view) states them at `change_failure_rate` (`{failed, total, rate}`, an object that is
+  never null, with each leaf null where the window holds no row of its eval),
+  `failed_deployment_recovery` and `deployment_rework_rate` (each null alike). While a release
+  rolls, the Delivery page of the release before this one reads `change_failure_rate.per_pr`,
+  `change_failure_rate.per_deploy` and `time_to_restore.median_minutes` with no null guard, so
+  the answer keeps those objects with every leaf null in every window, and computes none of
+  them; they go in the next release, with `GET` and `PUT /api/v1/settings/delivery`.
+  An after-merge check result stays bound to its failure when a replay finds an earlier deploy.
 time: 2026-11-23T02:13:17Z
 custom:
     Issue: INFRA-978

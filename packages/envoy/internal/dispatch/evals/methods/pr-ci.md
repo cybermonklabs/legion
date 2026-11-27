@@ -4,6 +4,6 @@ Each job of a run that ended in success or failure has a series of its own, `job
 
 The Pipeline section is deployment-wide, so it ranks by the `min_n` of `job:*` of the `pr-ci` eval in the project whose default repository is its deploy repository. Where no project's default repository is that repository, or more than one project's is, or its project holds no `pr-ci` eval yet, the Pipeline ranks by 50, `measures.SlowestMinResults`, and says so: it states the count it ranked by in `pr_checks.slowest_min_results`.
 
-A run counts for the project its pull request counts for, the project of the issue the pull request names, and so does each of its jobs. A run whose pull request names no issue counts for no project, and only the Pipeline section, which follows no project, counts it.
+A run counts for the project its pull request counts for, the project of the issue the pull request names, and so does each of its jobs. A run whose pull request names no issue counts, with each of its jobs, for each project whose published default repository is its repository, and for no project where none is. The Pipeline section, which follows no project, counts it either way.
 
 **What it does not count.** Runs of other workflows, runs that something other than a pull request started, cancelled runs in the times, and the jobs of a run that did not end in success or failure.

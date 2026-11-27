@@ -25,8 +25,9 @@ type Settings struct {
 // query that returns a setting selects exactly this.
 const settingsColumns = `project, state_url, created_by, updated_at`
 
-// ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it and
-// the board has nothing to show.
+// ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it, the
+// board has nothing to show, and an issue's own Legion read answers `configured` false rather
+// than refusing (api/legion_issue.go).
 var ErrNoSettings = errors.New("this project has no Legion daemon configured")
 
 // StateChannel is the Postgres notification channel one read of a daemon's state announces itself
@@ -80,9 +81,16 @@ func ListSettings(ctx context.Context, pool *store.Pool) ([]Settings, error) {
 	return listed, nil
 }
 
+// RowQueryer is what GetSettings needs of its connection: the pool, or a transaction a reader
+// holds open so the setting answers the moment its other reads of what the sampler writes answer
+// (api/legion_issue.go's readLegionIssue, whose `configured` and state are one moment's).
+type RowQueryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // GetSettings is one project's setting, or ErrNoSettings when it has none.
-func GetSettings(ctx context.Context, pool *store.Pool, project string) (Settings, error) {
-	settings, err := scanSettings(pool.QueryRow(ctx, `select `+settingsColumns+` from legion_settings where project = $1`, project))
+func GetSettings(ctx context.Context, db RowQueryer, project string) (Settings, error) {
+	settings, err := scanSettings(db.QueryRow(ctx, `select `+settingsColumns+` from legion_settings where project = $1`, project))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Settings{}, ErrNoSettings
@@ -285,7 +293,7 @@ type Current struct {
 // state keeps its `phase` row, written `null` when it left: it stays a Legion issue, so a child of
 // it climbs through it to the tree above, while it carries no card and no tree, since its `tree`
 // was written `null` with the rest. The rows under AdmissionKey belong to no issue — the admission
-// block and the daemon's settings — so they report nothing.
+// block, the daemon's settings and its controller session — so they report nothing.
 func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, nullif(value, 'null'::jsonb), observed_at

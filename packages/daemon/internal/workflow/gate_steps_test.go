@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The documents of the steps these tests gate. gateDoc is the root's primary document, which the
@@ -126,20 +126,11 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 	return notices
 }
 
-// awaitingNotices is the reason of every awaiting-person notice the outbox holds for issue: the
-// row that tells the controller the root waits on a person.
-func awaitingNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
+// controllerNoticesOn is the kind of every controller notice the outbox holds for issue, in the
+// order the outbox wrote them.
+func controllerNoticesOn(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload->>'reason' from outbox where kind = 'controller_notice' and issue = $1
-		and payload->>'kind' = $2 order by id`, issue, string(record.AwaitingPersonNotice))
-	if err != nil {
-		t.Fatalf("read the awaiting-person notices of %s: %v", issue, err)
-	}
-	reasons, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("scan the awaiting-person notices of %s: %v", issue, err)
-	}
-	return reasons
+	return outboxStrings(t, pool, `select payload->>'kind' from outbox where kind = 'controller_notice' and issue = $1 order by id`, issue)
 }
 
 // reconcileAwaiting runs one admission pass of engine over the project's records as they stand,
@@ -147,17 +138,17 @@ func awaitingNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 // (Admission.promoteHolds).
 func reconcileAwaiting(t *testing.T, pool *pgxpool.Pool, engine *Engine) []string {
 	t.Helper()
-	store := record.NewStore()
 	entered := []string{}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		scoped, _ := intake.WithCommitHooks(context.Background())
-		issues, err := store.Issues(scoped, tx)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := record.NewStore().Issues(ctx, tx)
 		if err != nil {
 			return err
 		}
-		entered, _, err = engine.ReconcileAwaiting(scoped, tx, "LEGION", issues, nil)
+		entered, _, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", issues, nil)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("reconcile the roots that wait: %v", err)
+	}
 	return entered
 }
 
@@ -192,94 +183,89 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // with its cap.
 func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held func(string) bool) {
 	t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped = engine.OpenFact(scoped)
-	tx, err := pool.Begin(scoped)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(scoped)
-	store := record.NewStore()
-	read := func() ([]record.Issue, []record.Slot, record.LineFacts) {
-		issues, err := store.Issues(scoped, tx)
+	if err := store.Transact(context.Background(), pool, func(scoped context.Context, tx pgx.Tx) error {
+		scoped = engine.OpenFact(scoped)
+		store := record.NewStore()
+		read := func() ([]record.Issue, []record.Slot, record.LineFacts) {
+			issues, err := store.Issues(scoped, tx)
+			if err != nil {
+				t.Fatalf("list issues: %v", err)
+			}
+			facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
+			if err != nil {
+				t.Fatalf("read the line facts: %v", err)
+			}
+			slots, err := store.Slots(scoped, tx)
+			if err != nil {
+				t.Fatalf("list slots: %v", err)
+			}
+			return issues, slots, facts
+		}
+		issues, slots, facts := read()
+		// Every issue that no longer needs its slot gives it back before the line is read, as the
+		// real pass does (admit's releaseSlots): a root whose gate has opened holds the slot its
+		// architect wrote the design in, and the line offers a slot to no issue already holding one.
+		byKey := make(map[string]record.Issue, len(issues))
+		for _, issue := range issues {
+			byKey[issue.Key] = issue
+		}
+		live := record.LiveRoots(issues, facts)
+		for _, slot := range slots {
+			issue, recorded := byKey[slot.Issue]
+			_, running := live[issue.Tree]
+			if recorded && record.NeedsSlot(issue, byKey[issue.Tree], running) {
+				continue
+			}
+			if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
+				t.Fatalf("release the slot of %s: %v", slot.Issue, err)
+			}
+		}
+		issues, slots, facts = read()
+		mirrored, err := store.DispatchIssues(scoped, tx, "LEGION")
 		if err != nil {
-			t.Fatalf("list issues: %v", err)
+			t.Fatalf("list the mirror: %v", err)
 		}
-		facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
+		rows := blockers.Rows(mirrored)
+		// Every started issue that waits on another issue gives its row back, as the real pass does
+		// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
+		// state that release leaves.
+		rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
 		if err != nil {
-			t.Fatalf("read the line facts: %v", err)
+			t.Fatalf("judge the line: %v", err)
 		}
-		slots, err := store.Slots(scoped, tx)
+		for _, slot := range slots {
+			if _, waits := facts.Waits[slot.Issue]; !waits {
+				continue
+			}
+			if err := store.ReleaseSlotForWait(scoped, tx, slot.Issue, time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatalf("release the slot of %s for what it waits on: %v", slot.Issue, err)
+			}
+		}
+		issues, slots, facts = read()
+		rows, _, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
 		if err != nil {
-			t.Fatalf("list slots: %v", err)
+			t.Fatalf("judge the line again: %v", err)
 		}
-		return issues, slots, facts
-	}
-	issues, slots, facts := read()
-	// Every issue that no longer needs its slot gives it back before the line is read, as the
-	// real pass does (admit's releaseSlots): a root whose gate has opened holds the slot its
-	// architect wrote the design in, and the line offers a slot to no issue already holding one.
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	live := record.LiveRoots(issues, facts)
-	for _, slot := range slots {
-		issue, recorded := byKey[slot.Issue]
-		_, running := live[issue.Tree]
-		if recorded && record.NeedsSlot(issue, byKey[issue.Tree], running) {
-			continue
+		for _, entry := range line {
+			// The real pass stops at the first candidate a hold holds, because the cap counts
+			// issues and everything behind it competes for the same slots.
+			if held != nil && held(entry.Issue.Key) {
+				break
+			}
+			if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, entry.Issue)) > 0 {
+				continue
+			}
+			if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
+				t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
+			}
 		}
-		if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
-			t.Fatalf("release the slot of %s: %v", slot.Issue, err)
+		if err := engine.SettleFact(scoped, tx); err != nil {
+			return fmt.Errorf("settle: %w", err)
 		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	issues, slots, facts = read()
-	mirrored, err := store.DispatchIssues(scoped, tx, "LEGION")
-	if err != nil {
-		t.Fatalf("list the mirror: %v", err)
-	}
-	rows := blockers.Rows(mirrored)
-	// Every started issue that waits on another issue gives its row back, as the real pass does
-	// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
-	// state that release leaves.
-	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
-	if err != nil {
-		t.Fatalf("judge the line: %v", err)
-	}
-	for _, slot := range slots {
-		if _, waits := facts.Waits[slot.Issue]; !waits {
-			continue
-		}
-		if err := store.ReleaseSlotForWait(scoped, tx, slot.Issue, time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)); err != nil {
-			t.Fatalf("release the slot of %s for what it waits on: %v", slot.Issue, err)
-		}
-	}
-	issues, slots, facts = read()
-	rows, _, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
-	if err != nil {
-		t.Fatalf("judge the line again: %v", err)
-	}
-	for _, entry := range line {
-		// The real pass stops at the first candidate a hold holds, because the cap counts
-		// issues and everything behind it competes for the same slots.
-		if held != nil && held(entry.Issue.Key) {
-			break
-		}
-		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, entry.Issue)) > 0 {
-			continue
-		}
-		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
-			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
-		}
-	}
-	if err := engine.SettleFact(scoped, tx); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if err := tx.Commit(scoped); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	committed()
 }
 
 // Under two gated steps every one of them holds the tree's work. With the Verification document
@@ -290,6 +276,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 // driven, because the step the work stands on is the first of the configured list that is closed,
 // whichever a person approved first.
 func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
+	t.Parallel()
 	orders := []struct {
 		name                   string
 		approvedDoc, closedDoc string
@@ -343,8 +330,8 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 	// The step the root hands to a person is the first gated step that is closed, and it moves on
 	// as each step is approved: with one step approved and the other's approval request still with
 	// the person, the root enters the wait once, keeping the row it took at its admission, and
-	// the pass after it finds nothing more to do. No member of this tree is in a phase, because a
-	// member that is keeps the root where it stands.
+	// the pass after it finds nothing more to do. The wait wakes no controller, at either pass. No
+	// member of this tree is in a phase, because a member that is keeps the root where it stands.
 	for _, tc := range orders {
 		t.Run(tc.name+", the wait on the person", func(t *testing.T) {
 			pool := migratedPool(t)
@@ -369,16 +356,15 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 				waiting.Awaiting.GateVersion != tc.closedVersion || waiting.Answered() {
 				t.Fatalf("the root = %#v, want it waiting unanswered on %s version %d", waiting.Awaiting, tc.closedDoc, tc.closedVersion)
 			}
-			reasons := awaitingNotices(t, pool, gatedRoot)
-			if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps its admission slot") {
-				t.Fatalf("awaiting-person notices = %q, want one saying the root keeps its admission slot", reasons)
+			if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+				t.Fatalf("the controller was told %q of the root's wait, want nothing: its skill does nothing for a root that waits on a person", told)
 			}
 
 			if entered := reconcileAwaiting(t, pool, engine); len(entered) != 0 {
 				t.Fatalf("a second pass returned %v, want nothing: the root waits once", entered)
 			}
-			if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
-				t.Fatalf("awaiting-person notices after a second pass = %q, want still the one", got)
+			if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+				t.Fatalf("the controller was told %q after a second pass, want still nothing", told)
 			}
 		})
 	}
@@ -388,6 +374,7 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 // both steps open, a changes request on the Verification document closes the criteria step,
 // leaves the spec step open, and tells the architect once with the reason the person gave.
 func TestGatedStepsAChangesRequestOnOneStepLeavesTheOtherOpen(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
@@ -446,6 +433,7 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 // catch-up says the gate was carried and names both steps, and the approval of the old root's
 // Verification document opens the copy that was closed, which starts the new root's first phase.
 func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)
@@ -501,6 +489,7 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 // that answered to one reference would replace each other's decision. The spec step keeps the
 // reference it has always had, so a one-step deployment's decisions are keyed as before.
 func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
 	apply := applyFacts(t, pool, engine)
@@ -524,11 +513,12 @@ func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {
 }
 
 // A step the deployment gates that nobody has registered holds the tree's work and asks nobody:
-// the root starts no phase, and no awaiting-person notice is written for it, because the record
-// knows no document to ask a person about. The same root with that step registered and closed
-// does wait, which is what tells the two apart, and it starts once that step is registered and
-// approved.
+// the root starts no phase and does not enter the wait on a person, because the record knows no
+// document to ask a person about. The same root with that step registered and closed does wait,
+// which is what tells the two apart, and it starts once that step is registered and approved.
+// Neither root tells the controller anything.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
+	t.Parallel()
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -549,8 +539,8 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		if got := recordedRoot(t, pool).Phase; got != phase.Admitted {
 			t.Fatalf("the root = %s after an admission pass, want it admitted: an unregistered step asks nobody", got)
 		}
-		if got := awaitingNotices(t, pool, gatedRoot); len(got) != 0 {
-			t.Fatalf("awaiting-person notices = %q, want none for a step nobody registered", got)
+		if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+			t.Fatalf("the controller was told %q, want nothing for a step nobody registered", told)
 		}
 
 		bindStep(t, pool, record.DesignStepDecisions, decisionsDoc)
@@ -585,8 +575,8 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != decisionsDoc {
 			t.Fatalf("the root = %#v, want it waiting on the decisions document", waiting.Awaiting)
 		}
-		if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
-			t.Fatalf("awaiting-person notices = %q, want the one a registered closed step raises", got)
+		if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+			t.Fatalf("the controller was told %q of the wait a registered closed step raises, want nothing", told)
 		}
 	})
 }
@@ -594,10 +584,11 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 // A step nobody has registered holds the work, and that is all it does: the wait a registered
 // step after it raised still reaches the person. Under the decisions step and the spec, with the
 // decisions step unregistered and the spec registered, unapproved and its approval request with
-// the person, the root enters the wait on its primary document and the controller is told.
-// Reading the unregistered step as the step the person has would leave the root with nothing to
-// answer the wait that never began, while the person holds its request.
+// the person, the root enters the wait on its primary document, and the controller is told
+// nothing of it. Reading the unregistered step as the step the person has would leave the root
+// with nothing to answer the wait that never began, while the person holds its request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine([]record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, nil)
 	apply := applyFacts(t, pool, engine)
@@ -614,8 +605,8 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 		waiting.Awaiting.GateVersion != 4 {
 		t.Fatalf("the root = %#v, want it waiting on the primary document at version 4", waiting.Awaiting)
 	}
-	if got := awaitingNotices(t, pool, gatedRoot); len(got) != 1 {
-		t.Fatalf("awaiting-person notices = %q, want the one the registered closed step raises", got)
+	if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
+		t.Fatalf("the controller was told %q of the wait, want nothing", told)
 	}
 }
 
@@ -627,6 +618,7 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 // document the deployment no longer gates is ignored. Both directions are driven from the one
 // stored tree.
 func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	spec := stepsEngine([]record.DesignStep{record.DesignStepSpec}, nil)
 	seedGatedTree(t, pool)
@@ -691,6 +683,7 @@ func assertRootWaitsOnItsChild(t *testing.T, pool *pgxpool.Pool, root string) {
 // is told once, a changes request is told once with the person's reason, and a carried copy opens
 // on an approval of the old root's document.
 func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
+	t.Parallel()
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	t.Run("the registration opens the one step and tells the architect once", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -751,6 +744,7 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 // records the spec step and opens it at once, with no person asked, and the root's first phase
 // starts at the admission pass after it.
 func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
@@ -777,6 +771,7 @@ func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
 // second approval starts the child, and the root's own first phase then waits for that open child
 // (children-first), its row given back for the wait.
 func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		first, second intake.DispatchArtifact
@@ -834,6 +829,7 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 // before, so each is owed the new one's news, and the task that carries it leads with the opening,
 // its told row recording the opening as owed in place of the opened message (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
@@ -875,6 +871,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 // gate registered before register_gate took criteria is: a version of that document reaches no
 // row, and the spec's approval opens the tree.
 func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -899,6 +896,7 @@ func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
 // holds nothing, closed as it stands: the spec's registration opens the tree at once, and a new
 // version of the kept document moves no row and tells nobody.
 func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateOff, nil)
 	apply := applyFacts(t, pool, engine)
@@ -925,6 +923,7 @@ func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
 // Registered after the gate already opened, it joins a tree its gate released: the row is
 // written as ever opened, and the tree reads opened once and closed.
 func TestAVerificationDocumentReadsEverOpenedByWhenItWasRegistered(t *testing.T) {
+	t.Parallel()
 	t.Run("registered before the first opening", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)

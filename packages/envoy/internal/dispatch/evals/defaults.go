@@ -3,12 +3,16 @@ package evals
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
 // defaults.go publishes the projects' default repositories (eval_days_defaults, migration
@@ -16,11 +20,59 @@ import (
 // rows (owners.go): a person's write of a project's default repository
 // (PUT /api/v1/projects/{key}/default-repository, projects.default_repo) moves no read and no view
 // until the refresher's page that reads it publishes it, and that page's commit makes visible, with
-// the new defaults, the stored figures of the projects it moves folded under them (the architect's
-// rulings of 08:28Z (b) and 14:07Z). So a read in one snapshot answers the old defaults whole, their
-// figures among them, or the new ones whole, and no read folds day rows because a figure is not
-// folded yet. The move rewrites no day row and no member: every owner key's rows are written
-// whatever the defaults are, its zero rows from its own first input day on.
+// the new defaults, the marks of the stored cuts it moves, the project's own rows ("") among them,
+// each naming the evals whose rows it moved there, and the first paint of each folded under them
+// where its mark names no logged eval (figures.go, foldMarkedFirstPaints). So a read in one
+// snapshot answers the old defaults whole, their figures among them, or the new ones whole: a read
+// of a first paint of a cut the move marked from the stored figures of its first paint once that is
+// folded, in the commit or in the first batch of the pass's refold, and from the day rows of the
+// evals the mark names before; a read of an older range from those day rows until the stored rows
+// it reads of them are folded again (refoldStaleCuts); and every other eval of the cut from its
+// stored figures, whose rows the move did not move. A default moves more than its own project's
+// reads: a pull request whose issue is held through a project's default repository (a condition of
+// its attribution list, delivery_days.go) counts for that project while its default is the pull
+// request's repository and for the repository's other readers otherwise, so the move moves what
+// each of them reads. The move rewrites no day row and no member: every owner key's rows are
+// written whatever the defaults are, its zero rows from its own first input day on, and the
+// published defaults decide who reads them (eval_project_owners). The same commit publishes a
+// move of the deploy sources, which the page records with the rules (eval_days_rules,
+// recordRules): the deploy repositories a read of the evals keyed by them folds (DeployReposIn),
+// and the reader of each repository's source key, a selection too (dispatch://INFRA-978, plan T19
+// paths 1 and 3), whose cuts the commit marks and whose first paints it folds alike
+// (publishDefaults, sourceMarksOf).
+
+// The eval tables' lock order. A transaction that takes locks of more than one of these steps
+// takes them in this order, and those of one step in the order the step gives, so two writers wait
+// for each other in turn and never in a cycle:
+//
+//  1. The eval locks (lockEvals), one for each key in the order of the keys, before any row lock:
+//     the readings and register writes, the seed, the zero fill, and each fold of a logged eval's
+//     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page and
+//     the publication of a settings rewrite take none (foldMarkedFirstPaints).
+//  2. eval_days_rules and then eval_days. A transaction that writes both writes its rule rows first:
+//     a refresher page's commit (commitPage, recordRules) and a settings rewrite's publication
+//     (rewriteSettings, recordRule) record their rules before their first day row. eval_days: its
+//     rows, in the byte order of their keys (writeDays). The boot's rename pass takes both tables
+//     whole in share row exclusive mode, eval_days_rules first, before any other lock of the pass's
+//     line of the eval tables (store's repoRenameLines).
+//  3. eval_day_owners: the change trigger of eval_days writes a key's row in the statement that
+//     writes the key's day rows (migration 20261117100014), a rebuild's stage writes rows with no
+//     day row (recordOwners), and the rename pass writes them behind eval_days' lock.
+//  4. eval_day_members and eval_days_owed, in either order: only the refresher, whose lease runs
+//     one pass at a time, and the rename pass, behind eval_days' lock, write them.
+//  5. The stored figures (eval_range_figures, eval_day_figures).
+//  6. eval_days_defaults, in the byte order of its keys, each row a transaction moves locked before
+//     it writes any: publishDefaults locks every published row (readPublishedDefaults), and the
+//     rename pass's markRenamedCuts those of the old name.
+//  7. eval_figure_cuts_stale, in the byte order of its keys (markStaleCuts, markRenamedCuts).
+//
+// The commit of a move and the transaction of a settings rewrite fold the first paints they fold
+// (5) after the marks they write (7), where a batch of a stale cut's refold folds (5) before it
+// records with its mark where it stands (7): every writer of both is the refresher, whose lease
+// runs one pass at a time (a rewrite runs in the pass's page, as the commit of a move does), or a
+// write that marks its own eval's cuts in its transaction, before it folds a first paint (a
+// readings write past inlineFoldDaySeries, foldWrittenPaints) or with no fold (a register write
+// that moves the eval's fold key), and the rename pass marks and no stored figure.
 
 // defaultsMove is what a page publishes of the projects' default repositories (syncDefaults):
 // every project's default repository as it stands (live, by project), the projects whose published
@@ -35,7 +87,11 @@ type defaultsMove struct {
 
 // syncDefaults reads the projects' default repositories and the published ones, and where they
 // differ records in w what the page's commit publishes (publishDefaults). One statement, which
-// reads every project's row: a few dozen at most.
+// reads every project's row, a few dozen at most; and, where a default moved, the projects'
+// delivery settings as saved (delivery.ListProjectSettings), whose sources name the deploy
+// repositories the delivery routes judge their views by, not the rules the day rows stand built
+// under (eval_days_rules, BuiltSettingsIn), which lag them until the refresher's rewrite of a
+// settings change commits.
 func (r *refresh) syncDefaults(ctx context.Context, w *pageWork) error {
 	pool := r.store.database.Pool
 	live, published := map[string]string{}, map[string]string{}
@@ -88,15 +144,10 @@ func (r *refresh) syncDefaults(ctx context.Context, w *pageWork) error {
 func judgingMoves(settings []delivery.ProjectSettings, published, live map[string]string) []string {
 	judges := func(defaults map[string]string) map[string]string {
 		projects := slices.Clone(settings)
-		for i := range projects {
-			projects[i].DefaultRepo = nil
-			if repo, held := defaults[projects[i].Project]; held {
-				projects[i].DefaultRepo = new(repo)
-			}
-		}
+		withDefaults(projects, defaults)
 		judge := map[string]string{}
 		for _, rule := range delivery.DeployRules(projects) {
-			judge[ruleKey(rule.DeployRepo)] = rule.Project
+			judge[delivery.RuleKey(rule.DeployRepo)] = rule.Project
 		}
 		return judge
 	}
@@ -116,22 +167,191 @@ func judgingMoves(settings []delivery.ProjectSettings, published, live map[strin
 	return moved
 }
 
-// publishDefaults publishes, in tx, the page's commit, the default repositories move holds: every
-// project's published default replaced by the one it stands at, then the stored figures of each
-// project the move moves folded again over every day of its evals (foldFiguresInTx), so they fold
-// the rows of the owner keys of its new default and none of its old one's, and then, for each
-// moved project, one eval_days change of no eval (delivery.EvalDaysWrittenByDefaults), which marks
-// its evals views, and, for each deploy repository whose judging project moved, one more
-// (delivery.JudgingMoved), which marks the delivery views those evals judge. Every write of the
-// commit lands together, so a read answers the old defaults and figures or the new ones.
-func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *defaultsMove) error {
-	projects := slices.Sorted(maps.Keys(move.live))
+// selectionRead is what the evals' reads select of the stored rows, as a transaction reads it: the
+// deploy repositories recorded with the rows (DeployReposIn), whose rows a read of a project's
+// evals keyed by the deploy repository folds (DeployRepos.Of), and the owner keys each project
+// reads, with whether it reads each through the repository (readOwnerPairs).
+type selectionRead struct {
+	repos  *DeployRepos
+	owners map[string]map[string]bool
+}
+
+// readSelection reads in q what the evals' reads select (selectionRead): one statement over
+// eval_days_rules, a row per repository that has been a source, and one over eval_project_owners.
+func readSelection(ctx context.Context, q delivery.Querier) (selectionRead, error) {
+	repos, err := DeployReposIn(ctx, q)
+	if err != nil {
+		return selectionRead{}, err
+	}
+	owners, err := readOwnerPairs(ctx, q)
+	if err != nil {
+		return selectionRead{}, err
+	}
+	return selectionRead{repos: repos, owners: owners}, nil
+}
+
+// publishDefaults publishes, in tx, a commit that moves what the evals' reads select from before,
+// which tx read before its first write (readSelection): a refresher page's commit (commitPage),
+// which records the deploy sources' rules (recordRules: the deploy repositories a read selects, and
+// the reader of each repository's source key) and publishes the default repositories move holds
+// where move is not nil. The rewrite of one repository's rule that also moves its source to another
+// project (rewriteSettings) publishes its move with move nil through selectionMoves, whose marks it
+// writes and folds with those of its own rows (markMovedCuts). projects is every project's key.
+// Where move is not nil, every project's published default is replaced by the one it stands at,
+// every published row locked first in the byte order of its key (readPublishedDefaults); each
+// project the commit moves gets one eval_days change of no eval (delivery.EvalDaysWrittenByDefaults),
+// which marks its evals views; and each deploy repository whose judging project moved one more
+// (delivery.JudgingMoved), which marks the delivery views those evals judge. A commit of the sources
+// alone logs neither: its record of the rules says the rows stand at the settings
+// (markSettingsApplied), which recomputes every evals view. Either way it marks stale each cut the
+// commit moves rows into or out of, naming the evals whose rows it moved there (selectionMoves:
+// staleMarksOf, sourceMarksOf; markStaleCuts), and folds the first paint of each cut it marks whose
+// mark names no logged eval under what the reads select now (foldMarkedFirstPaints). It takes the
+// defaults' locks and then the marks', and no eval lock, in the eval tables' lock order.
+//
+// The projects it moves are those whose own default it moves, and every project whose owner keys
+// (eval_project_owners, with whether it reads each through the repository) the commit moves, read
+// in tx before and after: a default move moves the readers of every key a list of which holds a
+// condition of the moved project, whatever their own defaults, and a source move the reader of the
+// source key of each repository a source reads or leaves (sourceKey). The cuts it moves of a
+// project are those of its old and its new published default, whose cut holds its own rows stored
+// under legionfacts.DefaultRepo (cutOf), where its own default moves; for each owner key it gains,
+// loses or reads otherwise through the repository, that of the key's repository and the project's
+// own rows (""), each of which folds the key's rows (noteMovedCuts); and, for each deploy
+// repository the project's read of the evals keyed by it gains or loses (DeployRepos.Of: every
+// source repository, whichever project's source reads it, and the project's own events repository;
+// a source added, removed or moved, the switch, a default move under a source that names none),
+// each cut that holds a row of it the project reads, its own or an owner key's, which the cut's
+// union of the project's deploy repositories (`deploy_repo` `*`, unionDeployRepo) folds
+// (sourceMarksOf). A repository fresh names is left out of both, its source key among the owner
+// keys: the commit wrote its every row, a repository's first rule or first runs (syncKept), after it
+// recorded the rules, so its writes folded them into every cut their readers read, the union cuts
+// among them (foldFiguresInTx). A commit that moves nothing a read selects marks nothing.
+//
+// It folds the history of none of the cuts: on the farm at ten times INFRA's rate, Postgres just
+// restarted, the fold of the project's own rows over every day of its delivery evals that the
+// commit of a default move made before took 3.45 s of the 3.9 s from the PUT to the commit, past
+// R14's 2 s, and at INFRA's size the two defaults' cuts hold about 290,000 range rows. Of those
+// cuts the marks name the evals that hold its rows under legionfacts.DefaultRepo, 6 of INFRA's 40,
+// those of the owner keys it gains or loses, and those of the deploy repositories it gains or
+// loses, and every other eval's stored figures of them stand, read as they are meanwhile. Every
+// write of the commit lands together, so a read answers the old selection and figures or the new
+// ones, a first paint of a cut the commit marked from its stored figures either way where the
+// commit folded it, and from the day rows of the evals its mark names where the commit left it
+// owed. The refresher's pass whose page commits the move folds each marked cut again once the work
+// of the pass before its refold is done, its pages, and, in a pass that builds the gap's batch of
+// the walks, that batch and the figures walk's too (refresh): first each first paint the commit
+// left owed, and then the rest of the marked evals, newest end day first, batch after batch, each in
+// a short transaction of its own (refoldStaleCuts). It answers what the commit moved, marked and
+// folded, which the page logs once it commits (movePublished.log).
+func publishDefaults(ctx context.Context, tx pgx.Tx, build string, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, error) {
+	published, marks, err := selectionMoves(ctx, tx, projects, move, before, fresh)
+	if err != nil {
+		return movePublished{}, err
+	}
+	written, err := markStaleCuts(ctx, tx, marks)
+	if err != nil {
+		return movePublished{}, err
+	}
+	if published.paints, err = foldMarkedFirstPaints(ctx, tx, figureScopeReader(ctx, tx, build), written, firstPaintOf); err != nil {
+		return movePublished{}, err
+	}
+	if move != nil {
+		for _, repo := range move.judging {
+			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, $4, null, null)`,
+				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, repo, delivery.DefaultsJudgingRef); err != nil {
+				return movePublished{}, fmt.Errorf("log the project judging the delivery views of %s: %w", repo, err)
+			}
+		}
+	}
+	return published, nil
+}
+
+// selectionMoves is what publishDefaults publishes and finds before it writes a mark: in tx, the
+// default repositories move holds published where move is not nil (publishDefaultRows), with one
+// eval_days change of no eval for each project the commit moves, and the projects the commit moves
+// from before, with the marks of the cuts it moves rows into or out of (noteMovedCuts,
+// staleMarksOf, sourceMarksOf), each cut's eval ids in byte order, not yet written. It answers
+// what the commit moved and marks, how many cuts and evals among them, and the marks, which
+// publishDefaults writes and folds the first paints of, and which a rewrite of one repository's
+// rule that moves its source to another project (rewriteSettings, move nil) writes in one batch
+// with the marks of the rows it rewrote (markMovedCuts).
+func selectionMoves(ctx context.Context, tx pgx.Tx, projects []string, move *defaultsMove, before selectionRead, fresh map[string]bool) (movePublished, map[staleCut][]string, error) {
+	published := movePublished{defaults: move != nil}
+	var was map[string]string
+	if move != nil {
+		var err error
+		if was, err = publishDefaultRows(ctx, tx, move); err != nil {
+			return movePublished{}, nil, err
+		}
+		published.moved = slices.Clone(move.moved)
+	}
+	after, err := readSelection(ctx, tx)
+	if err != nil {
+		return movePublished{}, nil, err
+	}
+	freshKeys := map[string]bool{}
+	for repo := range fresh {
+		freshKeys[sourceKey(repo)] = true
+	}
+	read := func(owner string) bool { return !freshKeys[owner] }
+	for _, pairs := range []map[string]map[string]bool{before.owners, after.owners} {
+		for project := range pairs {
+			if !sameOwners(before.owners[project], after.owners[project], read) {
+				published.moved = append(published.moved, project)
+			}
+		}
+	}
+	slices.Sort(published.moved)
+	published.moved = slices.Compact(published.moved)
+	cuts := map[staleCut]*movedCut{}
+	for _, project := range published.moved {
+		var from, to string
+		if move != nil {
+			if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, null, null, null)`,
+				delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, project); err != nil {
+				return movePublished{}, nil, fmt.Errorf("log the default repository %s publishes: %w", project, err)
+			}
+			from, to = was[project], move.live[project]
+		}
+		noteMovedCuts(cuts, project, from, to, before.owners[project], after.owners[project], read)
+	}
+	marks, err := staleMarksOf(ctx, tx, cuts)
+	if err != nil {
+		return movePublished{}, nil, err
+	}
+	sourced, err := sourceMarksOf(ctx, tx, projects, published.moved, before, after, fresh)
+	if err != nil {
+		return movePublished{}, nil, err
+	}
+	for cut, evals := range sourced {
+		marks[cut] = slices.Compact(slices.Sorted(slices.Values(slices.Concat(marks[cut], evals))))
+	}
+	published.cuts = len(marks)
+	for _, evals := range marks {
+		published.evals += len(evals)
+	}
+	return published, marks, nil
+}
+
+// publishDefaultRows publishes, in tx, the default repositories move holds: every project's
+// published default replaced by the one it stands at, every published row locked first in the byte
+// order of its key (readPublishedDefaults). It answers the defaults published before it.
+func publishDefaultRows(ctx context.Context, tx pgx.Tx, move *defaultsMove) (map[string]string, error) {
+	projects := slices.AppendSeq(make([]string, 0, len(move.live)), maps.Keys(move.live))
+	slices.Sort(projects)
 	repos := make([]string, len(projects))
 	for i, project := range projects {
 		repos[i] = move.live[project]
 	}
+	was, err := readPublishedDefaults(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	// projects is never nil, so a move that clears the last default deletes every published one:
+	// a nil slice is sent as null, `project_key = any(null)` is null, and the delete took none.
 	if _, err := tx.Exec(ctx, `delete from eval_days_defaults where not (project_key = any($1))`, projects); err != nil {
-		return fmt.Errorf("publish the default repositories: %w", err)
+		return nil, fmt.Errorf("publish the default repositories: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_days_defaults (project_key, repo)
@@ -140,26 +360,495 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 		order by given.project_key collate "C"
 		on conflict (project_key) do update set repo = excluded.repo where eval_days_defaults.repo is distinct from excluded.repo
 	`, projects, repos); err != nil {
-		return fmt.Errorf("publish the default repositories: %w", err)
+		return nil, fmt.Errorf("publish the default repositories: %w", err)
 	}
-	for _, project := range move.moved {
-		spans := make(map[string]daySpan, len(deliveryDaySlugs))
-		for _, slug := range deliveryDaySlugs {
-			spans[EvalID(project, slug)] = everyDay
-		}
-		if err := foldFiguresInTx(ctx, tx, build, project, spans); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, null, null, null)`,
-			delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, project); err != nil {
-			return fmt.Errorf("log the default repository %s publishes: %w", project, err)
+	return was, nil
+}
+
+// sameOwners reports whether a project reads the same owner keys of those read names in a as in b,
+// each through the repository or not alike.
+func sameOwners(a, b map[string]bool, read func(owner string) bool) bool {
+	for owner, via := range a {
+		if held, found := b[owner]; read(owner) && (!found || held != via) {
+			return false
 		}
 	}
-	for _, repo := range move.judging {
-		if _, err := tx.Exec(ctx, `select delivery_change_log_pending($1, $2, $3, $4, null, null)`,
-			delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, repo, delivery.DefaultsJudgingRef); err != nil {
-			return fmt.Errorf("log the project judging the delivery views of %s: %w", repo, err)
+	for owner := range b {
+		if _, found := a[owner]; read(owner) && !found {
+			return false
 		}
 	}
-	return nil
+	return true
+}
+
+// movePublished is what a commit that moves what the evals' reads select did (publishDefaults):
+// whether it published the default repositories, the projects it moved, how many cuts it marked
+// stale and how many evals the marks name in all, and what its fold of their first paints did.
+type movePublished struct {
+	defaults    bool
+	moved       []string
+	cuts, evals int
+	paints      markedPaints
+}
+
+// log logs the commit of a move, whose transaction began at began and committed at committed, as a
+// batch of a stale cut's refold logs: beside the counts, how long the first-paint folds took and
+// how long the transaction took. A commit of the sources that moved no read logs nothing.
+func (p movePublished) log(began, committed time.Time) {
+	what := "the deploy sources"
+	switch {
+	case p.defaults:
+		what = "the default repositories"
+	case len(p.moved) == 0 && p.cuts == 0:
+		return
+	}
+	slog.Info("dispatch: the eval day-row refresher published a move of "+what, "projects", len(p.moved), "cuts_marked", p.cuts,
+		"evals", p.evals, "first_paints", p.paints.folded, "first_paint_ms", p.paints.took.Milliseconds(),
+		"transaction_ms", committed.Sub(began).Milliseconds())
+}
+
+// markedPaints is how many first paints foldMarkedFirstPaints folded and how long it took.
+type markedPaints struct {
+	folded int
+	took   time.Duration
+}
+
+// foldMarkedFirstPaints folds, in tx, the first paints of the cuts markStaleCuts marked, in key
+// order (publishDefaults, rewriteSettings). It folds each cut that owes its first paint under
+// scopeOf and whose mark names only computed evals, and records the paint with the mark
+// (foldPaintOf). paintOf selects the end days and day rows to fold: the settings rewrite also
+// folds the day rows back to the paint's reach (paintReached). It reads each project's evals
+// once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those its
+// mark names (entriesNamed).
+//
+// It takes no eval lock: the transaction has locked rows by then, and the eval tables' lock
+// order puts eval locks first. Computed evals need no eval lock under the refresher's lease.
+// Where a standing mark also names a logged eval, explicitly or by naming every eval, the
+// transaction leaves that cut's paint owed. The pass's refold folds it under the logged evals'
+// locks before any other batch; a read folds the marked evals' day rows until then.
+func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), marks map[staleCut]cutMark, paintOf func(time.Time) figureEnds) (markedPaints, error) {
+	began := time.Now()
+	var paints markedPaints
+	cuts := slices.SortedFunc(maps.Keys(marks), compareStaleCuts)
+	read := map[string][]Entry{}
+	for _, cut := range cuts {
+		mark := marks[cut]
+		scope, err := scopeOf(cut.project)
+		if err != nil {
+			return markedPaints{}, err
+		}
+		if scope == nil || !mark.owesFirstPaint(*scope) {
+			continue
+		}
+		entries, done := read[cut.project]
+		if !done {
+			if entries, err = readEntries(ctx, tx, cut.project, owedEvals(cuts, marks, *scope)); err != nil {
+				return markedPaints{}, err
+			}
+			read[cut.project] = entries
+		}
+		entries = entriesNamed(entries, mark.evals)
+		if slices.ContainsFunc(entries, func(entry Entry) bool { return !entry.Definition.Computed() }) {
+			continue
+		}
+		if _, err := foldPaintOf(ctx, tx, *scope, cut, mark, entries, paintOf(scope.through)); err != nil {
+			return markedPaints{}, err
+		}
+		paints.folded++
+	}
+	paints.took = time.Since(began)
+	return paints, nil
+}
+
+// owedEvals is every eval named by the mark (in marks) of each cut of cuts that is of scope's
+// project and owes a first paint under scope (cutMark.owesFirstPaint), nil where one of those marks
+// names every eval: the evals of the project foldMarkedFirstPaints reads for the first paints it
+// folds.
+func owedEvals(cuts []staleCut, marks map[staleCut]cutMark, scope figureScope) []string {
+	evals := []string{}
+	for _, cut := range cuts {
+		mark, held := marks[cut]
+		if cut.project != scope.project || !held || !mark.owesFirstPaint(scope) {
+			continue
+		}
+		if mark.evals == nil {
+			return nil
+		}
+		evals = append(evals, mark.evals...)
+	}
+	return evals
+}
+
+// entriesNamed is each entry of entries whose eval id ids names, in their order, or entries where
+// ids is nil, which names every eval.
+func entriesNamed(entries []Entry, ids []string) []Entry {
+	if ids == nil {
+		return entries
+	}
+	var named []Entry
+	for _, entry := range entries {
+		if slices.Contains(ids, entry.Definition.EvalID) {
+			named = append(named, entry)
+		}
+	}
+	return named
+}
+
+// movedCut is what a move of what the evals' reads select moves of one cut of a project's stored
+// figures (noteMovedCuts): the project's own rows stored under legionfacts.DefaultRepo, where its
+// published default moves to or from the cut's repository (ownDefault), and the rows of each owner
+// key whose reading by the project it moves (owners).
+type movedCut struct {
+	ownDefault bool
+	owners     map[string]bool
+}
+
+// noteMovedCuts records in cuts the cuts of project's stored figures a move of what the evals'
+// reads select moves (publishDefaults), and what it moves of each, its published default moving
+// from was to now ("" for none) and the owner keys it reads, with whether through the repository,
+// from before to after, of those read names: the cuts of was and of now where they differ, which
+// hold its own rows stored under legionfacts.DefaultRepo (cutOf), and, for each owner key it gains,
+// loses or reads otherwise, the cut of the key's repository, which folds the key's rows of that
+// repository (an owner key's rows are of its own repository, OwnerKey), and the project's own cut
+// (""), which folds the key's all-repositories rows.
+func noteMovedCuts(cuts map[staleCut]*movedCut, project, was, now string, before, after map[string]bool, read func(owner string) bool) {
+	cut := func(repo string) *movedCut {
+		key := staleCut{project: project, repo: repo}
+		if cuts[key] == nil {
+			cuts[key] = &movedCut{owners: map[string]bool{}}
+		}
+		return cuts[key]
+	}
+	if was != now {
+		for _, repo := range []string{was, now} {
+			if repo != "" {
+				cut(repo).ownDefault = true
+			}
+		}
+	}
+	for _, pairs := range []map[string]bool{before, after} {
+		for owner := range pairs {
+			if !read(owner) {
+				continue
+			}
+			viaBefore, readBefore := before[owner]
+			viaAfter, readAfter := after[owner]
+			if readBefore && readAfter && viaBefore == viaAfter {
+				continue
+			}
+			if repo, _, _, ok := parseOwner(owner); ok {
+				cut(repo).owners[owner] = true
+				cut("").owners[owner] = true
+			}
+		}
+	}
+}
+
+// staleMarksOf reads in tx, the commit of the move, the evals whose rows the move moves in each
+// of cuts (noteMovedCuts), from the rows stored as it commits, so an eval whatever its name or
+// kind is named once it holds such a row, a new eval among them: of a cut the project's published
+// default moves to or from, each of the project's evals that holds a listed row under
+// legionfacts.DefaultRepo (DefaultRowEvalsQuery); and of a cut whose owner keys it moves, each of
+// the project's evals of a slug a listed row of one of those keys holds (ownerEvalsQuery, asReader).
+// It answers each cut's ids in byte order, and leaves out a cut that holds no row the move moved,
+// whose stored figures stand. The reads are bounded by eval_days' indexes, inside R14's 2 s: the
+// first one range of eval_days_window for each project whose default moves, every listed row it
+// holds under legionfacts.DefaultRepo (at INFRA's size, 21,993 rows of 6 of its 40 evals); the
+// second a walk of each owner key's eval ids through eval_days_stamps, one probe for each eval of
+// it and one past the last, in statements of at most statementBytes.
+func staleMarksOf(ctx context.Context, tx pgx.Tx, cuts map[staleCut]*movedCut) (map[staleCut][]string, error) {
+	var projects, owners []string
+	for cut, moved := range cuts {
+		if moved.ownDefault && !slices.Contains(projects, cut.project) {
+			projects = append(projects, cut.project)
+		}
+		for owner := range moved.owners {
+			if !slices.Contains(owners, owner) {
+				owners = append(owners, owner)
+			}
+		}
+	}
+	defaultRows := map[string][]string{}
+	if len(projects) > 0 {
+		rows, err := tx.Query(ctx, DefaultRowEvalsQuery, projects)
+		if err != nil {
+			return nil, fmt.Errorf("read the evals of %v that hold rows under %s: %w", projects, legionfacts.DefaultRepo, err)
+		}
+		var project, evalID string
+		if _, err := pgx.ForEachRow(rows, []any{&project, &evalID}, func() error {
+			defaultRows[project] = append(defaultRows[project], evalID)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the evals of %v that hold rows under %s: %w", projects, legionfacts.DefaultRepo, err)
+		}
+	}
+	ownerRows := map[string][]string{}
+	slices.Sort(owners)
+	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
+		rows, err := tx.Query(ctx, ownerEvalsQuery, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the evals of %d owner keys a move of the default repositories moves: %w", len(chunk), err)
+		}
+		var owner, evalID string
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &evalID}, func() error {
+			ownerRows[owner] = append(ownerRows[owner], evalID)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the evals of %d owner keys a move of the default repositories moves: %w", len(chunk), err)
+		}
+	}
+	marks := map[staleCut][]string{}
+	for cut, moved := range cuts {
+		evals := map[string]bool{}
+		if moved.ownDefault {
+			for _, evalID := range defaultRows[cut.project] {
+				evals[evalID] = true
+			}
+		}
+		for owner := range moved.owners {
+			for _, evalID := range ownerRows[owner] {
+				evals[asReader(owner, cut.project, evalID)] = true
+			}
+		}
+		if len(evals) > 0 {
+			marks[cut] = slices.Sorted(maps.Keys(evals))
+		}
+	}
+	return marks, nil
+}
+
+// DefaultRowEvalsQuery reads the evals of each project $1 names that hold a listed row stored
+// under legionfacts.DefaultRepo, each row a project and one of its evals: the evals a move of the
+// project's published default names in the cuts of the two defaults (staleMarksOf), and the bench's
+// k16 fallback marks its default's cut with, as a move of that default marks it. One range of
+// eval_days_window (project_key, repo, day) for each project, bounded by its key and that
+// repository, every row of which it reads.
+const DefaultRowEvalsQuery = `
+	select distinct d.project_key, d.eval_id from eval_days d
+	where d.project_key = any($1::text[]) and d.repo = '` + legionfacts.DefaultRepo + `' and d.listed
+`
+
+// ownerEvalsQuery reads the evals of each owner key $1 names that hold a listed row (staleMarksOf):
+// for each key, a walk of its eval ids through eval_days_stamps (project_key, eval_id, writer, day),
+// each probe the first listed row of the key after the eval before, so one probe for each eval of
+// the key and one past its last, rather than every row of it.
+const ownerEvalsQuery = `
+	select o.owner, held.eval_id
+	from unnest($1::text[]) as o(owner)
+	cross join lateral (
+		with recursive held(eval_id) as (
+			(select e.eval_id from eval_days e where e.project_key = o.owner and e.listed order by e.eval_id limit 1)
+			union all
+			select (select e.eval_id from eval_days e where e.project_key = o.owner and e.listed and e.eval_id > held.eval_id order by e.eval_id limit 1)
+			from held where held.eval_id is not null
+		)
+		select eval_id from held where eval_id is not null
+	) held
+`
+
+// sourceMarksOf reads in tx, the commit of a move of what the evals' reads select
+// (publishDefaults), the marks its move of the deploy repositories names beside those of its owner
+// keys (staleMarksOf), from the rows stored as it commits: for each of projects whose read of the
+// evals keyed by the deploy repository gains or loses a deploy repository from before to after
+// (DeployRepos.Of, a repository fresh names aside: movedDeployRepos), each cut that holds a row of
+// such a repository of one of those evals among the rows the project reads under either (its own,
+// and each owner key's it reads before or after), naming the project's eval of each such row's slug
+// (asReader), whose union cut (`deploy_repo` `*`) folds that row in one selection and not in the
+// other; and, of each project the commit moves (moved) or that this names a cut of, its failure
+// evals in each cut their rows stand in (FailureDaySlugs: the project's own rows, which the
+// failure writes rewrite under the published selection once the commit lands, applyFailures). It
+// answers each cut's ids in byte order, and no cut that holds no such row, whose stored figures
+// stand. An owner key's rows of a deploy repository are of the key's repository alone: a
+// repository's deploys ship its own pull requests alone (delivery.ContainingRun) and its deploy and
+// CI runs are its own (deliveryRead.linked), and a posted deploy counts in its project's own rows
+// alone; so a key is read only for the deploy repository of its own repository, and a project's
+// own key for every one its read moves. The read is bounded by eval_days' primary key
+// (cutRowsQuery): for each key, eval and deploy repository, one probe for each series and
+// repository its rows hold and one past the last, in statements of at most statementBytes.
+func sourceMarksOf(ctx context.Context, tx pgx.Tx, projects, moved []string, before, after selectionRead, fresh map[string]bool) (map[staleCut][]string, error) {
+	type probe struct{ key, evalID, deployRepo string }
+	var probes []probe
+	probed := map[probe]bool{}
+	add := func(one probe) {
+		if !probed[one] {
+			probed[one] = true
+			probes = append(probes, one)
+		}
+	}
+	readers := map[probe][]string{}
+	failing := slices.Clone(moved)
+	for _, project := range projects {
+		repos := movedDeployRepos(before.repos.Of(project), after.repos.Of(project), fresh)
+		if len(repos) == 0 {
+			continue
+		}
+		failing = append(failing, project)
+		keys := map[string]bool{project: true}
+		for _, owners := range []map[string]bool{before.owners[project], after.owners[project]} {
+			for owner := range owners {
+				keys[owner] = true
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(keys)) {
+			for _, repo := range repos {
+				if ownerRepo, _, _, ok := parseOwner(key); ok && !strings.EqualFold(ownerRepo, repo) {
+					continue
+				}
+				for _, slug := range deployRepoSlugs {
+					one := probe{key: key, evalID: EvalID(key, slug), deployRepo: repo}
+					add(one)
+					readers[one] = append(readers[one], project)
+				}
+			}
+		}
+	}
+	slices.Sort(failing)
+	for _, project := range slices.Compact(failing) {
+		for _, slug := range FailureDaySlugs {
+			add(probe{key: project, evalID: EvalID(project, slug)})
+		}
+	}
+	named := map[staleCut]map[string]bool{}
+	note := func(cut staleCut, evalID string) {
+		if named[cut] == nil {
+			named[cut] = map[string]bool{}
+		}
+		named[cut][evalID] = true
+	}
+	touched := map[string]bool{}
+	for _, project := range moved {
+		touched[project] = true
+	}
+	var failures []staleCut
+	failureEvals := map[staleCut][]string{}
+	size := func(one *probe) int { return 3*4 + len(one.key) + len(one.evalID) + len(one.deployRepo) }
+	for chunk := range statementChunks(probes, paramBytes(3), size) {
+		keys, evalIDs, repos := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for index, one := range chunk {
+			keys[index], evalIDs[index], repos[index] = one.key, one.evalID, one.deployRepo
+		}
+		rows, err := tx.Query(ctx, cutRowsQuery, keys, evalIDs, repos)
+		if err != nil {
+			return nil, fmt.Errorf("read the cuts of %d evals a move of the deploy sources moves rows of: %w", len(chunk), err)
+		}
+		var one probe
+		var repo string
+		if _, err := pgx.ForEachRow(rows, []any{&one.key, &one.evalID, &one.deployRepo, &repo}, func() error {
+			switch {
+			case repo == legionfacts.DefaultRepo:
+				// No row of an eval that reads the deploy repository, and no failure row, stands
+				// under it: it holds Legion rows alone.
+			case one.deployRepo == "":
+				cut := staleCut{project: one.key, repo: repo}
+				failures = append(failures, cut)
+				failureEvals[cut] = append(failureEvals[cut], one.evalID)
+			default:
+				for _, project := range readers[one] {
+					note(staleCut{project: project, repo: repo}, asReader(one.key, project, one.evalID))
+					touched[project] = true
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the cuts of %d evals a move of the deploy sources moves rows of: %w", len(chunk), err)
+		}
+	}
+	for _, cut := range failures {
+		if touched[cut.project] {
+			for _, evalID := range failureEvals[cut] {
+				note(cut, evalID)
+			}
+		}
+	}
+	marks := make(map[staleCut][]string, len(named))
+	for cut, evals := range named {
+		marks[cut] = slices.Sorted(maps.Keys(evals))
+	}
+	return marks, nil
+}
+
+// movedDeployRepos is the deploy repositories one of before and after holds and the other does not,
+// in byte order, less those fresh names.
+func movedDeployRepos(before, after []string, fresh map[string]bool) []string {
+	var moved []string
+	for _, repo := range slices.Concat(before, after) {
+		if slices.Contains(before, repo) != slices.Contains(after, repo) && !fresh[repo] {
+			moved = append(moved, repo)
+		}
+	}
+	slices.Sort(moved)
+	return slices.Compact(moved)
+}
+
+// cutRowsQuery reads, of each key, eval and deploy repository $1, $2 and $3 name pairwise, the
+// repository of each cut that holds a row of the key's eval under the deploy repository, the
+// computation's rows of it (eval_days.repo: ” for its all-repositories rows, and a repository's
+// name for that repository's rows): for each, a walk of eval_days' primary key (project_key,
+// eval_id, writer, deploy_repo, series, repo, day) from one series and repository to the next, each
+// probe the first row after the pair before, so one probe for each series and repository of the
+// key's eval under the deploy repository and one past the last, rather than every day of them. It
+// reads rows listed or not: the unlisted job series of pr-ci stand beside its listed series, each
+// in the repositories they do, so the cuts are the same.
+const cutRowsQuery = `
+	select given.key, given.eval_id, given.deploy_repo, cut.repo
+	from unnest($1::text[], $2::text[], $3::text[]) as given(key, eval_id, deploy_repo)
+	cross join lateral (
+		with recursive pairs(series, repo) as (
+			(select d.series, d.repo from eval_days d
+			where d.project_key = given.key and d.eval_id = given.eval_id and d.writer = '` + writerComputation + `'
+				and d.deploy_repo = given.deploy_repo
+			order by d.series, d.repo limit 1)
+			union all
+			select next.series, next.repo from pairs cross join lateral (
+				select d.series, d.repo from eval_days d
+				where d.project_key = given.key and d.eval_id = given.eval_id and d.writer = '` + writerComputation + `'
+					and d.deploy_repo = given.deploy_repo and (d.series, d.repo) > (pairs.series, pairs.repo)
+				order by d.series, d.repo limit 1
+			) next
+		)
+		select distinct pairs.repo from pairs
+	) cut
+`
+
+// readPublishedDefaults reads in q every project's published default repository, by project: a
+// project that publishes none is in none. It reads them for update, in the byte order of their
+// keys, so in a transaction it holds the lock of every published row from then on, before the
+// transaction writes one: publishDefaults' place for them in the eval tables' lock order.
+func readPublishedDefaults(ctx context.Context, q delivery.Querier) (map[string]string, error) {
+	rows, err := q.Query(ctx, `select project_key, repo from eval_days_defaults order by project_key collate "C" for update`)
+	if err != nil {
+		return nil, fmt.Errorf("read the published default repositories: %w", err)
+	}
+	published := map[string]string{}
+	var project, repo string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &repo}, func() error {
+		published[project] = repo
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the published default repositories: %w", err)
+	}
+	return published, nil
+}
+
+// readOwnerPairs reads in q the owner keys each project reads under the published defaults, with
+// whether it reads each through the repository (eval_project_owners, less each project's own key),
+// by project: a project that reads none is in none.
+func readOwnerPairs(ctx context.Context, q delivery.Querier) (map[string]map[string]bool, error) {
+	rows, err := q.Query(ctx, `select project_key, owner, via from eval_project_owners where owner <> project_key`)
+	if err != nil {
+		return nil, fmt.Errorf("read the owner keys each project reads: %w", err)
+	}
+	pairs := map[string]map[string]bool{}
+	var project, owner string
+	var via bool
+	if _, err := pgx.ForEachRow(rows, []any{&project, &owner, &via}, func() error {
+		if pairs[project] == nil {
+			pairs[project] = map[string]bool{}
+		}
+		pairs[project][owner] = via
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the owner keys each project reads: %w", err)
+	}
+	return pairs, nil
 }

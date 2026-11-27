@@ -3,7 +3,6 @@ package evals
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -44,17 +45,17 @@ import (
 //     that is the first to complete without it, which ships the pull requests merged before the
 //     repository's history began when the run does not (shippedNeighbours: no item records the
 //     deploy of such a pull request).
-//   - settings: a change of a project's delivery settings rewrites, in one transaction, the days
-//     of the delivery and CI evals it moves of each repository whose rule it moved, and of no
-//     other repository, from their first input day on, and begins no walk (settings_rewrite.go:
-//     settingsMoves names what each field of a rule moves and movedDeliveryDays the days it can
-//     move, and the pass finds the change by comparing each repository's rule it reads with the
-//     one the rows stand built under, so one that moves no eval rewrites nothing); a source that
-//     reads another repository builds that repository's days and deletes the old one's in the
-//     page's commit (syncKept), as a move of a project's default repository does for a source
-//     naming none, which the pass reads with the settings. The project's failure rows are written
-//     whole, and every failure row of each project whose failure measures are on where the kept
-//     repositories moved (applyFailures, failure_days.go).
+//   - settings: a change of a project's delivery settings rewrites the days of the delivery and CI
+//     evals it moves of each repository whose rule it moved, and of no other repository, from
+//     their first input day on, staged aside in short transactions and published in one with the
+//     rule, and begins no walk (settings_rewrite.go: settingsMoves names what each field of a rule
+//     moves and movedDeliveryDays the days it can move, and the pass finds the change by comparing
+//     each repository's rule it reads with the one the rows stand built under, so one that moves no
+//     eval rewrites nothing). A source move publishes a new selection (syncSettings); the
+//     repository gains rows where it had no rule before (syncKept), staged aside and published by
+//     the page's commit that records its first rule (stageKept). A settings save rewrites that
+//     project's failure rows. Changes to published defaults or source-key readers rewrite the
+//     affected measured projects' failure rows after publication (applyFailures, failure_days.go).
 //   - production_events: a posted deploy of a project whose events repository is read, its
 //     finished day before the change and after it (t_old and t_new), the merge days of the pull
 //     requests it names now and the days eval_day_members holds it and the pull requests it
@@ -72,9 +73,8 @@ import (
 //     change, an issue_filings change for the issue's filing, which the Legion days cut by that
 //     repository on the filing's day (migration 20261117100002).
 //   - issue_filings: the filing's day before and after, in the filing's project.
-//   - eval_readings: no day, since the readings write keeps a logged eval's day rows itself; the
-//     eval's zero rows are filled up to today, which a reading measured before its eval's first
-//     day leaves a gap in.
+//   - eval_readings: no day, since the readings write keeps a logged eval's day rows itself, the
+//     zero rows its readings leave owed among them (writeLoggedZeros).
 //   - session_group, eval_versions and eval_days: no day.
 //
 // The event log adds two more: an issue event that can move the count of open P0 issues with no
@@ -106,9 +106,10 @@ import (
 //     day, which the walk or a page's span built, or the first it builds itself
 //     (refresh.firstOf).
 //
-// A release, a lost change cursor, a database whose rows' settings are not recorded, and a
-// project first seen begin no walk: they rebuild aside and flip what moved in one commit
-// (rebuild.go).
+// A release, a lost change cursor and a database whose rows' settings are not recorded begin no
+// walk: they rebuild aside and flip what moved in one commit (rebuild.go). A family no rows are
+// served of, a database's or a project's first seen, has nothing to keep serving and is walked in
+// the open (walkDays).
 
 // refresh is one pass's state: the build and the day it writes as, the projects and the delivery
 // settings it read, the first input day of each project's series it has read (of each deploy
@@ -122,8 +123,15 @@ type refresh struct {
 	build      string
 	now, today time.Time
 	clock      func() time.Time
-	batch      int
-	// projects is every project's key, in key order, and known holds them; owners is the delivery
+	// batch is how many days of each walk the pass builds, how many end days a batch of a project's
+	// figures walk folds at most, and how many a batch of a stale cut's refold does; refoldBudget
+	// is about how long each such batch takes after the first of the project's figures walk or of
+	// the cut's refold in the pass, none where no time bounds it (refresherSchedule,
+	// refoldBatchDays).
+	batch        int
+	refoldBudget time.Duration
+	// projects is every project's key, in key order, and known holds them; absent holds the keys
+	// the page has looked for among the projects and not found (knows). owners is the delivery
 	// family's owners, every project and every owner key (owners.go) the store holds rows of or
 	// the pass's reads build rows of (noteOwners), whose delivery and CI days the walks, pages,
 	// spans, settings rewrites and rebuilds write alike. An owner key is no project: the Legion
@@ -131,11 +139,12 @@ type refresh struct {
 	projects []string
 	owners   []string
 	known    map[string]bool
+	absent   map[string]bool
 	// rules is the rule of each deploy source repository of a delivery-on project
 	// (delivery.DeployRules), and of each such project's events repository where it holds an
-	// events source (eventsRule), by ruleKey: empty where no project has delivery on, which leaves
-	// the delivery and CI rows unwritten, since no production rule judges a run and no deploy card
-	// follows a job.
+	// events source (eventsRule), by delivery.RuleKey: empty where no project has delivery on,
+	// which leaves the delivery and CI rows unwritten, since no production rule judges a run and no
+	// deploy card follows a job.
 	rules map[string]delivery.DeliverySettings
 	// failures is each project whose failure measures are on, by key (failureProjectOf), read
 	// with rules; failuresWritten the loop's UTC day on which a whole write of this process last
@@ -144,10 +153,11 @@ type refresh struct {
 	failures        map[string]failureProject
 	failuresWritten map[string]time.Time
 	// builtUnder is the rule each repository's stored delivery and CI rows stand built under
-	// (eval_days_rules, by ruleKey), read by the pass's first page (builtRead) and moved by each of
-	// its pages that brings the rows to the rules it reads (syncSettings, syncKept); empty where
-	// none is recorded. keptUnder is the repositories the rows stand built for (those of builtUnder
-	// with a start), read with it and moved by each page that reads another set (syncKept).
+	// (eval_days_rules, by delivery.RuleKey), read by the pass's first page (builtRead) and moved
+	// by each of its pages that brings the rows to the rules it reads (syncSettings, syncKept);
+	// empty where none is recorded. keptUnder is the repositories the rows stand built for (those
+	// of builtUnder with a start), read with it and moved by each page that reads another set
+	// (syncKept).
 	builtUnder map[string]builtRule
 	keptUnder  []keptRepo
 	builtRead  bool
@@ -173,11 +183,8 @@ type refresh struct {
 	unowned     map[string]bool
 	deployRepos []keptRepo
 	// serving is the page's one read of the serving records (servingNext): what tells a day the
-	// stored rows are whole through from one they are not. settingsApplied is set once the page has
-	// logged that the day rows stand at the delivery settings (markSettingsApplied), which a
-	// rewrite of them does in its own transaction.
-	serving         map[walkKey]servingState
-	settingsApplied bool
+	// stored rows are whole through from one they are not.
+	serving map[walkKey]servingState
 	// release is the loop's watch of the release rule (releaseWatch), which load takes from the
 	// loop's seeding; rebuilding is the rebuild that is building, as the pass's walks read it
 	// (rebuildDays); and staging, while a rebuild's walk builds a batch, the days it built, which
@@ -186,8 +193,11 @@ type refresh struct {
 	rebuilding *rebuildState
 	staging    *stageBatch
 	// walkApplies is the deploy runs of each kept repository the delivery walk's batch read once
-	// from walkAppliesFrom on (deliveryWalkDay), for the pass's walk alone.
+	// from walkAppliesFrom on (deliveryWalkDay), for the pass's walk alone, and walkPosted the
+	// posted deploys of each kept events repository the batch read with them, that finished from
+	// walkAppliesFrom on.
 	walkApplies     map[string]*delivery.ApplyRows
+	walkPosted      map[string]postedRecord
 	walkAppliesFrom time.Time
 	// walkHeld is each project's day of each walk's batch that holds rows of the walk's family,
 	// which the walk writes whether or not it builds a row of it (heldDays).
@@ -264,8 +274,8 @@ func (r *refresh) load(ctx context.Context, seeds *seeding) error {
 
 // loadSettings reads every project's delivery settings (delivery.ListProjectSettings) as the rule
 // of each deploy source repository of a delivery-on project (delivery.DeployRules) and of each such
-// project's events repository where it holds an events source (eventsRule), by ruleKey, and as each
-// project whose failure measures are on (failureProjectOf).
+// project's events repository where it holds an events source (eventsRule), by delivery.RuleKey,
+// and as each project whose failure measures are on (failureProjectOf).
 func (r *refresh) loadSettings(ctx context.Context) error {
 	projects, err := delivery.ListProjectSettings(ctx, r.store.database.Pool)
 	if err != nil {
@@ -273,15 +283,13 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 	}
 	r.rules = map[string]delivery.DeliverySettings{}
 	for _, rule := range delivery.DeployRules(projects) {
-		r.rules[ruleKey(rule.DeployRepo)] = rule
+		r.rules[delivery.RuleKey(rule.DeployRepo)] = rule
 	}
 	r.failures = map[string]failureProject{}
 	for _, project := range projects {
-		if project.Delivery && slices.ContainsFunc(project.Sources, func(source delivery.DeploySource) bool {
-			return source.Kind == delivery.SourceKindEvents
-		}) {
+		if project.Delivery && holdsEventsSource(project) {
 			rule := eventsRule(project.Project)
-			r.rules[ruleKey(rule.DeployRepo)] = rule
+			r.rules[delivery.RuleKey(rule.DeployRepo)] = rule
 		}
 		if failures, on := failureProjectOf(project); on {
 			r.failures[project.Project] = failures
@@ -299,20 +307,20 @@ func (r *refresh) delivers() bool {
 // ruleOf is the rule the pass reads for repo (refresh.rules), its DeployRepo repo as its rows are
 // keyed, false where no source reads it.
 func (r *refresh) ruleOf(repo string) (delivery.DeliverySettings, bool) {
-	rule, held := r.rules[ruleKey(repo)]
+	rule, held := r.rules[delivery.RuleKey(repo)]
 	rule.DeployRepo = repo
 	return rule, held
 }
 
 // pageWork is what one page of the feeds names: the pull requests and runs whose rows changed, by
 // row key; the merge times its changes moved a pull request from and the earliest start they name
-// of a deploy run, by repository; the posted deploys whose rows changed, by project; the Legion
-// days the facts and filing changes name, by project; the issues whose repository or parent moved;
-// the projects whose count of unowned P0 issues may have moved; the logged evals whose readings
-// changed, by project; the walks to begin again; the rebuild to begin; whether a change of the
-// delivery settings is among its changes; whether the page records the rules the delivery and CI
-// rows stand built under with its cursors; and the repositories they stand built for, with those
-// they stood built for before.
+// of a deploy run, by repository; the rows of each project's record of deploys and failures whose
+// changes it names, by project; the Legion days the facts and filing changes name, by project; the
+// issues whose repository or parent moved; the projects whose count of unowned P0 issues may have
+// moved; the walks to begin again; the rebuild to begin; whether a change of the delivery settings
+// is among its changes; whether the page records the rules the delivery and CI rows stand built
+// under with its cursors, and whether that record moves the repositories every evals view chooses
+// among; and the repositories they stand built for, with those they stood built for before.
 type pageWork struct {
 	prs  map[string]pullRequestRef
 	runs map[string]runRef
@@ -324,34 +332,44 @@ type pageWork struct {
 	// (shippedNeighbours).
 	left map[string][]time.Time
 	ran  map[string]time.Time
-	// posted is, for each project, the ids of the rows of its record (production_events) the
-	// page's changes name, each with the UTC midnights of the time it counts on before and after
-	// the change (a deploy's finished_at, a failure's deploy's, a restore's time): a posted
-	// deploy's days (applyPosted), and the failure measures' days (applyFailures).
-	posted     map[string]map[string][]time.Time
+	// prodEvents is, for each project, the ids of the rows of its record (production_events) the
+	// page's changes name, posted deploys, GitHub deploys and failures alike, each with the UTC
+	// midnights of the time it counts on before and after the change (a deploy's finished_at, a
+	// failure's deploy's, a restore's time): a posted deploy's days (applyPosted), and the failure
+	// measures' days (applyFailures).
+	prodEvents map[string]map[string][]time.Time
 	legion     map[string]map[time.Time]bool
 	reparented map[string]bool
 	unowned    map[string]bool
-	logged     map[string]map[string]bool
 	// restart names the families whose walks begin again: walkDelivery and walkLegion (every
 	// project's) and walkLogged (every project's). rebuild is the reason of the rebuild of every
 	// served family the page's commit begins (replaceRebuild): a database whose cursors are gone, a
 	// lost change cursor, or rules the rows stand built under that are not recorded; the empty
 	// string for none. Where it is set, a walk of a served family is the rebuild's and does not
 	// begin again (commitPage).
-	restart  map[string]bool
-	rebuild  string
+	restart map[string]bool
+	rebuild string
+	// settings is set where one of the page's changes is of the delivery settings: the page reads
+	// the settings again and brings the rows to them (syncSettings).
 	settings bool
-	// settingsRow is set where one of the page's changes is of the delivery settings: the page's
-	// commit then says that the day rows stand at the settings (markSettingsApplied), which is what
-	// an evals view is recomputed for.
-	settingsRow bool
 	// settingsOf is the projects whose delivery settings the page's changes name (a settings
 	// change's repo), whose failure rows the page writes whole (applyFailures).
 	settingsOf map[string]bool
+	// failureFirstDayOf is the projects for which a settings change moved the effective first
+	// measured day, which the Evals page reads even if the project has no failure day rows.
+	failureFirstDayOf map[string]bool
+	// failureSelection names projects whose source-key readers or published defaults the page
+	// moves. Their failure rows are written against the new selection after it commits.
+	failureSelection []string
 	// record is set where commitPage records refresh.builtUnder in eval_days_rules with the cursors
-	// and the rebuild the page begins (syncSettings, syncKept).
-	record bool
+	// and the rebuild the page begins (syncSettings, syncKept). settingsApplied is set where that
+	// record moves the repositories a read of the evals chooses among (DeployReposIn: a source
+	// repository it gains or loses, or the project whose source reads one, which reads its source
+	// key), or none was recorded and the page read a change of the
+	// settings row: the commit then says that the day rows stand at the settings
+	// (markSettingsApplied), which every evals view is recomputed for, and otherwise says nothing,
+	// since no evals view reads what it moves.
+	record, settingsApplied bool
 	// kept is the repositories kept now (keptRepos), nil where they are the ones recorded, and
 	// keptWas those the rows stood built for until then (syncKept): the page builds the days of each
 	// repository that differs between the two in its commit (refresh.writeNamed).
@@ -375,8 +393,9 @@ type runRef struct {
 func newPageWork() *pageWork {
 	return &pageWork{
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
-		posted: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
-		unowned: map[string]bool{}, logged: map[string]map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
+		prodEvents: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
+		unowned: map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
+		failureFirstDayOf: map[string]bool{},
 	}
 }
 
@@ -415,23 +434,26 @@ func (w *pageWork) addChange(change delivery.Change) {
 	case delivery.ChangeKindSettings:
 		// The page reads the settings again and rewrites what they moved (syncSettings), and the
 		// project's failure rows whole (applyFailures).
-		w.settings, w.settingsRow = true, true
+		w.settings = true
 		w.settingsOf[change.Repo] = true
+		if change.Ref == failureFirstDaySettingsRef {
+			w.failureFirstDayOf[change.Repo] = true
+		}
 	case delivery.ChangeKindProductionEvents:
 		// A row of a project's record (repo the project, ref the row's id), with the time it
 		// counts on before and after: a posted deploy's days are rewritten in its project
 		// (applyPosted), and those days of every project whose failure measures are on
 		// (applyFailures).
-		if w.posted[change.Repo] == nil {
-			w.posted[change.Repo] = map[string][]time.Time{}
+		if w.prodEvents[change.Repo] == nil {
+			w.prodEvents[change.Repo] = map[string][]time.Time{}
 		}
-		days := w.posted[change.Repo][change.Ref]
+		days := w.prodEvents[change.Repo][change.Ref]
 		for _, at := range []*time.Time{change.TOld, change.TNew} {
 			if at != nil {
 				days = append(days, measures.Midnight(*at))
 			}
 		}
-		w.posted[change.Repo][change.Ref] = days
+		w.prodEvents[change.Repo][change.Ref] = days
 	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
 		// Each names its Legion days itself, in its project: a facts change the issue's close day
 		// before and after it, a filing change the filing's day before and after it, nil where
@@ -444,11 +466,6 @@ func (w *pageWork) addChange(change delivery.Change) {
 				w.legion[change.Repo][measures.Midnight(*at)] = true
 			}
 		}
-	case delivery.ChangeKindEvalReadings:
-		if w.logged[change.Repo] == nil {
-			w.logged[change.Repo] = map[string]bool{}
-		}
-		w.logged[change.Repo][change.Ref] = true
 	}
 }
 
@@ -482,8 +499,9 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // it, brings the delivery and CI rows to the delivery settings it reads (syncSettings), writes the
 // days the page names, and moves the cursors in a transaction of its own, which also records the
 // walks the page begins again and the rebuild it begins, and, where the page's days move what days
-// it does not name hold, writes them and those days (apply, commitPage). It then writes each day a
-// write left owed (writeOwed). It answers whether a feed holds more rows.
+// it does not name hold, writes them and those days (apply, commitPage). When the page publishes
+// defaults or source rules, the failure rows follow that commit, under the published selection.
+// It then writes each day a write left owed (writeOwed). It answers whether a feed holds more rows.
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and a rebuild of every family begins (rebuild.go), which builds every day the feeds' history
@@ -502,6 +520,8 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // the pass's moment (now), whatever the page's reading.
 func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error) {
 	r.beginPage()
+	parts := &r.report.parts
+	parts.pages++
 	checked := r.clock()
 	cursors, committed, err := r.store.readRefresherCursors(ctx)
 	if err != nil {
@@ -518,6 +538,7 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		head.ReadAt = checked
 		moved = feedCursors{changes: head, events: safe}
 		work.restartAll(rebuildFirst)
+		parts.mark(partChanges)
 	} else {
 		after := cursors.changes
 		lost, err := delivery.CursorLost(ctx, r.store.database.Pool, after, checked)
@@ -540,7 +561,9 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 				work.addChange(change)
 			}
 			full = len(changes) == limit
+			parts.changes += len(changes)
 		}
+		parts.mark(partChanges)
 		events, err := r.store.readRefresherEvents(ctx, cursors.events, safe, limit)
 		if err != nil {
 			return false, err
@@ -548,6 +571,7 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		moved.events = events.position
 		full = full || events.full
 		work.addEvents(events)
+		parts.mark(partEvents)
 	}
 	if work.settings {
 		// The settings moved: the first days this pass read before were read under the old ones,
@@ -562,33 +586,54 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	if err := r.syncSettings(ctx, work); err != nil {
 		return false, err
 	}
+	parts.mark(partSettings)
 	if err := r.syncKept(ctx, work); err != nil {
 		return false, err
 	}
+	parts.mark(partKept)
 	if err := r.syncDefaults(ctx, work); err != nil {
 		return false, err
 	}
+	parts.mark(partDefaults)
 	rebuilds, err := r.apply(ctx, work)
 	if err != nil {
 		return false, err
 	}
+	// Ordinarily the failure writes precede the cursors, so a failed write leaves its input
+	// changes to be read again. A page publishing a selection must use it after the commit.
+	afterPublish := work.defaults != nil || work.record
+	if !afterPublish {
+		if err := r.applyFailures(ctx, work); err != nil {
+			return false, err
+		}
+	}
+	parts.mark(partWork)
 	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work, rebuilds); err != nil {
 		return false, err
+	}
+	parts.mark(partCommit)
+	if afterPublish {
+		if err := r.applyFailures(ctx, work); err != nil {
+			// The cursors have moved. Leave the failure walk owing a whole write on retry.
+			clear(r.failuresWritten)
+			return false, err
+		}
+		r.store.drainChanges(ctx)
 	}
 	if err := r.writeOwed(ctx); err != nil {
 		return false, err
 	}
+	parts.mark(partOwed)
 	return full, nil
 }
 
-// beginPage starts a page: its delivery reads, the unowned-p0 rows it wrote, its reads of the
-// repositories whose rows are kept per deploy repository and of the serving records, and whether
-// it has said that the rows stand at the settings begin empty (refresh's rule on why they hold for
-// one page).
+// beginPage starts a page: its delivery reads, the unowned-p0 rows it wrote, and its reads of the
+// repositories whose rows are kept per deploy repository and of the serving records begin empty
+// (refresh's rule on why they hold for one page).
 func (r *refresh) beginPage() {
 	r.reads, r.done, r.unowned = map[time.Time]deliveryRead{}, map[builtDay]bool{}, map[string]bool{}
 	r.deployRepos = nil
-	r.serving, r.settingsApplied = nil, false
+	r.serving = nil
 }
 
 // walkOf is the walk that builds project's days of family: the one delivery walk of every
@@ -601,49 +646,52 @@ func walkOf(family, project string) walkKey {
 }
 
 // apply writes every day w names, each family's whole days by writeNamed's rule: where the days of
-// a family move no day they do not name, each in a transaction of its own, and otherwise in the
-// page's commit, as the rebuilds it answers, which the caller commits with the page's cursors
+// a family move no day they do not name, in one transaction of their own, and otherwise in the
+// page's commit, as the span writes it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
-// failure rows (applyFailures), the unowned-p0 rows and the logged evals' zero rows are written
-// before it answers, so every write the page's cursors pass is made, or is in the commit that
-// moves them.
-func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
+// unowned-p0 rows are written before it answers. The caller writes the failure rows separately
+// (applyFailures), since those of a publishing page must follow its commit.
+func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) {
 	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
 		return nil, err
 	}
-	var rebuilds []*rebuild
-	whole, err := r.applyDelivery(ctx, w, owed)
+	spans, err := r.applyFamilies(ctx, w, owed)
 	if err != nil {
-		return nil, err
-	}
-	if whole != nil {
-		rebuilds = append(rebuilds, whole)
-	}
-	legion, err := r.applyLegion(ctx, w, owed)
-	if err != nil {
-		return nil, err
-	}
-	rebuilds = append(rebuilds, legion...)
-	if err := r.applyFailures(ctx, w); err != nil {
 		return nil, err
 	}
 	for _, project := range slices.Sorted(maps.Keys(w.unowned)) {
-		if r.known[project] {
+		known, err := r.knows(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		if known {
 			if err := r.writeUnowned(ctx, project); err != nil {
 				return nil, err
 			}
 		}
 	}
-	for _, project := range slices.Sorted(maps.Keys(w.logged)) {
-		if r.known[project] {
-			if err := r.fillLogged(ctx, project, slices.Sorted(maps.Keys(w.logged[project]))); err != nil {
-				return nil, err
-			}
-		}
+	return spans, nil
+}
+
+// applyFamilies writes the delivery and CI days w and owed name (applyDelivery), then their Legion
+// days (applyLegion), and answers the span writes of the families whose days move what days they
+// do not name hold, the delivery family's first, for the caller to commit.
+func (r *refresh) applyFamilies(ctx context.Context, w *pageWork, owed []owedDay) ([]*spanWrite, error) {
+	var spans []*spanWrite
+	whole, err := r.applyDelivery(ctx, w, owed)
+	if err != nil {
+		return nil, err
 	}
-	return rebuilds, nil
+	if whole != nil {
+		spans = append(spans, whole)
+	}
+	legion, err := r.applyLegion(ctx, w, owed)
+	if err != nil {
+		return nil, err
+	}
+	return append(spans, legion...), nil
 }
 
 // owedRounds bounds how many times one page writes the owed days again: a write of an owed day may
@@ -651,32 +699,25 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
 // read of the same move names too.
 const owedRounds = 3
 
-// writeOwed writes every day of the pass's projects a write left owing a rewrite (owedDays) once
-// the page has committed: a day an item moved off, or the day of the deploy run a pull request
+// writeOwed writes every day of the pass's projects and owner keys (owners.go) a write left owing a
+// rewrite (owedDays) once the page has committed: a day an item moved off, or the day of the
+// deploy run a pull request
 // moved off, which this page's own writes left so. A page names the days its items leave before it
 // writes (nameLeft), so there is none unless the store moved since. Each is written whole, as a
 // change naming it is, though the page wrote it already: the mark may be younger than that write.
 // Where such a day moves what other days hold, they are written with it in a commit of their own
-// (commitRebuilds).
+// (commitSpans).
 func (r *refresh) writeOwed(ctx context.Context) error {
 	for range owedRounds {
 		owed, err := r.store.owedDays(ctx, r.owners)
 		if err != nil || len(owed) == 0 {
 			return err
 		}
-		var rebuilds []*rebuild
-		whole, err := r.applyDelivery(ctx, newPageWork(), owed)
+		spans, err := r.applyFamilies(ctx, newPageWork(), owed)
 		if err != nil {
 			return err
 		}
-		if whole != nil {
-			rebuilds = append(rebuilds, whole)
-		}
-		legion, err := r.applyLegion(ctx, newPageWork(), owed)
-		if err != nil {
-			return err
-		}
-		if err := r.commitRebuilds(ctx, append(rebuilds, legion...)); err != nil {
+		if err := r.commitSpans(ctx, spans); err != nil {
 			return err
 		}
 	}
@@ -701,21 +742,45 @@ type deliveryItem struct {
 // (shippedNeighbours). No link beyond those is followed: the rows of the items behind them did
 // not move. With them it writes the days of each posted deploy w names (applyPosted), each
 // delivery day of owed, and, where the page read another set of kept repositories (w.kept), the
-// days of each that differs. It names the days first, each read once, and then writes them as
-// writeNamed says, which answers the rebuild the page's commit holds, nil where each day was
-// written in a transaction of its own.
-func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay) (*rebuild, error) {
+// days of each that differs. It names the days first, each read once and every day of each round
+// of naming in one read (readDeliveries), and then writes them as writeNamed says, which answers
+// the span write the page's commit holds, nil where the days were written in a transaction of
+// their own.
+func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay) (*spanWrite, error) {
 	if !r.delivers() && w.kept == nil {
 		return nil, nil
 	}
+	served, err := r.servingNext(ctx, walkDelivery, "")
+	if err != nil {
+		return nil, err
+	}
 	days := newPageDays(deliveryFamily)
+	// On a day the delivery walk has not made whole yet, no other owner key holds rows of it in
+	// eval_days: naming every owner key the day's read builds rows of ensures the page writes all
+	// of the day's keys in one commit, never half of a day while a later page holds its other runs.
+	whole := map[time.Time]bool{}
 	days.name = func(ctx context.Context, project string, day time.Time) error {
-		read, err := r.readDelivery(ctx, day, nil)
+		read, err := r.readDelivery(ctx, day, nil, nil)
 		if err != nil {
 			return err
 		}
-		r.nameDelivery(days, read, project, true)
+		r.nameDelivery(days, read, project)
+		if (served == nil || !read.Day.Before(*served)) && !whole[read.Day] {
+			whole[read.Day] = true
+			for _, owner := range r.owners {
+				if len(read.Rows(owner).Rows) > 0 {
+					r.nameDelivery(days, read, owner)
+				}
+			}
+		}
 		return nil
+	}
+	days.read = func(ctx context.Context, keys []projectDay) error {
+		named := make([]time.Time, len(keys))
+		for i, key := range keys {
+			named[i] = key.day
+		}
+		return r.readDeliveries(ctx, named)
 	}
 	if len(w.prs)+len(w.runs) > 0 {
 		items, err := r.store.deliveryItemDays(ctx, w.prs, w.runs)
@@ -749,14 +814,28 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 			return nil, err
 		}
 	}
-	if err := r.applyPosted(ctx, days, w.posted); err != nil {
+	if err := r.applyPosted(ctx, days, w.prodEvents); err != nil {
 		return nil, err
 	}
+	var owing []projectDay
 	for _, day := range owed {
-		if slices.Contains(deliveryDayFamilies, day.family) && r.writesDelivery(day.project) {
-			if err := days.name(ctx, day.project, day.day); err != nil {
-				return nil, err
-			}
+		if !slices.Contains(deliveryDayFamilies, day.family) {
+			continue
+		}
+		writes, err := r.writesDelivery(ctx, day.project)
+		if err != nil {
+			return nil, err
+		}
+		if writes {
+			owing = append(owing, projectDay{project: day.project, day: day.day})
+		}
+	}
+	if err := days.read(ctx, owing); err != nil {
+		return nil, err
+	}
+	for _, day := range owing {
+		if err := days.name(ctx, day.project, day.day); err != nil {
+			return nil, err
 		}
 	}
 	var kept *keptMove
@@ -766,39 +845,49 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 	if len(days.order) == 0 && kept == nil {
 		return nil, nil
 	}
-	return r.writeNamed(ctx, days, kept)
+	return r.writeNamed(ctx, days, kept, w.defaults != nil)
 }
 
-// applyPosted names, in days, the delivery days of each posted deploy posted names (by project,
+// applyPosted names, in days, the delivery days of each posted deploy changed names (by project,
 // each row id with the days its change counts on before and after) in its project, where the
 // project's events repository is read (refresh.rules): the day it finished before and after the
 // change, the days the pull requests it names merged on (the merge-to-production rows it times),
 // and the days eval_day_members holds it, and the pull requests it shipped, under when they were
 // last counted. A row the record still holds that is no posted deploy (a GitHub deploy, whose run
 // a source repository's rows count, or a failure) names no day: it moves no row of these evals.
-func (r *refresh) applyPosted(ctx context.Context, days *pageDays, posted map[string]map[string][]time.Time) error {
-	for _, project := range slices.Sorted(maps.Keys(posted)) {
+// Each project's rows are read in one statement (prodevents.ChangedRows), and the days it names in
+// one read of several days (readDeliveries).
+func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
+	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
-		if _, read := r.rules[ruleKey(repo)]; !read || !r.known[project] {
+		if _, read := r.rules[delivery.RuleKey(repo)]; !read {
 			continue
+		}
+		known, err := r.knows(ctx, project)
+		if err != nil {
+			return err
+		}
+		if !known {
+			continue
+		}
+		ids := slices.Sorted(maps.Keys(changed[project]))
+		stored, err := prodevents.ChangedRows(ctx, r.store.database.Pool, project, ids)
+		if err != nil {
+			return err
 		}
 		named := map[time.Time]bool{}
 		var members []string
 		prs := map[string]pullRequestRef{}
-		for _, id := range slices.Sorted(maps.Keys(posted[project])) {
-			event, err := prodevents.Get(ctx, r.store.database.Pool, project, id)
-			switch {
-			case errors.Is(err, prodevents.ErrNotFound):
-			case err != nil:
-				return fmt.Errorf("read production event %s of %s: %w", id, project, err)
-			case event.Kind != prodevents.KindDeploy || event.Source != prodevents.SourceAPI:
+		for _, id := range ids {
+			row, found := stored[id]
+			if found && !row.Posted {
 				continue
 			}
-			for _, day := range posted[project][id] {
+			for _, day := range changed[project][id] {
 				named[day] = true
 			}
 			members = append(members, PostedMember(id))
-			for _, ref := range event.PullRequests {
+			for _, ref := range row.PullRequests {
 				if name, number, ok := parsePullRequestRef(ref); ok {
 					prs[PullRequestMember(name, number)] = pullRequestRef{repo: name, number: number}
 				}
@@ -829,7 +918,11 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, posted map[st
 				}
 			}
 		}
-		for _, day := range slices.SortedFunc(maps.Keys(named), time.Time.Compare) {
+		ordered := slices.SortedFunc(maps.Keys(named), time.Time.Compare)
+		if err := r.readDeliveries(ctx, ordered); err != nil {
+			return err
+		}
+		for _, day := range ordered {
 			if err := days.name(ctx, project, day); err != nil {
 				return err
 			}
@@ -1089,8 +1182,12 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 		job.projects[member.project], job.members[member.member] = true, true
 	}
 	var linked []deliveryItem
-	for _, day := range slices.SortedFunc(maps.Keys(jobs), time.Time.Compare) {
-		read, err := r.readDelivery(ctx, day, nil)
+	ordered := slices.SortedFunc(maps.Keys(jobs), time.Time.Compare)
+	if err := r.readDeliveries(ctx, ordered); err != nil {
+		return nil, nil, err
+	}
+	for _, day := range ordered {
+		read, err := r.readDelivery(ctx, day, nil, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1106,8 +1203,14 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 			}
 		}
 		for _, project := range slices.Sorted(maps.Keys(projects)) {
-			if r.writesDelivery(project) {
-				r.nameDelivery(days, read, project, true)
+			writes, err := r.writesDelivery(ctx, project)
+			if err != nil {
+				return nil, nil, err
+			}
+			if writes {
+				if err := days.name(ctx, project, day); err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 	}
@@ -1116,13 +1219,21 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 
 // keptRepos is the repositories whose rows of the evals that read the deploy repository the pass
 // keeps, read once a page (refresh.deployRepos), in the byte order of their names, each with its
-// rule: of the repositories that hold a delivery run (readDeployRepos), those a deploy source of a
-// delivery-on project reads (refresh.rules), and the events repository of each project whose
-// posted deploys are read that holds one (readPostedRepos). The intake keeps the runs of a source
-// repository alone, but a repository's runs stay when no source reads it any more: it is not kept.
+// rule: of the repositories that hold a delivery run (readDeployRepos), each that a deploy source
+// of a delivery-on project reads (refresh.rules), under that source's rule, and each whose rule
+// stands recorded with the rows (refresh.builtUnder) where no source reads it any more, under that
+// rule and no project, as the base kept every repository that holds runs; and the events
+// repository of each project whose posted deploys are read that holds one (readPostedRepos). The
+// intake keeps the runs of a source repository alone, and a repository's runs stay when no source
+// reads it any more, so its rows and its rule stay with them: a source moved away from it and back,
+// or a later source on it under the same rule, rebuilds none of its days (syncKept), and which
+// repositories a project reads is the selection recorded with the rules (DeployReposIn).
 func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	if r.deployRepos != nil {
 		return r.deployRepos, nil
+	}
+	if err := r.readBuiltOnce(ctx); err != nil {
+		return nil, err
 	}
 	held, err := readDeployRepos(ctx, r.store.database.Pool)
 	if err != nil {
@@ -1131,16 +1242,22 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	repos := []keptRepo{}
 	var events []delivery.DeliverySettings
 	for _, repo := range held {
-		if _, posted := eventsProject(repo.name); posted {
+		if IsEventsRepo(repo.name) {
 			continue
 		}
 		if rule, read := r.ruleOf(repo.name); read {
 			repo.rule = rule
 			repos = append(repos, repo)
+			continue
+		}
+		if recorded, found := r.builtUnder[delivery.RuleKey(repo.name)]; found {
+			repo.rule = recorded.rule
+			repo.rule.DeployRepo, repo.rule.Project = repo.name, ""
+			repos = append(repos, repo)
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(r.rules)) {
-		if _, posted := eventsProject(r.rules[key].DeployRepo); posted {
+		if IsEventsRepo(r.rules[key].DeployRepo) {
 			events = append(events, r.rules[key])
 		}
 	}
@@ -1154,24 +1271,62 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	return r.deployRepos, nil
 }
 
-// readDelivery is the delivery rows of day (readDeliveryDay) with each kept repository as the
+// readDelivery is the delivery rows of day (readDeliveryDays) with each kept repository as the
 // deploy repository (keptRepos), read once a page (refresh.reads), each repository's deploy runs
-// taken from applies where it holds them.
-func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows) (deliveryRead, error) {
+// taken from applies, and each events repository's posted deploys from posted, where they hold
+// them.
+func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows,
+	posted map[string]postedRecord) (deliveryRead, error) {
+	day = measures.Midnight(day)
 	if read, ok := r.reads[day]; ok {
 		return read, nil
 	}
+	if err := r.readDays(ctx, []time.Time{day}, applies, posted); err != nil {
+		return deliveryRead{}, err
+	}
+	return r.reads[day], nil
+}
+
+// readDeliveries reads the delivery rows of each of days the page has not read yet in one read of
+// several days (readDeliveryDays), each repository's deploy runs read of the days' windows alone:
+// the days one round of a page's naming names, which readDelivery then answers. A page makes a
+// handful of rounds whatever the number of days it names, so it reads the deploy runs a handful of
+// times, where a read of each day read every deploy run created from the day on.
+func (r *refresh) readDeliveries(ctx context.Context, days []time.Time) error {
+	return r.readDays(ctx, days, nil, nil)
+}
+
+// readDays reads, in one read (readDeliveryDays), each of days the page has not read yet, each
+// kept repository's deploy runs taken from applies and each events repository's posted deploys
+// from posted, where they hold them, and keeps each read for the page (refresh.reads) and its
+// owner keys (noteOwners).
+func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[string]*delivery.ApplyRows,
+	posted map[string]postedRecord) error {
+	unread := make([]time.Time, 0, len(days))
+	for _, day := range days {
+		day = measures.Midnight(day)
+		if _, ok := r.reads[day]; !ok {
+			unread = append(unread, day)
+		}
+	}
+	if len(unread) == 0 {
+		return nil
+	}
+	slices.SortFunc(unread, time.Time.Compare)
+	unread = slices.Compact(unread)
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
-		return deliveryRead{}, err
+		return err
 	}
-	read, err := r.store.readDeliveryDay(ctx, kept, day, applies)
+	reads, err := r.store.readDeliveryDays(ctx, kept, unread, applies, posted)
 	if err != nil {
-		return deliveryRead{}, err
+		return err
 	}
-	r.noteOwners(read.owners())
-	r.reads[day] = read
-	return read, nil
+	for i, read := range reads {
+		r.noteOwners(read.owners())
+		r.reads[unread[i]] = read
+	}
+	return nil
 }
 
 // noteOwners adds to the delivery family's owners (refresh.owners) each owner key of keys it does
@@ -1184,68 +1339,120 @@ func (r *refresh) noteOwners(keys []string) {
 	}
 }
 
-// writesDelivery reports whether the pass writes key's delivery and CI days: a project it read,
-// or an owner key, whose rows belong to its repository.
-func (r *refresh) writesDelivery(key string) bool {
-	return r.known[key] || isOwner(key)
+// writesDelivery reports whether the pass writes key's delivery and CI days: a project (knows), or
+// an owner key, whose rows belong to its repository.
+func (r *refresh) writesDelivery(ctx context.Context, key string) (bool, error) {
+	if isOwner(key) {
+		return true, nil
+	}
+	return r.knows(ctx, key)
 }
 
-// writeDelivery is the delivery walk's write of project's delivery and CI rows of read's day,
+// knows reports whether key is a project the pass writes rows of: one it read (load) or one made
+// since. A page reads the input that counts for a project once that project is committed, an
+// issue of it that a pull request now names or a close of one of its issues, and the page's
+// cursors pass that input when the page commits, so a project the pass did not know would lose
+// the days the input moves, which no later change names. A key not among the projects the pass
+// read is looked for in the table, once a page (refresh.absent), and one found joins the pass's
+// projects and owners.
+func (r *refresh) knows(ctx context.Context, key string) (bool, error) {
+	if r.known[key] {
+		return true, nil
+	}
+	if r.absent[key] {
+		return false, nil
+	}
+	var found bool
+	if err := r.store.database.Pool.QueryRow(ctx, `select exists (select 1 from projects where key = $1)`, key).Scan(&found); err != nil {
+		return false, fmt.Errorf("read the project %s: %w", key, err)
+	}
+	if !found {
+		if r.absent == nil {
+			r.absent = map[string]bool{}
+		}
+		r.absent[key] = true
+		return false, nil
+	}
+	r.known[key] = true
+	r.projects = append(r.projects, key)
+	slices.Sort(r.projects)
+	r.noteOwners([]string{key})
+	return true, nil
+}
+
+// ownerDay is one owner's part of a delivery walk's day (buildDelivery): what the day writes of it,
+// and the rows the day's input built of it, by which its first input days move once the day is
+// written (noteBuilt).
+type ownerDay struct {
+	day   ProjectDay
+	built []DayRow
+}
+
+// buildDelivery is the delivery walk's build of project's delivery and CI rows of read's day,
 // those of the evals that read the deploy repository once for each repository read held: the rows
 // the day builds, less each lead time that counts no pull request before its series' first input
 // day (dropUnshipped), and the zero row of every series the day has no input of whose first input
-// day is on or before it (zerosFrom), by the walk's own first input days (firstOf); once a batch
-// (refresh.done). A project the day counts nothing for and holds no series of before that day
-// writes nothing unless the walk finds the day holding rows of it (walkHeld): its write deletes
-// what the day held. The walk writes its days in order, from the first input day or from the days
-// it built, so it finds each series' first input day as it goes (noteBuilt), and folds the stored
-// figures of its batch's days once they are written (foldWalked); a rebuild's walk stages them
-// instead (walkWrite). A page writes its days by writeNamed.
-func (r *refresh) writeDelivery(ctx context.Context, read deliveryRead, project string) error {
+// day is on or before it (zerosFrom), by the walk's own first input days (firstOf); nil where the
+// batch wrote the day already (refresh.done). A project the day counts nothing for and holds no
+// series of before that day writes nothing unless the walk finds the day holding rows of it
+// (walkHeld): its write deletes what the day held. The walk writes its days in order, from the
+// first input day or from the days it built, so it finds each series' first input day as it goes
+// (noteBuilt, once the day is written). A page writes its days by writeNamed.
+func (r *refresh) buildDelivery(ctx context.Context, read deliveryRead, project string) (*ownerDay, error) {
 	key := builtDay{family: walkDelivery, project: project, day: read.Day}
 	if r.done[key] {
-		return nil
+		return nil, nil
 	}
 	first, err := r.firstOf(ctx, walkDelivery, project)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	built := read.Rows(project)
 	built.Rows = dropUnshipped(built.Rows, first, read.Day)
-	day := built.WithZeros(zerosFrom(ZeroDeliveryDay(project, read.Day, read.rules).Rows, first, read.Day))
+	var zeros []DayRow
+	if begunBy(first, read.Day) {
+		zeros = zerosFrom(ZeroDeliveryDay(project, read.Day, read.rules).Rows, first, read.Day)
+	}
+	day := built.WithZeros(zeros)
 	if len(day.Rows) == 0 && !r.walkHeld[key] {
-		return nil
+		return nil, nil
 	}
-	if err := r.walkWrite(ctx, deliveryFamily, day); err != nil {
-		return err
-	}
-	r.noteBuilt(walkDelivery, project, read.Day, built.Rows)
-	r.done[key], r.report.days[key] = true, true
-	return nil
+	return &ownerDay{day: day, built: built.Rows}, nil
 }
 
-// walkWrite is a walk's write of one project's day of family: in the open, in a transaction of
-// its own (writeProjectDay), its stored figures folded at the end of the walks' batches
-// (noteWalked, foldWalked); or, while a rebuild's walk builds a batch (r.staging), held for the
-// batch to stage (stageWalk).
-func (r *refresh) walkWrite(ctx context.Context, family dayFamily, day ProjectDay) error {
+// walkWrite is a walk's write of one day of family, the days of it the walk built (one for each
+// project, or owner key, it writes): in the open, all of them in one transaction (writeDays) that
+// moves the walk's record, and the family's serving record, past the day (recordWalkIn), so no
+// commit holds a day's rows of some of the keys a project reads and not of the others, and the
+// day reads as built from the commit that writes it, their stored figures folded at the end of the
+// walks' batches (noteWalked, foldWalked); or, while a rebuild's walk builds a batch (r.staging),
+// held for the batch to stage (stageWalk). A day that writes nothing commits nothing: the next
+// day's commit, or the record at the end of the batch (walkDays), moves the records past it.
+func (r *refresh) walkWrite(ctx context.Context, family dayFamily, key walkKey, day time.Time, days ...ProjectDay) error {
 	if r.staging != nil {
-		r.staging.days = append(r.staging.days, day)
+		r.staging.days = append(r.staging.days, days...)
 		return nil
 	}
-	if err := r.store.writeProjectDay(ctx, family, day, r.build, false); err != nil {
+	if len(days) == 0 {
+		return nil
+	}
+	if err := r.store.writeDays(ctx, family, days, r.build, false, func(tx pgx.Tx) error {
+		return r.recordWalkIn(ctx, tx, key, day.AddDate(0, 0, 1))
+	}); err != nil {
 		return err
 	}
-	r.noteWalked(family.walk, day.Project, day.Day)
+	for _, one := range days {
+		r.noteWalked(family.walk, one.Project, one.Day)
+	}
 	return nil
 }
 
 // applyLegion writes the Legion days w names: the days the facts and filing changes named, and the
 // filing days and the close and held days of every issue below an issue whose repository or
 // parent moved, whose repository rows resolve through it, and with them each Legion day of owed.
-// Each project's days are written as writeNamed says, and it answers the rebuilds the page's
+// Each project's days are written as writeNamed says, and it answers the span writes the page's
 // commit holds, one for each project whose days move what days they do not name hold.
-func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) ([]*rebuild, error) {
+func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) ([]*spanWrite, error) {
 	days := map[string]map[time.Time]bool{}
 	add := func(project string, day time.Time) {
 		if days[project] == nil {
@@ -1277,37 +1484,42 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork, owed []owedDay) 
 			add(day.project, day.day)
 		}
 	}
-	var rebuilds []*rebuild
+	var spans []*spanWrite
 	for _, project := range slices.Sorted(maps.Keys(days)) {
-		if !r.known[project] {
+		known, err := r.knows(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		if !known {
 			continue
 		}
 		named := newPageDays(legionFamily)
 		named.name = func(ctx context.Context, project string, day time.Time) error {
-			return r.nameLegion(ctx, named, project, day, true)
+			return r.nameLegion(ctx, named, project, day)
 		}
 		for _, day := range slices.SortedFunc(maps.Keys(days[project]), time.Time.Compare) {
 			if err := named.name(ctx, project, day); err != nil {
 				return nil, err
 			}
 		}
-		one, err := r.writeNamed(ctx, named, nil)
+		one, err := r.writeNamed(ctx, named, nil, false)
 		if err != nil {
 			return nil, err
 		}
 		if one != nil {
-			rebuilds = append(rebuilds, one)
+			spans = append(spans, one)
 		}
 	}
-	return rebuilds, nil
+	return spans, nil
 }
 
-// writeLegion is project's Legion walk's write of its Legion rows of day, as writeDelivery is the
+// writeLegion is project's Legion walk's write of its Legion rows of day, as deliveryWalkDay is the
 // delivery walk's: the rows the day builds, and the zero row of every series the day has no input
 // of whose first input day is on or before it, by the walk's own first input days; once a batch
 // (refresh.done). A day with no input and no series begun before it writes nothing unless the
-// walk finds the day holding rows of it (walkHeld): its write deletes what the day held. A
-// rebuild's walk stages the day instead (walkWrite).
+// walk finds the day holding rows of it (walkHeld): its write deletes what the day held. The
+// project's day is the one key a Legion eval reads, written in a transaction of its own that moves
+// the project's Legion records past it (walkWrite); a rebuild's walk stages the day instead.
 func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time) error {
 	key := builtDay{family: walkLegion, project: project, day: day}
 	if r.done[key] {
@@ -1330,7 +1542,7 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 	if len(written.Rows) == 0 && !r.walkHeld[key] {
 		return nil
 	}
-	if err := r.walkWrite(ctx, legionFamily, written); err != nil {
+	if err := r.walkWrite(ctx, legionFamily, walkKey{family: walkLegion, project: project}, read.Day, written); err != nil {
 		return err
 	}
 	r.noteBuilt(walkLegion, project, read.Day, built.Rows)
@@ -1351,10 +1563,10 @@ func (r *refresh) writeUnowned(ctx context.Context, project string) error {
 	return nil
 }
 
-// fillLogged writes the zero rows of project's logged evals ids names (every one where ids is nil)
-// from each series' first day to today (fillLoggedZeros), recorded where it wrote any.
-func (r *refresh) fillLogged(ctx context.Context, project string, ids []string) error {
-	filled, err := r.fillLoggedZeros(ctx, project, ids)
+// fillLogged writes the zero rows of project's logged evals from each series' first day to today
+// (fillLoggedZeros), recorded where it wrote any.
+func (r *refresh) fillLogged(ctx context.Context, project string) error {
+	filled, err := r.fillLoggedZeros(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -1386,7 +1598,8 @@ func (r *refresh) sinceOf(ctx context.Context, project string) (LegionSince, err
 // and a day before the walk's own first days holds no row of it, whatever rows a day the walk now
 // builds held before: a whole walk over the same inputs holds the same. A rebuild's walk reads the
 // first input days its batches found and recorded instead (rebuildFirsts): the days before its
-// batch are the ones it staged, not the stored ones.
+// batch are the ones it staged, not the stored ones. A batch reads those of every project it
+// writes at its begin (beginBatch, loadWalkFirsts); a project it finds after, here.
 func (r *refresh) firstOf(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
 	if !r.walking {
 		return r.storedFirst(ctx, family, project)
@@ -1395,32 +1608,55 @@ func (r *refresh) firstOf(ctx context.Context, family, project string) (map[eval
 	if first, ok := r.walkFirst[key]; ok {
 		return first, nil
 	}
-	var first map[evalKey]time.Time
+	if err := r.loadWalkFirsts(ctx, family, []string{project}); err != nil {
+		return nil, err
+	}
+	return r.walkFirst[key], nil
+}
+
+// loadWalkFirsts reads the walk's first input days of family (firstOf) of each of projects in one
+// read, and keeps them for the walk's batch (walkFirst): a rebuild's walk's that its batches
+// recorded (rebuildFirsts, of every project where projects are more than one), each project's
+// marked as one whose first days the batch records (stageBatch.loaded); or the store's of the days
+// before the batch's first (readFirsts). Each project's is what a read of it alone answers.
+func (r *refresh) loadWalkFirsts(ctx context.Context, family string, projects []string) error {
+	if len(projects) == 0 {
+		return nil
+	}
+	var firsts map[string]map[evalKey]time.Time
 	if r.staging != nil {
-		r.staging.loaded[project] = true
-		found, err := r.store.rebuildFirsts(ctx, r.staging.rebuild.id, family, project)
-		if err != nil {
-			return nil, err
+		one := ""
+		if len(projects) == 1 {
+			one = projects[0]
 		}
-		first = found[project]
-		if first == nil {
-			first = map[evalKey]time.Time{}
+		found, err := r.store.rebuildFirsts(ctx, r.staging.rebuild.id, family, one)
+		if err != nil {
+			return err
+		}
+		firsts = make(map[string]map[evalKey]time.Time, len(projects))
+		for _, project := range projects {
+			r.staging.loaded[project] = true
+			if firsts[project] = found[project]; firsts[project] == nil {
+				firsts[project] = map[evalKey]time.Time{}
+			}
 		}
 	} else {
 		var before *time.Time
-		if from, ok := r.walkFrom[walkOf(family, project)]; ok {
+		if from, ok := r.walkFrom[walkOf(family, projects[0])]; ok {
 			before = &from
 		}
 		var err error
-		if first, err = r.readFirst(ctx, family, project, before); err != nil {
-			return nil, err
+		if firsts, err = r.readFirsts(ctx, family, projects, before); err != nil {
+			return err
 		}
 	}
 	if r.walkFirst == nil {
 		r.walkFirst = map[walkKey]map[evalKey]time.Time{}
 	}
-	r.walkFirst[key] = first
-	return first, nil
+	for project, first := range firsts {
+		r.walkFirst[walkKey{family: family, project: project}] = first
+	}
+	return nil
 }
 
 // storedFirst is the first input day of each eval of family that project holds a row of, by eval
@@ -1430,33 +1666,59 @@ func (r *refresh) firstOf(ctx context.Context, family, project string) (map[eval
 // It is where a walk begins (deliveryStart, legionStart), so the walk rewrites every day holding a
 // row of its family.
 func (r *refresh) storedFirst(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
-	key := walkKey{family: family, project: project}
-	if first, ok := r.first[key]; ok {
-		return first, nil
-	}
-	first, err := r.readFirst(ctx, family, project, nil)
+	firsts, err := r.storedFirsts(ctx, family, []string{project})
 	if err != nil {
 		return nil, err
 	}
-	r.first[key] = first
-	return first, nil
+	return firsts[project], nil
 }
 
-// readFirst reads the first day of each of project's evals of family before before (every day,
-// where it is nil), as storedFirst says.
-func (r *refresh) readFirst(ctx context.Context, family, project string, before *time.Time) (map[evalKey]time.Time, error) {
-	var zero []DayRow
+// storedFirsts is storedFirst of each of projects, by project, those the pass has not read yet
+// read in one read (readFirsts).
+func (r *refresh) storedFirsts(ctx context.Context, family string, projects []string) (map[string]map[evalKey]time.Time, error) {
+	firsts := make(map[string]map[evalKey]time.Time, len(projects))
+	var unread []string
+	for _, project := range projects {
+		if first, ok := r.first[walkKey{family: family, project: project}]; ok {
+			firsts[project] = first
+		} else {
+			unread = append(unread, project)
+		}
+	}
+	read, err := r.readFirsts(ctx, family, unread, nil)
+	if err != nil {
+		return nil, err
+	}
+	for project, first := range read {
+		r.first[walkKey{family: family, project: project}] = first
+		firsts[project] = first
+	}
+	return firsts, nil
+}
+
+// readFirsts reads the first day of each of projects' evals of family before before (every day,
+// where it is nil), as storedFirst says, in one read (firstDays), by project.
+func (r *refresh) readFirsts(ctx context.Context, family string, projects []string, before *time.Time) (map[string]map[evalKey]time.Time, error) {
+	if len(projects) == 0 {
+		return map[string]map[evalKey]time.Time{}, nil
+	}
+	zeros := make(map[string][]DayRow, len(projects))
 	switch family {
 	case walkDelivery:
 		kept, err := r.keptRepos(ctx)
 		if err != nil {
 			return nil, err
 		}
-		zero = ZeroDeliveryDay(project, r.today, keptRules(kept)).Rows
+		rules := keptRules(kept)
+		for _, project := range projects {
+			zeros[project] = ZeroDeliveryDay(project, r.today, rules).Rows
+		}
 	case walkLegion:
-		zero = ZeroLegionDay(project, r.today, legionDaySlugs...).Rows
+		for _, project := range projects {
+			zeros[project] = ZeroLegionDay(project, r.today, legionDaySlugs...).Rows
+		}
 	}
-	return r.store.firstDays(ctx, project, zero, before)
+	return r.store.firstDays(ctx, zeros, before)
 }
 
 // zerosFrom is each of zeros whose eval's first input day, of its deploy repository's rows, is on
@@ -1470,6 +1732,17 @@ func zerosFrom(zeros []DayRow, first map[evalKey]time.Time, day time.Time) []Day
 		}
 	}
 	return kept
+}
+
+// begunBy reports whether first holds a first input day on or before day: where it holds none,
+// zerosFrom keeps none of a day's zero rows, which its writer then need not build.
+func begunBy(first map[evalKey]time.Time, day time.Time) bool {
+	for _, since := range first {
+		if !day.Before(since) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteBuilt moves the first input day of each eval built holds an all-repositories row of (of each
@@ -1511,21 +1784,22 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 	if err != nil {
 		return false, false, err
 	}
+	parts := &r.report.parts
+	parts.mark(partWalkReads)
 	r.walking, r.done = true, map[builtDay]bool{}
 	defer func() { r.walking = false }()
 	live := false
 	if key := (walkKey{family: walkDelivery}); r.delivers() {
-		state, found := walks[key]
-		more, err := r.walkDays(ctx, key, state, found, r.deliveryStart, r.deliveryWalkDay, r.recordWalk)
+		more, err := r.walkDays(ctx, key, walks[key].next, r.deliveryStart, r.deliveryWalkDay, r.recordWalk)
 		if err != nil {
 			return false, false, err
 		}
 		live = live || more
 	}
+	parts.mark(partDeliveryWalk)
 	for _, project := range r.projects {
 		key := walkKey{family: walkLegion, project: project}
-		state, found := walks[key]
-		more, err := r.walkDays(ctx, key, state, found,
+		more, err := r.walkDays(ctx, key, walks[key].next,
 			func(ctx context.Context) (*time.Time, error) { return r.legionStart(ctx, project) },
 			func(ctx context.Context, day time.Time) error { return r.writeLegion(ctx, project, day) },
 			r.recordWalk)
@@ -1534,13 +1808,15 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 		}
 		live = live || more
 	}
+	parts.mark(partLegionWalks)
 	rebuilding, err := r.rebuildDays(ctx, walks, serving)
 	if err != nil {
 		return false, false, err
 	}
+	parts.mark(partRebuildWalks)
 	for _, project := range r.projects {
 		if err := r.walkDaily(ctx, walks, walkKey{family: walkLogged, project: project},
-			func(ctx context.Context) error { return r.fillLogged(ctx, project, nil) }); err != nil {
+			func(ctx context.Context) error { return r.fillLogged(ctx, project) }); err != nil {
 			return false, false, err
 		}
 		if err := r.walkDaily(ctx, walks, walkKey{family: walkUnowned, project: project},
@@ -1551,15 +1827,22 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 	if err := r.walkFailures(ctx); err != nil {
 		return false, false, err
 	}
-	return live || r.report.yielded, rebuilding, r.foldWalked(ctx)
+	parts.mark(partDaily)
+	err = r.foldWalked(ctx)
+	parts.mark(partFoldWalked)
+	return live || r.report.yielded, rebuilding, err
 }
 
 // yields reports whether the pass's walks stop before their next write, a day of a walk, a daily
 // write or a project's batch of the figures walk, and records it in the pass's report: a wake is
 // owed (duty.WakeOwed), so a change waits behind the write being made rather than the whole batch,
-// and the walks have made one write in this pass already, so a run of wakes cannot keep them from
-// building, as the echo of the walks' own writes would. The owed pass builds what the batch has
-// left after its own changes' work (gapBatch).
+// and the walks have made one write in this pass already, so no run of wakes keeps them from
+// building. A write of the walks commits an eval_days change, which wakes the loop as a change
+// does, and the pass cannot tell that echo from a change: so in the server a pass that walks
+// builds about one write, and what it reads once for the days it builds (beginBatch, the deploy
+// runs of deliveryWalkDay) the pass the echo owes reads again. That pass builds what the batch has
+// left after its own changes' work (gapBatch). A test's pass, which no hub wakes, builds the
+// whole batch from one read.
 func (r *refresh) yields(ctx context.Context) bool {
 	if r.walkBuilt == 0 || !duty.WakeOwed(ctx) {
 		return false
@@ -1568,25 +1851,24 @@ func (r *refresh) yields(ctx context.Context) bool {
 	return true
 }
 
-// walkDays builds what the pass's batch has left of the walk key, standing at state (found false
-// for a walk with no record): from the first day it has not built, or, where it is to begin (no
-// record, or one begun again), from the first input day begin answers, it builds up to the batch's
-// days left of the walk through today with build, stopping between two days for an owed wake
-// (yields), and records where it stands with record. A walk with nothing to walk (begin answers
-// nil) stands at tomorrow. It answers whether days before today are left. The days a pass builds
-// of the walk build by the first input days of the days before their first (beginBatch), and write
-// each project's day of them that holds rows of the walk's family whether or not they build a row
-// of it (heldDays), so a day whose input left holds no row a whole walk would not hold. A rebuild's
-// walk is one too (rebuildWalk): its days are staged where a walk's are written (walkWrite), and
-// its record is the staging of its batch (stageWalk).
-func (r *refresh) walkDays(ctx context.Context, key walkKey, state walkState, found bool,
+// walkDays builds what the pass's batch has left of the walk key, standing at next (nil for a walk
+// with no record, or one begun again): from next, or, where it is to begin, from the first input
+// day begin answers, it builds up to the batch's days left of the walk through today with build,
+// stopping between two days for an owed wake (yields), and records where it stands with record. A
+// walk with nothing to walk (begin answers nil) stands at tomorrow. It answers whether days before
+// today are left. The days a pass builds of the walk build by the first input days of the days
+// before their first (beginBatch), and write each project's day of them that holds rows of the
+// walk's family whether or not they build a row of it (heldDays), so a day whose input left holds
+// no row a whole walk would not hold. A rebuild's walk is one too (rebuildWalk): its days are
+// staged where a walk's are written (walkWrite), and its record is the staging of its batch
+// (stageWalk).
+func (r *refresh) walkDays(ctx context.Context, key walkKey, next *time.Time,
 	begin func(context.Context) (*time.Time, error), build func(context.Context, time.Time) error,
 	record func(context.Context, walkKey, time.Time) error) (bool, error) {
 	if r.yields(ctx) {
 		return true, nil
 	}
-	begun := !found || state.next == nil
-	next := state.next
+	begun := next == nil
 	if begun {
 		start, err := begin(ctx)
 		if err != nil {
@@ -1604,13 +1886,9 @@ func (r *refresh) walkDays(ctx context.Context, key walkKey, state walkState, fo
 		return false, nil
 	}
 	spent := r.batchKey(key)
-	left := r.batched.left(spent, r.batch)
-	if left <= 0 {
+	last, ok := r.batched.through(spent, r.batch, *next, r.today)
+	if !ok {
 		return true, nil
-	}
-	last := next.AddDate(0, 0, left-1)
-	if last.After(r.today) {
-		last = r.today
 	}
 	if err := r.beginBatch(ctx, key, *next, last); err != nil {
 		return false, err
@@ -1638,18 +1916,26 @@ func (r *refresh) walkDays(ctx context.Context, key walkKey, state walkState, fo
 }
 
 // batchKey is the key the walks' batch of the gap (gapBatch) counts key's days under: its own, or,
-// for a rebuild's walk of it (r.staging), one apart, so a walk in the open and a rebuild's walk of
-// one family each build up to a whole batch per gap.
+// for a rebuild's walk of it (r.staging), rebuildBatchKey's.
 func (r *refresh) batchKey(key walkKey) walkKey {
 	if r.staging != nil {
-		key.family = "rebuild " + key.family
+		return rebuildBatchKey(key)
 	}
 	return key
 }
 
+// rebuildBatchKey is the key the walks' batch of the gap (gapBatch) counts the days of a rebuild's
+// walk key under, one apart from the walk's own, so a walk in the open and a rebuild's walk of one
+// family, and a project's figures walk and the rebuild's, each build up to a whole batch per gap.
+func rebuildBatchKey(key walkKey) walkKey {
+	key.family = "rebuild " + key.family
+	return key
+}
+
 // beginBatch begins a batch of the walk key from from through through: the walk's first input days
-// are read anew of the days before from (firstOf), and the days of the batch that hold rows of its
-// family (walkHeld) are read, once for the batch.
+// of every project the batch writes are read anew of the days before from, in one read
+// (loadWalkFirsts), and the days of the batch that hold rows of its family (walkHeld) are read,
+// once for the days the pass builds of the batch (yields says how many that is under the loop).
 func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through time.Time) error {
 	if r.walkFrom == nil {
 		r.walkFrom, r.walkFirst, r.walkHeld = map[walkKey]time.Time{}, map[walkKey]map[evalKey]time.Time{}, map[builtDay]bool{}
@@ -1659,8 +1945,8 @@ func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through tim
 	if key.family == walkLegion {
 		projects, slugs = []string{key.project}, legionDaySlugs
 	}
-	for _, project := range projects {
-		delete(r.walkFirst, walkKey{family: key.family, project: project})
+	if err := r.loadWalkFirsts(ctx, key.family, projects); err != nil {
+		return err
 	}
 	held, err := r.store.heldDays(ctx, key.family, projects, slugs, from, through)
 	if err != nil {
@@ -1673,8 +1959,8 @@ func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through tim
 // deliveryStart is the first input day of the delivery walk, the UTC midnight of the earliest of
 // the first merge of a pull request, the first start of a run of a kept repository (keptRepos) and
 // the first day any project holds a delivery or CI row of, nil where none exists. Every project's
-// first days are taken together, so the walk begins at a midnight however many projects there
-// are, none included.
+// first days are taken together, in one read (storedFirsts), so the walk begins at a midnight
+// however many projects there are, none included.
 func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
@@ -1684,12 +1970,12 @@ func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
+	stored, err := r.storedFirsts(ctx, walkDelivery, r.owners)
+	if err != nil {
+		return nil, err
+	}
 	firsts := map[evalKey]time.Time{}
-	for _, project := range r.owners {
-		first, err := r.storedFirst(ctx, walkDelivery, project)
-		if err != nil {
-			return nil, err
-		}
+	for _, first := range stored {
 		// An eval id names its project, so no two projects' entries share a key.
 		maps.Copy(firsts, first)
 	}
@@ -1725,11 +2011,17 @@ func earliestOf(earliest *time.Time, first map[evalKey]time.Time) *time.Time {
 	return &day
 }
 
-// deliveryWalkDay writes one day of the delivery walk: every project's delivery and CI rows of it,
-// of every kept repository. The deploy runs of each kept repository every day of a batch reads
-// from its own start on are read once, at the batch's first day (delivery.ReadApplyRows), each
-// repository's read side by side, and each day takes its part of them: a batch's days run in
-// order, so the first day's read holds every later day's runs.
+// deliveryWalkDay writes one day of the delivery walk: every project's and every owner key's
+// delivery and CI rows of it, of every kept repository, built for each owner (buildDelivery) and
+// written together in one transaction (walkWrite), so a read that folds a project's own rows with
+// those of the owner keys it reads (eval_project_owners) finds all of the day or none of it; each
+// owner's first input days then move by what the day built of it (noteBuilt). The deploy runs of
+// each kept repository every day the pass builds of a batch reads from its own start on, and the
+// posted deploys of each kept events repository that finished from the pass's first day on, are
+// read once, at the pass's first day (delivery.ReadApplyRows, postedDeploys), each repository's
+// read side by side, and each day takes its part of them: a batch's days run in order, so the
+// first day's read holds every later day's runs and posts, and the pass the loop owes after one
+// that yielded (yields) reads them again.
 func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 	if r.walkApplies == nil || day.Before(r.walkAppliesFrom) {
 		kept, err := r.keptRepos(ctx)
@@ -1737,10 +2029,16 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 			return err
 		}
 		applies := make([]delivery.ApplyRows, len(kept))
+		posted := make([]postedRecord, len(kept))
 		var reads []func(context.Context) error
 		r.walkApplies = make(map[string]*delivery.ApplyRows, len(kept))
 		for i, repo := range kept {
-			if _, posted := eventsProject(repo.name); posted {
+			if IsEventsRepo(repo.name) {
+				project := repo.rule.Project
+				reads = append(reads, func(ctx context.Context) (err error) {
+					posted[i], err = postedDeploys(ctx, r.store.database.Pool, project, day)
+					return err
+				})
 				continue
 			}
 			settings := repo.rule
@@ -1753,26 +2051,49 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 			r.walkApplies[repo.name] = &applies[i]
 		}
 		if err := store.ReadSideBySide(ctx, reads...); err != nil {
-			r.walkApplies = nil
+			r.walkApplies, r.walkPosted = nil, nil
 			return err
+		}
+		r.walkPosted = make(map[string]postedRecord)
+		for i, repo := range kept {
+			if IsEventsRepo(repo.name) {
+				r.walkPosted[repo.name] = posted[i]
+			}
 		}
 		r.walkAppliesFrom = day
 	}
-	read, err := r.readDelivery(ctx, day, r.walkApplies)
+	read, err := r.readDelivery(ctx, day, r.walkApplies, r.walkPosted)
 	if err != nil {
 		return err
 	}
-	for _, project := range slices.Clone(r.owners) {
-		if err := r.writeDelivery(ctx, read, project); err != nil {
+	var owned []ownerDay
+	for _, project := range r.owners {
+		one, err := r.buildDelivery(ctx, read, project)
+		if err != nil {
 			return err
 		}
+		if one != nil {
+			owned = append(owned, *one)
+		}
+	}
+	days := make([]ProjectDay, len(owned))
+	for i, one := range owned {
+		days[i] = one.day
+	}
+	if err := r.walkWrite(ctx, deliveryFamily, walkKey{family: walkDelivery}, read.Day, days...); err != nil {
+		return err
+	}
+	for _, one := range owned {
+		r.noteBuilt(walkDelivery, one.day.Project, read.Day, one.built)
+		key := builtDay{family: walkDelivery, project: one.day.Project, day: read.Day}
+		r.done[key], r.report.days[key] = true, true
 	}
 	return nil
 }
 
 // walkDaily makes the once-a-day write of the walk key: write runs on the first walking pass of
-// each UTC day, and on the first walking pass of a walk begun again (no record of the running
-// build's), and the walk then stands at tomorrow; a pass whose walks stopped for an owed wake
+// each UTC day, and on the first walking pass of a walk begun again (no record of it), and the
+// walk then stands at tomorrow; a pass whose walks stopped for an owed wake
 // (yields) leaves it to the next. The logged evals' zero fill is one (fillLogged through today),
 // and the unowned-p0 row of today another (writeUnowned): its count reads issues alone, so it is
 // written whether or not delivery settings exist, a project made since the last pass included.

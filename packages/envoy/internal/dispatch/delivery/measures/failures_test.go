@@ -15,8 +15,8 @@ func failureAt(day time.Time, hours int) time.Time { return day.Add(time.Duratio
 // middle of 30 and 90 minutes with nothing left unrestored, and rework rate 1/4.
 func TestAWindowOfDeploysAndFailuresFoldsToTheDORAValues(t *testing.T) {
 	second := failureDay.AddDate(0, 0, 1)
-	dayOne := []FailureDeploy{{ID: "a", FinishedAt: failureAt(failureDay, 9), Failures: 2}, {ID: "b", FinishedAt: failureAt(failureDay, 12)}}
-	dayTwo := []FailureDeploy{{ID: "c", FinishedAt: failureAt(second, 8), Failures: 1}, {ID: "d", FinishedAt: failureAt(second, 10), Restores: true}}
+	dayOne := []FailureDeploy{{Failures: 2}, {}}
+	dayTwo := []FailureDeploy{{Failures: 1}, {Restores: true}}
 	var parts []DayPart
 	parts = append(parts, ChangeFailRateDay(failureDay, dayOne)...)
 	parts = append(parts, ChangeFailRateDay(second, dayTwo)...)
@@ -40,9 +40,9 @@ func TestAWindowOfDeploysAndFailuresFoldsToTheDORAValues(t *testing.T) {
 // A rejected failure is not counted, so its deploy leaves the numerator: change fail rate moves by
 // exactly that deploy's share of the window's deploys.
 func TestARejectMovesChangeFailRateByThatDeploysShare(t *testing.T) {
-	counted := []FailureDeploy{{ID: "a", Failures: 1}, {ID: "b", Failures: 1}, {ID: "c"}, {ID: "d"}, {ID: "e"}}
+	counted := []FailureDeploy{{Failures: 1}, {Failures: 1}, {}, {}, {}}
 	before := FoldChangeFailRate(ChangeFailRateDay(failureDay, counted))
-	counted[1].Failures = 0 // b's one failure rejected
+	counted[1].Failures = 0 // the second deploy's one failure rejected
 	after := FoldChangeFailRate(ChangeFailRateDay(failureDay, counted))
 	if before == nil || after == nil || before.Failed-after.Failed != 1 || before.Total != after.Total || *before.Rate-*after.Rate != 1.0/5 {
 		t.Errorf("change fail rate moved from %+v to %+v, want down by 1/5", before, after)
@@ -53,7 +53,7 @@ func TestARejectMovesChangeFailRateByThatDeploysShare(t *testing.T) {
 // recovery has no median ("no data", never 0) while it keeps the count of failures not restored; a
 // window with no part of a series reads no value at all.
 func TestNoFailureIsZeroAndNothingRestoredIsNoMedian(t *testing.T) {
-	deploys := []FailureDeploy{{ID: "a"}, {ID: "b"}}
+	deploys := []FailureDeploy{{}, {}}
 	if rate := FoldChangeFailRate(ChangeFailRateDay(failureDay, deploys)); rate == nil || rate.Failed != 0 || rate.Total != 2 || rate.Rate == nil || *rate.Rate != 0 {
 		t.Errorf("change fail rate with no failure = %+v, want 0 of 2", rate)
 	}

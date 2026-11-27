@@ -41,9 +41,9 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 			t.Errorf("%s holds %g h by phase, want its bar hours %g: %v", key, sum, want, row.PhaseHours)
 		}
 	}
-	if got := facts["INFRA-1"]; got.PhaseHours[breakdownPerson] != 1 || got.PhaseHours[breakdownChildren] != 0 {
+	if got := facts["INFRA-1"]; got.PhaseHours[breakdownPerson] != 1 || got.PhaseHours[legion.ColumnAwaitingChildren] != 0 {
 		t.Errorf("the root waited %g h on a person and holds %g h of waiting on children among its parts, want 1 and none: %v",
-			got.PhaseHours[breakdownPerson], got.PhaseHours[breakdownChildren], got.PhaseHours)
+			got.PhaseHours[breakdownPerson], got.PhaseHours[legion.ColumnAwaitingChildren], got.PhaseHours)
 	}
 	if got := facts["INFRA-1"]; got.WorkHours != 10 || got.ReviewRounds != 1 || !got.Root || got.Tree != "INFRA-1" {
 		t.Errorf("the root's facts are %+v, want 10 h of work, one review round and its own tree", got)
@@ -139,15 +139,18 @@ func TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked(t *testing.T) {
 
 // TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject: ReadIssues reads one tree where
 // ReadProject reads every issue of the project, and the facts of the issues asked for are the
-// same either way, field by field. A consumer can therefore recompute one issue's row without
-// reading a whole project's event history.
+// same either way, field by field, as are the filings of the filed issues named with them. A
+// consumer can therefore recompute one issue's row without reading a whole project's event
+// history.
 func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	database := storetest.Open(t)
-	// Two trees, so a read of one tree's issues covers one tree and leaves the other unread.
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
+	// Two trees, so a read of one tree's issues covers one tree and leaves the other unread. Each
+	// tree's sessions file an issue of every class beside the architect's children (Spec.Filings):
+	// one into the tree, one outside every tree and one by the controller.
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2, AwaitingChildren: true, Filings: true})
 	now := fixture.To
-	// The first tree: Seed writes each tree's root and then that tree's children, so the
-	// history's first issues per tree are the first tree.
+	// The first tree: Seed writes each tree's root, that tree's children and then the issues its
+	// sessions filed, so the history's first issues per tree are the first tree's.
 	perTree := len(fixture.Keys) / len(fixture.Roots)
 	keys, otherTree := fixture.Keys[:perTree], fixture.Keys[perTree:]
 
@@ -157,11 +160,20 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}
+	// The tree's keys name its filed issues too: ReadIssues keeps the ones a Legion session of the
+	// project filed.
 	startedIssues := time.Now()
-	named, err := ReadIssues(t.Context(), database.Pool, fixture.Project, keys, nil, now)
+	named, err := ReadIssues(t.Context(), database.Pool, fixture.Project, keys, keys, now)
 	issuesRead := time.Since(startedIssues)
 	if err != nil {
 		t.Fatalf("read the named issues: %v", err)
+	}
+	// The same filed issues and no key asked for: the scope then holds the tree only through the
+	// filers ReadIssues adds to it, and each filing's class and filer's phase read the filer's
+	// timeline.
+	filedAlone, err := ReadIssues(t.Context(), database.Pool, fixture.Project, nil, keys, now)
+	if err != nil {
+		t.Fatalf("read the named filed issues alone: %v", err)
 	}
 
 	whole, part := factsAt(project, nil), factsAt(named, nil)
@@ -173,13 +185,13 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	for _, key := range keys {
 		want, has := whole[key]
 		if !has {
-			// The follow-up nobody worked, which has facts in neither read.
+			// An issue no Legion role worked (the follow-up a person filed, and the three issues
+			// Spec.Filings files), which has facts in neither read.
 			continue
 		}
 		compared++
 		got := part[key]
-		if !maps.Equal(want.PhaseHours, got.PhaseHours) || want.WorkHours != got.WorkHours ||
-			want.ReviewRounds != got.ReviewRounds || want.Root != got.Root || want.Tree != got.Tree {
+		if !reflect.DeepEqual(want, got) {
 			t.Errorf("%s reads %+v from its own tree and %+v from the whole project, want one answer", key, got, want)
 		}
 		if want.WorkHours > 0 {
@@ -190,6 +202,9 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 		t.Fatalf("%d of the tree's issues were compared and %d of them hold work hours, which proves nothing",
 			compared, worked)
 	}
+	if got := whole[fixture.Roots[0]].PhaseHours[legion.ColumnAwaitingChildren]; got <= 0 {
+		t.Errorf("root %s holds %g h in awaiting_children, want nonzero awaiting_children phase hours", fixture.Roots[0], got)
+	}
 	// The other tree is outside the keys asked for, so its issues carry no Legion work this read
 	// gathered and no facts: that is what makes the two reads different reads.
 	for _, key := range otherTree {
@@ -197,8 +212,31 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 			t.Errorf("the facts of %s, in the tree nobody asked for, are %+v, want none", key, got)
 		}
 	}
-	t.Logf("%d issues compared, %d of them with work hours; ReadProject took %s over %d issues and ReadIssues took %s over %d",
-		compared, worked, projectRead, len(fixture.Keys), issuesRead, len(keys))
+	// The filings of the tree's filed issues are the whole project's, filing for filing, in the
+	// order both read them, from the tree's read and from the read of its filed issues alone.
+	inTree := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		inTree[key] = true
+	}
+	var filings []IssueFiling
+	for _, filing := range ProjectFilings(project) {
+		if inTree[filing.Key] {
+			filings = append(filings, filing)
+		}
+	}
+	if len(filings) == 0 {
+		t.Fatalf("the project's filings hold none of the tree's issues, so the reads' filings compare nothing")
+	}
+	for _, read := range []struct {
+		name       string
+		population *Population
+	}{{"the tree's read", named}, {"the read of its filed issues alone", filedAlone}} {
+		if got := ProjectFilings(read.population); !reflect.DeepEqual(got, filings) {
+			t.Errorf("%s answers the filings\n%+v\nand the whole project\n%+v", read.name, got, filings)
+		}
+	}
+	t.Logf("%d issues compared, %d of them with work hours, and %d filings; ReadProject took %s over %d issues and ReadIssues took %s over %d",
+		compared, worked, len(filings), projectRead, len(fixture.Keys), issuesRead, len(keys))
 }
 
 // TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue: the computation asked for some

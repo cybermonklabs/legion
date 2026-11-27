@@ -36,6 +36,7 @@ func testWindow() TimeWindow {
 }
 
 func TestIsPopulationPR(t *testing.T) {
+	t.Parallel()
 	rules := testRules()
 	window := testWindow()
 	inWindow := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
@@ -137,10 +138,11 @@ func TestIsPopulationPR(t *testing.T) {
 }
 
 // A pull request is judged a task pull request by the rule of its own source repository
-// (dispatch://INFRA-978, T7): with two sources in two repositories, a task-labelled merge of
+// (dispatch://INFRA-978, D1): with two sources in two repositories, a task-labelled merge of
 // either is a task pull request and an unlabelled merge of either is unclassified, while a merge
 // of a repository no source reads is neither, whatever its labels.
 func TestATaskPullRequestIsJudgedAgainstItsOwnDeployRepository(t *testing.T) {
+	t.Parallel()
 	rules := testRulesOf(
 		DeliverySettings{DeployRepo: "acme/widgets", PopulationAuthors: []string{"octocat"}},
 		DeliverySettings{DeployRepo: "acme/gadgets", PopulationAuthors: []string{"octocat"}},
@@ -176,6 +178,7 @@ func TestATaskPullRequestIsJudgedAgainstItsOwnDeployRepository(t *testing.T) {
 }
 
 func TestIsRework(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		title string
 		want  bool
@@ -198,6 +201,7 @@ func TestIsRework(t *testing.T) {
 }
 
 func TestRevertKind(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		title string
 		want  string

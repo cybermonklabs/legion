@@ -2,9 +2,10 @@
 // R6 to R8): the table production_events (migration 20261123002035) and every read and write of
 // it. A deploy row is one deploy run of a deploy repository, which the GitHub adapter writes under
 // the repository's owner project, or one deploy a system posted. A failure row is one failure
-// signal, which names the deploy it blames. Every write commits in a transaction of its own that
-// takes the delivery change log's lock nowhere: its change rows wait in the outbox (migration
-// 20261123002037), and the write drains them after its commit (delivery.DrainAfterCommit).
+// signal, which names the deploy it blames. Every write commits in a transaction of its own, or
+// in its caller's (WriteIn, SetStateIn), that takes the delivery change log's lock nowhere: its
+// change rows wait in the outbox (migration 20261123002037), and the write, or its caller, drains
+// them after its commit (delivery.DrainAfterCommit).
 package prodevents
 
 import (
@@ -12,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -160,11 +162,22 @@ func decodeActor(raw []byte) (*model.Actor, error) {
 	return &actor, nil
 }
 
-// recorded is actor as the record keeps it: who wrote the row, never how the request
-// authenticated (model.Actor.Credential is a fact of the request alone).
-func recorded(actor model.Actor) ([]byte, error) {
-	actor.Credential = nil
-	return json.Marshal(actor)
+// prepared refuses an event no row can hold (validate), and answers its actor as the record keeps
+// it, who wrote the row and never how the request authenticated (model.Actor.Recorded), and its
+// environment, DefaultEnvironment where it names none.
+func prepared(event Event) ([]byte, string, error) {
+	if err := validate(event); err != nil {
+		return nil, "", err
+	}
+	actor, err := json.Marshal(event.Actor.Recorded())
+	if err != nil {
+		return nil, "", fmt.Errorf("encode the actor of production event %s: %w", event.SourceRef, err)
+	}
+	environment := event.Environment
+	if environment == "" {
+		environment = DefaultEnvironment
+	}
+	return actor, environment, nil
 }
 
 // Write stores event under its project, or answers the row its project already holds under its
@@ -172,23 +185,34 @@ func recorded(actor model.Actor) ([]byte, error) {
 // row and created false. A failure's blamed deploy must be a deploy row; a deploy names none. The
 // row's id, its creation time and its state are the server's, whatever event carries.
 func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, error) {
-	if err := validate(event); err != nil {
-		return Event{}, false, err
-	}
-	actor, err := recorded(event.Actor)
-	if err != nil {
-		return Event{}, false, fmt.Errorf("encode the actor of production event %s: %w", event.SourceRef, err)
-	}
-	environment := event.Environment
-	if environment == "" {
-		environment = DefaultEnvironment
-	}
-	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("begin the write of production event %s: %w", event.SourceRef, err)
 	}
 	defer tx.Rollback(ctx)
+	stored, created, err := WriteIn(ctx, tx, event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
+	}
+	if created {
+		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event write")
+	}
+	return stored, created, nil
+}
+
+// WriteIn is Write's write in tx, the caller's transaction, for a writer that keeps a row of its
+// own beside the event's and commits the two together. It takes the delivery change log's lock
+// nowhere either: the caller commits tx and then, where created, drains the change rows the write
+// left in the outbox (delivery.DrainAfterCommit), as Write does.
+func WriteIn(ctx context.Context, tx pgx.Tx, event Event) (Event, bool, error) {
+	actor, environment, err := prepared(event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
 	if event.Kind == KindFailure {
 		if err := requireDeploy(ctx, tx, *event.DeployID); err != nil {
 			return Event{}, false, err
@@ -201,7 +225,7 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 	}
 	var restoredBy []byte
 	if event.RestoredBy != nil {
-		if restoredBy, err = recorded(*event.RestoredBy); err != nil {
+		if restoredBy, err = json.Marshal(event.RestoredBy.Recorded()); err != nil {
 			return Event{}, false, fmt.Errorf("encode the restorer of production event %s: %w", event.SourceRef, err)
 		}
 	}
@@ -218,17 +242,10 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 	created := true
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = false
-		stored, err = scan(tx.QueryRow(ctx, `select `+columns+` from production_events
-			where project_key = $1 and source_ref = $2`, event.ProjectKey, event.SourceRef))
+		stored, err = bySourceRef(ctx, tx, event.ProjectKey, event.SourceRef)
 	}
 	if err != nil {
 		return Event{}, false, fmt.Errorf("write production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Event{}, false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
-	}
-	if created {
-		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event write")
 	}
 	return stored, created, nil
 }
@@ -278,13 +295,16 @@ func validate(event Event) error {
 	return refuse(CodeInput, "signal %q is not one of the five", *event.Signal)
 }
 
-// requireDeploy refuses an id that names no deploy row.
+// requireDeploy refuses an id that names no deploy row. It reads the row for key share, the lock
+// the foreign key's check takes, so a drop of it (DropGitHubDeploy, which locks it for update)
+// waits for tx and then finds the row tx wrote that names it, and a write that comes after a drop
+// waits for the drop and then finds no row, which it refuses here rather than at the foreign key.
 func requireDeploy(ctx context.Context, tx pgx.Tx, id string) error {
 	if _, err := uuid.Parse(id); err != nil {
 		return refuse(CodeNoDeploy, "deploy %q is not a production event id", id)
 	}
 	var kind string
-	err := tx.QueryRow(ctx, `select kind from production_events where id = $1`, id).Scan(&kind)
+	err := tx.QueryRow(ctx, `select kind from production_events where id = $1 for key share`, id).Scan(&kind)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return refuse(CodeNoDeploy, "no deploy row has id %s", id)
@@ -315,18 +335,34 @@ const StateRestored = "restored"
 // state; a reject and a re-count keep the writer, the time and the reason (R8); a restore sets the
 // restore time and its writer, and the restoring deploy where change names one.
 func SetState(ctx context.Context, pool *store.Pool, project, id string, change StateChange) (Event, error) {
-	if _, err := uuid.Parse(id); err != nil {
-		return Event{}, ErrNotFound
-	}
-	by, err := recorded(change.Actor)
-	if err != nil {
-		return Event{}, fmt.Errorf("encode the writer of production event %s's state: %w", id, err)
-	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return Event{}, fmt.Errorf("begin the state write of production event %s: %w", id, err)
 	}
 	defer tx.Rollback(ctx)
+	updated, err := SetStateIn(ctx, tx, project, id, change)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, fmt.Errorf("commit production event %s's state: %w", id, err)
+	}
+	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event state write")
+	return updated, nil
+}
+
+// SetStateIn is SetState's write in tx, the caller's transaction, for a writer that decides the
+// change under a lock of its own and commits it with that lock held. It takes the delivery change
+// log's lock nowhere either: the caller commits tx and then drains the change rows the write left
+// in the outbox (delivery.DrainAfterCommit), as SetState does.
+func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change StateChange) (Event, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Event{}, ErrNotFound
+	}
+	by, err := json.Marshal(change.Actor.Recorded())
+	if err != nil {
+		return Event{}, fmt.Errorf("encode the writer of production event %s's state: %w", id, err)
+	}
 	current, err := scan(tx.QueryRow(ctx, `select `+columns+` from production_events
 		where project_key = $1 and id = $2 for update`, project, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -367,10 +403,6 @@ func SetState(ctx context.Context, pool *store.Pool, project, id string, change 
 	if err != nil {
 		return Event{}, fmt.Errorf("write production event %s's state: %w", id, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return Event{}, fmt.Errorf("commit production event %s's state: %w", id, err)
-	}
-	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a production event state write")
 	return updated, nil
 }
 
@@ -463,10 +495,10 @@ func (r totalRow) Scan(dest ...any) error {
 // DeployForCommit is the deploy row, of any project, whose commits hold sha: the earliest to
 // reach production, which is the deploy that first shipped the commit (a check made at a commit
 // blames the deploy that shipped it, R7). ok is false where no deploy holds it yet. A dropped
-// GitHub deploy (StatusDropped) holds none.
+// GitHub deploy (StatusDropped) holds none. The read is a probe of production_events_commits.
 func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where kind = 'deploy' and $1 = any(commits) and not `+droppedDeploy+`
+		where kind = 'deploy' and commits @> array[$1::text] and not `+droppedDeploy+`
 		order by finished_at, id limit 1`, strings.ToLower(sha)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
@@ -540,9 +572,44 @@ func scanAll(rows pgx.Rows, what string) ([]Event, error) {
 	return events, nil
 }
 
+// The source_ref prefix of each automatic source's rows: the GitHub adapter's deploy of a run
+// (GitHubSourceRef), a person's flag (PersonSourceRef), and the production signals' failures
+// (signals' CheckSourceRef, RevertSourceRef and IncidentSourceRef). The record holds one row per
+// project and source_ref, so a system's post under such a key would leave that source's write of
+// its own row writing nothing; the post route refuses one (AutomaticSourceRefPrefix).
+const (
+	GitHubSourceRefPrefix   = "github:"
+	PersonSourceRefPrefix   = "person:"
+	CheckSourceRefPrefix    = "check:"
+	RevertSourceRefPrefix   = "revert:"
+	IncidentSourceRefPrefix = "incident:"
+)
+
+// automaticSourceRefPrefixes is every automatic source's source_ref prefix.
+var automaticSourceRefPrefixes = [...]string{
+	GitHubSourceRefPrefix, PersonSourceRefPrefix, CheckSourceRefPrefix, RevertSourceRefPrefix, IncidentSourceRefPrefix,
+}
+
+// AutomaticSourceRefPrefix is the automatic source's prefix ref starts with, and false where it
+// starts with none of them.
+func AutomaticSourceRefPrefix(ref string) (string, bool) {
+	for _, prefix := range automaticSourceRefPrefixes {
+		if strings.HasPrefix(ref, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
 // GitHubSourceRef is the source_ref of the GitHub adapter's deploy row of run runID.
 func GitHubSourceRef(runID int64) string {
-	return fmt.Sprintf("github:%d", runID)
+	return GitHubSourceRefPrefix + strconv.FormatInt(runID, 10)
+}
+
+// PersonSourceRef is the source_ref of the flag of deploy (a deploy row's id) by the person
+// actorID: one row per person and deploy, so a second flag writes nothing.
+func PersonSourceRef(deployID, actorID string) string {
+	return PersonSourceRefPrefix + deployID + ":" + actorID
 }
 
 func nonNil(list []string) []string {

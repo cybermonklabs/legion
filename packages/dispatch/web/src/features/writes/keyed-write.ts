@@ -1,4 +1,5 @@
 import { IDEMPOTENCY_KEY_TTL_MS, retriesUnderKey } from "@legion/contracts";
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 
 import {
   AnswerNotKeptError,
@@ -171,9 +172,11 @@ const refusedAfterUnanswered = new WeakSet<ApiError>();
  * answered with no earlier attempt of the write that may have landed unseen, since
  * `writeUnderKey` makes the write again after every other answer. Dispatch commits nothing of such
  * a write, so it publishes no live event for it (`EndReadHold`). An attempt may have landed unseen
- * where the page had no answer to it in this try of the write, and where an earlier try sent
- * anything under the write's key (`carried`): a lapse stops a try, and the page takes the write up
- * in a try of its own once the person signs in again. A refusal after such an attempt is no
+ * where the page had no answer to it in this try of the write, or an answer that can come after
+ * Dispatch acted on it (a 5xx or a 408, `mayHaveReachedServer`: a proxy in front of Dispatch can
+ * time a request out after it forwarded it), and where an earlier try sent anything under the
+ * write's key (`carried`): a lapse stops a try, and the page takes the write up in a try of its own
+ * once the person signs in again. A refusal after such an attempt is no
  * verdict: that attempt may have landed, and the retry Dispatch refused says nothing of it - a
  * snooze is a `PUT`, which sends no key, so its retry runs Dispatch's handler again, which refuses
  * a moment that has passed meanwhile - and its event may still come. An earlier try counts however
@@ -183,6 +186,17 @@ const refusedAfterUnanswered = new WeakSet<ApiError>();
  */
 export function refusedByDispatch(refusal: unknown): boolean {
   return refusal instanceof ApiError && !refusedAfterUnanswered.has(refusal);
+}
+
+/** Whether `refusal`, which ended a write, is no verdict of Dispatch's: the write stopped - the
+ *  reader's Stop trying, a reload long ago, its key run out - or Dispatch refused it after an
+ *  attempt of it that may have landed unseen (`refusedByDispatch`). Such a write may have landed,
+ *  or may land still. */
+export function endedWithoutVerdict(refusal: unknown): boolean {
+  return (
+    refusal instanceof SendStoppedError ||
+    (refusal instanceof ApiError && !refusedByDispatch(refusal))
+  );
 }
 
 /** `error`, which ends a write, marked as a refusal after an attempt that may have landed unseen
@@ -311,7 +325,9 @@ function pause(
 }
 
 /** How one keyed write is tried: `login` is the person who pressed it, sent on every attempt so
- *  Dispatch refuses it under anyone else's session; `carried` is the method of the request that
+ *  Dispatch refuses it under anyone else's session, and `session` the session an agent viewer
+ *  pressed it as, handed to every attempt for a route that names its writer in the body
+ *  (`WriteBounds.session`); `carried` is the method of the request that
  *  has already gone out under this write's key, which whoever holds the page's writes knows and
  *  this loop cannot (`Writes`), and is required so that every caller says which it means:
  *  `null` is the answer that the key has carried nothing, not one reached by leaving it out.
@@ -327,6 +343,7 @@ export interface KeyedWriteOptions {
   readonly login?: string;
   readonly planned?: WriteRequest;
   readonly sent?: (request: WriteRequest) => void;
+  readonly session?: string;
   readonly signal?: AbortSignal;
   readonly unauthorized?: () => Promise<boolean>;
   readonly uploading?: (loaded: number, total: number) => void;
@@ -378,7 +395,17 @@ export class OneRequestPerWriteError extends Error {
 export async function writeUnderKey<T>(
   attempt: (bounds: WriteBounds) => Promise<T>,
   key: string,
-  { carried, failed, login, planned, sent, signal, unauthorized, uploading }: KeyedWriteOptions
+  {
+    carried,
+    failed,
+    login,
+    planned,
+    sent,
+    session,
+    signal,
+    unauthorized,
+    uploading,
+  }: KeyedWriteOptions
 ): Promise<T | null> {
   let backoff = FIRST_BACKOFF_MS;
   let first: WriteRequest | undefined = planned;
@@ -387,7 +414,8 @@ export async function writeUnderKey<T>(
   // have reached Dispatch - the connection can fail after it leaves - which is the point: from
   // then on the key may name something there, and its age decides the write.
   let underKey: WriteMethod | null = carried;
-  // Whether an attempt went out that the page has no answer to: a resent `DELETE` then finds the
+  // Whether an attempt went out that the page has no answer to, or one that can come after
+  // Dispatch acted on it (a 5xx or a 408, `mayHaveReachedServer`): a resent `DELETE` then finds the
   // thing already gone, and a refusal after it, or after an earlier try that sent under the key
   // (`carried`), says nothing of that attempt (`refusedByDispatch`).
   let unanswered = false;
@@ -427,6 +455,7 @@ export async function writeUnderKey<T>(
           login,
           progress: uploading,
           sent: told,
+          ...(session === undefined ? {} : { session }),
         });
       } catch (error) {
         if (isKeyCommitted(error) || error instanceof AnswerNotKeptError) return null;
@@ -448,7 +477,7 @@ export async function writeUnderKey<T>(
           unauthorizedWhileSignedIn = false;
         }
         failed?.();
-        unanswered ||= !(error instanceof ApiError) || error.status >= 500;
+        unanswered ||= !(error instanceof ApiError) || mayHaveReachedServer(error.status);
         if (!(await pause(wait.ms, wait.wakes, signal, ownRoute))) throw new SendStoppedError();
         if (wait.grows) backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // durableEvents records, in the order the server sent them, every answer published to the delivery
@@ -22,13 +23,19 @@ import (
 // in the order the server's messages arrive, so the record orders an answer against a creation.
 // That order cannot show a hand-back that made the recreated consumer deliver a message again: the
 // server sends a creation's advisory after the new consumer already takes answers, so the rows also
-// read that consumer itself (requireDeliveredOnceAfterTakeOver).
+// read that consumer itself (requireDeliveredOnceAfterTakeOver). A third subscription takes the
+// watch's own barrier messages (barrier), which say that every earlier event has been recorded.
 type durableEvents struct {
-	mu     sync.Mutex
-	events []string
+	conn     *natsgo.Conn
+	mu       sync.Mutex
+	events   []string
+	barriers map[string]bool
 }
 
 const durableCreated = "created"
+
+// durableEventsBarrier is the subject of the watch's own barrier messages (durableEvents.barrier).
+const durableEventsBarrier = "testdelivery.durable-events.barrier"
 
 func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	t.Helper()
@@ -37,6 +44,7 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	for _, subject := range []string{
 		"$JS.ACK." + bus.Stream + "." + bus.DispatchDeliveryDurable + ".>",
 		"$JS.EVENT.ADVISORY.CONSUMER.CREATED." + bus.Stream + "." + bus.DispatchDeliveryDurable,
+		durableEventsBarrier,
 	} {
 		if _, err := conn.ChanSubscribe(subject, arrived); err != nil {
 			t.Fatalf("subscribe to %s: %v", subject, err)
@@ -45,15 +53,18 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the durable's watch: %v", err)
 	}
-	recorded := &durableEvents{}
+	recorded := &durableEvents{conn: conn, barriers: map[string]bool{}}
 	go func() {
 		for msg := range arrived {
-			event := string(msg.Data)
-			if strings.HasPrefix(msg.Subject, "$JS.EVENT.") {
-				event = durableCreated
-			}
 			recorded.mu.Lock()
-			recorded.events = append(recorded.events, event)
+			switch {
+			case msg.Subject == durableEventsBarrier:
+				recorded.barriers[string(msg.Data)] = true
+			case strings.HasPrefix(msg.Subject, "$JS.EVENT."):
+				recorded.events = append(recorded.events, durableCreated)
+			default:
+				recorded.events = append(recorded.events, string(msg.Data))
+			}
 			recorded.mu.Unlock()
 		}
 	}()
@@ -73,23 +84,37 @@ func (r *durableEvents) count() int {
 	return len(r.events)
 }
 
+// barrier waits until the watch has recorded every event the server had handled when barrier
+// began: it publishes a message of its own on the watch's connection and waits until the watch
+// records it. The server sends the watch each event as it handles the publish that makes it, and
+// handles this one later, so the watch receives it after them, in order on its one channel.
+func (r *durableEvents) barrier(t *testing.T) {
+	t.Helper()
+	id := natsgo.NewInbox()
+	if err := r.conn.Publish(durableEventsBarrier, []byte(id)); err != nil {
+		t.Fatalf("publish the durable watch's barrier: %v", err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.barriers[id]
+	}, func() string { return "the durable's watch did not record its barrier within 30 s" })
+}
+
 // stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
 // request with a second message of it waiting behind, stops the holder, and holds a write on the
 // holder's link from inside the stop's hand-back of the waiting message, after the connected read
 // has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
 // lock. It returns once the write is held, with the stop under way. The stop's deadline is
-// intakeStopBudget, shrunk to stopBudget.
+// stopBudget for the intakes' stop budget.
 func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	t.Helper()
 	// The holder's handler holds the first message until the row releases it or the stop gives it
 	// up, never until a deadline of its own: the second message has to queue behind it. Set before
-	// the intakes start, whose take-overs read it (intakeAckWait).
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = untilTheBinaryDeadline(t)
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	// the intakes start, whose take-overs read it (intakeTuning.ackWait).
+	tuning := tuningFor(t)
+	tuning.messageTimeout = untilTheBinaryDeadline(t)
+	tuning.stopBudget = stopBudget
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -125,12 +150,12 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	})
 
 	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and each of the
-	// stop's calls waits for NATS at most callNATSWait: a drain that answers after it has the stop
-	// withhold its hand-backs, and the row has no publish to hold. So the stop's calls wait as long
-	// as the test binary's deadline allows, and the wait is put back as the hand-back's publish
-	// begins, so the held write still outlives it.
-	wait := callNATSWait.Swap(int64(untilTheBinaryDeadline(t)))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	// stop's calls waits for NATS at most the intakes' callWait: a drain that answers after it has
+	// the stop withhold its hand-backs, and the row has no publish to hold. So the stop's calls wait
+	// as long as the test binary's deadline allows, and the wait is put back as the hand-back's
+	// publish begins, so the held write still outlives it.
+	wait := tuning.callWait.Swap(int64(untilTheBinaryDeadline(t)))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -207,21 +232,20 @@ func (r heldHandBack) handBackPending() bool {
 // stopBudget is the stop's deadline in the rows below (intakeStopBudget).
 const stopBudget = 3 * time.Second
 
-// untilTheBinaryDeadline is how long the rows below wait for an event that ends a wait of their own
-// or of the stop's: what the test binary's deadline leaves less rowDeadlineMargin, so that a row
-// whose event never comes fails by name before go test's own timeout, and none of these waits ends
-// at a span a loaded runner can outlast. A run with no deadline (-timeout 0) waits rowWaitUnbounded.
+// untilTheBinaryDeadline is how long the rows below, and awaitBoundDurable, wait for an event that
+// ends a wait of their own or of the stop's: what the test binary's deadline leaves less
+// rowDeadlineMargin (testwait.Remaining), so that a row whose event never comes fails by name before
+// go test's own timeout, and none of these waits ends at a span a loaded runner can outlast. A
+// deadline that leaves no more than the margin fails the row by name, saying whether the -timeout
+// was too short or what ran before used it up. A run with no deadline (-timeout 0) waits
+// rowWaitUnbounded, which the intake's ack wait (intakeAckWait: intakeMaxAckPending times
+// intakeMessageTimeout, plus a minute) still takes.
 func untilTheBinaryDeadline(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
+	if _, bounded := t.Deadline(); !bounded {
 		return rowWaitUnbounded
 	}
-	left := time.Until(deadline)
-	if left <= rowDeadlineMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than rowDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), rowDeadlineMargin)
-	}
-	return left - rowDeadlineMargin
+	return testwait.Remaining(t, rowDeadlineMargin)
 }
 
 const (
@@ -409,7 +433,7 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // once.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
-		logs := captureLogs(t)
+		logs := captureIntakeLogs(t)
 		row := stopWithAHeldHandBack(t)
 		waitFor(t, untilTheBinaryDeadline(t), func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
@@ -473,8 +497,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			close(finalizing)
 			<-releaseFinalizer
 		}
-		finalizerBeforeRelease.Store(&hook)
-		t.Cleanup(func() { finalizerBeforeRelease.Store(nil) })
+		row.holder.intake.tuning.beforeRelease.Store(&hook)
 		var runs sync.WaitGroup
 		closed := make(chan struct{})
 		go func() {

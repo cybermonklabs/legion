@@ -4,11 +4,13 @@ import "context"
 
 // resolveSessionTitlesQuery answers, for each id it is given, that session's stored title: one
 // read of session_titles_pkey (migration 20261117100008) for the whole list, and no row for a
-// session that has none. It reads no events. Resolving each title out of events on a page read,
-// as an ordered read a session of events_session_actor_created_at_idx, cost 42 to 133 ms a paint
-// of the Delivery page on a production-shaped fixture (dispatch://INFRA-2916, R13), and the
-// table is written where the title is stamped instead (20261117100015's trigger). The plan test
-// of this package holds it there (session_titles_plan_test.go).
+// session that has none. It reads no events. Each title used to be resolved out of events on
+// every page read: the read before cybermonklabs/legion#3517, a `distinct on` that sorted every
+// event of the listed sessions, cost 42 to 133 ms a paint of the Delivery page over three
+// projects and 812,386 events (dispatch://INFRA-2916, R13), and #3517's ordered read a session of
+// events_session_actor_created_at_idx, which has no measurement at that size, still read events
+// on each one. The table is written where the title is stamped instead (20261117100015's
+// trigger). The plan test of this package holds the read there (session_titles_plan_test.go).
 const resolveSessionTitlesQuery = `select session_id, title from session_titles where session_id = any($1)`
 
 // ResolveSessionTitles answers the newest title each session stamped, which the Delivery page

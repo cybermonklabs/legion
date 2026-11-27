@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refresherNow is the moment the refresher's tests run their passes as of: noon of deliverytest's
@@ -54,16 +56,23 @@ func newRefresherRig(t *testing.T) *refresherRig {
 }
 
 // pass makes one refresher pass as of the rig's clock, under its build, with a batch of its own
-// (gapBatch), and answers what it wrote and when it asks to run again. It proves the event log's
-// safe horizon first, as the Legion facts consumer's tests do: a pass reads the log only up to the
-// horizon, which a later observation raises past a write the test just made.
+// (gapBatch), and answers what it wrote and when it asks to run again (refreshIn).
 func (r *refresherRig) pass(t *testing.T) (refreshed, time.Time) {
 	t.Helper()
-	if _, err := r.horizon.Await(t.Context()); err != nil {
+	return r.refreshIn(t.Context(), t, &gapBatch{})
+}
+
+// refreshIn makes one refresher pass in ctx as of the rig's clock, under its build, with batch
+// (refresh; nil for none), and answers what it wrote and when it asks to run again. It proves the
+// event log's safe horizon first, as the Legion facts consumer's tests do: a pass reads the log
+// only up to the horizon, which a later observation raises past a write the test just made.
+func (r *refresherRig) refreshIn(ctx context.Context, t *testing.T, batch *gapBatch) (refreshed, time.Time) {
+	t.Helper()
+	if _, err := r.horizon.Await(ctx); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
-	report, next, err := r.registry.refresh(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, &gapBatch{})
+	report, next, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, batch)
 	if err != nil {
 		t.Fatalf("the refresher's pass failed: %v", err)
 	}
@@ -135,17 +144,6 @@ func deployRule(t testing.TB, pool *store.Pool, repo string) delivery.DeliverySe
 	return delivery.DeliverySettings{}
 }
 
-// sourceOf is a github_workflow source holding rule's workflow, jobs and steps, naming repo (nil:
-// the project's default repository).
-func sourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput {
-	return delivery.SourceInput{
-		Kind: delivery.SourceKindGitHubWorkflow, Repo: repo, DeployWorkflowPath: new(rule.DeployWorkflowPath),
-		ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
-		StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
-		PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
-	}
-}
-
 // eventsSource is a source that reads the project's posted deploys.
 var eventsSource = delivery.SourceInput{Kind: delivery.SourceKindEvents}
 
@@ -158,23 +156,31 @@ func putSources(t testing.TB, pool *store.Pool, project string, authors []string
 	})
 }
 
-// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own.
+// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own
+// (deliverytest.SaveSettings).
 func putProjectSettings(t testing.TB, pool *store.Pool, input delivery.ProjectSettingsInput) delivery.ProjectSettings {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the delivery settings of %s: %v", input.Project, err)
-	}
-	defer tx.Rollback(ctx)
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, model.Actor{Kind: "system", ID: "evals-test"})
+	saved, err := deliverytest.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "evals-test"})
 	if err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the delivery settings of %s: %v", input.Project, err)
-	}
 	return saved
+}
+
+// leaveInputsUnread clears every stored pull request's attribution inputs, as a row stored before
+// its GitHub facts were read for them holds none, so the issue its row names (issue_key) stands as
+// its attribution: no inputs were read, and a row with none counts by the one list its issue_key
+// gives (delivery_days.go's attribution). A test whose oracle is deliverytest's issue_key, the
+// project of the issue it names each pull request after, reads its rows this way: the history's
+// issues own no repository and only its project's default is the deploy repository, so with the
+// inputs read most of its pull requests would count by the published defaults (under owner keys
+// whose lists name the issue's project), and those of its other repositories, and every one
+// naming an issue of its second project, for no project the issue names.
+func (r *refresherRig) leaveInputsUnread(t *testing.T) {
+	t.Helper()
+	r.exec(t, "leave the pull requests' attribution inputs unread", `
+		update delivery_pull_requests
+		set attribution_title_keys = null, attribution_cited_issues = null, attribution_branch_keys = null, attribution_commit_keys = null`)
 }
 
 // rowKey is a day row's identity, `<project> <eval id> <series> <repo> <day>`, and ` as <deploy
@@ -344,8 +350,10 @@ func (r *refresherRig) changesHead(t *testing.T) delivery.ChangeCursor {
 }
 
 // evalDayChanges is every eval_days change of an eval logged after seq, as `<eval id> <first
-// day>..<last day>`, in seq order. The eval_days change of no eval, the refresher's word that the
-// day rows stand at the delivery settings (delivery.SettingsApplied), names no day and is left out.
+// day>..<last day>`, in seq order. An eval_days change that names no day is left out: the
+// refresher's word that the day rows stand at the delivery settings (delivery.SettingsApplied),
+// that it recorded the rules they stand built under (recordRules, recordRule), or that the project
+// judging the delivery views moved (delivery.JudgingMoved).
 func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	t.Helper()
 	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, after, 100000)
@@ -354,37 +362,51 @@ func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	}
 	var lines []string
 	for _, change := range changes {
-		if change.Kind == "eval_days" && !delivery.SettingsApplied(change) {
+		if change.Kind == "eval_days" && change.TOld != nil && change.TNew != nil {
 			lines = append(lines, fmt.Sprintf("%s %s..%s", change.Ref, change.TOld.UTC().Format(time.DateOnly), change.TNew.UTC().Format(time.DateOnly)))
 		}
 	}
 	return lines
 }
 
+// dayProblems is what is wrong with the days a pass wrote, as expectDays judges them: the days it
+// wrote (report) other than the days want names (dayLine's form), a row of a day outside want that
+// was rewritten between before and after, and no row of a day of mustMove, whose input the change
+// moved, rewritten.
+func dayProblems(what string, report refreshed, before, after map[string]DayRow, want, mustMove []string) []string {
+	var problems []string
+	want = slices.Sorted(slices.Values(want))
+	if got := report.sorted(); !slices.Equal(got, want) {
+		problems = append(problems, fmt.Sprintf("%s: the pass wrote the days\n\t%s\nwant\n\t%s", what, strings.Join(got, "\n\t"), strings.Join(want, "\n\t")))
+	}
+	lines, _ := rewritten(before, after)
+	for _, line := range lines {
+		if !slices.Contains(want, line) {
+			problems = append(problems, fmt.Sprintf("%s: a row of %s was rewritten, a day the change does not touch", what, line))
+		}
+	}
+	for _, line := range mustMove {
+		if !slices.Contains(lines, line) {
+			problems = append(problems, fmt.Sprintf("%s: no row of %s was rewritten, and the change moved its input", what, line))
+		}
+	}
+	return problems
+}
+
 // expectDays makes one pass after the test changed an input, and checks that it wrote exactly the
 // days want names (dayLine's form), that no row of any other day was rewritten, and that a row of
-// each day of mustMove was: a day whose input the change moved. It logs what each rewritten day's
-// rows held for updated_at before and after, and every eval_days change row the pass logged.
+// each day of mustMove was: a day whose input the change moved (dayProblems). It logs what each
+// rewritten day's rows held for updated_at before and after, and every eval_days change row the
+// pass logged.
 func (r *refresherRig) expectDays(t *testing.T, what string, before map[string]DayRow, want, mustMove []string) map[string]DayRow {
 	t.Helper()
 	seq := r.latestSeq(t)
 	report, _ := r.pass(t)
 	after := r.dayRows(t)
-	slices.Sort(want)
-	if got := report.sorted(); !slices.Equal(got, want) {
-		t.Errorf("%s: the pass wrote the days\n\t%s\nwant\n\t%s", what, strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	for _, problem := range dayProblems(what, report, before, after, want, mustMove) {
+		t.Error(problem)
 	}
-	lines, described := rewritten(before, after)
-	for _, line := range lines {
-		if !slices.Contains(want, line) {
-			t.Errorf("%s: a row of %s was rewritten, a day the change does not touch", what, line)
-		}
-	}
-	for _, line := range mustMove {
-		if !slices.Contains(lines, line) {
-			t.Errorf("%s: no row of %s was rewritten, and the change moved its input", what, line)
-		}
-	}
+	_, described := rewritten(before, after)
 	t.Logf("%s: the pass wrote %v; rows rewritten:\n\t%s\n\teval_days changes: %v", what, report.sorted(),
 		strings.Join(described, "\n\t"), r.evalDayChanges(t, seq))
 	return after
@@ -400,6 +422,22 @@ func seriesDays(rows map[string]DayRow, project, slug, series string) ([]time.Ti
 		}
 	}
 	return slices.SortedFunc(maps.Keys(n), time.Time.Compare), n
+}
+
+// readRows is every stored day row as the projects that read it read it (asReaders): a project's
+// own row, and an owner key's (owners.go) once under each project that reads the key, by the
+// stored row's rowKey and the project. A project's day can hold a row of one series of its own and
+// rows of owner keys it reads.
+func (r *refresherRig) readRows(t *testing.T) map[string]DayRow {
+	t.Helper()
+	readers := r.ownerReaders(t)
+	read := map[string]DayRow{}
+	for key, row := range r.dayRows(t) {
+		for _, one := range asReaders(row, readers) {
+			read[key+" for "+one.ProjectKey] = one
+		}
+	}
+	return read
 }
 
 // contiguous reports the first day missing from days, which should run from their first to today
@@ -425,14 +463,16 @@ func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
 // time on its first close, its idle time on its first close on or after the first whole day after
 // its first claim observation, and the logged eval's on its reading's day. The days with no input
 // (today, and a day before a reading) hold zero rows, n 0. The cursors stand at the feeds' heads,
-// stamped with the pass's moment, which RefresherAge reads.
+// stamped with the pass's moment, which RefresherAgeIn reads.
 func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	readingDay := refresherToday.AddDate(0, 0, -3)
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "run-1", "value": 12.5, "measured_at": readingDay.Add(9 * time.Hour)}))
-	if _, found, err := r.registry.RefresherAge(t.Context(), r.now); err != nil || found {
-		t.Fatalf("before any pass RefresherAge answers found %t, %v, want no age", found, err)
+	if _, found, err := RefresherAgeIn(t.Context(), r.database.Pool, r.now); err != nil || found {
+		t.Fatalf("before any pass RefresherAgeIn answers found %t, %v, want no age", found, err)
 	}
 
 	r.batch = 2
@@ -469,13 +509,20 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if err := r.database.Pool.QueryRow(t.Context(), `select min(closed_at) from issue_facts where project_key = $1`, legion.Project).Scan(&firstClose); err != nil {
 		t.Fatalf("read the first close of %s: %v", legion.Project, err)
 	}
-	since, err := r.registry.ReadLegionSince(t.Context(), legion.Project)
-	if err != nil || since.Claims == nil {
-		t.Fatalf("read the first observations of %s: %+v, %v", legion.Project, since, err)
+	// The first claim observation, read from the table as the project's observations are stored:
+	// legion-idle-time has input from the first UTC midnight at or after it.
+	var firstClaim time.Time
+	if err := r.database.Pool.QueryRow(t.Context(), `select min(observed_at) from legion_observations where project = $1 and field like 'claim.%'`,
+		legion.Project).Scan(&firstClaim); err != nil {
+		t.Fatalf("read the first claim observation of %s: %v", legion.Project, err)
+	}
+	idleFrom := measures.Midnight(firstClaim)
+	if idleFrom.Before(firstClaim) {
+		idleFrom = idleFrom.AddDate(0, 0, 1)
 	}
 	var firstIdle time.Time
 	if err := r.database.Pool.QueryRow(t.Context(), `select min(closed_at) from issue_facts where project_key = $1 and closed_at >= $2`,
-		legion.Project, *since.Claims).Scan(&firstIdle); err != nil {
+		legion.Project, idleFrom).Scan(&firstIdle); err != nil {
 		t.Fatalf("read the first close of %s after its first claim: %v", legion.Project, err)
 	}
 
@@ -507,15 +554,20 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 		}
 		t.Logf("%s: rows from %s to %s, %d days, n of today %d", name, days[0].Format(time.DateOnly), days[len(days)-1].Format(time.DateOnly), len(days), n[refresherToday])
 	}
-	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day > $2 and n = 0 and repo = ''`, EvalID("EVAL", "build-minutes"), readingDay); got != 3 {
-		t.Errorf("the logged eval holds %d zero rows after its reading's day, want the 3 days through today", got)
+	// The write filled the zero rows through the database's today, past the rig's (writeLoggedZeros).
+	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day > $2 and day <= $3 and n = 0 and repo = ''`,
+		EvalID("EVAL", "build-minutes"), readingDay, refresherToday); got != 3 {
+		t.Errorf("the logged eval holds %d zero rows after its reading's day through today, want the 3 days", got)
 	}
 	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day = $2 and repo = ''`, EvalID(deliveries.Project, SlugUnownedP0), refresherToday); got != 1 {
 		t.Errorf("%s holds %d unowned-p0 rows of today, want 1", deliveries.Project, got)
 	}
 
-	// The last walk's writes logged eval_days changes after the cursor that pass moved; one more
-	// pass reads them, which name no day, and leaves the cursor at the head.
+	// An event of a type the refresher reads no day of is written after the walk, which the pass
+	// below reads past. The last walk's writes logged eval_days changes after the cursor that pass
+	// moved; one more pass reads them, which name no day, and leaves the cursor at the head.
+	r.exec(t, "write an event that names no day", `
+		insert into events (seq, type, actor, payload, notify) values (0, 'refresher.test', '{"kind":"user","id":"alice"}', '{}', false)`)
 	if report, _ := r.pass(t); len(report.days) != 0 {
 		t.Errorf("a pass after the walk wrote %v, want nothing: the walk's own eval_days changes name no day", report.sorted())
 	}
@@ -527,27 +579,32 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if got := cursors.changes; got.Seq != head.Seq || got.At == nil || head.At == nil || !got.At.Equal(*head.At) {
 		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.Seq, got.At, head.Seq, head.At)
 	}
-	age, found, err := r.registry.RefresherAge(t.Context(), r.now.Add(time.Minute))
+	// The event cursor stands at the safe horizon the last pass read the log through, past the
+	// event written after the walk.
+	if events := int64(r.count(t, `select coalesce(max(id), 0) from events`)); cursors.events != r.horizon.Proven() || cursors.events < events {
+		t.Errorf("the events cursor stands at %d, want the safe horizon %d, no less than the newest event %d", cursors.events, r.horizon.Proven(), events)
+	}
+	age, found, err := RefresherAgeIn(t.Context(), r.database.Pool, r.now.Add(time.Minute))
 	if err != nil || !found || age != time.Minute {
-		t.Errorf("RefresherAge a minute after the last pass answers %s, found %t, %v; want a minute", age, found, err)
+		t.Errorf("RefresherAgeIn a minute after the last pass answers %s, found %t, %v; want a minute", age, found, err)
 	}
 }
 
-// TestTheTickPrunesChangesOlderThanTheirRetention: a pass deletes every delivery change older
-// than delivery.ChangeRetention by the database's clock and keeps a newer one, and asks for its
-// next pass pruneSlack after the oldest change it kept passes its retention or at the next UTC
-// midnight, whichever is first, so the log keeps its 24 hours with no GitHub App's reconcile
-// pruning it, and a loop no change wakes prunes it within five minutes of a change's expiry and no
-// sooner.
+// TestTheTickPrunesChangesOlderThanTheirRetention: a pass deletes the delivery changes older than
+// delivery.ChangeRetention and keeps a newer one (where the cut falls is PruneChanges' own test's),
+// and asks for its next pass pruneSlack after the oldest change it kept passes its retention or at
+// the next UTC midnight, whichever is first, so the log keeps its 24 hours with no GitHub App's
+// reconcile pruning it, and a loop no change wakes prunes it within five minutes of a change's
+// expiry and no sooner.
 func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.now = time.Now().UTC()
 	r.pass(t)
-	r.exec(t, "log three changes", `
+	r.exec(t, "log two changes", `
 		insert into delivery_changes (kind, repo, ref, at)
 		values ('session_group', null, '25h', now() - interval '25 hours'),
-		       ('session_group', null, '24h1m', now() - interval '24 hours 1 minute'),
-		       ('session_group', null, '23h59m', now() - interval '23 hours 59 minutes')`)
+		       ('session_group', null, '23h', now() - interval '23 hours')`)
 	_, next := r.pass(t)
 	rows, err := r.database.Pool.Query(t.Context(), `select ref, at from delivery_changes where kind = 'session_group' order by seq`)
 	if err != nil {
@@ -562,8 +619,8 @@ func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(kept, []string{"23h59m"}) {
-		t.Errorf("after the pass the log keeps %v of the three changes, want the one 23 hours 59 minutes old", kept)
+	if !slices.Equal(kept, []string{"23h"}) {
+		t.Errorf("after the pass the log keeps %v of the two changes, want the one 23 hours old", kept)
 	}
 	want := keptAt.Add(delivery.ChangeRetention + pruneSlack)
 	if midnight := measures.Midnight(r.now).AddDate(0, 0, 1); midnight.Before(want) {
@@ -575,31 +632,31 @@ func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
 	t.Logf("pruned to %v; the next pass is due at %s", kept, next.UTC().Format(time.RFC3339))
 }
 
-// factsLatencyBound is how long after the Legion facts consumer's commit the refresher's loop may
-// take to rewrite the day rows the stored facts move: half of R14's 2 s from a facts write to
-// every evals view, which the views' own wake and recompute share.
-const factsLatencyBound = time.Second
+// loopGap is the gap the tests of the loop run it at: an hour, which no test waits out. A pass a
+// change woke then runs at once, or the test's wait for it gives up by name; and the loop begins
+// the next batch of the walks only once the test has moved the loop's clock a gap on (advance).
+const loopGap = time.Hour
 
 // refresherLoop is the refresher's loop as the server runs it (runRefresher, under the eval-days
-// lease), over a rig's database, at a gap the test gives and as of the rig's clock. deliveries is
-// its delivery wake where the test signals it by hand (wake), nil where a hub signals it; log
-// holds every record logged while the loop runs, and started is the moment before its boot pass
-// began.
+// lease), over a rig's database, at loopGap and as of the rig's clock. deliveries is its delivery
+// wake where the test signals it by hand (wake), nil where a hub signals it; log holds every
+// record logged while the loop runs; ahead is how far the loop's own clock stands ahead of the
+// wall clock (advance).
 type refresherLoop struct {
 	deliveries chan struct{}
 	log        *logtest.Recorder
-	started    time.Time
+	ahead      atomic.Int64
 }
 
 // runLoop starts the loop over the rig, woken by the test by hand rather than by a hub, once the
 // event log's safe horizon covers every event written so far; it runs until the test ends.
-func (r *refresherRig) runLoop(t *testing.T, gap time.Duration) *refresherLoop {
+func (r *refresherRig) runLoop(t *testing.T) *refresherLoop {
 	t.Helper()
 	if _, err := r.horizon.Await(t.Context()); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 	deliveries := make(chan struct{}, 1)
-	loop := r.startLoop(t, gap, deliveries)
+	loop := r.startLoop(t, deliveries)
 	loop.deliveries = deliveries
 	return loop
 }
@@ -607,17 +664,16 @@ func (r *refresherRig) runLoop(t *testing.T, gap time.Duration) *refresherLoop {
 // startLoop starts the loop over the rig with deliveries as its delivery wake and an events wake
 // nothing signals; it runs until the test ends. Its boot pass reads the event log through the
 // horizon as a pass of the server does (events.Horizon.SafeOrAwait).
-func (r *refresherRig) startLoop(t *testing.T, gap time.Duration, deliveries <-chan struct{}) *refresherLoop {
+func (r *refresherRig) startLoop(t *testing.T, deliveries <-chan struct{}) *refresherLoop {
 	t.Helper()
 	loop := &refresherLoop{log: &logtest.Recorder{}}
 	logtest.SetDefault(t, loop.log)
 	deps := RefresherDeps{Horizon: r.horizon, Build: r.build, Leases: storetest.Leases(t, r.database.Pool),
 		Events: make(chan struct{}, 1), Deliveries: deliveries}
 	now := r.now
-	sched := refresherSchedule{gap: gap, page: refresherPage, batch: r.batch, now: func() time.Time { return now }}
+	sched := refresherSchedule{gap: loopGap, page: refresherPage, batch: r.batch, now: func() time.Time { return now }, wall: loop.wall}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
-	loop.started = time.Now()
 	go func() {
 		defer close(done)
 		r.registry.runRefresher(ctx, deps, sched)
@@ -649,12 +705,30 @@ func (r *refresherRig) changesWake(t *testing.T) <-chan struct{} {
 		stop()
 		<-done
 	})
-	select {
-	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
-	}
+	testwait.Receive(t, "the hub to connect", connected)
 	return wake
+}
+
+// nudge logs a change of an issue's facts that names no day (no t_old and no t_new, as a change of
+// an open issue's facts does) and moves it into the change log, which a hub wakes the loop for: a
+// wake of a loop whose delivery wake is a hub's.
+func (r *refresherRig) nudge(t *testing.T) {
+	t.Helper()
+	r.exec(t, "log a change that names no day", `select delivery_change_log_pending('issue_facts', null, 'EVAL', 'EVAL-4', null, null)`)
+	if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+		t.Fatalf("move the change into the log: %v", err)
+	}
+}
+
+// wall is the loop's own clock: the wall clock, ahead as far as the test has moved it.
+func (l *refresherLoop) wall() time.Time {
+	return time.Now().Add(time.Duration(l.ahead.Load()))
+}
+
+// advance moves the loop's clock d on, so the next pass begins another batch of the walks where d
+// reaches the gap, which the loop would otherwise wait for.
+func (l *refresherLoop) advance(d time.Duration) {
+	l.ahead.Add(int64(d))
 }
 
 // wake signals the loop's delivery wake as the hub does, a send that never blocks into a buffer of
@@ -666,45 +740,41 @@ func (l *refresherLoop) wake() {
 	}
 }
 
-// ran is how many of the loop's passes have run so far: duty.Exclusive logs each one that ran
-// under the refresher's lease, as it ends.
-func (l *refresherLoop) ran() int {
-	n := 0
+// passEnds is when each of the loop's passes that has run so far ended: duty.Exclusive logs each
+// one that ran under the refresher's lease, as it ends.
+func (l *refresherLoop) passEnds() []time.Time {
+	var ends []time.Time
 	for _, record := range l.log.Records() {
 		if record.Message != "dispatch duty: leased pass ran" {
 			continue
 		}
 		record.Attrs(func(attr slog.Attr) bool {
 			if attr.Key == "lease" && attr.Value.String() == RefresherLease {
-				n++
+				ends = append(ends, record.Time)
 				return false
 			}
 			return true
 		})
 	}
-	return n
+	return ends
 }
 
-// awaitRan waits until n of the loop's passes have run, failing t once bound has passed, and
-// answers when they had.
-func (l *refresherLoop) awaitRan(t *testing.T, n int, bound time.Duration) time.Time {
-	t.Helper()
-	return awaitAt(t, time.Now().Add(bound), fmt.Sprintf("pass %d of the loop", n), func() bool { return l.ran() >= n })
+// ran is how many of the loop's passes have run so far (passEnds).
+func (l *refresherLoop) ran() int {
+	return len(l.passEnds())
 }
 
-// awaitAt asks holds every 10 ms until it holds, failing t once deadline has passed, and answers
-// the moment it was seen to hold.
-func awaitAt(t *testing.T, deadline time.Time, what string, holds func() bool) time.Time {
+// awaitRan waits until n of the loop's passes have run.
+func (l *refresherLoop) awaitRan(t *testing.T, n int) {
 	t.Helper()
-	for {
-		if holds() {
-			return time.Now()
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not seen by %s", what, deadline.Format(time.RFC3339Nano))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Eventually(t, fmt.Sprintf("pass %d of the loop", n), func() bool { return l.ran() >= n })
+}
+
+// tracedStore is a registry over the rig's database whose statements tracer traces, beside the
+// rig's documents, events and attributor: the registry of a check that reads what a write sends.
+func (r rig) tracedStore(t *testing.T, tracer pgx.QueryTracer) *Store {
+	t.Helper()
+	return New(storetest.TracedStore(t, r.database, tracer), r.documents, r.registry.events, r.registry.attributor)
 }
 
 // workTime is EVAL's legion-work-time n of each day, of its all-repositories rows of hours, by the
@@ -770,13 +840,15 @@ func (r *refresherRig) storeFacts(t *testing.T, history *legionEval, through int
 // reach every evals view, and a view wakes once the refresher has rewritten its day rows. The
 // write's event wakes the refresher at once, and that pass runs before the Legion facts consumer
 // has stored the facts the event moves, so it rewrites nothing; the consumer's commit wakes the
-// loop again. Here the loop runs as the server runs it, at RefresherGap, woken by hand: its first
-// pass reads EVAL-3's status event and rewrites nothing; a wake before the consumer commits, as the
+// loop again. Here the loop runs as the server runs it, at loopGap, woken by hand: its first pass
+// reads EVAL-3's status event and rewrites nothing; a wake before the consumer commits, as the
 // refresher's own writes give, runs a pass at once; then the consumer stores EVAL-3's close moved
-// from the 3rd day to the 5th, and the wake of that commit runs the pass that rewrites both days
-// within factsLatencyBound of the commit. EVAL-2's close, moved after that pass with no event,
-// reaches the day rows within the same bound of its own commit: no gap holds a pass a change woke.
+// from the 3rd day to the 5th, and the wake of that commit runs the pass that rewrites both days.
+// EVAL-2's close, moved after that pass with no event, reaches the day rows by the wake of its own
+// commit: no gap holds a pass a change woke, which a gap of an hour would hold past any wait.
 func TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -790,8 +862,8 @@ func TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit(t *testing.T) {
 	r.writeIssueEvent(t, "EVAL-3", "issue.updated", `{"key":"EVAL-3","status":"in_review","changed":["status"]}`)
 	event := int64(r.count(t, `select max(id) from events`))
 
-	loop := r.runLoop(t, RefresherGap)
-	loop.awaitRan(t, 1, time.Minute)
+	loop := r.runLoop(t)
+	loop.awaitRan(t, 1)
 	if read := int64(r.count(t, `select position from eval_days_cursor where name = $1`, eventsCursor)); read < event {
 		t.Fatalf("the first pass left the events cursor at %d, short of EVAL-3's event %d", read, event)
 	}
@@ -799,47 +871,40 @@ func TestTheFactsAnEventMovesReachTheDayRowsAtTheirCommit(t *testing.T) {
 		t.Fatalf("the first pass moved EVAL-3's close before its facts were stored: n %v", n)
 	}
 	loop.wake()
-	loop.awaitRan(t, 2, factsLatencyBound)
+	loop.awaitRan(t, 2)
 
 	moved := history.rows["EVAL-3"]
 	moved.ClosedAt = new(legionHistoryDay(5).Add(9 * time.Hour))
 	history.rows["EVAL-3"] = moved
-	committed := r.storeFacts(t, history, event, "EVAL-3")
+	r.storeFacts(t, history, event, "EVAL-3")
 	loop.wake()
-	landed := awaitAt(t, committed.Add(RefresherGap+3*time.Second), "the day rows of EVAL-3's moved close", func() bool {
+	testwait.Eventually(t, "the day rows of EVAL-3's moved close", func() bool {
 		n := r.workTime(t)
 		return n[d2] == 0 && n[d4] == 1
 	})
-	if latency := landed.Sub(committed); latency > factsLatencyBound {
-		t.Errorf("EVAL-3's moved close reached the day rows %s after the facts consumer's commit, want within %s", latency, factsLatencyBound)
-	}
-	t.Logf("EVAL-3's moved close reached the day rows %s after the facts consumer's commit (bound %s)", landed.Sub(committed), factsLatencyBound)
 
-	loop.awaitRan(t, 3, time.Minute)
+	loop.awaitRan(t, 3)
 	moved = history.rows["EVAL-2"]
 	moved.ClosedAt = new(legionHistoryDay(4).Add(12 * time.Hour))
 	history.rows["EVAL-2"] = moved
-	stored := r.storeFacts(t, history, event, "EVAL-2")
+	r.storeFacts(t, history, event, "EVAL-2")
 	loop.wake()
-	again := awaitAt(t, stored.Add(RefresherGap+3*time.Second), "the day rows of EVAL-2's moved close", func() bool {
+	testwait.Eventually(t, "the day rows of EVAL-2's moved close", func() bool {
 		n := r.workTime(t)
 		return n[d1] == 1 && n[d3] == 1
 	})
-	if latency := again.Sub(stored); latency > factsLatencyBound {
-		t.Errorf("EVAL-2's moved close, stored %s after EVAL-3's pass landed, reached the day rows %s after its commit, want within %s",
-			stored.Sub(landed), latency, factsLatencyBound)
-	}
-	t.Logf("EVAL-2's close, moved %s after EVAL-3's pass landed, reached the day rows %s after its own commit (bound %s)",
-		stored.Sub(landed), again.Sub(stored), factsLatencyBound)
 }
 
 // TestAChangeInsideWhatWasTheGapReachesTheDayRowsAtOnce: the loop runs as the server runs it, at
-// RefresherGap, woken by hand, over a settled Legion history of EVAL whose facts consumer stands at
-// the head of the events. EVAL-3's close, moved from the 3rd day to the 5th within a second of the
-// boot pass's end, reaches the day rows within factsLatencyBound of the facts' commit, and EVAL-2's,
-// moved from the 2nd to the 4th 300 ms later, within the same bound of its own commit: no gap holds
-// a pass a change woke. Before, both waited for RefresherGap after the boot pass began.
+// loopGap, woken by hand, over a settled Legion history of EVAL whose facts consumer stands at the
+// head of the events. EVAL-3's close, moved from the 3rd day to the 5th after the boot pass's end,
+// reaches the day rows by the wake of the facts' commit, and EVAL-2's, moved from the 2nd to the
+// 4th at once, with no wait for the pass of the first, by the wake of its own commit: no gap that
+// began with the boot pass holds a pass a change woke. Before, both waited for RefresherGap after
+// the boot pass began.
 func TestAChangeInsideWhatWasTheGapReachesTheDayRowsAtOnce(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -848,53 +913,39 @@ func TestAChangeInsideWhatWasTheGapReachesTheDayRowsAtOnce(t *testing.T) {
 	d1, d2 := history.d1.Format(time.DateOnly), history.d2.Format(time.DateOnly)
 	d3, d4 := legionHistoryDay(4).Format(time.DateOnly), legionHistoryDay(5).Format(time.DateOnly)
 
-	loop := r.runLoop(t, RefresherGap)
-	booted := loop.awaitRan(t, 1, time.Minute)
+	loop := r.runLoop(t)
+	loop.awaitRan(t, 1)
 	moved := history.rows["EVAL-3"]
 	moved.ClosedAt = new(legionHistoryDay(5).Add(9 * time.Hour))
 	history.rows["EVAL-3"] = moved
-	committed := r.storeFacts(t, history, head, "EVAL-3")
-	if after := committed.Sub(booted); after > time.Second {
-		t.Fatalf("EVAL-3's move committed %s after the boot pass ended, not within the second the test is of", after)
-	}
+	r.storeFacts(t, history, head, "EVAL-3")
 	loop.wake()
-	landed := awaitAt(t, committed.Add(RefresherGap+3*time.Second), "the day rows of EVAL-3's moved close", func() bool {
+	testwait.Eventually(t, "the day rows of EVAL-3's moved close", func() bool {
 		n := r.workTime(t)
 		return n[d2] == 0 && n[d4] == 1
 	})
-	if latency := landed.Sub(committed); latency > factsLatencyBound {
-		t.Errorf("EVAL-3's close, moved %s after the boot pass ended, reached the day rows %s after its commit, want within %s",
-			committed.Sub(booted), latency, factsLatencyBound)
-	}
 
-	time.Sleep(time.Until(committed.Add(300 * time.Millisecond)))
 	moved = history.rows["EVAL-2"]
 	moved.ClosedAt = new(legionHistoryDay(4).Add(12 * time.Hour))
 	history.rows["EVAL-2"] = moved
-	stored := r.storeFacts(t, history, head, "EVAL-2")
+	r.storeFacts(t, history, head, "EVAL-2")
 	loop.wake()
-	again := awaitAt(t, stored.Add(RefresherGap+3*time.Second), "the day rows of EVAL-2's moved close", func() bool {
+	testwait.Eventually(t, "the day rows of EVAL-2's moved close", func() bool {
 		n := r.workTime(t)
 		return n[d1] == 1 && n[d3] == 1
 	})
-	if latency := again.Sub(stored); latency > factsLatencyBound {
-		t.Errorf("EVAL-2's close, moved %s after EVAL-3's, reached the day rows %s after its commit, want within %s",
-			stored.Sub(committed), latency, factsLatencyBound)
-	}
-	t.Logf("EVAL-3's close, moved %s after the boot pass ended, reached the day rows %s after its commit; EVAL-2's, moved %s later, %s after its own (bound %s)",
-		committed.Sub(booted).Round(time.Millisecond), landed.Sub(committed).Round(time.Millisecond),
-		stored.Sub(committed).Round(time.Millisecond), again.Sub(stored).Round(time.Millisecond), factsLatencyBound)
 }
 
 // TestABurstDuringAPassMakesOneOwedPass: changes that commit while a pass runs earn one pass,
-// which starts as soon as the running one ends. The loop runs at RefresherGap, woken by hand, over
-// a settled Legion history of EVAL. EVAL-3's close moves to the 5th day, and the pass that rewrites
+// which starts as soon as the running one ends. The loop runs at loopGap, woken by hand, over a
+// settled Legion history of EVAL. EVAL-3's close moves to the 5th day, and the pass that rewrites
 // it is held at its write of the 5th (pauseInserts); while it is held, five more closes move, each
-// onto another day, each with its wake, and the held write then goes on. The next pass ends within
-// factsLatencyBound of the held pass's end, holding all five moves, and no other pass runs in the
-// 2 s after it, since the wakes are by hand and no echo comes. Before, that pass waited for
-// RefresherGap after the held pass began.
+// onto another day, each with its wake, and the held write then goes on. The next pass holds all
+// five moves, and no other pass runs in the 2 s after it, since the wakes are by hand and no echo
+// comes. Before, that pass waited for RefresherGap after the held pass began.
 func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -902,8 +953,8 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 	r.exec(t, "store the facts of every event so far", factsCursorUpsert, head)
 	day := func(n int) string { return legionHistoryDay(n).Format(time.DateOnly) }
 
-	loop := r.runLoop(t, RefresherGap)
-	loop.awaitRan(t, 1, time.Minute)
+	loop := r.runLoop(t)
+	loop.awaitRan(t, 1)
 	move := func(key string, n int) {
 		row := history.rows[key]
 		row.ClosedAt = new(legionHistoryDay(n).Add(10 * time.Hour))
@@ -913,9 +964,7 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 	}
 	holder := pauseInserts(t, r.rig, "eval_days", fmt.Sprintf("new.project_key = 'EVAL' and new.day = '%s'", day(5)))
 	move("EVAL-3", 5)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
-		t.Fatal("the pass of EVAL-3's move never reached its held write of the 5th")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	burst := []struct {
 		key string
 		day int
@@ -929,8 +978,7 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("let the held write on: %v", err)
 	}
-	heldEnded := loop.awaitRan(t, 2, time.Minute)
-	owedEnded := awaitAt(t, heldEnded.Add(factsLatencyBound), "the pass the burst owed", func() bool { return loop.ran() >= 3 })
+	loop.awaitRan(t, 3)
 	n := r.workTime(t)
 	want := map[string]int{day(2): 0, day(3): 1, day(4): 1, day(5): 1, day(6): 0, day(7): 0, day(8): 1}
 	for d, count := range want {
@@ -938,33 +986,24 @@ func TestABurstDuringAPassMakesOneOwedPass(t *testing.T) {
 			t.Errorf("after the owed pass legion-work-time holds n %d on %s, want %d: n %v", n[d], d, count, n)
 		}
 	}
-	quiet := owedEnded.Add(2 * time.Second)
-	if quiet.After(loop.started.Add(RefresherGap)) {
-		t.Fatalf("the owed pass ended %s after the loop started, too late to watch 2 s before the gap's end", owedEnded.Sub(loop.started))
+	// A span's check, which keeps its body: it ends at the first pass beyond the owed one, or
+	// after the 2 s no such pass came in.
+	if testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool { return loop.ran() != 3 }) {
+		t.Fatalf("%d passes ran within 2 s of the owed pass's end, want the boot pass, the held pass and the owed one", loop.ran())
 	}
-	for time.Now().Before(quiet) {
-		if ran := loop.ran(); ran != 3 {
-			t.Fatalf("%d passes ran within 2 s of the owed pass's end, want the boot pass, the held pass and the owed one", ran)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Logf("the pass the burst of %d moves owed ended %s after the held pass ended, and no pass ran in the 2 s after it",
-		len(burst), owedEnded.Sub(heldEnded).Round(time.Millisecond))
 }
 
 // TestTheWalkKeepsItsGapWhileChangesRunAtOnce: a pass that begins a batch of the walks keeps the
 // gap from the one before it, while the changes that arrive meanwhile run at once. Over the
 // settled Legion history of EVAL, a new build's loop rebuilds it (a release, rebuild.go), a day a
-// batch at a gap of 2 s, woken by hand, while EVAL-3's close moves between the 3rd and the 5th day
-// every 300 ms. Each move reaches the day rows within factsLatencyBound of its commit, and the
-// rebuild's walk moves once per gap: no gap since the loop started holds two of its moves (a
-// batch's day lands after its pass's own changes' work, or in the pass that continues a batch an
-// owed wake stopped, so a move can come late in its gap), and the walk moves as many times as the
-// gaps the window holds; the close moves at least half as often as one each 300 ms, each waiting
-// for the one before it to land, so no change waits for the walk's gap and the walk does not run
-// at the changes' pace. Before, each change waited for the gap.
+// batch at loopGap, woken by hand: its boot pass begins the rebuild and builds the walk's first
+// day. EVAL-3's close then moves between the 3rd and the 5th day six times, each move woken and
+// awaited, and the rebuild's walk stands where the boot pass left it after every one: no change's
+// pass begins a batch. Once the loop's own clock has moved a gap on, the next wake's pass builds
+// the walk's next day. Before, each change waited for the gap.
 func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
-	const gap, window, every = 2 * time.Second, 7 * time.Second, 300 * time.Millisecond
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -982,73 +1021,43 @@ func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
 		return next.Format(time.DateOnly)
 	}
 
-	loop := r.runLoop(t, gap)
-	type advance struct {
-		at   time.Time
-		next string
+	loop := r.runLoop(t)
+	loop.awaitRan(t, 1)
+	stood := walkNext()
+	if stood == "" {
+		t.Fatal("the boot pass staged no day of the rebuild's walk, and the test needs one")
 	}
-	var advances []advance
-	var latencies []time.Duration
-	last, moves := "", 0
-	var pending time.Time
-	nextMove := loop.started.Add(every)
-	for time.Since(loop.started) < window {
-		if next := walkNext(); next != last {
-			advances = append(advances, advance{at: time.Now(), next: next})
-			last = next
+	for move := 1; move <= 6; move++ {
+		onFifth := move%2 == 1
+		closed := legionHistoryDay(3)
+		if onFifth {
+			closed = legionHistoryDay(5)
 		}
-		if !pending.IsZero() {
+		moved := history.rows["EVAL-3"]
+		moved.ClosedAt = new(closed.Add(9 * time.Hour))
+		history.rows["EVAL-3"] = moved
+		r.storeFacts(t, history, head, "EVAL-3")
+		loop.wake()
+		testwait.Eventually(t, fmt.Sprintf("move %d of EVAL-3's close in the day rows", move), func() bool {
 			n := r.workTime(t)
-			onFifth := moves%2 == 1
-			if onFifth && n[d2] == 0 && n[d4] == 1 || !onFifth && n[d2] == 1 && n[d4] == 0 {
-				latencies = append(latencies, time.Since(pending))
-				pending = time.Time{}
-			} else if late := time.Since(pending); late > factsLatencyBound {
-				t.Fatalf("move %d of EVAL-3's close had not reached the day rows %s after its commit, want within %s", moves, late, factsLatencyBound)
-			}
-		}
-		if pending.IsZero() && !time.Now().Before(nextMove) {
-			moves++
-			moved := history.rows["EVAL-3"]
-			closed := legionHistoryDay(3)
-			if moves%2 == 1 {
-				closed = legionHistoryDay(5)
-			}
-			moved.ClosedAt = new(closed.Add(9 * time.Hour))
-			history.rows["EVAL-3"] = moved
-			pending = r.storeFacts(t, history, head, "EVAL-3")
-			loop.wake()
-			nextMove = nextMove.Add(every)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	moved := make([]string, len(advances))
-	for i, a := range advances {
-		moved[i] = fmt.Sprintf("to %s at %s", a.next, a.at.Sub(loop.started).Round(time.Millisecond))
-	}
-	perGap := map[int][]string{}
-	for i, a := range advances {
-		gapOf := int(a.at.Sub(loop.started) / gap)
-		perGap[gapOf] = append(perGap[gapOf], moved[i])
-	}
-	for gapOf, in := range perGap {
-		if len(in) > 1 {
-			t.Errorf("the walk moved %d times in gap %d (%v), want at most once a gap of %s", len(in), gapOf+1, in, gap)
+			return onFifth && n[d2] == 0 && n[d4] == 1 || !onFifth && n[d2] == 1 && n[d4] == 0
+		})
+		loop.awaitRan(t, 1+move)
+		if got := walkNext(); got != stood {
+			t.Fatalf("the rebuild's walk stands at %s after move %d of EVAL-3's close, want %s, where the boot pass left it: a change's pass began a batch", got, move, stood)
 		}
 	}
-	if want := int(window / gap); len(advances) < want || len(advances) > want+1 {
-		t.Errorf("the walk moved %d times in %s at a gap of %s, want %d or %d: %v", len(advances), window, gap, want, want+1, moved)
+
+	next, err := time.Parse(time.DateOnly, stood)
+	if err != nil {
+		t.Fatalf("read the walk's day %q: %v", stood, err)
 	}
-	if moves < int(window/every)/2 {
-		t.Errorf("%d moves of EVAL-3's close were made in %s, want at least half of one each %s", moves, window, every)
+	loop.advance(loopGap)
+	loop.wake()
+	loop.awaitRan(t, 8)
+	if got, want := walkNext(), next.AddDate(0, 0, 1).Format(time.DateOnly); got != want {
+		t.Errorf("the rebuild's walk stands at %s after the gap passed, want %s, one day on", got, want)
 	}
-	slices.Sort(latencies)
-	var worst, median time.Duration
-	if n := len(latencies); n > 0 {
-		worst, median = latencies[n-1], latencies[n/2]
-	}
-	t.Logf("in %s the walk moved %d times (%v); %d moves of EVAL-3's close reached the day rows, the worst %s after its commit, the median %s",
-		window, len(advances), moved, moves, worst.Round(time.Millisecond), median.Round(time.Millisecond))
 }
 
 // TestAWalkStopsBetweenDaysWhenAWakeIsOwed: a pass whose loop owes a wake (duty.WakeOwed) stops its
@@ -1060,6 +1069,7 @@ func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
 // the same batch builds no day, the batch spent, and says the walk has days left; and a pass with a
 // new batch builds four days again.
 func TestAWalkStopsBetweenDaysWhenAWakeIsOwed(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedLegionEval(t)
 	r.batch = 4
@@ -1094,17 +1104,19 @@ func TestAWalkStopsBetweenDaysWhenAWakeIsOwed(t *testing.T) {
 		batch   *gapBatch
 		days    int
 		yielded bool
+		// left is set where the step's pass stopped or spent its batch, so the walk has days left.
+		left bool
 	}{
-		{"the first pass under an owed wake", woken, batch, 1, true},
-		{"the second pass under the wake, with the same batch", woken, batch, 1, true},
-		{"the third pass, with no wake owed", t.Context(), batch, 2, false},
-		{"the fourth pass, with the batch spent", t.Context(), batch, 0, false},
-		{"a pass with a new batch", t.Context(), &gapBatch{}, 4, false},
+		{"the first pass under an owed wake", woken, batch, 1, true, true},
+		{"the second pass under the wake, with the same batch", woken, batch, 1, true, true},
+		{"the third pass, with no wake owed", t.Context(), batch, 2, false, false},
+		{"the fourth pass, with the batch spent", t.Context(), batch, 0, false, true},
+		{"a pass with a new batch", t.Context(), &gapBatch{}, 4, false, false},
 	} {
 		report := pass(step.ctx, step.batch)
-		if got := walked(report); got != step.days || report.yielded != step.yielded || !report.walksLeft {
-			t.Errorf("%s built %d days of EVAL's Legion walk, stopped for the wake %t, and left days %t; want %d, %t and true",
-				step.what, got, report.yielded, report.walksLeft, step.days, step.yielded)
+		if got := walked(report); got != step.days || report.yielded != step.yielded || step.left && !report.walksLeft {
+			t.Errorf("%s built %d days of EVAL's Legion walk, stopped for the wake %t, and left days %t; want %d, %t and, %t, days left",
+				step.what, got, report.yielded, report.walksLeft, step.days, step.yielded, step.left)
 			continue
 		}
 		t.Logf("%s built %d days of EVAL's Legion walk (%v), stopped for the wake %t", step.what, walked(report), report.sorted(), report.yielded)
@@ -1118,14 +1130,16 @@ func TestAWalkStopsBetweenDaysWhenAWakeIsOwed(t *testing.T) {
 // on the change log's channel, the refresher is woken by its own day writes too, and a batch of the
 // walks stops between two days whenever a wake is owed; the owed pass, which starts at once, does
 // its changes' work and then builds the days the batch has left. Over the Legion history of EVAL,
-// walked from its first input day in batches of three at a gap of 2 s, the walk's write of its
-// second day is held (pauseInserts) while EVAL-4 closes on the 8th day, then goes on. EVAL-4's
-// close reaches the day rows within factsLatencyBound of its commit, and at the middle of each gap
-// the walk stands a whole batch further than at the one before (three days, six, then every day
-// through today), not a day a gap, as it would if each stop dropped the batch's days, nor more, as
-// it would with no gap. Before, the change waited for the batch and for the gap after its start.
+// walked from its first input day in batches of three at loopGap, the walk's write of its second
+// day is held (pauseInserts) while EVAL-4 closes on the 8th day, then goes on. EVAL-4's close
+// reaches the day rows, and the walk stands a whole batch further after each gap the loop's own
+// clock is moved on (three days, six, then every day through today), not a day a gap, as it would
+// if each stop dropped the batch's days, nor more, as it would with no gap: a pass that ends after
+// the walk has reached a batch's last day finds it still there. Before, the change waited for the
+// batch and for the gap after its start.
 func TestAWalkBatchThatStopsForAWakeKeepsItsDaysForTheNextPass(t *testing.T) {
-	const gap = 2 * time.Second
+	// Not parallel: its loop logs through the process's default logger (startLoop), which the
+	// test reads.
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.batch = 3
@@ -1148,54 +1162,32 @@ func TestAWalkBatchThatStopsForAWakeKeepsItsDaysForTheNextPass(t *testing.T) {
 	}
 	holder := pauseInserts(t, r.rig, "eval_days", fmt.Sprintf("new.project_key = 'EVAL' and new.day = '%s'", start.AddDate(0, 0, 1).Format(time.DateOnly)))
 
-	loop := r.startLoop(t, gap, r.changesWake(t))
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
-		t.Fatal("the walk never reached its held write of its second day")
-	}
+	loop := r.startLoop(t, r.changesWake(t))
+	storetest.WaitForLockWaiters(t, holder, 1)
 	row := history.rows["EVAL-4"]
 	row.ClosedAt = new(closed.Add(10 * time.Hour))
 	history.rows["EVAL-4"] = row
-	committed := r.storeFacts(t, history, 0, "EVAL-4")
+	r.storeFacts(t, history, 0, "EVAL-4")
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("let the held write on: %v", err)
 	}
-	released := time.Now()
-	type sample struct {
-		at    time.Time
-		built int
-	}
-	var samples []sample
-	var landed time.Time
+	testwait.Eventually(t, "EVAL-4's close in the day rows", func() bool { return r.workTime(t)[closed.Format(time.DateOnly)] == 1 })
 	batches := (days + r.batch - 1) / r.batch
-	end := loop.started.Add(time.Duration(batches-1)*gap + gap/2 + 100*time.Millisecond)
-	for time.Now().Before(end) {
-		samples = append(samples, sample{at: time.Now(), built: built()})
-		if landed.IsZero() && r.workTime(t)[closed.Format(time.DateOnly)] == 1 {
-			landed = time.Now()
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	switch latency := landed.Sub(committed); {
-	case landed.IsZero():
-		t.Errorf("EVAL-4's close on %s had not reached the day rows %s after its commit", closed.Format(time.DateOnly), time.Since(committed))
-	case latency > factsLatencyBound:
-		t.Errorf("EVAL-4's close reached the day rows %s after its commit and %s after the held write went on, want within %s",
-			latency, landed.Sub(released), factsLatencyBound)
-	}
-	var stood []int
 	for k := range batches {
-		mid := loop.started.Add(time.Duration(k)*gap + gap/2)
-		at := 0
-		for _, s := range samples {
-			if !s.at.After(mid) {
-				at = s.built
-			}
+		want := min(days, (k+1)*r.batch)
+		if k > 0 {
+			loop.advance(loopGap)
+			r.nudge(t)
 		}
-		stood = append(stood, at)
-		if want := min(days, (k+1)*r.batch); at != want {
-			t.Errorf("at the middle of gap %d the walk had built %d of its %d days, want %d: a whole batch of %d a gap", k+1, at, days, want, r.batch)
+		testwait.Eventually(t, fmt.Sprintf("the walk to have built %d of its %d days, batch %d", want, days, k+1), func() bool { return built() >= want })
+		// A pass that ends after the walk reached the batch's last day finds the walk standing
+		// there, where a loop with no gap would have built on.
+		ran := loop.ran()
+		r.nudge(t)
+		loop.awaitRan(t, ran+1)
+		if got := built(); got != want {
+			t.Errorf("after gap %d of the loop's clock the walk had built %d of its %d days, want %d: a whole batch of %d a gap", k+1, got, days, want, r.batch)
 		}
 	}
-	t.Logf("EVAL-4's close reached the day rows %s after its commit (%s after the held write went on); at the middle of each gap the walk had built %v of %d days, in %d passes",
-		landed.Sub(committed).Round(time.Millisecond), landed.Sub(released).Round(time.Millisecond), stood, days, loop.ran())
+	t.Logf("EVAL-4's close reached the day rows, and the walk built %d days in %d batches of %d, in %d passes", days, batches, r.batch, loop.ran())
 }

@@ -14,13 +14,14 @@ import (
 )
 
 // waitingLineReason is the sentence a person reads for one member of the waiting line
-// (api.WaitingLineView.Reason): what put it there and when, where it stands in its own part of
-// the line, and what that place means for the slot it waits for. It reads the entry the line
-// holds for that member (record.LineEntry), partLength, the length of the part the member
-// stands in, and otherPart, the length of the part it does not, and nothing else — no record of
-// its own, no second count — so the sentence has one source and every number in it is the
-// member's own. The two lengths are the caller's because the entry carries neither: a part's
-// length is a fact about the line rather than about the member.
+// (api.WaitingLineView.Reason): what put it there and when, the priority it waits at and whose
+// that is, where it stands in its band's part of the line, and what that place means for the slot
+// it waits for. It reads the entry the line holds for that member (record.LineEntry), partLength,
+// the length of the part of its priority's band the member stands in, and otherPart, the length of
+// that band's other part, and nothing else — no record of its own, no second count — so the
+// sentence has one source and every number in it is the member's own. The two lengths are the
+// caller's because the entry carries neither: a part's length is a fact about the line rather
+// than about the member.
 //
 // The last clause is the holder's wherever the member already holds one of the cap's slots
 // (record.LineEntry.Holds), in every kind of both parts and never read off the kind: a member
@@ -33,6 +34,7 @@ import (
 // entry still names a wait (record.LineEntry.Waits); with none left, the sentence says the wait
 // has ended and ends on the clause the rest of the returned part reads.
 func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string {
+	placed, band := priorityPlaced(entry), bandWords(entry.Priority)
 	switch entry.Part {
 	case record.PartReturned:
 		came := ""
@@ -57,13 +59,15 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		if entry.Kind == record.LineWaitingOnIssue && len(entry.Waits) == 0 {
 			came += ", and that wait has ended"
 		}
-		place := fmt.Sprintf("It is %s of %s whose work came back", englishOrdinal(entry.PartPlace), issuesCounted(partLength))
+		// The priority sentence opens the place clause, so every return below carries it.
+		place := fmt.Sprintf("%s It is %s of %s %s whose work came back",
+			placed, englishOrdinal(entry.PartPlace), issuesCounted(partLength), band)
 		if entry.Holds {
 			return came + ". " + place + "." + holdsItsSlot
 		}
 		// The promotion passes over a member that still waits on an issue (its Waits), so it
-		// does not take the free slots first (admit.releaseSlotsForWaits).
-		// A member whose waits all ended takes the free slots first like the rest of its part.
+		// does not take the free slots before the rest of its band (admit.releaseSlotsForWaits).
+		// A member whose waits all ended takes them like the rest of its part.
 		if entry.Kind == record.LineWaitingOnIssue && len(entry.Waits) > 0 {
 			return came + ". " + place + "." + waitsItsTurn
 		}
@@ -71,7 +75,9 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		if partLength == 1 {
 			takes = "it takes"
 		}
-		return fmt.Sprintf("%s. %s, and %s the free slots first.", came, place, takes)
+		// Within its band the returned part goes first; every band of a higher priority goes
+		// before it, so the clause names what it goes before and nothing more.
+		return fmt.Sprintf("%s. %s, and %s the free slots before the issues %s that have not started.", came, place, takes, band)
 	case record.PartStarting:
 		rank := ""
 		switch entry.Kind {
@@ -86,8 +92,8 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		if partLength == 1 {
 			started = "has"
 		}
-		place := fmt.Sprintf("It is %s of %s that %s not started, by %s",
-			englishOrdinal(entry.PartPlace), issuesCounted(partLength), started, rank)
+		place := fmt.Sprintf("%s It is %s of %s %s that %s not started, by %s",
+			placed, englishOrdinal(entry.PartPlace), issuesCounted(partLength), band, started, rank)
 		switch {
 		case entry.Holds:
 			return "It has not started. " + place + "." + holdsItsSlot
@@ -98,14 +104,55 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		if otherPart == 1 {
 			stand = "stands"
 		}
-		return fmt.Sprintf("It has not started. %s, and %s whose work came back %s ahead of all of them.",
-			place, issuesCounted(otherPart), stand)
+		// The returned part of its own band alone stands ahead of it there: otherPart counts
+		// that band's returned part and no other band's.
+		return fmt.Sprintf("It has not started. %s, and %s %s whose work came back %s ahead of all of them.",
+			place, issuesCounted(otherPart), band, stand)
 	}
 	// Every entry the line builds stands in one of the two parts, set where the line places it
 	// (record.Waiting's final loops), so no member reaches this. A part this release has no
 	// sentence for renders nothing, and its member is served no reason rather than a sentence
 	// about a line it does not stand in.
 	return ""
+}
+
+// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`, or
+// `with no priority` for an entry Dispatch resolves no priority for, or, with an older Dispatch
+// that resolves none, one that neither it nor its tree root has a priority for.
+func bandWords(priority record.Priority) string {
+	if priority == record.NoPriority {
+		return "with no priority"
+	}
+	return "at " + priority.String()
+}
+
+// priorityPlaced is the sentence that says which priority placed entry in the line and whose it
+// is (record.LineEntry.Priority). Where Dispatch resolves the issue's priority
+// (record.Resolved.Known) it is the issue's own, or the one of the issue Dispatch names in
+// `priority_from`, the nearest above it on its Dispatch parent chain that has one, never the Legion
+// tree root; else, on a Dispatch release that resolves none, the issue's own, its tree root's, or
+// none on either. An entry with none waits after P3.
+func priorityPlaced(entry record.LineEntry) string {
+	if resolved := entry.Issue.Resolved; resolved.Known {
+		switch {
+		case resolved.Priority != record.NoPriority && resolved.From != "":
+			return "It waits at " + entry.Priority.String() + ", the priority of " + resolved.From + ", the nearest issue above it in Dispatch that has one."
+		case resolved.Priority != record.NoPriority:
+			return "It waits at " + entry.Priority.String() + ", its own priority."
+		case entry.Issue.Parent == nil:
+			return "It has no priority, so it waits after every issue at P0 to P3."
+		}
+		return "Neither it nor any issue above it in Dispatch has a priority, so it waits after every issue at P0 to P3."
+	}
+	switch {
+	case entry.Issue.Priority != record.NoPriority:
+		return "It waits at " + entry.Priority.String() + ", its own priority."
+	case entry.Priority != record.NoPriority:
+		return "It waits at " + entry.Priority.String() + ", the priority of its tree root " + entry.Issue.Tree + "."
+	case entry.Issue.Key == entry.Issue.Tree:
+		return "It has no priority, so it waits after every issue at P0 to P3."
+	}
+	return "Neither it nor its tree root " + entry.Issue.Tree + " has a priority, so it waits after every issue at P0 to P3."
 }
 
 // holdsItsSlot is the last clause of every member that already holds one of the cap's slots: it

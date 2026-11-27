@@ -25,10 +25,8 @@ const CountNotRestored = "not_restored"
 // restored_by_deploy of one: a revert's own deploy, or the one a person names with the drill-down's
 // Mark restored).
 type FailureDeploy struct {
-	ID         string
-	FinishedAt time.Time
-	Failures   int
-	Restores   bool
+	Failures int
+	Restores bool
 }
 
 // RestoredFailure is one counted failure restored on the day: the moment its deploy finished and
@@ -51,14 +49,21 @@ func ChangeFailRateDay(day time.Time, deploys []FailureDeploy) []DayPart {
 }
 
 // RecoveryDay is failed-deploy-recovery's part of one UTC day: the minutes from each restored
-// failure's deploy to its restore, for the failures restored on the day, beside the count of the
-// counted failures of the day's deploys that are not restored yet, which is rewritten when one is.
+// failure's deploy to its restore (RestoreMinutes), for the failures restored on the day, beside
+// the count of the counted failures of the day's deploys that are not restored yet, which is
+// rewritten when one is.
 func RecoveryDay(day time.Time, restored []RestoredFailure, notRestored int) []DayPart {
 	minutes := make([]float64, 0, len(restored))
 	for _, failure := range restored {
-		minutes = append(minutes, minutesBetween(failure.DeployFinishedAt, failure.RestoredAt))
+		minutes = append(minutes, RestoreMinutes(failure))
 	}
 	return []DayPart{SamplesPart(day, SeriesMinutes, minutes, map[string]float64{CountNotRestored: float64(notRestored)})}
+}
+
+// RestoreMinutes is the minutes from failure's deploy's finish to its restore: the sample
+// RecoveryDay counts for it.
+func RestoreMinutes(failure RestoredFailure) float64 {
+	return minutesBetween(failure.DeployFinishedAt, failure.RestoredAt)
 }
 
 // ReworkRateDay is deployment-rework-rate's part of one UTC day: the deploys that finished on it

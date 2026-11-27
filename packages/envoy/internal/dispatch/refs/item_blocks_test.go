@@ -24,18 +24,18 @@ func itemBlockNodeID(kind ItemKind, itemID, blockID string) string {
 // indexItemAsAWriteDoes indexes the body of comment or message itemID, written at `at`, as the
 // route that writes one indexes it: its blocks and the mentions each holds (IndexItem), then
 // the item's own references (replaceRefs), from one reading of body (Mentions), so the blocks
-// and the item read every bare key, `#id` and short id alike. A route plans those two writes
-// above its row locks and runs them as one batch of its own (api.planItemWrite), and counts
-// what both moved for its event (CountedChanges); no test here reads those counts, so this runs
-// the two writes alone.
+// and the item read every bare key, `#id` and short id alike, for the author every item of these
+// fixtures records (prefixAuthor). A route plans those two writes above its row locks and runs
+// them as one batch of its own (api.planItemWrite), and counts what both moved for its event
+// (CountedChanges); no test here reads those counts, so this runs the two writes alone.
 func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body, serverURL string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
-	if _, err := IndexItem(ctx, tx, kind, itemID, body, at, located, nil); err != nil {
+	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, serverURL).Mentions(body)
+	if _, err := IndexItem(ctx, tx, kind, itemID, body, serverURL, at, located, nil); err != nil {
 		t.Fatalf("index the blocks of %s %s: %v", kind, itemID, err)
 	}
-	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("index the references of %s %s: %v", kind, itemID, err)
 	}
 }
@@ -44,6 +44,7 @@ func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body,
 // so a target cited twice in one block is one pair and cited from two blocks is two, and an
 // external link writes none.
 func TestItemBlockPairsStartAtTheBlockHoldingEachMention(t *testing.T) {
+	t.Parallel()
 	body := "Intro cites dispatch://CORE-1 and dispatch://CORE-1 again.\n\n" +
 		"See https://example.com.\n\n" +
 		"- dispatch://CORE-2\n- dispatch://CORE-1"
@@ -67,6 +68,7 @@ func TestItemBlockPairsStartAtTheBlockHoldingEachMention(t *testing.T) {
 }
 
 func TestBlockNumberReadsAMintedID(t *testing.T) {
+	t.Parallel()
 	for id, want := range map[string]int{"b1": 1, "b12": 12} {
 		if got, ok := blockNumber(id); !ok || got != want {
 			t.Errorf("blockNumber(%q) = %d, %v, want %d", id, got, ok, want)

@@ -23,11 +23,15 @@ import (
 // ran it.
 
 // statement is one row of pg_stat_statements: a statement and what its executions cost since the
-// last reset.
+// last reset. planMs is its planning time, which pg_stat_statements counts with track_planning on
+// (job.sh sets it): a statement the server prepares is planned at its first executions after a
+// start, the first paint's, so a read's database time is its planning and its execution together
+// (dbMs).
 type statement struct {
 	queryID int64
 	query   string
 	calls   int64
+	planMs  float64
 	execMs  float64
 	rows    int64
 	hit     int64
@@ -46,17 +50,17 @@ func resetStatements(ctx context.Context, pool *store.Pool) error {
 // own reads of pg_stat_statements left out.
 func snapshotStatements(ctx context.Context, pool *store.Pool) ([]statement, error) {
 	rows, err := pool.Query(ctx, `
-		select queryid, query, calls, total_exec_time, rows, shared_blks_hit, shared_blks_read
+		select queryid, query, calls, total_plan_time, total_exec_time, rows, shared_blks_hit, shared_blks_read
 		from pg_stat_statements
 		where dbid = (select oid from pg_database where datname = current_database())
 		  and calls > 0 and query not like '%pg_stat_statements%'
-		order by total_exec_time desc`)
+		order by total_plan_time + total_exec_time desc`)
 	if err != nil {
 		return nil, fmt.Errorf("read pg_stat_statements: %w", err)
 	}
 	var all []statement
 	var one statement
-	if _, err := pgx.ForEachRow(rows, []any{&one.queryID, &one.query, &one.calls, &one.execMs, &one.rows, &one.hit, &one.read}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&one.queryID, &one.query, &one.calls, &one.planMs, &one.execMs, &one.rows, &one.hit, &one.read}, func() error {
 		all = append(all, one)
 		return nil
 	}); err != nil {
@@ -80,10 +84,11 @@ func setStatementLog(ctx context.Context, pool *store.Pool, on bool) error {
 	return nil
 }
 
-// logged is one execution the statement log holds: when it ended, its query id, its text and
-// the literals of its parameters, in order.
+// logged is one execution the statement log holds: when it ended, the backend that ran it (its
+// pid), its query id, its text and the literals of its parameters, in order.
 type logged struct {
 	at      time.Time
+	pid     int64
 	queryID int64
 	text    string
 	params  []string
@@ -117,6 +122,7 @@ func readStatementLog(path string, offset int64) ([]logged, error) {
 	for scanner.Scan() {
 		var line struct {
 			Timestamp string `json:"timestamp"`
+			PID       int64  `json:"pid"`
 			Message   string `json:"message"`
 			Detail    string `json:"detail"`
 			QueryID   int64  `json:"query_id"`
@@ -136,7 +142,7 @@ func readStatementLog(path string, offset int64) ([]logged, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read the parameters of query %d at %s: %w", line.QueryID, line.Timestamp, err)
 		}
-		all = append(all, logged{at: at.UTC(), queryID: line.QueryID, text: match[1], params: params})
+		all = append(all, logged{at: at.UTC(), pid: line.PID, queryID: line.QueryID, text: match[1], params: params})
 	}
 	return all, scanner.Err()
 }
@@ -300,7 +306,7 @@ var jobNameCondition = regexp.MustCompile(`\bname = (?:ANY \(|')`)
 var failedJobsCondition = regexp.MustCompile(`\bconclusion = 'failure'`)
 
 // failedJobsPredicate is the predicate, as pg_get_expr writes it, of an index of
-// delivery_run_jobs that holds the failed jobs alone (migration 20261117100022's
+// delivery_run_jobs that holds the failed jobs alone (migration 20261126203311's
 // delivery_run_jobs_failed). Postgres plans no condition its index's predicate implies, so a scan
 // through such an index states no failure in its index condition, and the index says it.
 const failedJobsPredicate = `(conclusion = 'failure'::text)`
@@ -445,6 +451,41 @@ func seqScanned(plan, table string) bool {
 // usesIndex reports whether a plan reads through index.
 func usesIndex(plan, index string) bool {
 	return strings.Contains(plan, "using "+index+" ") || strings.Contains(plan, "Bitmap Index Scan on "+index)
+}
+
+// readsOnlyThrough reports whether a text plan scans table and reads it through index alone: each
+// scan of it an index scan or an index-only scan using index, or a bitmap heap scan every bitmap
+// index scan under which is on index. A sequential scan of it, or a read of it through any other
+// index beside index, is false, as is a plan that does not scan it.
+func readsOnlyThrough(plan, table, index string) bool {
+	lines := strings.Split(plan, "\n")
+	scans := 0
+	for i, line := range lines {
+		match := scannedRelation.FindStringSubmatch(strings.TrimPrefix(strings.TrimLeft(line, " "), "->  "))
+		if match == nil || match[3] != table {
+			continue
+		}
+		scans++
+		switch {
+		case strings.HasPrefix(match[1], "Bitmap Heap Scan"):
+			bitmaps := 0
+			for j := i + 1; j < nodeEnd(lines, i); j++ {
+				if bitmap := bitmapIndexScanNode.FindStringSubmatch(strings.TrimLeft(lines[j], " ")); bitmap != nil {
+					if bitmap[1] != index {
+						return false
+					}
+					bitmaps++
+				}
+			}
+			if bitmaps == 0 {
+				return false
+			}
+		case strings.HasPrefix(strings.TrimPrefix(match[1], "Parallel "), "Index") && match[2] == index:
+		default:
+			return false
+		}
+	}
+	return scans > 0
 }
 
 // measuredNumbers matches a plan node's measured numbers: its cost, its actual time and rows, or

@@ -5,25 +5,33 @@
 -- read of the same rows, so no page read reads a project's population.
 --
 -- eval_days holds one row per owner, eval, writer, deploy repository, series, repository and day.
---   project_key     the owner of the row: the project it counts for through an issue, which is
---                   also the project of its eval id; or, for what a repository attributes rather
---                   than an issue (dispatch://INFRA-2916, R15 and plan D1: a pull request that
---                   names no issue the issues table holds, a CI run of such a pull request or of
---                   none, and a deploy run where it ships such a pull request or ships none, with
---                   each job of it a deploy card follows), the repository's owner key,
---                   ':' || repo || '|' || sharers (evals.OwnerKey, the one place it is made and
+--   project_key     the owner of the row: the project it counts for whatever the projects'
+--                   default repositories are, which is also the project of its eval id; or, for
+--                   what counts for a project only through a default repository
+--                   (dispatch://INFRA-2916, R15 and plan D1: a pull request whose issue is held
+--                   through its project's default repository, or that has no issue, a CI run of
+--                   such a pull request or of none, and a deploy run where it ships such a pull
+--                   request or ships none, with each job of it a deploy card follows), an owner
+--                   key of its repository, ':' || repo || '|' || sharers, then '|' || lists where
+--                   any list holds a project (evals.OwnerKey, the one place it is made and
 --                   parsed): repo the repository's name (canonical, as every delivery table keeps
---                   it; the boot's rename pass rewrites it, store/repo_rename_pass.go), and sharers
---                   the sorted keys, comma separated, of the projects whose issue-named pull
---                   requests the deploy run ships ('' for every other row), which count the run
---                   through their own rows already. So one owner key stands for each distinct
---                   sharers set a repository holds rows of, and sharers is part of the key. No
---                   project key starts with ':' (projects_key_check, ^[A-Z][A-Z0-9]{1,9}$,
---                   migration 0001), so an owner key never names a project. An owner key's rows
---                   are written once, whatever the projects' default repositories are, by the same
---                   writers as a project's (its zero rows from its own first input day on); a
---                   project reads them at read time, through eval_project_owners below, for each
---                   repository it publishes as its default, less those it shares.
+--                   it; the boot's rename pass rewrites it, store/repo_rename_pass.go); sharers
+--                   the sorted keys, comma separated, of the projects a deploy run counts for in
+--                   their own rows through the pull requests it ships ('' for every other row);
+--                   and lists the sorted, distinct attribution lists, ';' separated, of the pull
+--                   requests the row counts for that a default decides (evals.attributionList:
+--                   the projects of the issues that own no repository ranked above its terminal,
+--                   ',' separated, '>', then the project of the first issue that owns the
+--                   repository or ''; a deploy's list of a pull request of no project is '>').
+--                   So one owner key stands for each distinct sharers set and set of lists a
+--                   repository holds rows of, and both are part of the key. No project key starts
+--                   with ':' or holds ',', ';' or '>' (projects_key_check, ^[A-Z][A-Z0-9]{1,9}$,
+--                   migration 0001), so an owner key never names a project and reads back as it
+--                   was made. An owner key's rows are written once, whatever the projects' default
+--                   repositories are, by the same writers as a project's (its zero rows from its
+--                   own first input day on); a project reads them at read time, through
+--                   eval_project_owners below, where the published defaults make it one of the
+--                   key's readers, less the key's sharers.
 --   eval_id, series the series the row is a day of.
 --   writer          which writer made the row (R3): `computation`, the refresher and the day
 --                   builders, which write a computed eval's rows; or `readings`, the readings
@@ -44,10 +52,10 @@
 --                   pr-ci and the deploy cards) the repository the row is computed as if it were
 --                   the deploy repository: one set of those evals' rows for every repository that
 --                   holds a delivery run, each from that repository's own runs. The eval list reads
---                   the rows of the repository the delivery settings name (evals.DeployRepoOf), so
---                   a move of the deploy repository is a selection at read time, which rewrites no
---                   row and whose move back finds the old repository's rows as they stand; a
---                   repository that holds no run has no such row, and reads "no data".
+--                   the rows of the repository recorded with the stored rows (evals.DeployRepoIn,
+--                   DeployRepoOf), so a move of the deploy repository is a selection at read time,
+--                   which rewrites no row and whose move back finds the old repository's rows as
+--                   they stand; a repository that holds no run has no such row, and reads "no data".
 --   repo            '' for the row of all the project's repositories, and a repository's name for
 --                   that repository's own row, so a read cut by repository folds those rows and
 --                   a read of the whole project folds the '' rows alone.
@@ -76,7 +84,9 @@
 --                   readings by, so a read of repositories answers what the project's own row
 --                   holds. Both are null where the row records no write.
 --   via_repository  how many of the row's inputs reached the project through a repository
---                   rather than through an issue.
+--                   rather than through an issue: none of a project's own row, all (n) of an
+--                   owner key's, which a project reads as n where it reads the key through the
+--                   repository and as 0 where a list of the key picks it (eval_project_owners.via).
 --   built_by        the build that last moved the row's values: a write that moves no value
 --                   rewrites no row, so a release whose rules agree leaves it, and one whose
 --                   rules differ rewrites what they move in its rebuild's flip (evals/rebuild.go).
@@ -87,7 +97,7 @@
 -- (dispatch://INFRA-2916/artifact/plan-md, "The design in one page"); the read keeps each eval's
 -- rows of its own writer and deploy repository from what the range holds. The primary key is the
 -- read and the upsert of one writer's days of one series of one deploy repository, and its first
--- day (evals.Store.FirstDays) is one probe of it.
+-- day (evals.FirstDaysIn) is one probe of it.
 -- eval_days_stamps, (project_key, eval_id, writer, day) over the listed rows, is the stored
 -- figures' read of the rows a write may have moved (evals.movedFigureDays): one range of an eval's
 -- days of every series, repository and deploy repository, which every write of day rows reads for
@@ -136,15 +146,15 @@
 -- day's write writes the day's rows and items of every deploy repository, so the day owed names
 -- none.
 --
--- Three new tables, all empty, two more below and two views: nothing existing is read or
--- rewritten, and the release before this one neither reads nor writes any, so the two builds
--- roll together (cmd/dispatch/README.md, "Database migrations"). The three tables hold an owner
--- key that names no project as well as project keys, so none of them references projects: a
--- project's deletion deletes its own rows of them by the trigger eval_days_project_deleted below,
--- and leaves a repository's, which belong to no project. eval_days_defaults references projects;
--- that foreign key and the trigger take SHARE ROW EXCLUSIVE on projects for the length of this
--- transaction, which holds a project write and no project read. The census answers 0, and
--- rolling back past it is an image rollback alone.
+-- Three new tables, all empty, two more below, two views, two functions and a trigger: nothing
+-- existing is read or rewritten, and the release before this one neither reads nor writes any, so
+-- the two builds roll together (cmd/dispatch/README.md, "Database migrations"). The three tables
+-- hold an owner key that names no project as well as project keys, so none of them references
+-- projects: a project's deletion deletes its own rows of them by the trigger
+-- eval_days_project_deleted below, and leaves a repository's, which belong to no project.
+-- eval_days_defaults references projects; that foreign key and the trigger take SHARE ROW
+-- EXCLUSIVE on projects for the length of this transaction, which holds a project write and no
+-- project read. The census answers 0, and rolling back past it is an image rollback alone.
 create table eval_days (
     project_key text not null,
     eval_id text not null,
@@ -181,7 +191,20 @@ create table eval_days (
 -- 0.2 %, and wrote 0.93 MB of WAL where 1.89; over 60 passes with no vacuum the table grew
 -- 0.69 MiB a pass at 100 and stopped growing by pass 8 at 80, smaller than at 100 with autovacuum
 -- at its defaults. The cost is up to a quarter more heap as the rows are loaded.
-with (fillfactor = 80);
+--
+-- The insert threshold and the index cleanup: a rewrite also deletes the rows the new settings no
+-- longer build and inserts the rows they build anew (60 of each in a pass of a production rule at
+-- INFRA's size), and an insert finds the space a delete freed only in the free space map, which a
+-- vacuum alone writes. At the defaults autovacuum waits for inserts or dead rows of a fifth of the
+-- table, and pruning keeps taking the dead rows off its count, so over 60 such passes it never ran
+-- and the table grew 66 KB a pass, 236.0 to 240.0 MB, and was growing still (dispatch://INFRA-2916,
+-- test round 15). With a vacuum after every 1,000 inserts, whatever the table holds, over 120 such
+-- passes on the farm the table grew 235.7 to 238.6 MB in the first 19, until its first vacuum, and
+-- not a byte in the 101 after it, 99.4 % of its 854,640 updates HOT. The index cleanup is on
+-- because a vacuum left to choose skips its index pass while few pages hold dead item pointers,
+-- and with it the pass that frees those pointers: the same 120 passes with it left to choose took
+-- 65 KB more late in the run, between two vacuums 22 passes apart.
+with (fillfactor = 80, autovacuum_vacuum_insert_threshold = 1000, autovacuum_vacuum_insert_scale_factor = 0, vacuum_index_cleanup = on);
 create index eval_days_window on eval_days (project_key, repo, day) where listed;
 create index eval_days_stamps on eval_days (project_key, eval_id, writer, day) where listed;
 
@@ -205,49 +228,97 @@ create table eval_days_owed (
 );
 
 -- eval_day_owners holds one row per owner key that eval_days has held a row of (evals.OwnerKey):
--- the key, its repository and its sharers, so a read finds the owner keys of a repository it
--- publishes in one probe of eval_day_owners_repo, whatever the database's collation, where a
--- prefix of the key would need byte order. The repository is compared without case, as GitHub
--- compares names and as a project's default repository is compared with the deploy repository
--- (evals.Store.DeployRepoEvals). The eval_days change trigger records a key the first time a
--- statement writes a row of it (eval_days_change_log, migration 20261117100014), and a rebuild
--- the first time it stages one (evals.recordOwners), whose fold reads the staged rows through
--- eval_project_owners. A key whose rows are all gone keeps its row, which a read joins to no row;
--- the rename pass rewrites the repository in both columns.
+-- the key, its repository, its sharers and its lists (each as the key carries it, '{}' for a plain
+-- key), so a read finds the owner keys of a repository it publishes in one probe of
+-- eval_day_owners_repo, whatever the database's collation, where a prefix of the key would need
+-- byte order, and eval_owner_readers reads a key's lists without parsing it. The repository is
+-- compared without case, as GitHub compares names and as a project's default repository is
+-- compared with the deploy repository (evals.Store.DeployRepoEvals). The eval_days change trigger
+-- records a key the first time a statement writes a row of it (eval_days_change_log, migration
+-- 20261117100014), and a rebuild the first time it stages one (evals.recordOwners), whose fold
+-- reads the staged rows through eval_project_owners. A key whose rows are all gone keeps its row,
+-- which a read joins to no row; the rename pass rewrites the repository in the key and in repo,
+-- and the sharers and the lists, which name projects alone, stand.
 create table eval_day_owners (
     owner text primary key check (starts_with(owner, ':')),
     repo text not null,
-    sharers text[] not null default '{}'
+    sharers text[] not null default '{}',
+    lists text[] not null default '{}'
 );
 create index eval_day_owners_repo on eval_day_owners (lower(repo));
 
 -- eval_days_defaults holds the default repository each project's reads stand under, published:
 -- the projects.default_repo the evals refresher's page last made visible, in the one commit that
--- also makes visible the stored figures folded under it (evals.syncDefaults, the architect's
--- rulings of 08:28Z (b) and 14:07Z). A person's write of projects.default_repo moves no read until
--- that commit, and a read in one snapshot answers the old defaults whole or the new ones whole.
--- A project with no row publishes no default repository, and reads its own rows alone.
+-- also makes visible the stored figures folded under it (evals.syncDefaults, publishDefaults). A
+-- person's write of projects.default_repo moves no read until that commit, and a read in one
+-- snapshot answers the old defaults whole or the new ones whole.
+-- A project with no row publishes no default repository, and reads its own rows and the owner
+-- keys whose lists name it as a terminal alone.
 create table eval_days_defaults (
     project_key text primary key references projects (key) on delete cascade,
     repo text not null
 );
 
 -- eval_project_repos is the one seam every read of a project's day rows takes the repositories it
--- unions the owner-key rows of from: today the one-element set of the project's published
--- default. eval_project_owners is, for each project, its own key, and the owner key of each
--- sharers set of each repository eval_project_repos names whose sharers do not hold the project:
--- the rows a read of the project folds. A project that counts a deploy through an issue counts it
--- in its own rows, so it skips the repository's row of that deploy. Every read (evals.DayWindowIn,
--- FirstDaysIn, EvalDaysIn, CountedIn, the stored figures' fold) and the change trigger's lookup
--- of the projects an owner key's write moves go through it.
+-- reads the owner-key rows of from: today the one-element set of the project's published default.
 create view eval_project_repos as
     select project_key, repo from eval_days_defaults;
-create view eval_project_owners as
-    select key as project_key, key as owner from projects
+
+-- eval_owner_readers is the readers of an owner key that carries lists (evals.OwnerKey), of the
+-- repository p_repo, the sharers p_sharers and the lists p_lists, each list its conditions in rank
+-- order joined by ',', then '>', then its terminal or '' (evals.attributionList): the projects whose
+-- reads fold the key's rows under the published defaults, each with whether it reads them through
+-- the repository. Each list picks its first condition whose published default (eval_project_repos)
+-- is p_repo, compared without case, else its terminal, else none. The readers are the projects some
+-- list picks, through an issue (via false), and, where some list picks none, each project whose
+-- published default is p_repo, through the repository (via true), less the sharers, which count
+-- the key's deploy run in their own rows; a project reached both ways reads through its issue, and
+-- a terminal that names no project any more reads nothing. A pull request's key carries one list,
+-- so it counts for one project, or for its repository's owners; a deploy run's carries a list for
+-- each pull request it ships that a default decides, so it counts once in each project any of them
+-- reaches. One SQL statement over the published defaults, a few dozen rows, for each key.
+create function eval_owner_readers(p_repo text, p_sharers text[], p_lists text[])
+returns table (project_key text, via boolean) language sql stable as $$
+  with picks as (
+    select coalesce(
+      (select r.project_key
+         from unnest(string_to_array(split_part(l.list, '>', 1), ',')) with ordinality as c(project, rank)
+         join eval_project_repos r on r.project_key = c.project and lower(r.repo) = lower(p_repo)
+        order by c.rank
+        limit 1),
+      nullif(split_part(l.list, '>', 2), '')) as pick
+    from unnest(p_lists) as l(list)
+  ), reached as (
+    select pick as project_key, false as via from picks where pick is not null
     union all
-    select r.project_key, o.owner
+    select r.project_key, true from eval_project_repos r
+    where lower(r.repo) = lower(p_repo) and exists (select 1 from picks where pick is null)
+  )
+  select reached.project_key, bool_and(reached.via)
+  from reached join projects p on p.key = reached.project_key
+  where not (reached.project_key = any(p_sharers))
+  group by reached.project_key
+$$;
+
+-- eval_project_owners is, for each project, the keys whose day rows a read of the project folds,
+-- each with whether the project reads it through a repository (via): its own key (false); each
+-- plain owner key of the repository eval_project_repos names whose sharers do not hold the project
+-- (true), since a project that counts a deploy in its own rows skips the repository's row of that
+-- deploy; and each owner key that carries lists whose readers hold the project
+-- (eval_owner_readers, its via). Every read (evals.DayWindowIn, FirstDaysIn, EvalDaysIn, CountedIn,
+-- the stored figures' fold) and the change trigger's lookup of the projects an owner key's write
+-- moves go through it, and a read that answers via_repository counts it only where via is true
+-- (evals.viaAsRead).
+create view eval_project_owners as
+    select key as project_key, key as owner, false as via from projects
+    union all
+    select r.project_key, o.owner, true
     from eval_project_repos r join eval_day_owners o on lower(o.repo) = lower(r.repo)
-    where not (r.project_key = any(o.sharers));
+    where o.lists = '{}' and not (r.project_key = any(o.sharers))
+    union all
+    select reader.project_key, o.owner, reader.via
+    from eval_day_owners o cross join lateral eval_owner_readers(o.repo, o.sharers, o.lists) as reader
+    where o.lists <> '{}';
 
 create function eval_days_project_deleted() returns trigger language plpgsql as $$
 begin

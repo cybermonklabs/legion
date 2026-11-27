@@ -66,6 +66,26 @@ Board and its components; a linked GitHub issue or pull request can be taken off
 
 Legion, when it works an issue, moves that issue's status itself.
 
+Dispatch keeps a parent's status in line with its children's. A parent is done only when each child
+is done. While a child is in work (Todo, In progress, Testing, Needs review or Retro), its parent is
+in work too. Before the page changes the status of an issue that has a parent or an open child, it
+asks Dispatch what the change would do. When the change needs no question, the page saves it, even
+if you leave the page before Dispatch answers. When the change would break this rule, a dialog
+names the issues that stop it and offers a choice:
+
+- **Move them with it**: each open issue under it whose status is in another group takes the new
+  status too. The groups are not started (Triage, Icebox, Backlog), in work and done. So a child in
+  Icebox stays there when its parent moves to Backlog.
+- **Unlink them**: each open child stops being a child of this issue and keeps its status.
+- **Move the parents into work too**: each parent that is not in work moves to In progress.
+- **Keep as it is** or **Cancel**: nothing changes. Escape does the same, and so does leaving the
+  page while the dialog is open: a question nobody answers changes nothing.
+
+The page offers the first two when a child stops the change, and the third when a parent stops it.
+Each choice lists the changes it makes before you choose it. Dispatch leaves a comment on each
+other issue a choice changes. When a choice changed at least one other issue, the issue you moved
+gets one more comment that lists those changes.
+
 ## The List and the Board
 
 The **List** and **Board** buttons switch between two views of the same issues. Press `v` to
@@ -105,6 +125,12 @@ An epic group's **Epic actions** can rename it, merge its open work into another
 Merge moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after every move succeeds; otherwise the source stays open and the notice identifies the failed moves.
 Closed issues keep their original parent and history.
 Move, Take out and New epic skip selected closed issues and report how many were skipped; New epic requires at least one open selection.
+Move, New epic and Merge keep a parent's status in line with its children's.
+When an issue you move is in work and the epic is not, the table asks first. **Move into work too** moves the epic, and each parent above it that is not in work, to In progress, and then makes the move.
+When the epic is done, the table asks to reopen it into In progress the same way (**Reopen it too**).
+The question lists each change it makes. **Cancel** changes nothing.
+**Finish** of an interrupted New epic or Merge asks the same question before it moves the epic, and refuses to move issues under an epic that has closed since.
+A new epic is not in work, so New epic asks before it makes the epic.
 Naming and renaming an epic happen in a dialog in the page, like creating an issue.
 If a new epic may duplicate another issue, **Create anyway** is an explicit choice.
 If Dispatch created the epic but lost its answer, the table says so and leaves the selected issues in place rather than guessing the new epic's key.
@@ -132,6 +158,12 @@ Dropping a card in Done closes the issue. Moving it out of Done reopens it.
 Icebox and Done start as narrow folded columns. They still take drops. **Show Icebox & Done**
 opens them in full, and Dispatch remembers that choice.
 
+A card with a parent or an open child stays where it is while Dispatch checks the move. When the
+move would break the parent-status rule, the Board asks the same question as the issue page (see
+[Statuses](#statuses)). The card moves only after you confirm a choice. A card with no parent and
+no open child that you drop while Dispatch checks another move, before that move's question opens,
+moves at once, but Dispatch saves its move only after the other move ends.
+
 If someone else moved cards while you were dragging, the move fails with "The board changed while
 you were moving this card - refreshed, try again." The Board shows the fresh order.
 
@@ -158,10 +190,11 @@ another person, and whose Inbox lists those asks. An issue nobody holds leaves i
 project's default assignee, so every ask reaches somebody.
 Change it from the issue header. The choices are **Unassigned** and every login allowed to sign in.
 An agent that creates an issue without naming one gets the person its token acts for, else the
-parent's assignee, else the project's default assignee: the person you name in the projects table
-in **Settings → Projects**, who takes every issue the chain leaves without an owner. Every project
-names one, so every new issue has an assignee. A person moves a project's default on that page,
-and an agent names the first one in the call that creates the project.
+parent's assignee when the parent is in the same project, else the project's default assignee: the
+person you name in the projects table in **Settings → Projects**, who takes every issue the chain
+leaves without an owner. Every project names one, so every new issue has an assignee. A person
+moves a project's default on that page, and an agent names the first one in the call that creates
+the project.
 
 ### Labels
 
@@ -215,27 +248,37 @@ shows that issue and offers **Create anyway**. A new issue opens as soon as it i
 
 ### The header
 
-The header holds the issue's key, title, and pin, then its controls:
+The header holds the issue's key, title, and pin, then its controls in groups. When the header is
+too narrow, a whole group moves to the next line:
 
-- **Status**, priority, and assignee.
-- An approval chip once someone has asked for the spec to be approved.
-- **Close issue**, or **Reopen** on a closed issue.
-- Whose turn it is: `Waiting on you (N)` or `Waiting on agents (N)`, counting the issue's open
-  asks.
+- **State**: status, priority, assignee, progress, and an approval chip once someone has asked for
+  the spec to be approved (or the steps of the project's approval gate).
+- **Attention**: whose turn it is (`Waiting on you (N)` or `Waiting on agents (N)`, counting the
+  issue's open asks), a warning when nobody holds the issue's message route, or its holder has
+  stopped answering, and the claim with **Release** beside it.
+- **Labels**, at most ten and then **+N**, which shows the rest.
+- **Close issue** and **Details**. A closed issue says so above its key, with **Reopen**.
 
-A line of details follows: labels, subscribers, the parent issue, linked GitHub issues and pull
-requests, and **Referenced by**. Choose the title, or press `e`, to edit it.
+Choose the title, or press `e`, to edit it. A title shows in full, wrapped at any width, rather
+than cut off after two lines. A list that still clamps a title shows the whole of it on hover.
 
-A title shows in full, wrapped at any width, rather than cut off after two lines. A list that
-still clamps a title shows the whole of it on hover.
+**Details** opens the issue's other properties, each a name and a value with the control that
+changes it. It stays open or closed as you left it, on every issue, in this browser:
 
+- **Advances**: the priorities the issue serves.
+- **Opened by**: who opened the issue.
+- **Message route**: where new asks, comments and messages on the issue go, with a line under it
+  that says what the route is for.
+- **Subscribers** lists the agent sessions subscribed to the issue. **Unsubscribe** stops delivery
+  to one and tells it so.
+- **Referenced by** lists every issue, document, ask, comment, and message that links here.
 - **Parent** shows the parent issue or **None**. You can edit it to move the issue under another.
-- **Subscribers: N** lists the agent sessions subscribed to the issue. **Unsubscribe** stops
-  delivery to one and tells it so.
-- **Referenced by (N)** lists every issue, document, ask, comment, and message that links here.
-- **Components** appears when the project has an architecture source. It shows which parts of the
-  architecture the issue belongs to, and lets you change them, picking from the components of
-  every source of the project.
+- **Repository**: the repository the issue's work lands in.
+- **Components** shows which parts of the project's architecture the issue belongs to. When the
+  project has an architecture source you can change them, picking from the components of every
+  source of the project.
+- **Pull requests** lists the GitHub pull requests linked to the issue, each with its state and
+  checks, and **Links** the other links. Each list shows ten and then **+N**.
 
 ### Changes Dispatch has not confirmed
 
@@ -310,13 +353,20 @@ agents using it stop working at once.
   retracted with its reason, and counts as no evidence.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
-- **Steps** lists each step Legion ran on the issue, one table per task: each run of a step with
-  its role, type, agent, model, attempt, start, end and result. A step that ran twice, after a
-  review sent its task back, has a row for each run, and the second reads attempt 2; a run that
-  failed or stopped and sent its task back says which step it returned to. A run that has not
-  ended reads **running**, and a field Legion did not record reads `—`. Legion's daemon writes
-  these records, and the tab only reads them. An issue Legion never ran reads **No step of this
-  issue has run in Legion.**
+- **Steps** lists each task of the issue: first the tasks of the issue's newest plan, in the plan's
+  order, then each other task that ran, in the order each first ran. Where the records of the
+  issue's newest run name an experiment, the tab shows `Experiment <experiment>: variant <variant>`
+  once above its tasks. A task of the plan shows the tasks it needs, or **Needs not recorded**
+  where the plan Dispatch holds does not record them. It shows each step the plan gives it, with
+  where that step stands: **not started**, **running**, **passed**, **failed**, **stopped**, or
+  Dispatch's own word for a state this page does not know. Under that, each task has one table of
+  its runs: each run of a step with its role, type, agent, model, attempt, start, end and result.
+  A task none of whose steps has run says so in place of the table, for example **No step of task
+  b has run yet.** A step that ran twice, after a review sent its task back, has a row for each
+  run, and the second reads attempt 2; a run that failed or stopped and sent its task back says
+  which step it returned to. A run that has not ended reads **running**, and a field Legion did
+  not record reads `—`. Legion's daemon writes these records, and the tab only reads them. An
+  issue with no plan and no run reads **No step of this issue has run in Legion.**
 - **Conversation** is the issue's conversations, one card each: every ask with its replies and
   its answer, every comment thread with its replies, every message thread with its replies. The
   conversation with the newest reply is at the top, so a thread rises when someone answers it,

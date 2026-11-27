@@ -3,7 +3,6 @@ package bus_test
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -28,22 +27,18 @@ import (
 // authorization violations and "envoy nats connection closed"; the client built at the head logged
 // one authorization violation a second for 12 s and never closed.
 func TestANkeyConnectionRefusedTwiceClosesAsAtTheMergeBase(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	_, other := testnats.User(t)
 	server, url := testnats.StartNkeyAuthorizedServer(t, public)
-	nc, err := bus.Dial("nkey-refusal-test", []string{url}, func(name string) (string, bool) {
-		if name == bus.NkeySeedEnvVar {
-			return seed, true
-		}
-		return "", false
-	})
+	nc, err := bus.Dial("nkey-refusal-test", []string{url}, testnats.SeedOnly(seed))
 	require.NoError(t, err)
 	defer nc.Close()
 	require.True(t, nc.IsConnected())
 
 	server.Restart(t, fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q } ]\n}\n", other))
-	testwait.WithinPolling(t, 30*time.Second, 100*time.Millisecond,
-		"the bus connection whose seed the hub refuses twice to close, as it does at the merge base", func() bool {
-			return nc.Status() == nats.CLOSED
-		})
+	testwait.Until(t, "the bus connection whose seed the hub refuses twice to close, as it does at the merge base", func() (nats.Status, bool) {
+		status := nc.Status()
+		return status, status == nats.CLOSED
+	})
 }

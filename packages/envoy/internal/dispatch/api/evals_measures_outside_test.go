@@ -139,7 +139,7 @@ func TestNoRouteOrViewOutsideTheEvalsAnswersAMeasure(t *testing.T) {
 		if isEvalRoute(route.Pattern) {
 			continue
 		}
-		found := shapeMeasure(routeShapes[name])
+		found := shapeMeasure(route.Shape)
 		listed := slices.Contains(measureRoutesUntilTheRoot, name)
 		switch {
 		case found != "" && !listed:

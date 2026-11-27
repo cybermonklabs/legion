@@ -14,15 +14,17 @@ import (
 )
 
 // TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProjects
-// (dispatch://INFRA-978, T14 and R13): through the change log, a deploy row of ALPHA's repository
+// (dispatch://INFRA-978, R13): through the change log, a deploy row of ALPHA's repository
 // that ships ALPHA-1's and OMEGA-1's pull requests, a failure posted on it and that failure's
 // reject each log one production_events change and recompute no view at all: no view reads the
 // record, and touchedBy's production_events arm marks none. The refresher's pass that follows each
 // writes the failure evals' day rows of the projects the deploy counts for, ALPHA (its repository's
 // owner, and ALPHA-1's) and OMEGA (OMEGA-1's), and their eval_days changes recompute the evals
-// views of those two projects and of no other: DELTA's, whose failure measures are on and which
-// the deploy does not count for, and the timeline recompute nothing. Each of the two pages is sent
-// the failure evals the write moved, and no other page is sent anything.
+// views of those two projects and of no other (DELTA's, whose failure measures are on and which
+// the deploy does not count for, among them), and the timeline, which folds the failure evals' day
+// rows of the one delivery-on project (evals.Store.DeploymentFailures) and so is marked by a write
+// of them in any project. Each of the two evals pages is sent the failure evals the write moved,
+// and no other page is sent anything: with three delivery-on projects the timeline folds none.
 func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProjects(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -77,9 +79,9 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		subOf[spec.key] = sub
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		conns[sub].snapshot(t, 5*time.Second, sub)
+		conns[sub].snapshot(t, sub)
 		if sub != "t" {
-			conns[sub].freshness(t, 5*time.Second, "the verdict after the snapshot of "+sub)
+			conns[sub].freshness(t, "the verdict after the snapshot of "+sub)
 		}
 	}
 	rig.settle(t)
@@ -111,7 +113,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		}
 		rig.hub.catchUpNow()
 		for _, sub := range wantRecomputed {
-			rig.waitFor(t, mark, 5*time.Second, "the recompute of "+sub+" after "+what, recomputeOfView(t, frames[sub]))
+			rig.waitFor(t, mark, "the recompute of "+sub+" after "+what, recomputeOfView(t, frames[sub]))
 		}
 		rig.waitNoRecompute(t, viewMaxWait)
 		recomputed := []string{}
@@ -144,7 +146,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 			for i, slug := range slugs {
 				ids[i] = evals.EvalID(project, slug)
 			}
-			got := liveUpsertIDs(t, conns[sub].delta(t, 5*time.Second, sub), "items")
+			got := liveUpsertIDs(t, conns[sub].delta(t, sub), "items")
 			slices.Sort(got)
 			slices.Sort(ids)
 			if !slices.Equal(got, ids) {
@@ -155,7 +157,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 
 	record := []string{delivery.ChangeKindProductionEvents}
 	days := []string{delivery.ChangeKindEvalDays}
-	both := []string{"a", "o"}
+	withTimeline := []string{"a", "o", "t"}
 	refresh := func() { refreshEvalDays(t, registry, rig.database, rig.clock.Now()) }
 
 	var deploy, failure prodevents.Event
@@ -168,7 +170,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		})
 	}, record, nil)
 	sent("the deploy row", nil)
-	step("the refresher's pass after the deploy row", refresh, days, both)
+	step("the refresher's pass after the deploy row", refresh, days, withTimeline)
 	sent("the refresher's pass after the deploy row", map[string][]string{
 		"a": {evals.SlugChangeFailRate, evals.SlugDeploymentReworkRate},
 		"o": {evals.SlugChangeFailRate, evals.SlugDeploymentReworkRate},
@@ -181,7 +183,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		})
 	}, record, nil)
 	sent("the failure row", nil)
-	step("the refresher's pass after the failure", refresh, days, both)
+	step("the refresher's pass after the failure", refresh, days, withTimeline)
 	sent("the refresher's pass after the failure", map[string][]string{
 		"a": {evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery},
 		"o": {evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery},
@@ -195,7 +197,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		}
 	}, record, nil)
 	sent("the reject", nil)
-	step("the refresher's pass after the reject", refresh, days, both)
+	step("the refresher's pass after the reject", refresh, days, withTimeline)
 	sent("the refresher's pass after the reject", map[string][]string{
 		"a": {evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery},
 		"o": {evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery},

@@ -1,7 +1,7 @@
 -- 20261123041501_production_signals.up.sql
 --
 -- The bookkeeping of the loop that writes the record's GitHub deploy rows and its three automatic
--- failure signals (dispatch://INFRA-978, T11 and T12; prodevents/signals): where each of its feeds
+-- failure signals (dispatch://INFRA-978, R6 and R7; prodevents/signals): where each of its feeds
 -- stands, and the rule each deploy repository's GitHub deploy rows stand derived under.
 --
 -- production_signal_cursors holds one row per feed the loop reads, each a cursor of its own:

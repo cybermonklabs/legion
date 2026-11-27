@@ -34,6 +34,7 @@ import (
 // The loss is made as the partial cut's test makes it, with the whole first message block cut
 // instead of half of it.
 func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMessagesAgain(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {
@@ -75,18 +76,14 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	waitForAckFloor(t, consumers, session, before+acked)
 	waitForAckPending(t, consumers, session, 0)
 
+	ownerBefore, consumersBefore := reconnectsBeforeCut(owner, consumers)
 	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
+	awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
 	var state sessionStreamState
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the restart", func() (string, bool) {
 		state, err = consumers.streamState(ctx)
-		return err == nil
-	}) {
-		t.Fatalf("read the stream after the restart: %v", err)
-	}
+		return fmt.Sprint(err), err == nil
+	})
 	if state.lastSeq != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 	}

@@ -12,7 +12,8 @@
 -- of the transaction, and deletes the rows a day no longer builds (evals.deleteStaleDays), and
 -- Postgres fires an upsert's statement-level triggers once for its inserted rows and once for its
 -- updated rows, each with a transition table of its own half. So three statement-level triggers
--- read the two halves and the deleted rows, and each hands each eval's span to
+-- read the two halves and the deleted rows, the insert's and the delete's through one function
+-- (eval_days_inserted, each naming its rows `written`), and each hands each eval's span to
 -- eval_days_change_log, which records the eval's first change of the transaction in the change
 -- log's outbox through delivery_change_log_pending (20261117100001), which takes no lock, so no
 -- write of the day rows takes the change log's lock (6900, 0100); a drain moves the row into
@@ -36,21 +37,31 @@
 -- dispatch.eval_days_cause, null where it names none. The refresher's rewrite of a delivery
 -- settings change sets it to 'settings_rewrite' (delivery.EvalDaysWrittenBySettingsRewrite,
 -- through evals.MarkSettingsRewrite) before its first write of a day row, and its rebuild of a
--- span, the one transaction that holds the days a page names with every other day they move, to
--- 'rebuild' (delivery.EvalDaysWrittenByRebuild, through evals.MarkRebuild); no other writer sets
--- it. The Delivery page's live hub recomputes an evals view at once for those two's changes, and
--- every other change waits its quiet. The pending row takes the cause its first write finds, and
--- the drain (delivery_changes_drain, 20261117100001) copies it into delivery_changes.
+-- span, the one transaction that holds the days a page names with every other day they move, and
+-- a verified rebuild's flip, which makes what the rebuild staged visible, to 'rebuild'
+-- (delivery.EvalDaysWrittenByRebuild, through evals.MarkRebuild); no other writer sets it. The
+-- Delivery page's live hub recomputes an evals view at once for those changes and for the
+-- publishing of the default repositories below (delivery.EvalDaysImmediate), and every other
+-- change waits its quiet. The pending row takes the cause its first write finds, and the drain
+-- (delivery_changes_drain, 20261117100001) copies it into delivery_changes.
 -- set_config(..., true) reverts the setting when the transaction ends, so a pooled connection's
 -- next transaction reads it empty, which nullif makes null.
 --
--- Two eval_days changes are logged by no trigger here. The refresher's fold of a walk batch's
+-- Four eval_days changes are logged by no trigger here. The refresher's fold of a walk batch's
 -- stored figures writes no day row, and calls eval_days_change_log itself for each eval whose
 -- figures it folded again (evals.foldFiguresOfDays), so a view that read the batch's rows beside
--- the figures of before them is recomputed. And the refresher logs one eval_days change of no
--- eval, repo and ref null and run_kind 'settings_rewrite', through delivery_change_log_pending,
--- in the transaction that leaves the day rows standing at the delivery settings a change of the
--- settings row named (evals.markSettingsApplied): every evals view is recomputed for it.
+-- the figures of before them is recomputed; a rebuild's flip does the same for each eval whose
+-- figures alone moved (evals.flipRebuild), under the rebuild's cause. The refresher logs one
+-- eval_days change of no eval, repo and ref null and run_kind 'settings_rewrite', through
+-- delivery_change_log_pending, in the transaction that leaves the day rows standing at the
+-- delivery settings a change of the settings row named (evals.markSettingsApplied): every evals
+-- view is recomputed for it. And the page's commit that publishes the projects' default
+-- repositories (evals.publishDefaults) logs, through delivery_change_log_pending and with run_kind
+-- 'defaults' (delivery.EvalDaysWrittenByDefaults), one eval_days change of no eval for each
+-- project whose reads it moves, repo that project's key, which marks the project's evals views;
+-- and, where it moves the project whose published default is the deploy repository, one more,
+-- repo the deploy repository and ref 'judging' (delivery.DefaultsJudgingRef), which marks the
+-- delivery views that project's evals judge.
 --
 -- An update logs only the rows whose content moved: as 0100's and 20261117100002's triggers ignore
 -- the columns a pass rewrites whatever it finds, the update half ignores updated_at and built_by,
@@ -69,16 +80,19 @@
 -- input left goes, and a view of its numbers wakes to the change. A project's deletion logs one
 -- change of each of its evals, which no view of the deleted project reads.
 --
--- A row of an owner key, what a repository attributes rather than an issue (evals.OwnerKey,
--- migration 20261117100006), is read by no view of its own: a project reads it for each
--- repository it publishes as its default (eval_project_owners). So its change is logged once for
--- each project whose read folds it, under that project's key and its eval id of the same slug,
--- with the same span, and none for a repository no project publishes, so the hub's arm
+-- A row of an owner key, what counts for a project only through a default repository rather than
+-- whatever the defaults are (evals.OwnerKey, migration 20261117100006), is read by no view of its
+-- own: a project reads it where the published defaults make it one of the key's readers
+-- (eval_project_owners: the projects whose default is its repository for a plain key, and those
+-- eval_owner_readers picks for a key that carries lists). So its change is logged once for each
+-- project whose read folds it, under that project's key and its eval id of the same slug, with the
+-- same span, and none for a key no project reads, so the hub's arm
 -- `view.spec.project == change.Repo` (api/delivery_live_hub_intake.go) wakes exactly the views
 -- that read it (dispatch://INFRA-2916/artifact/plan-md, T3). The same call records the owner key
--- in eval_day_owners the first time a statement writes a row of it, where the reads find it.
+-- in eval_day_owners the first time a statement writes a row of it, with its repository, its
+-- sharers and its lists as the key carries them, where the reads find it.
 --
--- The census answers 0: four functions and three triggers, reading and rewriting no row.
+-- The census answers 0: three functions and three triggers, reading and rewriting no row.
 create function eval_days_change_log(p_project text, p_eval text, p_first date, p_last date)
 returns void language plpgsql as $$
 declare
@@ -90,9 +104,10 @@ declare
   reader text;
 begin
   if starts_with(p_project, ':') then
-    insert into eval_day_owners (owner, repo, sharers)
+    insert into eval_day_owners (owner, repo, sharers, lists)
     values (p_project, substr(split_part(p_project, '|', 1), 2),
-      coalesce(string_to_array(nullif(split_part(p_project, '|', 2), ''), ','), '{}'))
+      coalesce(string_to_array(nullif(split_part(p_project, '|', 2), ''), ','), '{}'),
+      coalesce(string_to_array(nullif(split_part(p_project, '|', 3), ''), ';'), '{}'))
     on conflict do nothing;
     for reader in
       select project_key from eval_project_owners where owner = p_project order by project_key
@@ -161,21 +176,6 @@ create trigger eval_days_updated after update on eval_days
   referencing old table as replaced new table as written
   for each statement execute function eval_days_updated();
 
-create function eval_days_deleted() returns trigger language plpgsql as $$
-declare
-  span record;
-begin
-  for span in
-    select project_key, eval_id, min(day) as first_day, max(day) as last_day
-    from removed
-    group by project_key, eval_id
-    order by project_key, eval_id
-  loop
-    perform eval_days_change_log(span.project_key, span.eval_id, span.first_day, span.last_day);
-  end loop;
-  return null;
-end $$;
-
 create trigger eval_days_deleted after delete on eval_days
-  referencing old table as removed
-  for each statement execute function eval_days_deleted();
+  referencing old table as written
+  for each statement execute function eval_days_inserted();

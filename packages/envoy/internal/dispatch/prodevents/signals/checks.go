@@ -16,24 +16,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The check_fail signal (dispatch://INFRA-978, R7 and T12): a check_results row with verdict fail
+// The check_fail signal (dispatch://INFRA-978, R7 and D5): a check_results row with verdict fail
 // on a check whose when is after_merge (the result.recorded event's When) is a failure of the
 // deploy that first shipped its commit (prodevents.DeployForCommit), written under the project of
-// the issue the result was recorded on, naming that issue's pull requests, keyed
-// check:<check block id>@<deploy id>, its actor the result's and its detected time the result's
-// own. A result whose commit no deploy row holds yet makes its row when a deploy row that holds it
-// lands (matchEarlyChecks); a result no deploy ever holds makes none. A retraction of the result
-// rejects the row it made, with the retraction's reason and actor.
+// the issue the result was recorded on, naming that issue's pull requests, keyed by the check and
+// the deploy (CheckSourceRef), its actor the result's and its detected time the result's own. A
+// result whose commit no deploy row holds yet makes its row when a deploy row that holds it lands
+// (matchEarlyChecks); a result no deploy ever holds makes none. The result is bound to the row its
+// first match wrote, or found under that key, in the transaction that writes it
+// (check_fail_bindings, migration 20261127022136), and stays on it: a deploy row found later that
+// shipped the commit earlier makes it no second row. A retraction of the result rejects the row it
+// is bound to, with the retraction's reason and actor. A result's first match and its retraction's
+// reject take the result's row in turn (lockResult), so neither runs inside the other.
 
-// The words of a check result this signal reads (api's checkWhenAfterMerge and the verdict column).
-const (
-	whenAfterMerge = "after_merge"
-	verdictFail    = "fail"
-)
+// verdictFail is the verdict of a failed check result (check_results.verdict).
+const verdictFail = "fail"
 
 // checkResult is what the signal reads of one check_results row: its issue's project, its check,
-// its commit, its verdict, the When its result.recorded event judged it by, its actor and time, and
-// whether a retraction stands against it.
+// its commit, its verdict, the When its result.recorded event judged it by, its actor and time,
+// whether a retraction stands against it, and the check_fail row it is bound to.
 type checkResult struct {
 	id         string
 	issueKey   string
@@ -46,15 +47,19 @@ type checkResult struct {
 	actor      model.Actor
 	createdAt  time.Time
 	retracted  bool
+	// bound is the id of the check_fail row the result is bound to (check_fail_bindings), "" where
+	// it is bound to none.
+	bound string
 }
 
 // checkResultColumns is checkResult's read: the result, its issue's project, the When of the event
-// it was recorded by (the event's own seq on the check's issue, check_results.event_seq), and
-// whether a retraction stands against it.
+// it was recorded by (the event's own seq on the check's issue, check_results.event_seq), whether
+// a retraction stands against it, and its binding.
 const checkResultColumns = `
 	select r.id::text, r.issue_key, i.project_key, r.check_artifact_id::text, r.check_block_id, r.commit_sha,
 		r.verdict, coalesce(e.payload ->> 'when', ''), r.actor, r.created_at,
-		exists (select from check_result_retractions x where x.result_id = r.id)
+		exists (select from check_result_retractions x where x.result_id = r.id),
+		coalesce((select b.failure_id::text from check_fail_bindings b where b.result_id = r.id), '')
 	from check_results r
 	join issues i on i.key = r.issue_key
 	left join events e on e.issue_key = r.check_issue_key and e.seq = r.event_seq`
@@ -63,7 +68,7 @@ func scanCheckResult(row pgx.Row) (checkResult, error) {
 	var result checkResult
 	var actor []byte
 	if err := row.Scan(&result.id, &result.issueKey, &result.project, &result.artifactID, &result.blockID, &result.commitSHA,
-		&result.verdict, &result.when, &actor, &result.createdAt, &result.retracted); err != nil {
+		&result.verdict, &result.when, &actor, &result.createdAt, &result.retracted, &result.bound); err != nil {
 		return checkResult{}, err
 	}
 	if err := json.Unmarshal(actor, &result.actor); err != nil {
@@ -87,24 +92,55 @@ func readCheckResult(ctx context.Context, q delivery.Querier, id string) (checkR
 // counts reports whether the result is a check_fail signal: a fail of an after_merge check that no
 // retraction has taken back.
 func (r checkResult) counts() bool {
-	return r.verdict == verdictFail && r.when == whenAfterMerge && !r.retracted
+	return r.verdict == verdictFail && r.when == model.CheckWhenAfterMerge && !r.retracted
 }
 
-// checkSourceRef is the source_ref of the check_fail row of block's check blaming deploy.
-func checkSourceRef(blockID, deployID string) string {
-	return "check:" + blockID + "@" + deployID
+// CheckSourceRef is the source_ref of the check_fail row of a check blaming deploy:
+// check:<document>/<block>@<deploy>, the check named by its Verification document's id
+// (check_results.check_artifact_id) and its block id, since a block id names a check within one
+// document alone.
+func CheckSourceRef(artifactID, blockID, deployID string) string {
+	return prodevents.CheckSourceRefPrefix + artifactID + "/" + blockID + "@" + deployID
+}
+
+// lockResult takes the row of result id in tx `for no key update`. A result's first match
+// (RecordCheckFailure) and its retraction's reject (RejectRetractedCheck) take it before they read
+// the result, so a reject waits for a first match in flight and then reads the binding it wrote,
+// and a first match that waited reads the retraction committed before it. The level leaves a
+// foreign key that names the result (`for key share`), a retraction's insert among them, unblocked.
+func lockResult(ctx context.Context, tx pgx.Tx, id string) error {
+	if _, err := tx.Exec(ctx, `select 1 from check_results where id = $1::uuid for no key update`, id); err != nil {
+		return fmt.Errorf("lock check result %s: %w", id, err)
+	}
+	return nil
 }
 
 // RecordCheckFailure writes the check_fail row of result id where it is one (a fail of an
-// after_merge check, not retracted) and a deploy row holds its commit, and reports whether it wrote
-// a row. A repeat writes nothing: the row is keyed by the check and the deploy. A result no deploy
-// holds yet is logged with its id and makes its row when one lands (matchEarlyChecks).
+// after_merge check, not retracted), a deploy row holds its commit and the result is bound to no
+// row yet, and reports whether it wrote a row. The row blames the deploy that first shipped the
+// commit; where another result of the check wrote that row already, under the same key, the
+// result stands behind it and writes nothing. Either way the result is bound to the row in the
+// transaction that writes the row, which takes the delivery change log's lock nowhere and drains
+// after its commit: a repeat writes nothing, and a deploy row found later that shipped the commit
+// earlier makes the result no second row. A result no deploy holds yet is logged with its id and
+// makes its row when one lands (matchEarlyChecks).
 func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool, error) {
-	result, found, err := readCheckResult(ctx, pool, id)
-	if err != nil || !found || !result.counts() {
+	if result, found, err := readCheckResult(ctx, pool, id); err != nil || !found || !result.counts() || result.bound != "" {
 		return false, err
 	}
-	deploy, held, err := prodevents.DeployForCommit(ctx, pool, result.commitSHA)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin the check_fail of result %s: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockResult(ctx, tx, id); err != nil {
+		return false, err
+	}
+	result, found, err := readCheckResult(ctx, tx, id)
+	if err != nil || !found || !result.counts() || result.bound != "" {
+		return false, err
+	}
+	deploy, held, err := prodevents.DeployForCommit(ctx, tx, result.commitSHA)
 	if err != nil {
 		return false, err
 	}
@@ -113,17 +149,27 @@ func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool,
 			"result", result.id, "commit", result.commitSHA)
 		return false, nil
 	}
-	pulls, err := issuePullRequests(ctx, pool, result.issueKey)
+	pulls, err := issuePullRequests(ctx, tx, result.issueKey)
 	if err != nil {
 		return false, err
 	}
-	_, created, err := prodevents.Write(ctx, pool, prodevents.Event{
+	row, created, err := prodevents.WriteIn(ctx, tx, prodevents.Event{
 		ProjectKey: result.project, Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults,
-		SourceRef: checkSourceRef(result.blockID, deploy.ID), PullRequests: pulls, Actor: result.actor,
+		SourceRef: CheckSourceRef(result.artifactID, result.blockID, deploy.ID), PullRequests: pulls, Actor: result.actor,
 		DeployID: new(deploy.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(result.createdAt.UTC()),
 	})
 	if err != nil {
 		return false, fmt.Errorf("write the check_fail of result %s: %w", result.id, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into check_fail_bindings (result_id, failure_id) values ($1::uuid, $2::uuid)`,
+		result.id, row.ID); err != nil {
+		return false, fmt.Errorf("bind result %s to its check_fail %s: %w", result.id, row.ID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit the check_fail of result %s: %w", result.id, err)
+	}
+	if created {
+		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a check_fail write")
 	}
 	return created, nil
 }
@@ -144,57 +190,106 @@ func issuePullRequests(ctx context.Context, q delivery.Querier, issue string) ([
 		if err := rows.Scan(&repo, &number); err != nil {
 			return nil, fmt.Errorf("read the pull requests of %s: %w", issue, err)
 		}
-		pulls = append(pulls, prodevents.PullRequestName(repo, number))
+		pulls = append(pulls, delivery.PullRequestName(repo, number))
 	}
 	return pulls, rows.Err()
 }
 
-// RejectRetractedCheck rejects the check_fail row result id made, with the retraction's reason,
-// actor and time, and reports whether it rejected one. A row another fail of the same check still
-// stands behind (a result of it, not retracted, whose commit the same deploy first shipped) stays
-// counted: that result makes the same row. A row rejected already, or one no result made, writes
-// nothing.
+// RejectRetractedCheck rejects the check_fail row result id made or stands behind (rowOf), with the
+// retraction's reason, actor and time, and reports whether it rejected one. A row another fail of
+// the same check still stands behind (standsBehind) stays counted. A row rejected already, by a
+// person or by another retraction, or one no result made, writes nothing. The decision and the
+// reject commit together under the result's lock (lockResult) and the row's, in a transaction that
+// takes the delivery change log's lock nowhere and drains after its commit.
 func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason string, actor model.Actor, at time.Time) (bool, error) {
-	result, found, err := readCheckResult(ctx, pool, id)
-	if err != nil || !found || result.verdict != verdictFail || result.when != whenAfterMerge {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin the reject of result %s's check_fail: %w", id, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockResult(ctx, tx, id); err != nil {
 		return false, err
 	}
-	deploy, held, err := prodevents.DeployForCommit(ctx, pool, result.commitSHA)
-	if err != nil || !held {
+	result, found, err := readCheckResult(ctx, tx, id)
+	if err != nil || !found || result.verdict != verdictFail || result.when != model.CheckWhenAfterMerge {
 		return false, err
 	}
-	row, made, err := prodevents.BySourceRef(ctx, pool, result.project, checkSourceRef(result.blockID, deploy.ID))
+	row, made, err := rowOf(ctx, tx, result)
 	if err != nil || !made || row.State == prodevents.StateRejected {
 		return false, err
 	}
-	standing, err := standingFailsOf(ctx, pool, result)
+	standing, err := standingFailsOf(ctx, tx, result)
 	if err != nil {
 		return false, err
 	}
 	for _, other := range standing {
-		if other.project != result.project {
-			continue
-		}
-		if blamed, held, err := prodevents.DeployForCommit(ctx, pool, other.commitSHA); err != nil {
+		if behind, err := standsBehind(ctx, tx, other, row); err != nil || behind {
 			return false, err
-		} else if held && blamed.ID == deploy.ID {
-			return false, nil
 		}
 	}
-	if _, err := prodevents.SetState(ctx, pool, result.project, row.ID, prodevents.StateChange{
+	if _, err := prodevents.SetStateIn(ctx, tx, result.project, row.ID, prodevents.StateChange{
 		State: prodevents.StateRejected, Reason: reason, Actor: actor, At: at,
 	}); err != nil {
 		return false, fmt.Errorf("reject the check_fail of result %s: %w", result.id, err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit the reject of result %s's check_fail: %w", result.id, err)
+	}
+	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a check_fail reject")
 	return true, nil
+}
+
+// rowOf is the check_fail row result made or stands behind, locked in tx `for update` and read
+// under that lock, and false where none is stored: the row it is bound to, or for a result bound to
+// none, the row its first match would find, the one keyed by its check and the deploy that first
+// shipped its commit. The lock is the one prodevents.SetStateIn takes, so a state written while
+// this waited is the state read: a reject of another retraction, or a person's reject, is kept.
+func rowOf(ctx context.Context, tx pgx.Tx, result checkResult) (prodevents.Event, bool, error) {
+	id := result.bound
+	if id == "" {
+		deploy, held, err := prodevents.DeployForCommit(ctx, tx, result.commitSHA)
+		if err != nil || !held {
+			return prodevents.Event{}, false, err
+		}
+		row, made, err := prodevents.BySourceRef(ctx, tx, result.project, CheckSourceRef(result.artifactID, result.blockID, deploy.ID))
+		if err != nil || !made {
+			return prodevents.Event{}, false, err
+		}
+		id = row.ID
+	}
+	if _, err := tx.Exec(ctx, `select 1 from production_events where id = $1::uuid for update`, id); err != nil {
+		return prodevents.Event{}, false, fmt.Errorf("lock the check_fail %s of result %s: %w", id, result.id, err)
+	}
+	row, err := prodevents.Get(ctx, tx, result.project, id)
+	if errors.Is(err, prodevents.ErrNotFound) {
+		return prodevents.Event{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+// standsBehind reports whether other, another fail of row's check that still counts, stands
+// behind row: it is bound to row, or it is bound to none and its first match would find row, the
+// deploy that first shipped its commit being the one row blames.
+func standsBehind(ctx context.Context, q delivery.Querier, other checkResult, row prodevents.Event) (bool, error) {
+	if other.project != row.ProjectKey {
+		return false, nil
+	}
+	if other.bound != "" {
+		return other.bound == row.ID, nil
+	}
+	blamed, held, err := prodevents.DeployForCommit(ctx, q, other.commitSHA)
+	if err != nil || !held {
+		return false, err
+	}
+	return blamed.ID == *row.DeployID, nil
 }
 
 // standingFailsOf is every other result of result's check that is a check_fail signal still
 // (checkResult.counts).
 func standingFailsOf(ctx context.Context, q delivery.Querier, result checkResult) ([]checkResult, error) {
 	rows, err := q.Query(ctx, checkResultColumns+`
-		where r.check_artifact_id = $1::uuid and r.check_block_id = $2 and r.id <> $3::uuid and r.verdict = 'fail'`,
-		result.artifactID, result.blockID, result.id)
+		where r.check_artifact_id = $1::uuid and r.check_block_id = $2 and r.id <> $3::uuid and r.verdict = $4`,
+		result.artifactID, result.blockID, result.id, verdictFail)
 	if err != nil {
 		return nil, fmt.Errorf("read the results of check %s: %w", result.blockID, err)
 	}
@@ -212,36 +307,37 @@ func standingFailsOf(ctx context.Context, q delivery.Querier, result checkResult
 	return standing, rows.Err()
 }
 
-// matchEarlyChecks writes the check_fail rows a deploy row that just landed completes: every fail
-// of an after_merge check, not retracted, whose commit the row holds (RecordCheckFailure, which
-// blames the deploy that first shipped the commit and writes nothing for a row already made).
-func matchEarlyChecks(ctx context.Context, pool *store.Pool, deploy prodevents.Event) error {
-	if len(deploy.Commits) == 0 {
+// matchEarlyChecks writes the check_fail rows deploys complete: every fail of an after_merge check,
+// not retracted and bound to no row yet, whose commit one of them holds (RecordCheckFailure, which
+// blames the deploy that first shipped the commit and binds the result to its row). deploys are
+// every row a derive calls a deploy, whether its write moved the row or wrote nothing, so a derive
+// run again after a pass that failed between a deploy row's write and its check_fail's matches
+// that row all the same, and a result bound already, on this deploy or another, is left on its
+// row. The results are read once for the commits of every row, then written oldest first, each
+// once.
+func matchEarlyChecks(ctx context.Context, pool *store.Pool, deploys []delivery.DeployRow) error {
+	var commits []string
+	for _, deploy := range deploys {
+		commits = append(commits, deploy.Commits...)
+	}
+	if len(commits) == 0 {
 		return nil
 	}
 	rows, err := pool.Query(ctx, `
 		select r.id::text from check_results r
 		join events e on e.issue_key = r.check_issue_key and e.seq = r.event_seq
-		where r.verdict = 'fail' and r.commit_sha = any($1) and e.payload ->> 'when' = $2
+		where r.verdict = $3 and r.commit_sha = any($1) and e.payload ->> 'when' = $2
 		  and not exists (select from check_result_retractions x where x.result_id = r.id)
-		order by r.created_at, r.id`, deploy.Commits, whenAfterMerge)
+		  and not exists (select from check_fail_bindings b where b.result_id = r.id)
+		order by r.created_at, r.id`, commits, model.CheckWhenAfterMerge, verdictFail)
 	if err != nil {
-		return fmt.Errorf("read the failed checks of deploy %s: %w", deploy.ID, err)
+		return fmt.Errorf("read the failed checks of %d deploy rows: %w", len(deploys), err)
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return fmt.Errorf("read the failed checks of deploy %s: %w", deploy.ID, err)
-		}
-		ids = append(ids, id)
+	results, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the failed checks of %d deploy rows: %w", len(deploys), err)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the failed checks of deploy %s: %w", deploy.ID, err)
-	}
-	for _, id := range ids {
+	for _, id := range results {
 		if _, err := RecordCheckFailure(ctx, pool, id); err != nil {
 			return err
 		}
@@ -260,37 +356,12 @@ type feedEvent struct {
 	createdAt time.Time
 }
 
-// passChecks is one pass of the checks feed: it reads the result events after its cursor up to
-// safe, the event log's safe horizon, page after page, writes the check_fail of each fail of an
-// after_merge check (RecordCheckFailure) and rejects the row of each retracted result
-// (RejectRetractedCheck), then moves its cursor over the page. A page shorter than a whole one
-// read every event to safe, so the cursor moves to safe.
+// passChecks is one pass of the checks feed (passEventFeed): it writes the check_fail of each fail
+// of an after_merge check (RecordCheckFailure) and rejects the row of each retracted result
+// (RejectRetractedCheck).
 func passChecks(ctx context.Context, pool *store.Pool, safe int64) error {
-	stored, err := readCursor(ctx, pool, checksCursor)
-	if err != nil {
-		return err
-	}
-	position := stored.position
-	for position < safe {
-		events, err := readEventPage(ctx, pool, position, safe, []string{"result.recorded", "result.retracted"}, "")
-		if err != nil {
-			return err
-		}
-		for _, event := range events {
-			if err := checkSignal(ctx, pool, event); err != nil {
-				return err
-			}
-		}
-		next := safe
-		if len(events) == page {
-			next = events[len(events)-1].id
-		}
-		if err := moveCursor(ctx, pool, checksCursor, next, nil, time.Now()); err != nil {
-			return err
-		}
-		position = next
-	}
-	return nil
+	return passEventFeed(ctx, pool, checksCursor, safe, []string{"result.recorded", "result.retracted"}, "",
+		func(event feedEvent) error { return checkSignal(ctx, pool, event) })
 }
 
 // checkSignal is the write one result event makes.
@@ -301,7 +372,7 @@ func checkSignal(ctx context.Context, pool *store.Pool, event feedEvent) error {
 		if err := json.Unmarshal(event.payload, &payload); err != nil {
 			return fmt.Errorf("decode result event %d: %w", event.id, err)
 		}
-		if payload.Verdict != verdictFail || payload.When != whenAfterMerge {
+		if payload.Verdict != verdictFail || payload.When != model.CheckWhenAfterMerge {
 			return nil
 		}
 		_, err := RecordCheckFailure(ctx, pool, payload.ResultID)
@@ -313,6 +384,38 @@ func checkSignal(ctx context.Context, pool *store.Pool, event feedEvent) error {
 		}
 		_, err := RejectRetractedCheck(ctx, pool, payload.ResultID, payload.Reason, event.actor, event.createdAt)
 		return err
+	}
+	return nil
+}
+
+// passEventFeed is one pass of the event feed whose cursor is name: it reads the events of kinds
+// after its cursor up to safe, the event log's safe horizon, that where keeps (readEventPage), page
+// after page, runs handle on each, then moves its cursor over the page. A page shorter than a whole
+// one read every event to safe, so the cursor moves to safe.
+func passEventFeed(ctx context.Context, pool *store.Pool, name string, safe int64, kinds []string, where string, handle func(feedEvent) error) error {
+	stored, err := readCursor(ctx, pool, name)
+	if err != nil {
+		return err
+	}
+	position := stored.position
+	for position < safe {
+		events, err := readEventPage(ctx, pool, position, safe, kinds, where)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if err := handle(event); err != nil {
+				return err
+			}
+		}
+		next := safe
+		if len(events) == page {
+			next = events[len(events)-1].id
+		}
+		if err := moveCursor(ctx, pool, name, next, nil, time.Now()); err != nil {
+			return err
+		}
+		position = next
 	}
 	return nil
 }

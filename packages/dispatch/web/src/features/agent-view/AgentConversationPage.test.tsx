@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   type AgentStreamCommand,
   type AgentStreamFrame,
@@ -28,13 +28,21 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
-import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
+import type {
+  Agent,
+  AuthenticatedUser,
+  Message,
+  MessageRead,
+  UserAgentStates,
+} from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -91,6 +99,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-09-27T21:16:15Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -122,6 +131,14 @@ const spies: { mockRestore: () => void }[] = [];
 const clients: QueryClient[] = [];
 let sockets: FakeLiveSockets;
 
+// A held send's words and a reply are Markdown (`MarkdownBody`), drawn by the lazy Markdown
+// engine, and several rows read them as soon as their turn shows, some on the fake clock, where
+// the engine's load cannot land. The rows run in random order, so the file loads the engine
+// before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 beforeEach(() => {
   sockets = installFakeLiveSockets();
 });
@@ -142,18 +159,21 @@ function newClient(): QueryClient {
   return client;
 }
 
-/** Dispatch's reads, signed in as sami, with `agents` the live sessions. */
+/** Dispatch's reads, signed in as sami unless `viewer` names who else `/auth/whoami` answers, with
+ *  `agents` the live sessions. */
 function mockDispatch({
   agentState,
   agents,
   messages,
   putAgentState,
+  viewer = { event_head: "0", kind: "user", login: "sami" },
 }: {
   agentState: UserAgentStates;
   /** The live sessions, or an Error the agent registry read rejects with. */
   agents: Agent[] | Error;
   messages: () => MessageRead[];
   putAgentState: Mock<typeof api.putAgentState>;
+  viewer?: AuthenticatedUser;
 }): void {
   const listAgents = spyOn(api, "listAgents");
   if (agents instanceof Error) {
@@ -162,7 +182,7 @@ function mockDispatch({
     listAgents.mockResolvedValue(agents);
   }
   spies.push(
-    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "sami" }),
+    spyOn(api, "whoAmI").mockResolvedValue(viewer),
     listAgents,
     spyOn(api, "listAgentMessages").mockImplementation(async () => messages()),
     spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
@@ -250,6 +270,7 @@ function renderLiveView({
   putAgentState,
   replay,
   responding,
+  viewer,
 }: {
   agentState: UserAgentStates;
   /** What the agent list answers in place of SESSION alone: another list, or a failure. */
@@ -260,6 +281,8 @@ function renderLiveView({
   putAgentState: Mock<typeof api.putAgentState>;
   replay?: AgentStreamFrame[];
   responding?: boolean;
+  /** Who `/auth/whoami` answers in place of sami. */
+  viewer?: AuthenticatedUser;
 }): QueryClient & LiveView {
   let thread = messages;
   mockDispatch({
@@ -270,6 +293,7 @@ function renderLiveView({
     ],
     messages: () => thread,
     putAgentState,
+    viewer,
   });
   const queryClient = newClient();
   renderPage(queryClient, SESSION, true, other !== undefined);
@@ -468,6 +492,35 @@ test("the live view attributes other people's messages to the session to their a
     "href",
     "/agents/reviewer-session-id/live"
   );
+});
+
+// An agent viewer of the dashboard wrote none of a session's messages as "you", even when its
+// login label is a person's own - a personal token's owner: every message names its author.
+test("an agent viewer reads no message as its own, each naming its author", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      { message: message("m1", "Sami: where is the dashboard?"), replies: [] },
+      {
+        message: message("m2", "Alice here: status?", {
+          author: { id: "alice", kind: "user" },
+          created_at: "2026-09-27T21:18:00Z",
+        }),
+        replies: [],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    viewer: { event_head: "0", kind: "agent", login: "sami", session: null },
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await expect(within(thread).findByText("Alice here: status?")).resolves.toBeTruthy();
+  expect(within(thread).queryAllByTestId("agent-message-user")).toEqual([]);
+  expect(
+    within(thread)
+      .getAllByTestId("agent-message-other")
+      .map((node) => node.textContent)
+  ).toEqual(["samiSami: where is the dashboard?", "aliceAlice here: status?"]);
 });
 
 // The header is the agent's own live conversation (exclusion E3): `AgentName` names it by its
@@ -1029,9 +1082,8 @@ test("Send stays open with text while an earlier send is out or late, and each p
     await sendFromLiveView(user, "try the other branch");
     const [held] = screen.getAllByTestId("agent-send-held");
     // The pending turn names the message as the reader's own, at a glance and to a screen reader.
-    expect(
-      within(held as HTMLElement).getByText("Your message: “try the other branch”")
-    ).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("Your message")).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("try the other branch")).toBeTruthy();
     expect(within(held as HTMLElement).getByRole("status").textContent).toBe("Sending…");
 
     // The field cleared on the press, and the next message goes out as its own press.
@@ -2606,10 +2658,35 @@ test("a refused send keeps the message on screen and says why", async () => {
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “try the other branch”")
-  ).toBeTruthy();
+  const held = screen.getByTestId("agent-send-held");
+  expect(within(held).getByText("Your message")).toBeTruthy();
+  expect(within(held).getByText("try the other branch")).toBeTruthy();
   expect(composerInput().value).toBe("");
+});
+
+// The held turn draws the draft by the renderer, as the message it becomes will be drawn: its
+// formatting is drawn, and a mention the picker wrote reads as the party's name. Drawn as the
+// characters typed, the turn would keep the asterisks.
+test("a held message reads as the message it becomes, never as the source typed", async () => {
+  const user = userEvent.setup();
+  spies.push(
+    spyOn(api, "createAgentMessage").mockRejectedValue(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" })
+    )
+  );
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
+
+  await type(user, input, "try the **other** branch");
+  await user.click(sendButton());
+  await screen.findByTestId("agent-send-error");
+  const held = screen.getByTestId("agent-send-held");
+  await waitFor(() => expect(held.querySelector("strong")?.textContent).toBe("other"));
+  expect(held.textContent).not.toContain("**");
 });
 
 // A refusal belongs to the session that sent the message. One landing while the reader is on
@@ -2656,9 +2733,9 @@ test("a refusal that lands after switching sessions stays with the session that 
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “hold this”")
-  ).toBeTruthy();
+  const turn = screen.getByTestId("agent-send-held");
+  expect(within(turn).getByText("Your message")).toBeTruthy();
+  expect(within(turn).getByText("hold this")).toBeTruthy();
 });
 
 // Messages to one session go out one after another, in press order: Send stays open while one is
@@ -2911,6 +2988,41 @@ for (const capabilities of [[], ["future-capability"]]) {
   });
 }
 
+// A corrected issue message reaches the session's own page too: its byline carries the edit,
+// and a deleted one reads as deleted where its text was.
+test("the live view marks an edited issue message and reads a deleted one as deleted", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      {
+        message: message("m1", "Bob on the issue: ship it?", {
+          author: { id: "bob", kind: "user" },
+          edited_at: "2026-09-27T21:19:10Z",
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+      {
+        message: message("m2", "", {
+          author: { id: "bob", kind: "user" },
+          created_at: "2026-09-27T21:20:00Z",
+          deleted_at: "2026-09-27T21:21:00Z",
+          deleted_by: { id: "bob", kind: "user" },
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await within(thread).findByText("Bob on the issue: ship it?");
+  const others = within(thread).getAllByTestId("agent-message-other");
+  expect(others[0]?.textContent).toContain("edited");
+  await waitFor(() => expect(others[1]?.textContent).toContain("Deleted by bob"));
+});
+
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin
  *  and none once the viewer unpinned it. */
 function answerPinWrites(): Mock<typeof api.putAgentState> {
@@ -3017,7 +3129,7 @@ test("the live view's header holds the back link, the name, the live state and t
   expect(within(header).getByText("Live")).toBeTruthy();
   expect(within(header).getByRole("button", { name: "Pin Planner" })).toBeTruthy();
 
-  expect(within(header).queryAllByRole("combobox").length).toBe(0);
+  expect(within(header).queryAllByRole("combobox")).toHaveLength(0);
   expect(within(header).queryByText(agent.host)).toBeNull();
   expect(within(header).queryByText(agent.dir)).toBeNull();
   expect(screen.queryByText(/relayed while this page is open/)).toBeNull();

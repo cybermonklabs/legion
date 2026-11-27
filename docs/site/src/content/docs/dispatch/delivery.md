@@ -45,7 +45,8 @@ They are:
 
 A repository is the deploy source of one delivery-on project at most, and of one source of that project, so each repository has one rule and one owner.
 The save checks this under a lock of each repository involved, taken in name order, so two saves cannot both take one repository.
-A move of a project's default repository is held to the same rule: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear the default repository of a delivery-on project whose source reads it (`409 DELIVERY_NEEDS_REPOSITORY`).
+A move of the default repository of a delivery-on project whose `github_workflow` source names no repository, and so reads the default, is held to the same rule: `PUT /api/v1/projects/{key}/default-repository` refuses a move onto a repository that another delivery-on project's source reads or that another source of the project names (`409 DELIVERY_REPOSITORY_SHARED`), and refuses to clear it (`409 DELIVERY_NEEDS_REPOSITORY`).
+Any other project moves its default repository freely.
 
 A save replaces the project's sources.
 A source whose repository and rule are both unchanged keeps its id, its bookkeeping and its repository's reconcile progress.
@@ -72,6 +73,11 @@ A refused save writes nothing, and its body is `{code, error, field?, source?, p
 - `409 DELIVERY_REPOSITORY_SHARED`: with delivery on, a repository that a source of another delivery-on project reads, that project named in `project`.
 
 - `404 PROJECT_NOT_FOUND`: no project has the key.
+
+An agent may save them on the tab itself, in a headless browser that sends its agent bearer on every request to Dispatch and has no sign-in: `GET /auth/whoami` answers such a bearer as an agent, and the dashboard draws its shell for it.
+An agent whose credential proves no session opens the tab at `/projects/<KEY>/settings?session=<its session>`, and its save names that session as the writer (`actor`), as a bearer's write must; a broker-issued token's own session is named without the parameter.
+Opened with neither, the tab sends no save: **Save delivery settings** says to open the page with `?session=<your session>`, since Dispatch would refuse the save `400 ACTOR_KIND`.
+The agent's shell has no **Sign out** and no **Settings** link, and shows none of a person's own lists (the Inbox's asks and threads, pinned issues and pinned agents), since each needs a person's sign-in or the `person` scope.
 
 The deployment-wide delivery record of the release before this one, `GET` and `PUT /api/v1/settings/delivery`, still answers for one release, because a route is removed only in the release after the one that stops calling it; nothing in the web app calls it, this release reads that record nowhere else, and the next release removes the route.
 
@@ -209,7 +215,7 @@ A project's failure measures count each signal where the project has the failure
 
 - `check_fail` (failure source `check_results`): a `fail` result of a check whose `when` is `after_merge`.
   It blames the deploy that first shipped the result's commit, of any project, and is written under the project of the issue the result was recorded on, with that issue's pull requests, the result's actor, and the result's time as `detected_at`.
-  Its `source_ref` is `check:<check block id>@<deploy id>`.
+  Its `source_ref` is `check:<check document id>/<check block id>@<deploy id>`: block ids are per document, so two documents' checks of one block id on one deploy write two rows.
   The result route writes it as soon as the result commits, and the production signals loop, which reads the `result.recorded` event, writes it where that write was lost.
   A result whose commit no deploy row holds yet makes its row when such a deploy row lands, and a result that no deploy ever ships makes none.
   A retraction of the result (`POST /api/v1/results/{id}/retract`) rejects the row with the retraction's reason and actor, unless another `fail` of the same check that is not retracted, whose commit the same deploy first shipped, still stands behind it.
@@ -260,17 +266,22 @@ So a failure counts for every project its deploy counts for whose failure source
 
 - **Failed deployment recovery time**: the median of the minutes from each counted failure's deploy finishing to the failure's restore, over the failures restored in the window, beside `not_restored`, the counted failures of the window's deploys that no restore has closed yet.
   A window with no restore has no median: "no data", never 0.
-  The delivery measures route answers it as `{n, median_minutes, not_restored}`.
+  The delivery measures route answers it as `failed_deployment_recovery`, `{n, median_minutes, not_restored}`.
 
 - **Deployment rework rate**: the deploys that restored a counted failure, over every deploy.
   A deploy restores a failure when it is that failure's `restored_by_deploy`: a revert's own deploy, or the deploy a person names when marking the failure restored.
-  The delivery measures route answers it as `{restoring, total, rate}`.
+  The delivery measures route answers it as `deployment_rework_rate`, `{restoring, total, rate}`.
 
 A window's value folds its days: the two rates divide the summed numerators by the summed denominators, and the recovery time takes the median of every restore's minutes, never a mean of the daily medians.
 From `failures_measured_since` on, every day holds a row of each of the three, a day with no deploy a row of zeros, so the two rates of a window from that day with no failure read 0 percent.
 A window that starts before that day reads "no data": every statistic of the series is null, and the series' `data_since` names that day.
 A `failures_measured_since` in the past counts the record's rows from that day.
-A write to the record, a reject and a restore each make the eval refresher rewrite the days they move, and a change of the project's delivery settings rewrites the project's rows whole.
+A write to the record, including a reject, re-count or restore, makes the eval refresher rewrite the days it affects and update their stored figures together.
+A save of the failure sources or measurement start rewrites the project's failure rows; an open Evals page receives the new figures together.
+If both the previous and new measurement start are in the future, the page still updates the date it shows, even though there are no failure day rows yet.
+A default-repository move changes which projects count a deploy only after the refresher publishes the move.
+In the same pass it updates the affected projects' failure rows and figures.
+A source move, a repository's source moved to another project, or delivery turned off or on is published the same way: from that commit, the Evals page answers the periods the move touched from the day rows until the refresher has stored their figures again, so the numbers move once, to the new sources' values.
 
 `GET /api/v1/projects/{key}/evals/{slug}/items` of each of the three lists the rows of the record behind its numbers, `deploy` and `failure` rows, each with its `relation` to the numbers: `failed`, `restoring`, `deployed` or `blamed` for a deploy, and `counted`, `restored` or `not_restored` for a failure.
 
@@ -280,7 +291,8 @@ A window that starts before that project's `failures_measured_since` reads "no d
 
 ## Which project a row counts for
 
-Each delivery and CI eval counts its rows for projects by one rule, and the failure measures count a deploy by the same rule:
+Each delivery and CI eval counts its rows for projects by one rule.
+The failure measures and their items use the same deploy attribution, including the published defaults and source selection:
 
 - A pull request counts for the project of the issue it names.
   One that names no issue, or an issue Dispatch does not hold, counts for each project whose default repository is its repository, and for no project where no project's default repository is.
@@ -293,7 +305,7 @@ Each delivery and CI eval counts its rows for projects by one rule, and the fail
 
 - A deploy run that ships no pull request counts for the project whose deploy source reads its repository, and for no other project, whatever the default repositories say.
   A run that did not reach production ships nothing, so it counts there too.
-  Where no delivery-on source reads its repository, it counts as a pull request with no issue does.
+  Such runs follow the source: once the refresher's next pass has recorded a source moved to another repository, or a repository's source moved to another project, they count for the project whose source reads their repository then, and while no delivery-on source reads it they count for no project.
 
 - A posted deploy counts for the project of the route it was posted to, and for no other project.
   While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to `merge-to-production`, where no earlier deploy shipped it.
@@ -313,7 +325,12 @@ The route takes the timeline's parameters: `from` and `to` (the last seven days 
 Any signed-in person or agent token reads it.
 `GET /api/v1/delivery/timeline` carries the same answer as its `measures` for its own window and filters, so an agent reading both needs only the timeline.
 The routes and the page's live updates compute from the same stored facts with the same code, so they agree.
-The three failure measures are `change_failure_rate` (`{failed, total, rate}`), `time_to_restore` (`{n, median_minutes, not_restored}`) and `deployment_rework_rate` (`{restoring, total, rate}`), and each is null, "no data" with no verdict, where no stored day row of its eval holds a part of the window (The failure measures, above).
+The three failure measures are `change_failure_rate` (`{failed, total, rate}`), `failed_deployment_recovery` (`{n, median_minutes, not_restored}`) and `deployment_rework_rate` (`{restoring, total, rate}`).
+Where no stored day row of a measure's eval holds a part of the window, it reads "no data" with no verdict (The failure measures, above): `failed_deployment_recovery` and `deployment_rework_rate` are null, and `change_failure_rate` is still an object, with `failed`, `total` and `rate` null.
+While a release rolls, the Delivery page of the release before this one is still served, and it reads three members of `measures` with no null guard.
+So the answer keeps `change_failure_rate.per_pr` and `change_failure_rate.per_deploy`, and `time_to_restore`, as objects whose every leaf is null in every window: no release counts what they held, and nothing computes them.
+`time_to_restore` is not the recovery time, which is `failed_deployment_recovery`.
+No reader reads a figure from those members, and they are removed in the next release, with `GET` and `PUT /api/v1/settings/delivery`.
 A project's own figures, its failure measures among them, are its evals: `GET /api/v1/projects/{key}/evals`.
 
 The record has three routes, each of a project:

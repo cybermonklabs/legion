@@ -1,6 +1,7 @@
 package legion
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,9 +33,10 @@ func TestSlotUseAnswersOneUsePerSlotState(t *testing.T) {
 	}
 }
 
-// TestCardWaitingAnswersOneReasonPerWait: the four reasons an issue waits for, one case each, and
-// the nil answer for an issue that waits for nothing. Since is the phase entry, and the moment a
-// person was asked where the issue waits for that person.
+// TestCardWaitingAnswersOneReasonPerWait: the four reasons an issue waits for, one case each, the
+// two waits of a parent in `awaiting_children`, and the nil answer for an issue that waits for
+// nothing. Since is the phase entry, and the moment a person was asked where the issue waits for
+// that person.
 func TestCardWaitingAnswersOneReasonPerWait(t *testing.T) {
 	entered := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
 	asked := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
@@ -80,6 +82,19 @@ func TestCardWaitingAnswersOneReasonPerWait(t *testing.T) {
 			},
 			reason: WaitingPerson, since: asked,
 		},
+		{
+			name: "its open children hold a parent waiting on them, which the daemon lists as blocked",
+			in: WaitingInput{
+				Phase: PhaseAwaitingChildren, Column: ColumnAwaitingChildren,
+				BlockedBy: []string{"ACME-12"}, PhaseSince: &entered,
+			},
+			reason: WaitingBlocked, since: entered,
+		},
+		{
+			name:   "a parent whose last child closed is ready for the pass that returns it",
+			in:     WaitingInput{Phase: PhaseAwaitingChildren, Column: ColumnAwaitingChildren, PhaseSince: &entered},
+			reason: WaitingReady, since: entered,
+		},
 	} {
 		waiting := CardWaiting(want.in)
 		if waiting == nil {
@@ -108,11 +123,11 @@ func TestCardWaitingAnswersOneReasonPerWait(t *testing.T) {
 	}
 }
 
-// TestColumnAnswersTheQueueForEachStateOfTheWaitingLine: the column rule over the three things a
+// TestColumnOfAnswersTheQueueForEachStateOfTheWaitingLine: the column rule over the three things a
 // reader can know of the daemon's waiting line. A read that recorded no admission block knows
 // no line at all (QueuedUnread), and the Queue is then the issues that are still `admitted` and
 // hold no slot, which is the fallback both the board and the stored facts read here.
-func TestColumnAnswersTheQueueForEachStateOfTheWaitingLine(t *testing.T) {
+func TestColumnOfAnswersTheQueueForEachStateOfTheWaitingLine(t *testing.T) {
 	slot := 2
 	for _, want := range []struct {
 		name   string
@@ -129,10 +144,49 @@ func TestColumnAnswersTheQueueForEachStateOfTheWaitingLine(t *testing.T) {
 		{"no block was read of a slot holder", PhaseAdmitted, &slot, QueuedUnread, ColumnDesign},
 		{"no block was read of an issue at work", PhaseImplementing, nil, QueuedUnread, ColumnImplementing},
 		{"no block was read of an issue waiting on a person", PhaseAwaitingPerson, nil, QueuedUnread, ColumnAwaiting},
+		{"a blocker link holds a parent waiting on its children", PhaseAwaitingChildren, nil, QueuedYes, ColumnAwaitingChildren},
+		{"no block was read of a parent waiting on its children", PhaseAwaitingChildren, nil, QueuedUnread, ColumnAwaitingChildren},
 		{"the phase is on no column", PhaseDone, nil, QueuedUnread, ""},
 	} {
-		if column := Column(want.phase, want.slot, want.queued); column != want.column {
-			t.Errorf("%s: Column(%s) = %q, want %q", want.name, want.phase, column, want.column)
+		if column := ColumnOf(want.phase, want.slot, want.queued); column != want.column {
+			t.Errorf("%s: ColumnOf(%s) = %q, want %q", want.name, want.phase, column, want.column)
+		}
+	}
+}
+
+// TestEachPhaseIsInOneColumn: PhaseColumns gives every phase of Columns the one column that lists
+// it, and phaseColumns panics on a table that lists one phase in two columns, naming the phase
+// and both columns, so such a table stops the package at start (PhaseColumns is read off Columns
+// then) rather than put a card in one column and its hours under another.
+func TestEachPhaseIsInOneColumn(t *testing.T) {
+	listed := 0
+	for _, column := range Columns {
+		for _, phase := range column.Phases {
+			listed++
+			if got := PhaseColumns[phase]; got != column.ID {
+				t.Errorf("PhaseColumns[%q] = %q, want %q, the column that lists it", phase, got, column.ID)
+			}
+		}
+	}
+	if len(PhaseColumns) != listed {
+		t.Errorf("PhaseColumns holds %d phases, want the %d Columns lists", len(PhaseColumns), listed)
+	}
+
+	recovered := func() (value any) {
+		defer func() { value = recover() }()
+		phaseColumns([]Column{
+			{"first", []string{PhaseMerging}},
+			{"second", []string{PhaseAwaitingMerge, PhaseMerging}},
+		})
+		return nil
+	}()
+	message, ok := recovered.(string)
+	if !ok {
+		t.Fatalf("phaseColumns over a phase in two columns recovered %#v, want a panic with a message", recovered)
+	}
+	for _, named := range []string{PhaseMerging, "first", "second"} {
+		if !strings.Contains(message, `"`+named+`"`) {
+			t.Errorf("the panic %q does not name %q", message, named)
 		}
 	}
 }

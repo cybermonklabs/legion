@@ -10,7 +10,7 @@ import (
 )
 
 // readCapturedPullRequest decodes one of GitHub's own REST answers for a pull request, captured
-// into testdata/github (dispatch://INFRA-978, T12), as fetchPullRequestPayload decodes GitHub's
+// into testdata/github (dispatch://INFRA-978, R7), as fetchPullRequestPayload decodes GitHub's
 // answer.
 func readCapturedPullRequest(t *testing.T, name string) pullRequestPayload {
 	t.Helper()
@@ -35,7 +35,7 @@ func readCapturedPullRequest(t *testing.T, name string) pullRequestPayload {
 func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 	revert := readCapturedPullRequest(t, "revert-pull-cli-14462.json")
 	reverted := readCapturedPullRequest(t, "reverted-pull-cli-14437.json")
-	if !strings.Contains(revert.Body, "\r\n\r\nReverts cli/cli#14437\r\n\r\n") || len(revert.Body) <= len("Reverts cli/cli#14437") {
+	if !strings.Contains(revert.Body, "\r\n\r\nReverts cli/cli#14437\r\n\r\n") {
 		t.Fatalf("the captured body is not the longer description holding the revert line: %q", revert.Body)
 	}
 	var bare string
@@ -83,5 +83,22 @@ func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 	unmerged.MergedAt = nil
 	if got, ok := revertOf("cli/cli", unmerged, &reverted); ok {
 		t.Errorf("an unmerged pull request read as the revert %+v", got)
+	}
+}
+
+// TestARevertLineNamesAPullRequestNumberOfAtMostNineDigits: delivery_reverts keeps the reverted
+// pull request's number in an integer column, so a revert line names one of at most nine digits,
+// as a linked pull request does (linked_pull_requests.go): a nine-digit number is read, and a
+// ten-digit one is no revert line, whose row no write could store and whose repository's reverts
+// step would stall on it.
+func TestARevertLineNamesAPullRequestNumberOfAtMostNineDigits(t *testing.T) {
+	t.Parallel()
+	if repo, number, ok := ParseRevert("Reverts acme/widgets#999999999"); !ok || repo != "acme/widgets" || number != 999999999 {
+		t.Errorf("ParseRevert of a nine-digit number = %q #%d, %v; want acme/widgets #999999999", repo, number, ok)
+	}
+	for _, body := range []string{"Reverts acme/widgets#1000000000", "Reverts acme/widgets#99999999999999999999"} {
+		if repo, number, ok := ParseRevert(body); ok {
+			t.Errorf("ParseRevert(%q) = %s#%d, want no revert", body, repo, number)
+		}
 	}
 }

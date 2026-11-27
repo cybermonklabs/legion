@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -74,6 +75,7 @@ func insertScopeBlockAsk(t *testing.T, tx pgx.Tx, issueKey any, artifactID, bloc
 // each document lists exactly the sources ScopeOf puts in it, and a direct message, like a reply
 // whose thread loops back on itself before naming a document, belongs to none.
 func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -161,7 +163,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	}
 	want := map[string][]Target{spec: {}, notes: {}, project: {}}
 	for _, shape := range shapes {
-		got, err := ScopeOf(ctx, tx, shape.Kind, shape.ID)
+		got, err := ScopeOf(ctx, tx, model.Actor{}, shape.Kind, shape.ID)
 		if err != nil {
 			t.Fatalf("scope of %s: %v", shape.name, err)
 		}
@@ -184,7 +186,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 			t.Errorf("scope sources of %s = %v; want %v", doc, got, sources)
 		}
 	}
-	if got, err := ScopeOf(ctx, tx, "comment", "c1"); err != nil || got != "" {
+	if got, err := ScopeOf(ctx, tx, model.Actor{}, "comment", "c1"); err != nil || got != "" {
 		t.Fatalf("scope of a source that is not a uuid = %q, %v; want none", got, err)
 	}
 }
@@ -196,6 +198,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 // order changed on one side, a field the pending shape stops carrying - the edges a new ask,
 // comment, reply or message stores would stop matching the ones its stored row says it should.
 func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -278,7 +281,7 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pending scope of %s: %v", shape.name, err)
 		}
-		stored, err := ScopeOf(ctx, tx, shape.kind, shape.stored)
+		stored, err := ScopeOf(ctx, tx, model.Actor{}, shape.kind, shape.stored)
 		if err != nil {
 			t.Fatalf("scope of the stored %s: %v", shape.name, err)
 		}
@@ -334,6 +337,7 @@ func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
 // its row carries. Each maps to the reference text.Extract reads from that ask's dispatch://
 // address, which for a question of a project document is that document's and not an issue's.
 func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -391,7 +395,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		record:   nil,
 		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
 	} {
-		got, err := QuestionMap(ctx, tx, doc)
+		got, err := QuestionMap(ctx, tx, model.Actor{}, doc)
 		if err != nil {
 			t.Fatalf("question map of %s: %v", doc, err)
 		}
@@ -406,6 +410,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 // parse does: the same parser reads both spellings (pmdoc.ParseTypedDirectiveOpen), so a
 // question written either way is in the map its `#id`s resolve against.
 func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -421,7 +426,7 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	insertScopeVersion(t, tx, spec, 1, ":::ask{#q1}\nWhich?\n:::\n\n"+
 		`:::ask{id="q 2" state="open"}`+"\nWhich?\n:::\n")
 
-	got, err := QuestionMap(ctx, tx, spec)
+	got, err := QuestionMap(ctx, tx, model.Actor{}, spec)
 	if err != nil {
 		t.Fatalf("question map of the spec: %v", err)
 	}

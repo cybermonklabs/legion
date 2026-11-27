@@ -78,6 +78,7 @@ function Deploys({
   pageSize = 25,
   plain = false,
   rows = DEPLOYS,
+  stackedHeader,
 }: {
   columns?: ColumnDef<Deploy>[];
   grouping?: GroupingState;
@@ -87,6 +88,7 @@ function Deploys({
   pageSize?: number;
   plain?: boolean;
   rows?: Deploy[];
+  stackedHeader?: string;
 }): ReactNode {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [grouping, setGrouping] = useState<GroupingState>(initialGrouping);
@@ -157,6 +159,7 @@ function Deploys({
         )}
         rowAttribute={plain ? "data-row" : undefined}
         scrollTestId={`${layoutKey}-scroll`}
+        stackedHeader={stackedHeader}
       />
     </section>
   );
@@ -383,6 +386,29 @@ for (const boxWidth of [1400, 390]) {
     expect(JSON.parse(localStorage.getItem(tableStorageKey("namesakes")) ?? "{}")).toEqual(stored);
   });
 }
+
+// A phone stands a header's filter under its words only in the column its caller names, as the
+// issues table names its title: another table's `title` stands on one line there.
+test("a phone stacks the header its caller names, and no other table's title", async () => {
+  draw(
+    <>
+      <Deploys
+        columns={NAMESAKE_COLUMNS}
+        layoutColumns={NAMESAKE_LAYOUT}
+        layoutKey="stacked"
+        stackedHeader="title"
+      />
+      <Deploys columns={NAMESAKE_COLUMNS} layoutColumns={NAMESAKE_LAYOUT} layoutKey="unstacked" />
+    </>,
+    390
+  );
+  await screen.findByRole("table", { name: "Deploys stacked" });
+  const stacked = (name: string) =>
+    within(screen.getByRole("table", { name }))
+      .getByRole("columnheader", { name: /^Service/ })
+      .firstElementChild?.classList.contains("flex-col");
+  expect([stacked("Deploys stacked"), stacked("Deploys unstacked")]).toEqual([true, false]);
+});
 
 // The reader moving the view - a sort, a filter, a page - starts the box at its top; the rows
 // changing under a view the reader kept leaves the box where the reader scrolled it.

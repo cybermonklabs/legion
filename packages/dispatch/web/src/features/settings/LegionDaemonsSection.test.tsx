@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the in-the-step row submits and checks in one synchronous step, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -12,8 +12,15 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** Every spy a test installed, put back when it ends, so one test's identity or answers are
  *  never the next one's. */
@@ -67,20 +74,17 @@ function legionServer(initial: readonly LegionSetting[]): LegionServer {
 
 /** Renders the section against `server`, over a deployment of two projects, ACME and CORE, in
  *  `queryClient`, which a case that stops a late write reaches as the shell's indicator does.
- *  `human` is what `/auth/whoami` says: a person is offered the field and the Remove, a bearer is
- *  not. A bearer's answer names a kind the browser's own contract does not — the SPA types the
- *  route by the one answer it is meant to get — so this writes the answer a bearer really
- *  receives. */
+ *  `human` is what `/auth/whoami` says: a person is offered the field and the Remove, an agent
+ *  viewer - here a personal token of alice's, so its login is hers - is not. */
 async function renderSection(
   server: LegionServer,
   human = true,
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 ) {
-  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(
-    human
-      ? { event_head: "0", kind: "user", login: "alice" }
-      : ({ event_head: "0", kind: "agent", login: "alice" } as unknown as AuthenticatedUser)
-  );
+  const viewer: AuthenticatedUser = human
+    ? { event_head: "0", kind: "user", login: "alice" }
+    : { event_head: "0", kind: "agent", login: "alice", session: null };
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(viewer);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation(server.get);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(
     ["ACME", "CORE"].map((key) => ({
@@ -89,6 +93,7 @@ async function renderSection(
       key,
       name: key,
       open_asks: 0,
+      proven_sessions: false,
     }))
   );
   spies.push(whoAmI, getLegionDaemon, listProjects);

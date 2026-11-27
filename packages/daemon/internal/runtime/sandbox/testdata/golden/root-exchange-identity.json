@@ -18,7 +18,7 @@
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
           "legion.dev/leak-checker-manifest-sha256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
-          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"3\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"19Gi\"},\"requests\":{\"cpu\":\"3\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"19Gi\"}},\"disk\":\"20Gi\"}"
+          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"2\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"8Gi\"},\"requests\":{\"cpu\":\"2\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"8Gi\"}},\"disk\":\"20Gi\"}"
         },
         "labels": {
           "legion.dev/issue": "LEGION-208",
@@ -68,14 +68,14 @@
             "name": "roles",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -97,12 +97,6 @@
               {
                 "mountPath": "/var/run/legion/home/.config",
                 "name": "config"
-              },
-              {
-                "mountPath": "/legion/feed",
-                "name": "issue",
-                "readOnly": true,
-                "subPath": "feed"
               },
               {
                 "mountPath": "/var/run/legion/roles/architect/launcher",
@@ -265,11 +259,17 @@
             "command": [
               "/opt/legion/bin/legion",
               "workspace-init",
-              "fetch",
+              "provision",
+              "--issue",
+              "LEGION-208",
               "--repo",
               "sjawhar/legion-smoke",
-              "--feed",
-              "/legion/feed"
+              "--default-branch",
+              "main",
+              "--root",
+              "/legion",
+              "--credential-helper",
+              "!legion git-credential"
             ],
             "env": [
               {
@@ -293,22 +293,34 @@
                 "value": "/var/run/legion/provision/LEGION_REPOSITORY_CACHE_TOKEN"
               },
               {
-                "name": "LEGION_DEFAULT_BRANCH",
-                "value": "main"
+                "name": "XDG_CONFIG_HOME",
+                "value": "/home/legion/.config"
+              },
+              {
+                "name": "XDG_CACHE_HOME",
+                "value": "/home/legion/.cache"
+              },
+              {
+                "name": "XDG_DATA_HOME",
+                "value": "/home/legion/.local/share"
+              },
+              {
+                "name": "XDG_STATE_HOME",
+                "value": "/home/legion/.local/state"
               }
             ],
             "image": "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef",
-            "name": "workspace-fetch",
+            "name": "workspace-init",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -333,88 +345,8 @@
                 "name": "tmp"
               },
               {
-                "mountPath": "/legion/feed",
-                "name": "issue",
-                "subPath": "feed"
-              }
-            ],
-            "workingDir": "/legion/feed"
-          },
-          {
-            "command": [
-              "/opt/legion/bin/legion",
-              "workspace-init",
-              "provision",
-              "--issue",
-              "LEGION-208",
-              "--repo",
-              "sjawhar/legion-smoke",
-              "--default-branch",
-              "main",
-              "--root",
-              "/legion",
-              "--credential-helper",
-              "!legion git-credential",
-              "--feed",
-              "/legion/feed"
-            ],
-            "env": [
-              {
-                "name": "PATH",
-                "value": "/opt/legion/bin:/opt/omp/bin:/opt/codegraph/bin:/usr/local/bin:/usr/bin:/bin"
-              },
-              {
-                "name": "XDG_CONFIG_HOME",
-                "value": "/home/legion/.config"
-              },
-              {
-                "name": "XDG_CACHE_HOME",
-                "value": "/home/legion/.cache"
-              },
-              {
-                "name": "XDG_DATA_HOME",
-                "value": "/home/legion/.local/share"
-              },
-              {
-                "name": "XDG_STATE_HOME",
-                "value": "/home/legion/.local/state"
-              }
-            ],
-            "image": "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef",
-            "name": "workspace-init",
-            "resources": {
-              "limits": {
-                "cpu": "3",
-                "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
-              },
-              "requests": {
-                "cpu": "3",
-                "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
-              }
-            },
-            "securityContext": {
-              "allowPrivilegeEscalation": false,
-              "capabilities": {
-                "drop": [
-                  "ALL"
-                ]
-              },
-              "seccompProfile": {
-                "type": "RuntimeDefault"
-              }
-            },
-            "volumeMounts": [
-              {
                 "mountPath": "/legion",
                 "name": "issue"
-              },
-              {
-                "mountPath": "/legion/feed",
-                "name": "issue",
-                "readOnly": true,
-                "subPath": "feed"
               },
               {
                 "mountPath": "/home/legion/.config",
@@ -424,9 +356,6 @@
             "workingDir": "/legion"
           }
         ],
-        "nodeSelector": {
-          "legion.dev/pool": "legion"
-        },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
         "runtimeClassName": "gvisor",
@@ -438,14 +367,6 @@
           "runAsUser": 1000
         },
         "terminationGracePeriodSeconds": 30,
-        "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          }
-        ],
         "volumes": [
           {
             "ephemeral": {
@@ -830,7 +751,7 @@
               "sources": [
                 {
                   "serviceAccountToken": {
-                    "audience": "agent-secrets",
+                    "audience": "cipher",
                     "expirationSeconds": 3600,
                     "path": "token"
                   }

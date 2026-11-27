@@ -48,7 +48,7 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	if repo == nil {
 		return
 	}
-	key := deliveryRuleKey(*repo)
+	key := delivery.RuleKey(*repo)
 	source, held := g.fresh.sources[key]
 	if !held || source.Project != row.Project {
 		return
@@ -79,7 +79,7 @@ func (h *deliveryHub) judgeLocked(g *hubGeneration, now time.Time) {
 	}
 	verdict := g.verdictLocked(now)
 	if verdict.unfetchable == g.sent.unfetchable && slices.Equal(verdict.stale, g.sent.stale) &&
-		equalStringPointers(verdict.lastError, g.sent.lastError) {
+		equalPointers(verdict.lastError, g.sent.lastError) {
 		return
 	}
 	g.sent = verdict

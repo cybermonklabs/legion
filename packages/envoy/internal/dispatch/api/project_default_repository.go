@@ -20,10 +20,10 @@ import (
 // over projects.default_repo). A project has one or none.
 //
 // The write belongs to the deployment and to no person, so its route is scopeDeployment and
-// declares no personal scope (routes_table.go). The default decides the repository of every issue
-// of the project that names none, so a credential that may write one project's issues is refused
-// it by name, the project its path names included. The credential the deployment configured
-// writes it, and so does a person.
+// declares no personal scope (its route file). The default decides the repository of every issue
+// of the project that names none, so a credential that names one project is refused it by name,
+// the project its path names included. The credential the deployment configured writes it, and
+// so does a person.
 
 // projectDefaultRepository is what the route answers: the project, and the default it holds now,
 // null for none.
@@ -158,7 +158,7 @@ func defaultRepositoryMove(ctx context.Context, tx pgx.Tx, project string, next 
 		}
 		return nil, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
-	if (current == nil && next == nil) || (current != nil && next != nil && *current == *next) {
+	if equalPointers(current, next) {
 		return nil, nil
 	}
 	if err := delivery.LockProject(ctx, tx, project); err != nil {

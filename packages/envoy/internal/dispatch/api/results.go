@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -43,12 +44,10 @@ var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
 // resultCommitSHA is the commit a result ran at, as the column's own check spells it.
 var resultCommitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// The two values of a check's `when`, beside before_merge (docs.CheckWhenBeforeMerge), that the
-// closed enum pmdoc/schema/blocks.json declares under `choices`.
-const (
-	checkWhenAfterMerge    = "after_merge"
-	checkWhenDefaultBranch = "default_branch"
-)
+// checkWhenDefaultBranch is a value of a check's `when`, beside before_merge
+// (docs.CheckWhenBeforeMerge) and after_merge (model.CheckWhenAfterMerge), that the closed enum
+// pmdoc/schema/blocks.json declares under `choices`.
+const checkWhenDefaultBranch = "default_branch"
 
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
 // and how much of the check's own words the line of a derived result carries (ciVerdictLine),
@@ -190,13 +189,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordCheckFailure writes the check_fail signal of a fail of an after_merge check once its result
-// has committed (dispatch://INFRA-978, T12): a failure of the deploy that first shipped the result's
-// commit, in a transaction of its own (signals.RecordCheckFailure). A failure of the write is
-// logged and fails nothing: the production signals' loop reads the result.recorded event after
-// it and writes the same row, and a result whose commit no deploy row holds yet makes its row when
-// one lands.
+// has committed (dispatch://INFRA-978, R7 and D5): a failure of the deploy that first shipped the
+// result's commit, in a transaction of its own (signals.RecordCheckFailure). A failure of the
+// write is logged and fails nothing: the production signals' loop reads the result.recorded event
+// after it and writes the same row, and a result whose commit no deploy row holds yet makes its
+// row when one lands.
 func (s *server) recordCheckFailure(ctx context.Context, written recordedCheckResult) {
-	if written.result.Verdict != "fail" || written.check.Attributes.When != checkWhenAfterMerge {
+	if written.result.Verdict != "fail" || written.check.Attributes.When != model.CheckWhenAfterMerge {
 		return
 	}
 	if _, err := signals.RecordCheckFailure(ctx, s.deps.Store.Pool, written.result.ID); err != nil {
@@ -257,9 +256,19 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// whole seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is
 	// settled here — the check's words and its `when` are the document's, not the issue's — and
 	// what it does protect, the block's indexed version and digest, is read again under it
-	// below.
-	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
+	// below. A credential scoped to one project does not see a check of a private project that it
+	// does not name, which resolveCheck leaves out before it counts the matches: a private check
+	// alone is 400 UNKNOWN_CHECK there, the answer of a check that does not exist.
+	callerProject, _ := s.callerProject(r)
+	check, err := s.resolveCheck(r.Context(), pool, issueKey, callerProject, input.Check)
 	if err != nil {
+		return refused(err)
+	}
+	// The check may be on an issue of another project, which a parent of another project puts
+	// above the recording issue, and the result is appended to that issue. The pre-handler
+	// check read only the path's issue, so a credential scoped to one project is asked about
+	// such a check here, before anything is written (refuseUncoveredCheck).
+	if err := refuseUncoveredCheck(r.Context(), pool, callerProject, check.IssueKey, input.Check); err != nil {
 		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
@@ -333,6 +342,29 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 		issueKey: issueKey, input: input, actor: actor, check: check,
 		repo: checkRepo, linkedCommitRepo: linkedCommitRepo, words: words,
 	}, true
+}
+
+// refuseUncoveredCheck asks, for a result on a check of the issue checkIssue, whether the
+// request's credential covers that issue's project, with the visibility of that project read in
+// the same statement (checkIssueProject). caller is the one project the credential names, empty
+// for a credential that names none, which is refused nothing here. A credential that names one
+// project records on the check of every project that access.CredentialCovers covers. A check of a
+// private project that the credential does not name answers as a check that does not exist,
+// unknownCheck of check, the value the body names, for the record and its dry run. resolveCheck
+// has left out such a check already, so this check refuses one only where its project became
+// private between the two reads.
+func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue, check string) error {
+	if caller == "" {
+		return nil
+	}
+	project, private, err := checkIssueProject(ctx, q, caller, checkIssue)
+	if err != nil {
+		return err
+	}
+	if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return unknownCheck(check)
+	}
+	return nil
 }
 
 // checkContended is the code of a results write whose check a document version moved at every
@@ -476,7 +508,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// branch: such a check can only be proved once the issue has closed, so refusing it would make
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
-	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != checkWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
+	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != model.CheckWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
 		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
 			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, resolved.Attributes.When)
 	}
@@ -488,6 +520,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: resolved.Version, CheckSHA256: resolved.SHA256,
+		CheckSubject: resolved.Attributes.Subject, CheckProgram: resolved.Attributes.Program,
 		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
 		CommitSHA: input.Commit, CommitRepo: linkedCommitRepo, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
@@ -532,14 +565,16 @@ type issueCheckResults struct {
 // check's words moved since. An issue with no Verification document has no checks and no
 // error.
 //
-// A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
-// head, and its one result is the one derived from the run its `ci_check` names
-// (deriveCIResults), which is judged as a recorded result is.
+// A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
+// none is open at the final head of the merged one that merged last, and its results are the one
+// derived from the run its `ci_check` names at each head (deriveCIResults), each judged as a
+// recorded result is. A reader of one result of such a check finds the derived one by its id
+// (ci-run:<check run id>).
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
-// The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
-// newest pull request head as on every read: the derived result is that head's, and stands at
-// the named commit only where that commit is the head.
+// The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
+// request head as on every read: the derived result of each is that head's, and stands at the named
+// commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -593,10 +628,16 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+	// Learn heads before deriving CI, so both reads use the same stored or request-local heads.
+	// The reader shares one merge-time fill across the comparison and every CI head.
+	reader := newComparisonReader(r.Context(), s, at)
+	reader.learn(r.Context(), checks)
+	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader.headCI = headCI
 	// Each result's observed text is registered for its tree once no check's results are replaced
 	// any more (deriveCIResults), since what is registered is a pointer into the row.
 	for index := range checks {
@@ -604,11 +645,6 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
 	}
@@ -731,7 +767,13 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
 // UNKNOWN_CHECK.
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+//
+// caller is the one project the request's credential names, empty for a credential that names
+// none. Such a caller does not see a check of an issue of a private project that the credential
+// does not name, so resolveCheck leaves out each such check before it counts the matches (seenBy):
+// a private check alone is 400 UNKNOWN_CHECK, the answer of a check that does not exist, and a
+// 409 CHECK_AMBIGUOUS names no issue that the caller does not see.
+func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -757,9 +799,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
+		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256,
+		       i.project_key, p.visibility = 'private'
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
+		join issues i on i.key = a.issue_key
+		join projects p on p.key = i.project_key
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
 		  and ($3 = '' or d.artifact_id = $3::uuid)
@@ -768,38 +813,44 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
-	defer rows.Close()
-	var found []resolvedCheck
-	var references []string
-	for rows.Next() {
-		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
-		var slug string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256); err != nil {
-			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-		}
-		found = append(found, check)
-		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
-		}); ok {
-			references = append(references, reference)
-		}
+	// matchedCheck is one check the value matches, with its document's slug, which its reference
+	// names, and its issue's project and whether that project is private.
+	type matchedCheck struct {
+		check         resolvedCheck
+		slug, project string
+		private       bool
 	}
-	if err := rows.Err(); err != nil {
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (matchedCheck, error) {
+		match := matchedCheck{check: resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}}
+		err := row.Scan(&match.check.IssueKey, &match.slug, &match.check.ArtifactID, &match.check.Version, &match.check.SHA256,
+			&match.project, &match.private)
+		return match, err
+	})
+	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
+	}
+	if caller != "" {
+		found = seenBy(caller, found, func(match matchedCheck) (string, bool) { return match.project, match.private })
 	}
 	if len(found) == 0 {
 		return resolvedCheck{}, unknownCheck(value)
 	}
 	if len(found) > 1 {
 		issues := make([]string, len(found))
-		for index, check := range found {
-			issues[index] = check.IssueKey
+		var references []string
+		for index, match := range found {
+			issues[index] = match.check.IssueKey
+			if reference, ok := text.FormatBlockRef(text.Ref{
+				Kind: "block", IssueKey: match.check.IssueKey, ID: match.slug, Block: blockID,
+			}); ok {
+				references = append(references, reference)
+			}
 		}
 		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
 			"check %s is a check of the Verification document of %s: name one with its reference, %s",
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
-	check := found[0]
+	check := found[0].check
 	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
@@ -1370,15 +1421,15 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 		insert into check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo
+			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo, check_subject, check_program
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		returning created_at
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
 		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo,
+		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo, result.CheckSubject, result.CheckProgram,
 	).Scan(&result.CreatedAt)
 }
 

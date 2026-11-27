@@ -30,6 +30,7 @@ var fetchers = []string{
 // TestThePackageImportsNoClientThatFetches reads the import list of every file of the package
 // that is not a test and fails on any path in fetchers or below one.
 func TestThePackageImportsNoClientThatFetches(t *testing.T) {
+	t.Parallel()
 	sources, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("list the package's files: %v", err)

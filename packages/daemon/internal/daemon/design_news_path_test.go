@@ -144,7 +144,7 @@ func newNewsPathRig(t *testing.T, approved int, members ...pathMember) *newsPath
 
 func (r *newsPathRig) inTx(write func(pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, write); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(_ context.Context, tx pgx.Tx) error { return write(tx) }); err != nil {
 		r.t.Fatalf("write the record: %v", err)
 	}
 }
@@ -525,6 +525,7 @@ func (r *newsPathRig) publishedTo(token claim.Token) []string {
 // news, and the told version rises, and the opening is cleared, only in the write that confirms
 // the reviewer's task.
 func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheReviewersStart(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -638,6 +639,7 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 // says nothing of an opening that no longer stands. The approval of version 5 still stands below
 // version 6, so its item is still told, and the confirmation raises it.
 func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedItSaysClosed(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -691,6 +693,7 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 // and the sub-architect running for the child's parent for a grandchild. The member's told version
 // rises at that task's confirmation.
 func TestAnOwedMemberMovedIntoAcceptingIsToldByATaskToItsOwningArchitect(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		members   []pathMember
@@ -785,6 +788,7 @@ func TestAnOwedMemberMovedIntoAcceptingIsToldByATaskToItsOwningArchitect(t *test
 // Either releases the start once its backoff runs out: the merger is launched with its task
 // carrying the news, and its told version rises at that task's confirmation.
 func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		answer   func(record.VersionPair) (dispatch.ArtifactChanges, error)
@@ -945,6 +949,7 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role, unch
 // The reviewer's half of oneDeliveryOfTheOpening: a reviewer between turns on its review, told the
 // gate closed, gets the decision-only opening once, as the news task, and no role message.
 func TestAReviewerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -956,6 +961,7 @@ func TestAReviewerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *test
 // closed, gets the decision-only opening that releases its merge once, by its news-only start, and
 // no role_message row is written for it.
 func TestAMergerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Retro})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -968,6 +974,7 @@ func TestAMergerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *testin
 // says nothing its issue holds changed because the new version holds the same text, and no role
 // message.
 func TestAReviewerToldTheGateClosedGetsOneDeliveryOfAnUnchangedOpening(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -979,6 +986,7 @@ func TestAReviewerToldTheGateClosedGetsOneDeliveryOfAnUnchangedOpening(t *testin
 // waiting between turns, told the gate closed, gets the opening that releases its merge once, by
 // its news-only start, and no role_message row is written for it.
 func TestAMergerToldTheGateClosedGetsOneDeliveryOfAnUnchangedOpening(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Retro})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)

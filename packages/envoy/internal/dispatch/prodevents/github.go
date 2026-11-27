@@ -2,9 +2,9 @@ package prodevents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The GitHub adapter's writes and the signals' reads (dispatch://INFRA-978, T11 and T12). A GitHub
+// The GitHub adapter's writes and the signals' reads (dispatch://INFRA-978, R6 and R7). A GitHub
 // deploy row follows its run: the adapter writes it where the repository's rule calls the run a
 // deploy, moves it in place where the run moved (a re-run's times, a pull request it ships), and
 // drops it where the rule no longer calls the run a deploy (prodevents/signals). Every write is a
@@ -27,33 +27,26 @@ import (
 const StatusSucceeded = "succeeded"
 
 // StatusDropped is the status of a GitHub deploy row whose run the repository's rule no longer
-// calls a deploy but which a failure blames, so it stays (decision 6 of the plan): its failures are
-// rejected with the reason its note holds, and no measure counts it as a deploy.
+// calls a deploy but which a failure blames, so it stays: its failures are rejected with the
+// reason its note holds, and no measure counts it as a deploy.
 const StatusDropped = "dropped"
 
 // droppedDeploy is the SQL condition of a dropped GitHub deploy row (StatusDropped), which no
 // signal blames: the reads of a signal's deploy leave it out.
-const droppedDeploy = `(source = 'github' and status = 'dropped')`
+const droppedDeploy = `(source = '` + SourceGitHub + `' and status = '` + StatusDropped + `')`
 
 // UpsertGitHubDeploy stores the GitHub adapter's deploy row event, or moves the row its project
 // already holds under its source_ref to event's fields (a re-run's times, the pull requests and
-// commits it ships, its url, a dropped row the rule calls a deploy again), and answers the stored
-// row and whether the write changed it. A row whose fields would not move is not written, so a
-// second write of one run writes nothing and logs no change.
+// commits it ships, its url, a dropped row the rule calls a deploy again), and answers the row it
+// wrote and true. A row whose fields would not move is not written, so a second write of one run
+// writes nothing, logs no change, and answers no row and false.
 func UpsertGitHubDeploy(ctx context.Context, pool *store.Pool, event Event) (Event, bool, error) {
 	if event.Kind != KindDeploy || event.Source != SourceGitHub {
 		return Event{}, false, refuse(CodeInput, "the GitHub adapter writes deploys of source github alone")
 	}
-	if err := validate(event); err != nil {
-		return Event{}, false, err
-	}
-	actor, err := recorded(event.Actor)
+	actor, environment, err := prepared(event)
 	if err != nil {
-		return Event{}, false, fmt.Errorf("encode the actor of production event %s: %w", event.SourceRef, err)
-	}
-	environment := event.Environment
-	if environment == "" {
-		environment = DefaultEnvironment
+		return Event{}, false, err
 	}
 	stored, err := scan(pool.QueryRow(ctx, `
 		insert into production_events (id, project_key, kind, environment, status, source, source_ref,
@@ -73,12 +66,7 @@ func UpsertGitHubDeploy(ctx context.Context, pool *store.Pool, event Event) (Eve
 		uuid.Must(uuid.NewV7()).String(), event.ProjectKey, environment, event.Status, event.SourceRef, event.StartedAt, event.FinishedAt, event.Repo,
 		nonNil(event.Commits), nonNil(event.PullRequests), event.URL, actor, event.Note))
 	if errors.Is(err, pgx.ErrNoRows) {
-		stored, err = scan(pool.QueryRow(ctx, `select `+columns+` from production_events
-			where project_key = $1 and source_ref = $2`, event.ProjectKey, event.SourceRef))
-		if err != nil {
-			return Event{}, false, fmt.Errorf("read production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
-		}
-		return stored, false, nil
+		return Event{}, false, nil
 	}
 	if err != nil {
 		return Event{}, false, fmt.Errorf("write production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
@@ -92,11 +80,10 @@ func UpsertGitHubDeploy(ctx context.Context, pool *store.Pool, event Event) (Eve
 // failure blames and no restore names is deleted. One that a failure blames, or that a restore
 // names as its restoring deploy, stays (the foreign keys hold it) with status StatusDropped and
 // reason as its note, and each counted failure that blames it is rejected with reason, by actor at
-// at (decision 6 of the plan). The row is locked first, so a failure written against it meanwhile
-// waits for this write and then finds it as it left it. A row already dropped with this reason
-// writes nothing.
+// at. The row is locked first, so a failure written against it meanwhile waits for this write and
+// then finds it as it left it. A row already dropped with this reason writes nothing.
 func DropGitHubDeploy(ctx context.Context, pool *store.Pool, project, id, reason string, actor model.Actor, at time.Time) (bool, error) {
-	by, err := recorded(actor)
+	by, err := json.Marshal(actor.Recorded())
 	if err != nil {
 		return false, fmt.Errorf("encode the writer of the drop of production event %s: %w", id, err)
 	}
@@ -197,8 +184,7 @@ func DeployForPullRequest(ctx context.Context, q delivery.Querier, pullRequest s
 
 // BySourceRef reads the row project holds under sourceRef, and false where it holds none.
 func BySourceRef(ctx context.Context, q delivery.Querier, project, sourceRef string) (Event, bool, error) {
-	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where project_key = $1 and source_ref = $2`, project, sourceRef))
+	event, err := bySourceRef(ctx, q, project, sourceRef)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
 	}
@@ -208,8 +194,30 @@ func BySourceRef(ctx context.Context, q delivery.Querier, project, sourceRef str
 	return event, true, nil
 }
 
-// PullRequestName is a pull request as the record names it: owner/repo#n, the repository in lower
-// case.
-func PullRequestName(repo string, number int) string {
-	return fmt.Sprintf("%s#%d", strings.ToLower(repo), number)
+// bySourceRef reads the row project holds under sourceRef, pgx.ErrNoRows where it holds none.
+func bySourceRef(ctx context.Context, q delivery.Querier, project, sourceRef string) (Event, error) {
+	return scan(q.QueryRow(ctx, `select `+columns+` from production_events
+		where project_key = $1 and source_ref = $2`, project, sourceRef))
+}
+
+// HeldSourceRefs is the refs among refs that project holds a row under, each read through the
+// unique (project_key, source_ref) index.
+func HeldSourceRefs(ctx context.Context, q delivery.Querier, project string, refs []string) (map[string]bool, error) {
+	held := map[string]bool{}
+	if len(refs) == 0 {
+		return held, nil
+	}
+	rows, err := q.Query(ctx, `select source_ref from production_events where project_key = $1 and source_ref = any($2)`,
+		project, refs)
+	if err != nil {
+		return nil, fmt.Errorf("read which of %d source refs %s holds: %w", len(refs), project, err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which of %d source refs %s holds: %w", len(refs), project, err)
+	}
+	for _, ref := range stored {
+		held[ref] = true
+	}
+	return held, nil
 }

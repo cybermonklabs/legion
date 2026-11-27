@@ -4,12 +4,14 @@ import {
   type Envelope,
   EnvelopeSchema,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  MESSAGE_NOT_SENT_PREFIX,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-role.json";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
+import { delivered } from "../../test/delivered";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consumer-delivery";
@@ -28,6 +30,7 @@ import {
   type DeliveryAnswer,
   EnvoyApiError,
   EnvoySendUnconfirmedError,
+  type KeyTakenResult,
   mayActOnRoleRecord,
   newClientInstanceID,
   parseSubscribeAnswer,
@@ -490,6 +493,22 @@ describe("EnvoyClient", () => {
     }
   });
 
+  // A 408, a 429 and any 5xx are an outage (`@legion/contracts/http-status`), and a listener call
+  // sends each once more but the 429: the listener's 429 is `sender_rate_limited`, whose sentence
+  // the agent reads to decide when to send again.
+  test("a listener call answered with an outage is sent once more, but a 429 is one request", async () => {
+    const sent: Record<number, number> = {};
+    for (const status of [408, 429, 500, 501, 503]) {
+      const recorded = recordFetch(
+        Array.from({ length: 2 }, () => Response.json({ error: `answered ${status}` }, { status }))
+      );
+      const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+      await expect(client.getInterest("ses_sender")).rejects.toThrow(`answered ${status}`);
+      sent[status] = recorded.requests.length;
+    }
+    expect(sent).toEqual({ 408: 2, 429: 1, 500: 2, 501: 2, 503: 2 });
+  });
+
   test("sends a direct message and parses the listener envelope", async () => {
     const recorded = recordFetch([
       jsonResponse({
@@ -507,11 +526,13 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const result = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
+    const result = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
 
     expect(result.envelope.topic).toBe("notifications.agent.ses_target");
     expect(result.recipient).toBe("ses_target");
@@ -555,6 +576,128 @@ describe("EnvoyClient", () => {
     });
   });
 
+  // The listener answers a repeat of a key another sender's message holds with that message's ids
+  // and times alone, its text fields empty (`requestSender.answer`), on a send, a publish's 200
+  // and a role publish's 202 kept. Each reads as a key-taken result, not delivered, naming that
+  // message's event id. The control is the envelope schema every answer was read by before,
+  // which throws on that body; and a whole duplicate answer still reads as a delivered result.
+  test("a send or a publish whose key another sender's message holds reads as key taken, not as a delivery", async () => {
+    const taken = {
+      event_id: "event-alice",
+      source: "",
+      source_event_id: "",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.key",
+      issued_at: 7,
+      payload_summary: "",
+      trace_id: "",
+      duplicate: true,
+    };
+    expect(() => EnvelopeSchema.parse(taken)).toThrow();
+    const whole = {
+      ...taken,
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-alice",
+      payload_summary: "hello",
+      trace_id: "trace-alice",
+    };
+    const recorded = recordFetch([
+      jsonResponse({
+        ...taken,
+        recipient: "ses_target",
+        recipient_state: "live",
+        state: "connected",
+      }),
+      jsonResponse(taken),
+      new Response(
+        JSON.stringify({ ...taken, kept: true, kept_reason: "unclaimed", kept_until: 9 }),
+        { status: 202, headers: { "Content-Type": "application/json" } }
+      ),
+      jsonResponse({ ...whole, recipient: "ses_target" }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const keyTaken: KeyTakenResult = {
+      keyTaken: { eventId: "event-alice", topic: "notifications.agent.ses_target", issuedAt: 7 },
+      delivered: false,
+    };
+
+    expect(
+      await client.send({
+        sourceSessionID: "ses_bob",
+        targetSessionID: "ses_target",
+        message: "hi",
+      })
+    ).toEqual(keyTaken);
+    expect(
+      await client.publish({
+        sourceSessionID: "ses_bob",
+        topic: "notifications.team.x",
+        message: "hi",
+      })
+    ).toEqual(keyTaken);
+    expect(
+      await client.publish({
+        sourceSessionID: "ses_bob",
+        topic: "notifications.role.r",
+        message: "hi",
+      })
+    ).toEqual(keyTaken);
+    const repeat = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hi",
+      })
+    );
+    expect(repeat).toMatchObject({ duplicate: true, envelope: { event_id: "event-alice" } });
+  });
+
+  // The listener gives the key-taken answer only to a request that names it (`Envoy-Reads:
+  // key-taken`, listenerwire.ReadsHeader), and any other the envelope it built for the repeat. A
+  // send or a publish that names its source session names it; one that names none does not, since
+  // the listener cannot tell its own retry from another sessionless sender's request. The control
+  // is the sessionless call, which carries no such header.
+  test("a send or a publish that names its session says it reads the key-taken answer, and one that names none does not", async () => {
+    const whole = {
+      event_id: "event-own",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-own",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.key",
+      issued_at: 7,
+      payload_summary: "hello",
+      trace_id: "trace-own",
+      recipient: "ses_target",
+    };
+    const recorded = recordFetch([
+      jsonResponse(whole),
+      jsonResponse(whole),
+      jsonResponse(whole),
+      jsonResponse(whole),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hi",
+    });
+    await client.publish({
+      sourceSessionID: "ses_sender",
+      topic: "notifications.team.x",
+      message: "hi",
+    });
+    await client.send({ sourceSessionID: "", targetSessionID: "ses_target", message: "hi" });
+    await client.publish({ sourceSessionID: "", topic: "notifications.team.x", message: "hi" });
+
+    expect(recorded.requests.map((request) => request.headers.get("Envoy-Reads"))).toEqual([
+      "key-taken",
+      "key-taken",
+      null,
+      null,
+    ]);
+  });
+
   test("a send reads the target's state", async () => {
     const envelope = {
       event_id: "event-stopped",
@@ -581,16 +724,20 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const stopped = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
-    const connected = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
+    const stopped = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
+    const connected = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
 
     expect(stopped).toMatchObject({
       recipientState: "gone",
@@ -619,11 +766,13 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const result = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_target",
-      message: "hello",
-    });
+    const result = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_target",
+        message: "hello",
+      })
+    );
 
     expect(result.state).toBe("connected");
     expect(result.lastSeen).toBeUndefined();
@@ -647,12 +796,14 @@ describe("EnvoyClient", () => {
       jsonResponse(envelope),
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    const publish = () =>
-      client.publish({
-        sourceSessionID: "ses_sender",
-        topic: "notifications.team.deploy-squad.all",
-        message: "broadcast",
-      });
+    const publish = async () =>
+      delivered(
+        await client.publish({
+          sourceSessionID: "ses_sender",
+          topic: "notifications.team.deploy-squad.all",
+          message: "broadcast",
+        })
+      );
 
     expect(await publish()).toMatchObject({ recipients: 3, recipientsConnected: 2 });
     // Zero is a count the listener sends, not an absence: it is the answer that says the message
@@ -737,12 +888,14 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const result = await client.publish({
-      sourceSessionID: "ses_sender",
-      topic: "notifications.role.controller",
-      message: "broadcast",
-      payload: `{"kind":"role-event"}`,
-    });
+    const result = delivered(
+      await client.publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.role.controller",
+        message: "broadcast",
+        payload: `{"kind":"role-event"}`,
+      })
+    );
     expect(result).toMatchObject({ envelope: { event_id: "event-2" } });
     expect(result.holder).toBeUndefined();
 
@@ -782,8 +935,10 @@ describe("EnvoyClient", () => {
       jsonResponse(envelope),
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    const publish = (topic: string) =>
-      client.publish({ sourceSessionID: "ses_sender", topic, message: "broadcast" });
+    const publish = async (topic: string) =>
+      delivered(
+        await client.publish({ sourceSessionID: "ses_sender", topic, message: "broadcast" })
+      );
 
     const role = await publish("notifications.role.controller");
     const taken = await publish("notifications.team.deploy-squad.all");
@@ -828,12 +983,14 @@ describe("EnvoyClient", () => {
       }),
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    const publish = (role: string) =>
-      client.publish({
-        sourceSessionID: "ses_sender",
-        topic: `notifications.role.${role}`,
-        message: "the worker is stalled",
-      });
+    const publish = async (role: string) =>
+      delivered(
+        await client.publish({
+          sourceSessionID: "ses_sender",
+          topic: `notifications.role.${role}`,
+          message: "the worker is stalled",
+        })
+      );
 
     const result = await publish("legion-architect");
     expect(result.kept).toBe(true);
@@ -861,7 +1018,7 @@ describe("EnvoyClient", () => {
           headers: { "Content-Type": "application/json" },
         }
       );
-    const delivered = jsonResponse({
+    const accepted = jsonResponse({
       event_id: "event-delivered",
       source: "agent",
       source_event_id: "agent.ses_sender.event-delivered",
@@ -873,15 +1030,17 @@ describe("EnvoyClient", () => {
       trace_id: "trace-delivered",
       holder: "ses_architect",
     });
-    const recorded = recordFetch([delivered, refused()]);
+    const recorded = recordFetch([accepted, refused()]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
     // An unset `keep` sends no field at all, so an older listener sees an unchanged request.
-    const plain = await client.publish({
-      sourceSessionID: "ses_sender",
-      topic: "notifications.role.legion-architect",
-      message: "ping",
-    });
+    const plain = delivered(
+      await client.publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.role.legion-architect",
+        message: "ping",
+      })
+    );
     expect(plain.kept).toBeUndefined();
     expect(plain.keptReason).toBeUndefined();
     expect(await recorded.requests[0]?.json()).not.toHaveProperty("keep");
@@ -946,15 +1105,51 @@ describe("EnvoyClient", () => {
 
     const result = await client.setRole({ sessionID: "ses_sender", role: "controller" });
 
+    // The answer carries no warnings, as no answer of a listener predating the field does: [].
     expect(result).toEqual({
       claimed: true,
       interest: expect.objectContaining({ topics: ["notifications.role.controller"] }),
+      warnings: [],
     });
     // A hard claim sends no `soft` field, so an older listener sees an
     // unchanged request.
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_sender",
       role: "controller",
+    });
+  });
+
+  test("a granted claim answers the listener's warnings beside the interest, never inside it", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const edge =
+      "this edge listener hands over no messages: the unread messages of ses_old stay on its own subject, and a claim through a shared listener hands them to this session";
+    const recorded = recordFetch([
+      jsonResponse({
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+        warnings: [handover, edge],
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.setRole({
+      sessionID: "ses_new",
+      role: "controller",
+      previousSessionID: "ses_old",
+    });
+
+    expect(result).toEqual({
+      claimed: true,
+      interest: {
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+      },
+      warnings: [handover, edge],
     });
   });
 
@@ -981,9 +1176,14 @@ describe("EnvoyClient", () => {
     });
   });
 
-  test("previous_session_id is sent with a soft claim and dropped from a hard one", async () => {
+  test("previous_session_id is sent with a soft claim and a hard one, and only when it names a session", async () => {
     const interest = { session_id: "ses_child", machine_id: "host-a", dir: "/work", topics: [] };
-    const recorded = recordFetch([jsonResponse(interest), jsonResponse(interest)]);
+    const recorded = recordFetch([
+      jsonResponse(interest),
+      jsonResponse(interest),
+      jsonResponse(interest),
+      jsonResponse(interest),
+    ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
     await client.setRole({
@@ -997,6 +1197,8 @@ describe("EnvoyClient", () => {
       role: "controller",
       previousSessionID: "ses_parent",
     });
+    await client.setRole({ sessionID: "ses_child", role: "controller" });
+    await client.setRole({ sessionID: "ses_child", role: "controller", previousSessionID: "" });
 
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_child",
@@ -1004,9 +1206,19 @@ describe("EnvoyClient", () => {
       soft: true,
       previous_session_id: "ses_parent",
     });
-    // A hard claim is last-claim-wins already; the predecessor is meaningless
-    // and stays off the wire.
+    // A hard claim names the session it replaces too, whose unread messages the listener hands
+    // to the claimant; a listener older than that reads it on a soft claim alone.
     expect(await recorded.requests[1]?.json()).toEqual({
+      session_id: "ses_child",
+      role: "controller",
+      previous_session_id: "ses_parent",
+    });
+    // No predecessor, or an empty one, leaves the key off the wire.
+    expect(await recorded.requests[2]?.json()).toEqual({
+      session_id: "ses_child",
+      role: "controller",
+    });
+    expect(await recorded.requests[3]?.json()).toEqual({
       session_id: "ses_child",
       role: "controller",
     });
@@ -1310,16 +1522,20 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const stalled = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
-    const older = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
+    const stalled = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
+    const older = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
 
     expect(stalled.recipientState).toBe("unresponsive");
     expect(older.recipientState).toBe("live");
@@ -1347,16 +1563,20 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const timed = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
-    const untimed = await client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: "ses_stalled",
-      message: "hello",
-    });
+    const timed = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
+    const untimed = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_stalled",
+        message: "hello",
+      })
+    );
 
     expect(timed.lastSeen).toBe(1_700_000_000_000);
     expect(untimed.lastSeen).toBeUndefined();
@@ -1487,6 +1707,42 @@ describe("EnvoyClient", () => {
       recipient: "01a01111-2222-7333-4444-555555555555",
       envelope: { event_id: "event-retried" },
     });
+  });
+
+  // The listener writes no 408, so one is a hop's timeout on the send, which may come after the
+  // hop forwarded it: the send goes again under the same key, and the second attempt's answer is
+  // the send's.
+  test("retries a send answered 408 under the same key, and the second attempt delivers it", async () => {
+    const recorded = recordFetch([
+      new Response("<html>408 Request Timeout</html>", { status: 408 }),
+      jsonResponse({
+        event_id: "event-retried",
+        source: "agent",
+        source_event_id: "agent.sender.event-retried",
+        source_session: "01a00000-0000-7000-0000-000000000001",
+        topic: "notifications.agent.01a01111-2222-7333-4444-555555555555",
+        dedupe_key: "event-retried",
+        issued_at: 1,
+        payload_summary: "hello",
+        trace_id: "trace-retried",
+        recipient: "01a01111-2222-7333-4444-555555555555",
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.send({
+      sourceSessionID: "01a00000-0000-7000-0000-000000000001",
+      targetSessionID: "01a01111-2222-7333-4444-555555555555",
+      message: "hello",
+    });
+
+    expect(recorded.requests).toHaveLength(2);
+    const keys = await Promise.all(
+      recorded.requests.map(async (request) => (await request.json()).idempotency_key)
+    );
+    expect(keys[0]).toBeString();
+    expect(keys[1]).toBe(keys[0]);
+    expect(result).toMatchObject({ envelope: { event_id: "event-retried" } });
   });
   test("retries a delivered direct message with one generated idempotency key", async () => {
     const idempotencyKeys: string[] = [];
@@ -1839,6 +2095,154 @@ describe("EnvoyClient", () => {
     );
   });
 
+  // The listener's 503 for a message the bus refused before it sent anything: the deployed stream
+  // does not capture the topic, as during a hub move's quiesce (`bus.ErrSubjectNotDeployed`,
+  // `writeBusUnavailable` in packages/envoy/cmd/listener/api.go). Its error opens with
+  // `MESSAGE_NOT_SENT_PREFIX` and goes on to the bus's own reason.
+  const NOT_SENT_ERROR =
+    `${MESSAGE_NOT_SENT_PREFIX}: nothing was sent: the deployed stream does not capture a topic ` +
+    "this build stores (stream ENVOY_NOTIFICATIONS, topic notifications.agent.ses_target)";
+  const notSent = () =>
+    Response.json({ error: NOT_SENT_ERROR }, { status: 503, headers: { "Retry-After": "1" } });
+
+  // Nothing was stored on either attempt, so the send is the listener's answer, which says the
+  // message was not sent and may be sent again later, never "may or may not have arrived" with a
+  // resend to make under the key. The client still makes its second attempt, under the same key.
+  test("a send the listener did not send on any attempt is that answer: nothing was stored", async () => {
+    const recorded = recordFetch([notSent(), notSent()]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    // Both attempts carry the same body, so the same idempotency key.
+    const first: unknown = await recorded.requests[0]?.json();
+    expect(first).toMatchObject({ idempotency_key: expect.any(String) });
+    expect(await recorded.requests[1]?.json()).toEqual(first);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ notSent: true, details: { status: 503 } });
+    expect((error as Error).message).toBe(NOT_SENT_ERROR);
+  });
+
+  // The control: an attempt that got no answer may have stored the message, so a later attempt
+  // the listener did not send says nothing of it, and the send stays unconfirmed.
+  test("a send not sent after an unanswered attempt stays unconfirmed: that attempt may have stored it", async () => {
+    let calls = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) throw new DOMException("The operation timed out.", "TimeoutError");
+        return notSent();
+      },
+    });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(calls).toBe(2);
+    expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect((error as Error).message).toContain("It may or may not have arrived.");
+  });
+
+  test("a publish the listener did not send on any attempt is that answer: nothing was stored", async () => {
+    const recorded = recordFetch([notSent(), notSent()]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .publish({ sourceSessionID: "ses_sender", topic: "notifications.team.x", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ notSent: true, details: { status: 503 } });
+    expect((error as Error).message).toBe(NOT_SENT_ERROR);
+  });
+
+  // A publish has no error of its own for a message that may have been stored, so its last answer
+  // is what it throws: one that says the message was not sent must not stand alone when an earlier
+  // attempt got a 5xx or no answer, after which the stream may hold the message.
+  test("a publish not sent after a 5xx does not say nothing was stored", async () => {
+    const recorded = recordFetch([
+      Response.json(
+        { error: "envoy: the message bus did not answer: context deadline exceeded" },
+        { status: 503 }
+      ),
+      notSent(),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .publish({ sourceSessionID: "ses_sender", topic: "notifications.team.x", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ notSent: false, details: { status: 503 } });
+    expect((error as Error).message).toBe(
+      `${NOT_SENT_ERROR} An earlier attempt got no answer, a 5xx or a 408, so that attempt may have ` +
+        "stored the message."
+    );
+  });
+
+  // The two rules meet here. A 408 is in the resend set (`mayHaveReachedServer`), so the send is
+  // made again under its key, and the 408 may have reached the listener, so the send stays
+  // unconfirmed even though the second attempt was the listener's word that it sent nothing.
+  test("a send not sent after a 408 is sent again and stays unconfirmed: the 408 may have stored it", async () => {
+    const recorded = recordFetch([
+      Response.json({ error: "upstream request timeout" }, { status: 408 }),
+      notSent(),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+  });
+
+  // And the other order: the listener's not-sent 503 is sent again and counts for nothing, so the
+  // 408 after it is what makes the send unconfirmed; a 408 outside the resend set would end the
+  // send at once as the listener's refusal.
+  test("a 408 after the listener's not-sent answer makes the send unconfirmed", async () => {
+    const recorded = recordFetch([
+      notSent(),
+      Response.json({ error: "upstream request timeout" }, { status: 408 }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(2);
+    expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+  });
+
   test("a send the listener refused with a 4xx is that refusal, sent once", async () => {
     const recorded = recordFetch([
       Response.json({ error: "no live session ses_target" }, { status: 404 }),
@@ -1856,6 +2260,33 @@ describe("EnvoyClient", () => {
     expect(error).toBeInstanceOf(EnvoyApiError);
     expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
     expect((error as Error).message).toBe("no live session ses_target");
+  });
+
+  // Each outage on every attempt of a send: a 5xx may have been stored, and so may a 408 (the
+  // listener writes none, and a hop can answer 408 after it forwarded the send), so the send is not
+  // confirmed; a 429 is the listener's word and is not sent again.
+  test("a send answered with an outage on every attempt: a 408 or a 5xx is unconfirmed, a 429 is one request", async () => {
+    const outcomes: Record<number, readonly [number, string]> = {};
+    for (const status of [408, 429, 500, 501, 503]) {
+      const recorded = recordFetch(
+        Array.from({ length: 2 }, () => Response.json({ error: `answered ${status}` }, { status }))
+      );
+      const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+      const error = await client
+        .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown
+        );
+      outcomes[status] = [recorded.requests.length, (error as Error).name];
+    }
+    expect(outcomes).toEqual({
+      408: [2, "EnvoySendUnconfirmedError"],
+      429: [1, "EnvoyApiError"],
+      500: [2, "EnvoySendUnconfirmedError"],
+      501: [2, "EnvoySendUnconfirmedError"],
+      503: [2, "EnvoySendUnconfirmedError"],
+    });
   });
 
   // The listener's 429 for a sender past its limit (`senderRateLimitedAnswer`,
@@ -2446,11 +2877,13 @@ describe("an envelope that carries the role field", () => {
   async function sendAnswered(envelope: object) {
     const recorded = recordFetch([jsonResponse({ ...envelope, ...sendAnswer })]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-    return client.send({
-      sourceSessionID: "ses_sender",
-      targetSessionID: SESSION,
-      message: "Review the plan",
-    });
+    return delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: SESSION,
+        message: "Review the plan",
+      })
+    );
   }
 
   test("send (transport.ts, EnvelopeResponseSchema): an answer with the field reads as the answer without it, and its tool line is the same", async () => {
@@ -2491,11 +2924,13 @@ describe("an envelope that carries the role field", () => {
           Response.json({ ...envelope, topic: ROLE_TOPIC, ...answer }, { status }),
         ]);
         const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
-        return client.publish({
-          sourceSessionID: "ses_sender",
-          topic: ROLE_TOPIC,
-          message: "Review the plan",
-        });
+        return delivered(
+          await client.publish({
+            sourceSessionID: "ses_sender",
+            topic: ROLE_TOPIC,
+            message: "Review the plan",
+          })
+        );
       };
       const before = await published(withoutRole);
       const after = await published(withRole);

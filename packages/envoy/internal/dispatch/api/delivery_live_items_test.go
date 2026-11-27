@@ -125,7 +125,7 @@ func TestTheItemsViewAnswersTheItemsRoutesBody(t *testing.T) {
 		view := frames[sub]
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, view))
-		snapshot := conns[sub].snapshot(t, 5*time.Second, sub)
+		snapshot := conns[sub].snapshot(t, sub)
 		requireTheItemsRead(t, rig.handler, "INFRA", "review-time", snapshot.Body, *view.Query)
 		if len(snapshot.Revs.Items)+len(snapshot.Revs.Maps)+len(snapshot.Revs.Counts) != 0 {
 			t.Errorf("%s: the snapshot's revisions hold items %v, maps %v and counts %v, want its fields alone", sub,
@@ -148,7 +148,7 @@ func TestTheItemsViewAnswersTheItemsRoutesBody(t *testing.T) {
 		t.Fatalf("log the reading: status %d, body %s", written.Code, written.Body.String())
 	}
 	for _, sub := range []string{"custom", "filtered"} {
-		delta := conns[sub].delta(t, 10*time.Second, sub)
+		delta := conns[sub].delta(t, sub)
 		if set, _, _, _ := liveSections(delta); !slices.Contains(set, "items") {
 			t.Errorf("%s: the reading's delta sets %v, want the rows", sub, set)
 		}
@@ -165,7 +165,7 @@ func TestTheItemsViewAnswersTheItemsRoutesBody(t *testing.T) {
 	if routed.Code != http.StatusNotFound || answer.Code != codeEvalNotFound {
 		t.Fatalf("GET the items of pr-size: status %d, body %s; want 404 %s", routed.Code, routed.Body.String(), codeEvalNotFound)
 	}
-	if refusal := conn.refusal(t, 5*time.Second, "new", answer.Code); refusal.Message != answer.Error {
+	if refusal := conn.refusal(t, "new", answer.Code); refusal.Message != answer.Error {
 		t.Errorf("the refusal's message = %q, want the route's %q", refusal.Message, answer.Error)
 	}
 	conn.none(t, time.Second, "the refusal of an eval no row holds")
@@ -174,7 +174,7 @@ func TestTheItemsViewAnswersTheItemsRoutesBody(t *testing.T) {
 	if registered.Code != http.StatusCreated {
 		t.Fatalf("log pr-size's reading: status %d, body %s", registered.Code, registered.Body.String())
 	}
-	snapshot := conn.snapshot(t, 10*time.Second, "new")
+	snapshot := conn.snapshot(t, "new")
 	requireTheItemsRead(t, rig.handler, "INFRA", "pr-size", snapshot.Body, "")
 	if len(itemsRowKeys(t, snapshot.Body)) == 0 {
 		t.Error("the snapshot after the registering reading holds no row")
@@ -281,7 +281,7 @@ func TestAReadingMarksTheItemsViewOfItsEvalAlone(t *testing.T) {
 		subOf[spec.key] = sub
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		held[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
+		held[sub] = conns[sub].snapshot(t, sub).Body
 	}
 	rig.settle(t)
 	mark := rig.mark()
@@ -291,7 +291,7 @@ func TestAReadingMarksTheItemsViewOfItsEvalAlone(t *testing.T) {
 		t.Fatalf("log the reading: status %d, body %s", written.Code, written.Body.String())
 	}
 	rig.hub.catchUpNow()
-	rig.waitFor(t, mark, 5*time.Second, "the recompute of INFRA's review-time items after its reading", recomputeOfView(t, frames["r"]))
+	rig.waitFor(t, mark, "the recompute of INFRA's review-time items after its reading", recomputeOfView(t, frames["r"]))
 	rig.waitNoRecompute(t, viewMaxWait)
 	recomputed := []string{}
 	rig.mu.Lock()
@@ -304,7 +304,7 @@ func TestAReadingMarksTheItemsViewOfItsEvalAlone(t *testing.T) {
 	if !slices.Equal(recomputed, []string{"r"}) {
 		t.Errorf("the reading of INFRA's review-time recomputed the items views of %v, want r alone", recomputed)
 	}
-	delta := conns["r"].delta(t, 5*time.Second, "r")
+	delta := conns["r"].delta(t, "r")
 	requireTheDeltaLandsOnTheItemsRead(t, rig.handler, "INFRA", "review-time", held["r"], delta, "")
 	conns["p"].none(t, 100*time.Millisecond, "the reading of another eval")
 	conns["o"].none(t, 100*time.Millisecond, "the reading of another project's eval")
@@ -430,7 +430,7 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 		subOf[spec.key] = sub
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		held[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
+		held[sub] = conns[sub].snapshot(t, sub).Body
 		requireTheItemsRead(t, rig.handler, "HUB", evals.SlugPRCI, held[sub], *frames[sub].Query)
 	}
 	if got := itemsRowKeys(t, held["f"]); !slices.Equal(got, []string{failingJobKey("acme/widgets", "checks / flaky")}) {
@@ -443,7 +443,7 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 		t.Fatalf("fail run %d's steady job: %v", runID, err)
 	}
 	rig.hub.catchUpNow()
-	rig.waitFor(t, mark, 5*time.Second, "the recompute of pr-ci's failures after a job failed", recomputeOfView(t, frames["f"]))
+	rig.waitFor(t, mark, "the recompute of pr-ci's failures after a job failed", recomputeOfView(t, frames["f"]))
 	rig.waitNoRecompute(t, viewMaxWait)
 	recomputed := []string{}
 	rig.mu.Lock()
@@ -456,7 +456,7 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 	if !slices.Equal(recomputed, []string{"f"}) {
 		t.Errorf("the job's change recomputed the items views of %v, want the failures view alone", recomputed)
 	}
-	delta := conns["f"].delta(t, 5*time.Second, "f")
+	delta := conns["f"].delta(t, "f")
 	applied := requireTheDeltaLandsOnTheItemsRead(t, rig.handler, "HUB", evals.SlugPRCI, held["f"], delta, *frames["f"].Query)
 	if got, want := itemsRowKeys(t, applied), []string{failingJobKey("acme/widgets", "checks / flaky"), failingJobKey("acme/widgets", "checks / steady")}; !slices.Equal(got, want) {
 		t.Errorf("after the steady job failed the failures view holds %v, want both jobs", got)
@@ -511,7 +511,7 @@ func TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours(t *testing.T) {
 		keys[sub] = spec.key
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		held[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
+		held[sub] = conns[sub].snapshot(t, sub).Body
 		if got := itemsRowKeys(t, held[sub]); !slices.Equal(got, []string{failingJobKey("acme/widgets", "checks / flaky")}) {
 			t.Fatalf("%s: the failures view holds %v, want the job that failed 23 h 59 min ago", sub, got)
 		}
@@ -536,10 +536,11 @@ func TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours(t *testing.T) {
 		t.Fatalf("the clock already reads %s, past the expiry %s the test moves it to", rig.clock.Now().Format(time.RFC3339Nano), leaves.Format(time.RFC3339Nano))
 	}
 	rig.clock.Advance(ahead)
-	rig.waitFor(t, mark, 5*time.Second, "the preset failures view's read at its expiry", func(note deliveryHubNote) bool {
+	rig.waitFor(t, mark, "the preset failures view's read at its expiry", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.view == keys["preset"] && note.cause == deliveryCauseExpiry
 	})
-	delta := conns["preset"].delta(t, 5*time.Second, "preset")
+
+	delta := conns["preset"].delta(t, "preset")
 	if set, _, _, _ := liveSections(delta); !slices.Contains(set, "items") {
 		t.Errorf("the expiry's delta sets %v, want the rows", set)
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -36,10 +39,10 @@ func evalDaysEnding(n int, end time.Time) evals.Range {
 
 // storedEvalShapes is every shape of the list read a page asks for as of today, and two the stored
 // figures do not answer: each preset of the Evals tab as a GET from midnight to midnight (L days
-// ending today), with and without the compare range before it; each as the live view reads it at a
-// moment of today (L+1 days ending tomorrow), with the compare range its query names and without;
-// a repository's rows; and, read from the day rows, a range of a length the tab does not offer and
-// two repositories.
+// ending today), with and without the compare range before it; each as the live view reads it at
+// a moment of today (L+1 days ending tomorrow), with the compare range its query names and
+// without; a repository's rows, which the stored figures of its cut answer; and, read from the day
+// rows, a range of a length the tab does not offer and two repositories.
 func storedEvalShapes(today time.Time, repo, other string) []evalShape {
 	var shapes []evalShape
 	for _, n := range []int{7, 14, 28, 84} {
@@ -103,7 +106,8 @@ func seedLoggedAggs(t *testing.T, registry *evals.Store, project, repo string, t
 }
 
 // storedEvalsRig is the server and the moment the stored figures' read is checked over: the
-// delivery project and its repositories, and the Legion project beside it.
+// delivery project and its repositories, the golden Legion project beside it, and legion, a Legion
+// project whose history begins a month before the moment.
 type storedEvalsRig struct {
 	served   *server
 	projects []string
@@ -111,11 +115,16 @@ type storedEvalsRig struct {
 	today    time.Time
 	delivery string
 	repos    []string
+	legion   string
 }
 
 // newStoredEvalsRig seeds the delivery history of 30 days, the Legion history of the golden
-// windows, and the logged evals of every agg over 100 days (seedLoggedAggs), and refreshes the
-// day rows and their stored figures as the server's refresher writes them.
+// windows, a Legion history of 30 trees a day apart ending at the golden history's end, its roots
+// queued for a slot, and the logged evals of every agg over 100 days (seedLoggedAggs), and
+// refreshes the day rows and their stored figures as the server's refresher writes them. The golden
+// history begins five days before the rig's moment, after the start of every range a page asks for,
+// so each of its figures reads no data; the month-long one gives the Legion evals values in the 7,
+// 14 and 28 days a page reads.
 func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, args ...any)) {
 	t.Helper()
 	_, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
@@ -125,7 +134,9 @@ func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, ar
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	long := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGN", Trees: 30, Now: windows[0].Spec.Now, Spacing: 24 * time.Hour, Queued: true})
+	storeLegionFacts(t, database, long.Project, windows[0].Spec.Now)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	seedLoggedAggs(t, registry, fixture.Project, fixture.DeployRepo, measures.Midnight(now))
 	refreshEvalDays(t, registry, database, now)
 	exec := func(statement string, args ...any) {
@@ -135,8 +146,8 @@ func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, ar
 		}
 	}
 	return &storedEvalsRig{
-		served: served, projects: []string{fixture.Project, windows[0].Spec.Project}, now: now, today: measures.Midnight(now),
-		delivery: fixture.Project, repos: fixture.Repos,
+		served: served, projects: []string{fixture.Project, windows[0].Spec.Project, long.Project}, now: now, today: measures.Midnight(now),
+		delivery: fixture.Project, repos: fixture.Repos, legion: long.Project,
 	}, exec
 }
 
@@ -156,7 +167,8 @@ func readEvalShape(t *testing.T, served *server, projects []string, now time.Tim
 		ranges.compareFrom, ranges.compareTo = shape.compare.From, shape.compare.To
 	}
 	answer, err := served.readEvalList(t.Context(), evalListRequest{
-		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax}, projects: projects,
+		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax},
+		projectsIn:    func(context.Context, pgx.Tx) ([]string, error) { return projects, nil },
 	}, now)
 	if err != nil {
 		t.Fatalf("read %s: %v", shape.name, err)
@@ -176,10 +188,12 @@ func readEvalShape(t *testing.T, served *server, projects []string, now time.Tim
 // first day, the per-day arrays of the window and of the compare range (days, compare_days) among
 // them, which hold days of their own. The read of the day rows is the same server's once no
 // project's figures stand built (eval_figures_built), which a range of a length the tab does not
-// offer and a read of two repositories read anyway. The negative control breaks the stored
-// figures of one eval: every shape the stored figures answer then answers otherwise, and the two
-// the day rows answer do not.
+// offer and a read of two repositories read anyway. The month-long Legion history gives its evals
+// values in the shorter ranges, so the Legion figures compared are not all null against null. The
+// negative control breaks the stored figures of one eval, every cut of them: every shape the
+// stored figures answer then answers otherwise, and the two the day rows answer do not.
 func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
+	t.Parallel()
 	r, exec := newStoredEvalsRig(t)
 	shapes := storedEvalShapes(r.today, r.repos[0], r.repos[1])
 	for _, shape := range shapes {
@@ -188,7 +202,7 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 		}
 	}
 	stored := map[string][]byte{}
-	figures, compareDays := 0, 0
+	figures, compareDays, legionValues := 0, 0, 0
 	for _, shape := range shapes {
 		answer, body := r.read(t, shape)
 		stored[shape.name] = body
@@ -199,10 +213,23 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 					compareDays += len(series.CompareDays)
 				}
 			}
+			if item.Definition.Kind != evals.KindLegion {
+				continue
+			}
+			for _, series := range item.Series {
+				for _, value := range series.Window {
+					if value != nil {
+						legionValues++
+					}
+				}
+			}
 		}
 	}
 	if compareDays == 0 {
 		t.Fatal("no shape the stored figures answer holds a day of its compare range, so their compare_days are compared with nothing")
+	}
+	if legionValues == 0 {
+		t.Fatalf("no shape states a value of a Legion eval, so the Legion figures compared are null against null")
 	}
 	marks := r.figuresBuilt(t)
 	if len(marks) != len(r.projects) {
@@ -217,11 +244,13 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 				len(stored[shape.name]), len(sample[shape.name]), firstDifference(stored[shape.name], sample[shape.name]))
 		}
 	}
-	t.Logf("%d shapes over %d projects, %d series in all, %d days of compare ranges among the stored figures' answers, answered alike by the stored figures and the day rows",
-		len(shapes), len(r.projects), figures, compareDays)
+	t.Logf("%d shapes over %d projects, %d series in all (%d values of the Legion evals), %d days of compare ranges among the stored figures' answers, answered alike by the stored figures and the day rows",
+		len(shapes), len(r.projects), figures, legionValues, compareDays)
 
+	// The marks go back as the walk left them: the figures and each project's union cut built
+	// through the same end day (evals.markFiguresBuilt).
 	for project, through := range marks {
-		exec(`insert into eval_figures_built (project_key, through, built_by) values ($1, $2, $3)`, project, through, testServerBuild)
+		exec(`insert into eval_figures_built (project_key, through, built_by, union_through) values ($1, $2, $3, $2)`, project, through, testServerBuild)
 	}
 	broken := evals.EvalID(r.delivery, evals.SlugDeployFrequency)
 	exec(`update eval_range_figures set figures = '\x0000'::bytea where eval_id = $1`, broken)
@@ -243,37 +272,67 @@ func firstDifference(a, b []byte) int {
 	return min(len(a), len(b))
 }
 
-// figuresBuilt is how far each of the rig's projects' figures stand built.
+// figuresBuilt is how far each of the rig's projects' figures stand built (figuresBuiltOf).
 func (r *storedEvalsRig) figuresBuilt(t *testing.T) map[string]time.Time {
 	t.Helper()
-	built, err := r.served.registry().FiguresThrough(t.Context(), r.projects)
+	return figuresBuiltOf(t, r.served.deps.Store.Pool, r.projects)
+}
+
+// figuresBuiltOf is how far each of projects' figures stand built, read in pool: the end day
+// eval_figures_built holds of each, which a read of the stored figures reads.
+func figuresBuiltOf(t *testing.T, pool *store.Pool, projects []string) map[string]time.Time {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `select project_key, through from eval_figures_built where project_key = any($1)`, projects)
 	if err != nil {
-		t.Fatalf("read how far the figures are built: %v", err)
+		t.Fatalf("read how far the figures of %v are built: %v", projects, err)
+	}
+	built := map[string]time.Time{}
+	var project string
+	var through time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&project, &through}, func() error {
+		built[project] = measures.Midnight(through)
+		return nil
+	}); err != nil {
+		t.Fatalf("read how far the figures of %v are built: %v", projects, err)
 	}
 	return built
 }
 
 // TestTheStoredFiguresAnswerK12sHandFolds (k12 over the stored figures): for one count
-// (deploy-frequency's deploys), one hours measure (legion-slot-wait's hours), one share
-// (deploy-run-success's runs) and one quantile (pr-open-to-merge's minutes), the 14-day read with
-// its compare range, which the stored figures answer, states for the window and the compare range
-// each statistic k12 folds by hand from the project's day rows of the range, its own and those of
-// the owner keys of its published default repository (eval_project_owners, R15): sums over the
-// days, the share's summed numerator over its summed denominator, the quantile's ranks of every
-// sample of the range merged and sorted, the Legion figures to four decimals, and no data for a
-// range that starts before the series' first day; within k12's tolerance, and bit for bit.
+// (deploy-frequency's deploys), one hours measure (legion-slot-wait's hours, of the month-long
+// Legion history, whose roots wait for a slot), one share (deploy-run-success's runs) and one
+// quantile (pr-open-to-merge's minutes), the 14-day read with its compare range, which the stored
+// figures answer, states for the window and the compare range each statistic k12 folds by hand
+// from the project's day rows of the range, its own and those of the owner keys of its published
+// default repository (eval_project_owners, R15): sums over the days, the share's summed numerator
+// over its summed denominator, the quantile's ranks of every sample of the range merged and
+// sorted, interpolated here as k12 states the rule rather than by the code under test, the Legion
+// figures to four decimals, and no data for a range that starts before the series' first day;
+// within k12's tolerance, and bit for bit. Each measure states at least one value its hand fold
+// compares, so none is null against null alone.
 func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
+	t.Parallel()
 	r, _ := newStoredEvalsRig(t)
 	compare := evalDaysEnding(14, r.today.AddDate(0, 0, -14))
 	shape := evalShape{name: "14 days with a compare range", window: evalDaysEnding(14, r.today), compare: &compare, offered: true}
 	if !evals.FiguresOffered(nil, shape.window, shape.compare) || len(r.figuresBuilt(t)) != len(r.projects) {
 		t.Fatalf("the stored figures do not answer %s: built %v", shape.name, r.figuresBuilt(t))
 	}
+	// quantile is p's quantile of sorted, which holds at least one sample, by k12's rule: linear
+	// between the two nearest ranks, each product converted to float64 before the sum it feeds,
+	// which keeps the compiler from fusing a multiply and an add into one rounding.
+	quantile := func(sorted []float64, p float64) float64 {
+		rank := float64(float64(len(sorted)-1) * p)
+		low := int(math.Floor(rank))
+		if low+1 >= len(sorted) {
+			return sorted[len(sorted)-1]
+		}
+		return sorted[low] + float64((sorted[low+1]-sorted[low])*(rank-float64(low)))
+	}
 	answer, _ := r.read(t, shape)
-	golden := r.projects[1]
 	measured := []struct{ kind, project, slug, series string }{
 		{"count", r.delivery, evals.SlugDeployFrequency, measures.SeriesDeploys},
-		{"hours", golden, evals.SlugLegionSlotWait, "hours"},
+		{"hours", r.legion, evals.SlugLegionSlotWait, "hours"},
 		{"share", r.delivery, evals.SlugDeployRunSuccess, measures.SeriesRuns},
 		{"quantile", r.delivery, evals.SlugPROpenToMerge, measures.SeriesMinutes},
 	}
@@ -281,7 +340,7 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 	pool := r.served.deps.Store.Pool
 	for _, m := range measured {
 		evalID := evals.EvalID(m.project, m.slug)
-		foldedRows := 0
+		foldedRows, stated := 0, 0
 		values := seriesValues(t, findEval(t, answer.Items, m.project, m.slug), m.series)
 		var first *time.Time
 		// The project's rows are its own and its default repository's owner keys' (evals.OwnerKey),
@@ -340,12 +399,12 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 			case "quantile":
 				hand["n"] = new(float64(len(merged)))
 				if len(merged) > 0 {
-					hand["median"], hand["p90"], hand["max"] = new(measures.Quantile(merged, 0.5)), new(measures.Quantile(merged, 0.9)), new(merged[len(merged)-1])
+					hand["median"], hand["p90"], hand["max"] = new(quantile(merged, 0.5)), new(quantile(merged, 0.9)), new(merged[len(merged)-1])
 				}
 			case "hours":
 				hand["hours"], hand["n"] = new(fourDecimals(sum)), new(float64(len(merged)))
 				if len(merged) > 0 {
-					hand["median"], hand["p90"] = new(fourDecimals(measures.Quantile(merged, 0.5))), new(fourDecimals(measures.Quantile(merged, 0.9)))
+					hand["median"], hand["p90"] = new(fourDecimals(quantile(merged, 0.5))), new(fourDecimals(quantile(merged, 0.9)))
 				}
 			}
 			if first == nil || which.days.From.Before(first.UTC()) {
@@ -355,6 +414,9 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 			}
 			for name, want := range hand {
 				folds++
+				if want != nil {
+					stated++
+				}
 				got := which.got[name]
 				bits := want == nil && got == nil || want != nil && got != nil && math.Float64bits(*want) == math.Float64bits(*got)
 				if bits {
@@ -368,8 +430,9 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 				}
 			}
 		}
-		if foldedRows == 0 {
-			t.Errorf("%s's %s holds no day row of %s in the window or the compare range, so the hand fold folds nothing", m.project, m.slug, m.series)
+		if foldedRows == 0 || stated == 0 {
+			t.Errorf("%s's %s holds %d day rows of %s in the window and the compare range, and the hand fold states %d values of them; want rows and values, so the fold compares a value",
+				m.project, m.slug, foldedRows, m.series, stated)
 		}
 	}
 	t.Logf("k12 over the stored figures: %d of %d hand folds bit for bit, over %d day rows", exact, folds, examined)
@@ -385,6 +448,7 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 // in the answer the commit lands in, the window's old figures beside the new days: the mixed delta
 // a live evals view sent for half a second after a settings rewrite.
 func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	commits := storetest.NewCommitBetweenReads("eval_range_figures", "eval_figures_built")
 	_, _, deps, served := newRegisteredTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
@@ -394,10 +458,10 @@ func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	shape := evalShape{name: "7 days", window: evalDaysEnding(7, measures.Midnight(now)), offered: true}
-	if built, err := registry.FiguresThrough(t.Context(), []string{fixture.Project}); err != nil || built[fixture.Project].Before(shape.window.To) {
-		t.Fatalf("%s's figures stand built through %v (%v), so the read of %s answers from the day rows", fixture.Project, built, err, shape.name)
+	if built := figuresBuiltOf(t, database.Pool, []string{fixture.Project}); built[fixture.Project].Before(shape.window.To) {
+		t.Fatalf("%s's figures stand built through %v, so the read of %s answers from the day rows", fixture.Project, built, shape.name)
 	}
 	// read is the list read of the delivery project's evals in shape, and its body without its
 	// freshness, which a refresher pass may move without moving a value.

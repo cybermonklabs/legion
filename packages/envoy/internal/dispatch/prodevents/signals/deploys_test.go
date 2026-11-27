@@ -3,10 +3,12 @@ package signals
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
@@ -41,7 +43,7 @@ func TestADeployRunWhoseProductionJobAndApplyStepSucceedWritesOneDeployRow(t *te
 	row := rows[0]
 	if row.ProjectKey != alpha || row.Kind != prodevents.KindDeploy || row.Source != prodevents.SourceGitHub ||
 		row.SourceRef != "github:100" || row.Status != prodevents.StatusSucceeded || row.Repo != widgets ||
-		row.URL != "https://github.com/acme/widgets/actions/runs/100" || row.Actor != Actor {
+		row.URL != "https://github.com/acme/widgets/actions/runs/100" || row.Actor != loopActor {
 		t.Fatalf("deploy row = %+v", row)
 	}
 	if !row.StartedAt.Equal(at(60)) || !row.FinishedAt.Equal(at(70)) {
@@ -97,6 +99,50 @@ func TestAJobWriteMakesTheDeployRowOnceTheProductionJobFinishes(t *testing.T) {
 	}
 }
 
+// TestAPruneBetweenTwoPagesOfTheDeploysFeedLosesItsCursor: the deploys feed judges its cursor
+// afresh before each page of the change log, by its clock's reading for that page
+// (delivery.ChangeCursor, CursorLost). Its cursor last read the log to its end more than the
+// retention ago, and a backlog recorded past the retention waits after it: a full page of changes
+// the feed derives nothing from (a repository no rule reads), then deploy run 300's. A prune that
+// runs once the first page has moved the cursor takes the change the cursor rests on, and run
+// 300's changes, which the feed never read, with it. So the second page finds the cursor lost: the
+// feed forgets the recorded rule, derives the repository whole, and run 300 gets its deploy row.
+// Red where the feed judges its cursor once a pass: its second page reads on after the pruned
+// changes, finds none, and run 300 gets no row.
+func TestAPruneBetweenTwoPagesOfTheDeploysFeedLosesItsCursor(t *testing.T) {
+	r := newRig(t)
+	r.passDeploys()
+	head, err := delivery.ChangesHead(r.ctx, r.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.exec("a full page of changes no rule reads", `insert into delivery_changes (kind, repo, ref)
+		select 'session_group', 'acme/elsewhere', n::text from generate_series(1, $1::int) n`, page)
+	r.deployRun(300, at(60), sha("e"), prodJob, success, success)
+	if _, err := delivery.DrainPending(r.ctx, r.pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	r.exec("record the backlog past the retention", `update delivery_changes set at = now() - interval '2 days' where seq > $1`, head.Seq)
+	r.exec("leave the log unread to its end past the retention", `update production_signal_cursors
+		set updated_at = now() - interval '25 hours' where name = $1`, deploysCursor)
+	// The prune, run by the first move of the cursor past the head: PruneChanges' statement.
+	r.exec("make the prune", `create function signals_test_prune() returns trigger language plpgsql as $$
+		begin
+			delete from delivery_changes where at < now() - interval '24 hours';
+			return new;
+		end $$`)
+	r.exec("prune once the first page moves the cursor", `create trigger signals_test_prune after update on production_signal_cursors
+		for each row when (new.name = 'deploys' and new.position > `+strconv.FormatInt(head.Seq, 10)+`) execute function signals_test_prune()`)
+	r.passDeploys()
+	var left int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from delivery_changes where seq > $1 and at < now() - interval '24 hours'`, head.Seq).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the backlog holds %d changes after the pass (%v), want the prune to have taken them all", left, err)
+	}
+	if !slices.ContainsFunc(r.deploys(), func(row prodevents.Event) bool { return row.SourceRef == prodevents.GitHubSourceRef(300) }) {
+		t.Errorf("deploy rows = %+v, want run 300's, whose changes the prune took before the feed read them", r.deploys())
+	}
+}
+
 // TestARuleChangeDerivesTheRepositorysDeployRowsAgain: a save that changes the repository's rule
 // derives its GitHub deploy rows again on the next pass. A run the new rule calls a deploy gains
 // its row; a row the new rule does not call a deploy is deleted; and one a failure blames stays,
@@ -112,7 +158,7 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	}
 	blamed, unblamed := r.deployOf(130), r.deployOf(131)
 	flagged, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
-		ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson, SourceRef: "person:" + blamed.ID + ":alice",
+		ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson, SourceRef: prodevents.PersonSourceRef(blamed.ID, "alice"),
 		Actor: person, DeployID: new(blamed.ID), Signal: new(prodevents.SignalPerson), DetectedAt: new(at(200)),
 	})
 	if err != nil {
@@ -142,7 +188,7 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	}
 	if rejected.State != prodevents.StateRejected || rejected.StateReason == nil ||
 		!strings.Contains(*rejected.StateReason, "deploy rule of acme/widgets changed") ||
-		!strings.Contains(*rejected.StateReason, canaryJob) || rejected.StateBy == nil || *rejected.StateBy != Actor {
+		!strings.Contains(*rejected.StateReason, canaryJob) || rejected.StateBy == nil || *rejected.StateBy != loopActor {
 		t.Errorf("the failure on the dropped row = state %q, reason %v, by %v; want rejected naming the rule change", rejected.State, rejected.StateReason, rejected.StateBy)
 	}
 	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, sha("e")); err != nil || held {
@@ -167,7 +213,7 @@ func TestTheDeployRowWriteTakesNoChangeLogLock(t *testing.T) {
 		t.Fatalf("take the change log's lock: %v", err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- passDeploys(r.ctx, r.pool, time.Now) }()
+	go func() { done <- passDeploys(r.ctx, r.pool) }()
 
 	var row prodevents.Event
 	for deadline := time.Now().Add(30 * time.Second); ; {

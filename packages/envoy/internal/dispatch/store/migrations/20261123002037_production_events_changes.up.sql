@@ -17,13 +17,14 @@
 -- read from that row, since a failure counts on its deploy's day. An insert carries the new time
 -- in t_new, a delete the old one in t_old, an update both. A failure whose restored_at moves logs
 -- a second row, its restored_at before and after, because a restore also counts on its own day
--- (failed deployment recovery time, INFRA-978 R11). The refresher reads the row by its id for
--- the rest (the deploy a failure blames and the projects that deploy counts for), and a deleted
--- row by the times its change carries.
+-- (failed deployment recovery time, INFRA-978 R11). A change that removes or replaces a restoring
+-- deploy also names its old finish day if the other changes do not name it (deployment rework
+-- rate). The refresher reads the row by its id for the rest (the deploy a failure blames and the
+-- projects that deploy counts for), and a deleted row by the times its change carries.
 --
 -- As the other triggers do, it writes no change row when nothing moved.
 --
--- The census answers 0: one function and one trigger, reading and rewriting no row.
+-- The census answers 0: two functions and one trigger, reading and rewriting no row.
 create function production_events_counts_at(p_kind text, p_finished timestamptz, p_deploy uuid)
 returns timestamptz language sql stable as $$
   select case when p_kind = 'deploy' then p_finished
@@ -34,6 +35,7 @@ create function production_events_changed() returns trigger language plpgsql as 
 declare
   old_at timestamptz;
   new_at timestamptz;
+  old_restorer_at timestamptz;
 begin
   if tg_op = 'INSERT' then
     new_at := production_events_counts_at(new.kind, new.finished_at, new.deploy_id);
@@ -53,6 +55,15 @@ begin
     perform delivery_change_log_pending('production_events', null, new.project_key, new.id::text, old_at, new_at);
     if old.restored_at is distinct from new.restored_at then
       perform delivery_change_log_pending('production_events', null, new.project_key, new.id::text, old.restored_at, new.restored_at);
+    end if;
+    if old.restored_by_deploy is not null and old.restored_by_deploy is distinct from new.restored_by_deploy then
+      select finished_at into old_restorer_at from production_events where id = old.restored_by_deploy;
+      if old_restorer_at is not null and not exists (
+        select 1 from unnest(array[old_at, new_at, old.restored_at, new.restored_at]) as named(at)
+        where date_trunc('day', named.at, 'UTC') = date_trunc('day', old_restorer_at, 'UTC')
+      ) then
+        perform delivery_change_log_pending('production_events', null, new.project_key, new.id::text, old_restorer_at, null);
+      end if;
     end if;
   end if;
   return null;

@@ -1,6 +1,8 @@
 package bus
 
 import (
+	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // generationKey is the stream metadata key that holds the generation of the stream's settings,
@@ -17,7 +20,9 @@ import (
 const generationKey = "dispatch.stream-generation"
 
 // rawJetStream is a JetStream context on a plain connection to url, which ensures nothing: the
-// test plays another build's process with it.
+// test plays another build's process with it. Its requests have no span of their own, since an
+// answer can come late on a loaded machine with nothing wrong: they end at the test binary's
+// deadline (testnats.MaxWait).
 func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 	t.Helper()
 	conn, err := nats.Connect(url, nats.Timeout(5*time.Second))
@@ -25,7 +30,7 @@ func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -36,6 +41,7 @@ func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 // build starts, whether it names a replica count (the listener) or not (Dispatch): the older build
 // does not revert what the newer one set.
 func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
 	urls := cluster.URLs()
 	newer := nats.StreamConfig{
@@ -89,6 +95,7 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 // which keeps a deployed subject overlapping none of its own (reconcileSubjects) and removes
 // none in the keeper (keptSubjects).
 func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
+	t.Parallel()
 	resumeLane := SessionResumeSubjectPrefix + ">"
 	// Generation 2, named rather than derived from streamConfigGeneration: generation 3 is the
 	// one that added this lane, so the build without it is that row whatever the next bump does.
@@ -117,14 +124,14 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 		t.Fatalf("stream subjects = %v, want this build's stream to carry %s", stamped.Subjects, resumeLane)
 	}
 
-	subjects, err := ensureStreamWithConfig(t.Context(), js, &older, capsAnUnsetStream, atStart)
+	subjects, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &older, capsAnUnsetStream, atStart)
 	if err != nil {
 		t.Fatalf("the build before this one starts: %v", err)
 	}
 	if !slices.Contains(subjects, resumeLane) {
 		t.Fatalf("the start of the build before this one leaves subjects %v, want %s among them", subjects, resumeLane)
 	}
-	if _, err := keepStream(t.Context(), js, &older, capsAnUnsetStream); err != nil {
+	if _, err := keepStream(t.Context(), slog.Default(), js, &older, capsAnUnsetStream); err != nil {
 		t.Fatalf("the keeper of the build before this one: %v", err)
 	}
 	if got := deployedStream(t, js).Config.Subjects; !slices.Equal(got, stamped.Subjects) {
@@ -135,6 +142,7 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 // A stream without a generation (a build before generations) or with an older one is reconciled
 // and stamped with this build's generation.
 func TestAnOwningClientStampsItsGenerationOnAnUnstampedStream(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	js := rawJetStream(t, uri)
 	unstamped := *streamCfg
@@ -155,6 +163,7 @@ func TestAnOwningClientStampsItsGenerationOnAnUnstampedStream(t *testing.T) {
 // A stream deleted while an owning client runs is created again when the client reconnects, so a
 // stream lost while a process runs does not stay lost until the process restarts.
 func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -180,19 +189,14 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		info, err := checkerJS.StreamInfo(Stream)
-		if err == nil {
-			if !slices.Equal(info.Config.Subjects, streamCarriedSubjects) {
-				t.Fatalf("recreated stream subjects = %v, want %v", info.Config.Subjects, streamCarriedSubjects)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the stream was not recreated after the client reconnected: %v", err)
-		}
-		time.Sleep(100 * time.Millisecond)
+	var info *nats.StreamInfo
+	testwait.UntilPolling(t, 100*time.Millisecond, "the client to recreate the stream once it reconnected (the last read is the stream read's error)", func() (string, bool) {
+		read, err := checkerJS.StreamInfo(Stream)
+		info = read
+		return fmt.Sprint(err), err == nil
+	})
+	if !slices.Equal(info.Config.Subjects, streamCarriedSubjects) {
+		t.Fatalf("recreated stream subjects = %v, want %v", info.Config.Subjects, streamCarriedSubjects)
 	}
 }
 
@@ -201,6 +205,7 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 // a client that owns the stream and by one that does not: the stream keeps one copy and reports
 // the repeat a duplicate.
 func TestATopicOnlyTheDeployedStreamCapturesIsPublishedThroughJetStream(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.x.y"
 	if StreamCaptures(topic) {
 		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", topic)
@@ -267,6 +272,7 @@ func TestATopicOnlyTheDeployedStreamCapturesIsPublishedThroughJetStream(t *testi
 // subjects again every streamSubjectsRefresh, whether it owns the stream or not, and then publishes
 // a topic under the new subject through JetStream with its MsgId.
 func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.x.y"
 	for _, tc := range []struct {
 		name    string
@@ -299,13 +305,10 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.UpdateStream(&newer); err != nil {
 				t.Fatalf("the newer build adds its subject: %v", err)
 			}
-			deadline := time.Now().Add(10 * time.Second)
-			for client.UsesCoreTransport(topic) {
-				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 10 s after the stream captured it", topic)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			testwait.Until(t, "the client to send "+topic+" through JetStream once the stream captured it (the last read is whether it still sent it over core NATS)", func() (bool, bool) {
+				core := client.UsesCoreTransport(topic)
+				return core, !core
+			})
 			envelope := contracts.Envelope{
 				EventID:        "evt-followed-subject",
 				Source:         "dispatch",
@@ -334,6 +337,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 // topic under a subject only a newer build added then takes JetStream at once, without waiting a
 // streamSubjectsRefresh.
 func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testing.T) {
+	t.Parallel()
 	const topic = "notifications.x.y"
 	for _, tc := range []struct {
 		name    string
@@ -364,13 +368,10 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 
 			srv.Start(t)
-			deadline := time.Now().Add(15 * time.Second)
-			for client.UsesCoreTransport(topic) {
-				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 15 s after the server came up", topic)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+			testwait.Until(t, "the client to send "+topic+" through JetStream once the server came up (the last read is whether it still sent it over core NATS)", func() (bool, bool) {
+				core := client.UsesCoreTransport(topic)
+				return core, !core
+			})
 		})
 	}
 }

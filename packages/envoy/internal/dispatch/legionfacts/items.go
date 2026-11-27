@@ -86,32 +86,44 @@ type ItemRow struct {
 }
 
 // ItemRows turns stored facts rows into the items rows an eval's issue list serves: one row per
-// issue, in the order the rows were given, which is the key order computeKeys and ComputeProject
-// answer in.
+// issue, in the order the rows were given. Its one caller, the eval items route
+// (api/evals_items.go's legionItemSource), gives it the rows of the issues closed in a range as
+// ReadClosedIn answers them, newest close first, each closed at the request (Row.At).
 //
 // The measured time is when the facts were measured: a closed issue's close, the moment its
 // values stopped moving and the moment its Legion evals count it on, whenever its row was last
-// recomputed; and an open issue's row's AsOf, the moment its still-moving facts stand at, which
-// is the reader's own clock once the reader has closed the row there (Row.At, which ReadClosedIn
-// makes). An eval that charts it reads it at the moment it was true.
+// recomputed. An eval that charts it reads it at the moment it was true. A row of an open issue,
+// which ReadClosedIn never answers, would be measured at its AsOf, the moment its still-moving
+// facts stand at.
 //
 // The repo column is repos' entry for the issue, "" for none: the repository the issue resolves
 // to now (ReadRepos), which the items route filters by and the Legion day rows cut by
-// (evals.ReadLegionDay). The stored row's repo is the one its facts pass resolved, which a move
-// of a project's default repository leaves behind until the pass that rewrites it, so a row
-// showing it could stand in one repository's list while naming another.
-func ItemRows(rows []Row, repos map[string]string) []ItemRow {
+// (evals.ReadLegionDay). The stored row's repo is the one its facts pass resolved, DefaultRepo
+// where the issue's chain names none, so a move of a project's default repository rewrites no
+// stored row and leaves none stale. It goes stale only when the issue's own repository, or an
+// ancestor's, moves, until the pass that rewrites it, so a row showing it could stand in one
+// repository's list while naming another.
+//
+// filings is the filing of each issue of rows that the same range filed, by issue, nil for none:
+// such an issue's row carries its filing's columns beside its facts (addFilingColumns), its
+// root_key the facts' own, so an issue a range both filed and closed answers one row (R24) that
+// states what its filing's row (FilingItemRows) would, and is measured at its close.
+func ItemRows(rows []Row, repos map[string]string, filings map[string]Filing) []ItemRow {
 	items := make([]ItemRow, 0, len(rows))
 	for _, row := range rows {
 		measured := row.AsOf
 		if row.ClosedAt != nil {
 			measured = *row.ClosedAt
 		}
+		columns := itemColumns(row, repos[row.Issue])
+		if filing, filed := filings[row.Issue]; filed {
+			addFilingColumns(columns, filing)
+		}
 		items = append(items, ItemRow{
 			Project:    row.Project,
 			RowKey:     row.Issue,
 			RowKind:    ItemRowKind,
-			Columns:    itemColumns(row, repos[row.Issue]),
+			Columns:    columns,
 			MeasuredAt: measured,
 			Source:     ItemSource,
 			Href:       "/issues/" + row.Issue,
@@ -226,27 +238,32 @@ func WithIssues(items []ItemRow, issues map[string]ItemIssue) []ItemRow {
 
 // FilingItemRows turns stored filings into the items rows legion-splitting's filings serve: one
 // `issue` row per filed issue, in the order the filings were given, whose columns are the
-// filing's (when, by which role, issue and phase, its class and the filed issue's tree root),
-// measured when it was filed.
+// filing's (addFilingColumns) and the filed issue's tree root, measured when it was filed.
 func FilingItemRows(filings []Filing) []ItemRow {
 	items := make([]ItemRow, 0, len(filings))
 	for _, filing := range filings {
+		columns := make(map[string]any, 6)
+		columns[ColumnRootKey] = filing.Root
+		addFilingColumns(columns, filing)
 		items = append(items, ItemRow{
-			Project: filing.Project,
-			RowKey:  filing.Key,
-			RowKind: ItemRowKind,
-			Columns: map[string]any{
-				ColumnFiledAt:    filing.At,
-				ColumnFilerRole:  filing.Filer,
-				ColumnFilerIssue: filing.FilerIssue,
-				ColumnFilerPhase: filing.FilerPhase,
-				ColumnClass:      filing.Class,
-				ColumnRootKey:    filing.Root,
-			},
+			Project:    filing.Project,
+			RowKey:     filing.Key,
+			RowKind:    ItemRowKind,
+			Columns:    columns,
 			MeasuredAt: filing.At,
 			Source:     ItemSource,
 			Href:       "/issues/" + filing.Key,
 		})
 	}
 	return items
+}
+
+// addFilingColumns sets a filing's own columns among columns: when it was filed, by which role,
+// issue and phase, and its class.
+func addFilingColumns(columns map[string]any, filing Filing) {
+	columns[ColumnFiledAt] = filing.At
+	columns[ColumnFilerRole] = filing.Filer
+	columns[ColumnFilerIssue] = filing.FilerIssue
+	columns[ColumnFilerPhase] = filing.FilerPhase
+	columns[ColumnClass] = filing.Class
 }

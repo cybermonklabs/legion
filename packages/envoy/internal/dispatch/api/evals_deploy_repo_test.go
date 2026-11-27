@@ -14,15 +14,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The checks of a move of the deploy repository (evals/deploy_repos.go): the evals that read it
-// are kept for every repository that holds a delivery run, so a move is a selection at read time,
-// which writes nothing, answers what a whole walk under the new settings answers, reads the new
-// repository's own history from its first day, and finds the old repository's as it left it on the
-// way back.
+// are kept for every repository that holds a delivery run and a rule, a deploy source's or the one
+// recorded with its rows once no source reads it, each under that rule, so a move builds the rows
+// of a repository a source reads under its first rule (syncKept), leaves those of the repository the
+// source leaves as they stand, and writes no other row; the read after it answers what a whole walk
+// under the new settings answers and reads the new repository's own history from its first day,
+// and on the way back it answers what the old repository answered before the move.
 
 // deployRepoRig is a server over the delivery history of 30 days (seedEvalHistories), whose second
 // repository, other, holds copies of the deploy repository's deploy runs from first on and of its
@@ -39,9 +40,6 @@ type deployRepoRig struct {
 	other    string
 }
 
-// deployRepoAlice is who saves the settings of the checks.
-var deployRepoAlice = model.Actor{Kind: "user", ID: "alice"}
-
 // newDeployRepoRig seeds the rig, other's runs copied from the twelfth day of the history on where
 // copied is set, runs before (where it is not nil) and then refreshes the day rows and their stored
 // figures as the server's refresher writes them: one whole walk.
@@ -55,7 +53,7 @@ func newDeployRepoRig(t *testing.T, copied bool, before func(*deployRepoRig)) *d
 	}
 	now := end.Add(-time.Minute)
 	r := &deployRepoRig{
-		served: served, database: database, registry: evals.New(database, deps.Docs, deps.Events), fixture: fixture,
+		served: served, database: database, registry: evals.New(database, deps.Docs, deps.Events, deps.Attributor), fixture: fixture,
 		projects: []string{fixture.Project, windows[0].Spec.Project}, now: now, today: measures.Midnight(now), other: fixture.Repos[1],
 	}
 	if copied {
@@ -113,9 +111,7 @@ func (r *deployRepoRig) saveSource(t *testing.T, repo string) {
 	t.Helper()
 	settings := r.fixture.Settings
 	settings.DeployRepo = repo
-	if _, err := deliverytest.SaveRules(t.Context(), r.database.Pool, r.fixture.Project, settings); err != nil {
-		t.Fatalf("save the delivery settings of %s: %v", r.fixture.Project, err)
-	}
+	saveProjectRules(t, r.database, r.fixture.Project, settings)
 }
 
 // read is the list read of every eval of the rig's projects in shape at the rig's moment
@@ -149,27 +145,37 @@ func values(t *testing.T, answer evalListResponse) []string {
 	return lines
 }
 
-// written is the transaction that last wrote each day row, member, stored figure and walk record,
-// by its key: a write moves its xmin, and a row it makes or deletes comes or goes.
-func (r *deployRepoRig) written(t *testing.T) map[string]string {
+// heldRow is what written reads of a day row, member, stored figure or walk record: the
+// transaction that last wrote it, its kind (`day`, `member`, `range`, `figure` or `walk`), the
+// project or owner key its key names, the deploy repository its key names ("" for a row of an eval
+// no deploy repository moves, and for a walk record), and its eval ("" for a member and a walk
+// record).
+type heldRow struct {
+	xmin, kind, project, deployRepo, evalID string
+}
+
+// written is each day row, member, stored figure and walk record by its key (heldRow): a write
+// moves its xmin, and a row it makes or deletes comes or goes.
+func (r *deployRepoRig) written(t *testing.T) map[string]heldRow {
 	t.Helper()
 	rows, err := r.database.Pool.Query(t.Context(), `
-		select 'day ' || project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day, xmin::text from eval_days
+		select 'day ' || project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day, 'day', project_key, deploy_repo, eval_id, xmin::text from eval_days
 		union all
-		select 'member ' || project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, xmin::text from eval_day_members
+		select 'member ' || project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, 'member', project_key, deploy_repo, '', xmin::text from eval_day_members
 		union all
-		select 'range ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, xmin::text from eval_range_figures
+		select 'range ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, 'range', project_key, deploy_repo, eval_id, xmin::text from eval_range_figures
 		union all
-		select 'figure ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, xmin::text from eval_day_figures
+		select 'figure ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, 'figure', project_key, deploy_repo, eval_id, xmin::text from eval_day_figures
 		union all
-		select 'walk ' || family || ' ' || project_key || ' ' || built_by, xmin::text from eval_days_walks`)
+		select 'walk ' || family || ' ' || project_key || ' ' || built_by, 'walk', project_key, '', '', xmin::text from eval_days_walks`)
 	if err != nil {
 		t.Fatalf("read what the passes wrote: %v", err)
 	}
-	held := map[string]string{}
-	var key, xmin string
-	if _, err := pgx.ForEachRow(rows, []any{&key, &xmin}, func() error {
-		held[key] = xmin
+	held := map[string]heldRow{}
+	var key string
+	var row heldRow
+	if _, err := pgx.ForEachRow(rows, []any{&key, &row.kind, &row.project, &row.deployRepo, &row.evalID, &row.xmin}, func() error {
+		held[key] = row
 		return nil
 	}); err != nil {
 		t.Fatalf("read what the passes wrote: %v", err)
@@ -177,22 +183,27 @@ func (r *deployRepoRig) written(t *testing.T) map[string]string {
 	return held
 }
 
-// rewritten is the keys of before and after whose rows a write made, deleted or moved, the first
-// ten, sorted.
-func rewritten(before, after map[string]string) []string {
-	var moved []string
-	for key, xmin := range after {
-		if was, held := before[key]; !held || was != xmin {
-			moved = append(moved, key)
+// rewritten is each row of before and after a write made, deleted or moved, by its key, as after
+// holds it, or as before held it where a write deleted it.
+func rewritten(before, after map[string]heldRow) map[string]heldRow {
+	moved := map[string]heldRow{}
+	for key, row := range after {
+		if was, held := before[key]; !held || was.xmin != row.xmin {
+			moved[key] = row
 		}
 	}
-	for key := range before {
+	for key, row := range before {
 		if _, held := after[key]; !held {
-			moved = append(moved, key)
+			moved[key] = row
 		}
 	}
-	slices.Sort(moved)
-	return moved[:min(len(moved), 10)]
+	return moved
+}
+
+// firstKeys is the first ten of keys, sorted.
+func firstKeys(keys []string) []string {
+	slices.Sort(keys)
+	return keys[:min(len(keys), 10)]
 }
 
 // firstDeployDay is the UTC day of other's first deploy run.
@@ -213,13 +224,16 @@ func (r *deployRepoRig) firstDeployDay(t *testing.T) time.Time {
 // that straddles it reads "no data" too and draws only the days from it on; a window after it reads
 // real values, a point of every day, the days with no deploy among them as 0. Each series names its
 // own first day: pr-ci that of the repository's first PR-checks run, and merge-to-production the
-// merge day of a pull request of the repository merged before its first deploy and shipped by it,
+// merge day of a pull request of the repository merged before its first deploy and shipped by it
+// (the history's attribution inputs left unread, so the issue its row names is its attribution,
+// leaveAttributionInputsUnread),
 // which reads its real lead time that day while deploy-frequency holds no point of it. No row of
 // the repository is older than its first run, the start of the history the reconcile holds for it.
 // Read from the stored figures and then from the day rows (no figures built), the answers are the
 // same bytes.
 func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T) {
-	r := newDeployRepoRig(t, true, nil)
+	t.Parallel()
+	r := newDeployRepoRig(t, true, func(r *deployRepoRig) { leaveAttributionInputsUnread(t, r.database.Pool) })
 	first := r.firstDeployDay(t)
 	var since time.Time
 	if err := r.database.Pool.QueryRow(t.Context(), `select min(started_at) from delivery_runs where repo = $1`, r.other).Scan(&since); err != nil {
@@ -229,14 +243,19 @@ func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T
 	r.moveTo(t, r.other)
 
 	project, other := r.fixture.Project, r.other
+	// shipped is the merge day of the first pull request of other that other's deploys ship, read
+	// from the pull requests themselves: one of other's own (a pull request elsewhere is shipped by
+	// no deploy of it, delivery.ContainingRun), created and merged as merge-to-production counts it,
+	// merged on or after the day of other's first run, before which other holds no row, and before
+	// the day of its first deploy, every apply of which is created after that merge.
 	var shipped time.Time
 	if err := r.database.Pool.QueryRow(t.Context(), `
-		select min(day) from eval_days
-		where project_key = $1 and eval_id = $2 and deploy_repo = $3 and repo = '' and n > 0 and day < $4`,
-		project, evals.EvalID(project, evals.SlugMergeToProduction), other, first).Scan(&shipped); err != nil {
+		select min(merged_at) from delivery_pull_requests
+		where repo = $1 and created_at is not null and merged_at >= $2 and merged_at < $3`,
+		other, since, first).Scan(&shipped); err != nil {
 		t.Fatalf("read the first pull request %s shipped before its first deploy: %v", other, err)
 	}
-	shipped = shipped.UTC()
+	shipped = measures.Midnight(shipped)
 	if older := countRows(t, r.database, `select count(*) from eval_days where deploy_repo = $1 and day < $2`, other, since); older != 0 {
 		t.Errorf("%s holds %d rows before %s, its first run", other, older, since.Format(time.DateOnly))
 	}
@@ -297,79 +316,163 @@ func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T
 
 // TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore (root R11, edge b): the list
 // read of every shape a page asks for, before a move of the deploy repository to a second
-// repository with runs of its own, equals byte for byte the read after the move back, though a
-// pull request changed while the second was the deploy repository and the pass that wrote its day
-// wrote every repository's rows of it.
+// repository with runs of its own, equals byte for byte the read after the move back, which reads
+// the first repository's rows as they were kept, though while the second was the deploy repository the first
+// commit of a pull request of its own that its deploys ship moved an hour earlier, and the pass that
+// wrote that pull request's day wrote the second's rows of it alone, moving what some shape read
+// under the second (its first-commit-to-production; a first commit moves no eval that reads no
+// deploy repository). The history's attribution inputs are left unread, so the issue each pull
+// request names is its attribution (leaveAttributionInputsUnread) and the second repository's pull
+// requests count for the project read.
 func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing.T) {
-	r := newDeployRepoRig(t, true, nil)
+	t.Parallel()
+	r := newDeployRepoRig(t, true, func(r *deployRepoRig) { leaveAttributionInputsUnread(t, r.database.Pool) })
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	before := map[string][]byte{}
 	for _, shape := range shapes {
 		_, before[shape.name] = r.read(t, shape)
 	}
 	r.moveTo(t, r.other)
+	away := map[string][]byte{}
 	differs := 0
 	for _, shape := range shapes {
-		if _, body := r.read(t, shape); !bytes.Equal(body, before[shape.name]) {
+		if _, away[shape.name] = r.read(t, shape); !bytes.Equal(away[shape.name], before[shape.name]) {
 			differs++
 		}
 	}
 	if differs == 0 {
 		t.Fatalf("no shape reads otherwise with %s as the deploy repository, so the move back shows nothing", r.other)
 	}
-	r.exec(t, `
-		update delivery_pull_requests set title = title || ' (edited)'
-		where (repo, number) = (select repo, number from delivery_pull_requests where merged_at is not null
-			order by merged_at desc limit 1)`)
+	moved, err := r.database.Pool.Exec(t.Context(), `
+		update delivery_pull_requests set first_commit_at = first_commit_at - interval '1 hour'
+		where (repo, number) = (
+			select repo, number from delivery_pull_requests
+			where repo = $1 and merged_at < $2 and created_at is not null and first_commit_at is not null
+			order by merged_at desc limit 1)`,
+		r.other, r.today.AddDate(0, 0, -1))
+	if err != nil || moved.RowsAffected() != 1 {
+		t.Fatalf("move the first commit of %s's newest pull request merged before yesterday: %v rows, %v", r.other, moved.RowsAffected(), err)
+	}
 	r.refresh(t)
+	changed := 0
+	for _, shape := range shapes {
+		if _, body := r.read(t, shape); !bytes.Equal(body, away[shape.name]) {
+			changed++
+		}
+	}
+	if changed == 0 {
+		t.Fatalf("the moved first commit of %s's pull request moved no shape's read, so the move back shows nothing of it", r.other)
+	}
 	r.moveTo(t, r.fixture.DeployRepo)
 	for _, shape := range shapes {
 		if _, body := r.read(t, shape); !bytes.Equal(body, before[shape.name]) {
 			t.Errorf("%s: the read after the move back differs from the read before the move at byte %d", shape.name, firstDifference(body, before[shape.name]))
 		}
 	}
-	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between", len(shapes), differs)
+	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between, %d of them moved by the pull request's first commit", len(shapes), differs, changed)
 }
 
-// TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing: moved to a second repository with runs
-// of its own and back, the passes write no day row, member, stored figure or walk record, and the
-// list read of every shape a page asks for states, under the second repository, each eval's
-// values as a second database answers them whose whole walk ran under it, and after the move back
-// the values it stated before.
-func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing(t *testing.T) {
+// deployKeyedSlugs is the evals (by slug) whose rows are kept per deploy repository, and whose
+// stored figures a project's union cut (`deploy_repo` `*`) folds (evals.KeyedByDeployRepo).
+var deployKeyedSlugs = []string{
+	evals.SlugMergeToProduction, evals.SlugFirstCommitToProduction, evals.SlugOpenToProduction, evals.SlugDeployFrequency,
+	evals.SlugDeployRunSuccess, evals.SlugPRCI, evals.SlugStagingE2E, evals.SlugStagingDeploy, evals.SlugProductionDeploy,
+}
+
+// TestAMoveOfTheDeployRepositoryAwayAndBackWritesNoDayRowAndRefoldsOnlyTheCutsItMoves
+// (dispatch://INFRA-978, plan T19 paths 1 and 3): the source is moved to a second repository with
+// runs of its own and back once, so the rows of each stand built under its rule, and then again.
+// Each move's passes write and delete no day row, member or walk record, of either repository or
+// any other, since each repository keeps its rows and its rule once no source reads it, and the
+// move is a selection the pass records (eval_days_rules); rows of both repositories stand. The
+// stored figures they write are the moved project's, of the evals keyed by the deploy repository,
+// in the cuts the move moves rows of, which its commit marks stale and the refold folds again: its
+// union cut (`deploy_repo` `*`), which folds the newly selected repository's rows in place of the
+// old one's, and some of it; and the cuts of the two repositories' own rows, the one the source
+// leaves and the one it reads, each of which folds that repository's source key (its deploys that
+// ship no pull request) for the project whose source reads it and no other. No other stored figure,
+// of another deploy repository, an eval no deploy repository moves or another project, is written
+// or deleted. The list read of every shape a page asks for states, under the second repository,
+// each eval's values as a second database answers them whose whole walk ran under it, and after
+// the move back the values it stated before.
+func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNoDayRowAndRefoldsOnlyTheCutsItMoves(t *testing.T) {
+	t.Parallel()
 	r := newDeployRepoRig(t, true, nil)
 	walked := newDeployRepoRig(t, true, func(w *deployRepoRig) { w.saveSource(t, w.other) })
+	r.moveTo(t, r.other)
+	r.moveTo(t, r.fixture.DeployRepo)
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	original := map[string][]string{}
 	for _, shape := range shapes {
 		answer, _ := r.read(t, shape)
 		original[shape.name] = values(t, answer)
 	}
+	project := r.fixture.Project
+	// refolds reports whether row is a stored figure of project's, of an eval keyed by the deploy
+	// repository, under one of deployRepos: the rows a move's refold rewrites.
+	refolds := func(row heldRow, deployRepos ...string) bool {
+		slug, ofProject := strings.CutPrefix(row.evalID, project+"/")
+		return (row.kind == "range" || row.kind == "figure") && row.project == project && slices.Contains(deployRepos, row.deployRepo) &&
+			ofProject && slices.Contains(deployKeyedSlugs, slug)
+	}
 	for _, move := range []struct {
-		repo string
-		want func(evalShape) []string
+		from, repo string
+		want       func(evalShape) []string
 	}{
-		{r.other, func(shape evalShape) []string { answer, _ := walked.read(t, shape); return values(t, answer) }},
-		{r.fixture.DeployRepo, func(shape evalShape) []string { return original[shape.name] }},
+		{r.fixture.DeployRepo, r.other, func(shape evalShape) []string { answer, _ := walked.read(t, shape); return values(t, answer) }},
+		{r.other, r.fixture.DeployRepo, func(shape evalShape) []string { return original[shape.name] }},
 	} {
 		held := r.written(t)
 		r.moveTo(t, move.repo)
-		if moved := rewritten(held, r.written(t)); len(moved) > 0 {
-			t.Errorf("the move to %s wrote %v", move.repo, moved)
+		now := r.written(t)
+		var retained, figures []string
+		union, own := 0, 0
+		for key, row := range rewritten(held, now) {
+			switch {
+			case row.kind == "day" || row.kind == "member" || row.kind == "walk":
+				retained = append(retained, key)
+			case refolds(row, "*"):
+				union++
+			case refolds(row, move.from, move.repo):
+				own++
+			default:
+				figures = append(figures, key)
+			}
+		}
+		if len(retained) > 0 {
+			t.Errorf("the move to %s wrote or deleted %d day rows, members or walk records, first ones: %v", move.repo, len(retained), firstKeys(retained))
+		}
+		if len(figures) > 0 {
+			t.Errorf("the move to %s wrote or deleted %d stored figures outside %s's cuts of %s, %s and its union of the evals keyed by the deploy repository, first ones: %v",
+				move.repo, len(figures), project, move.from, move.repo, firstKeys(figures))
+		}
+		if union == 0 {
+			t.Errorf("the move to %s refolded no stored figure of %s's union cut, which folds the repository it moves to", move.repo, project)
+		}
+		kept := map[string]int{}
+		for _, row := range now {
+			kept[row.deployRepo]++
+		}
+		for _, repo := range []string{move.from, move.repo} {
+			if kept[repo] == 0 {
+				t.Errorf("after the move to %s no row of %s stands", move.repo, repo)
+			}
 		}
 		for _, shape := range shapes {
 			answer, _ := r.read(t, shape)
 			if got, want := values(t, answer), move.want(shape); !slices.Equal(got, want) {
-				index := firstLine(got, want)
+				index := firstDifferingLine(got, want)
 				t.Errorf("under %s, %s states otherwise than it should, first at item %d of %d:\n\tgot  %s\n\twant %s",
 					move.repo, shape.name, index, len(want), lineAt(got, index), lineAt(want, index))
 			}
 		}
+		t.Logf("the move to %s rewrote %d stored figures of %s's union cut and %d of its cuts of %s and %s, and no other row",
+			move.repo, union, project, own, move.from, move.repo)
 	}
 }
 
-// firstLine is the first index at which a and b differ.
-func firstLine(a, b []string) int {
+// firstDifferingLine is the first index at which a and b differ.
+func firstDifferingLine(a, b []string) int {
 	for index := range min(len(a), len(b)) {
 		if a[index] != b[index] {
 			return index
@@ -387,10 +490,11 @@ func lineAt(lines []string, index int) string {
 }
 
 // TestAMoveToARepositoryWithNoRunReadsNoDataOfItsDeployEvals: moved to a repository that holds no
-// delivery run, every eval that reads the deploy repository reads "no data" over every shape a page
-// asks for, naming no first day and drawing no day, and every other eval states what it stated
-// before.
+// delivery run, every eval that reads the deploy repository states each of its series and reads
+// "no data" in each over every shape a page asks for, naming no first day and drawing no day, and
+// every other eval states what it stated before, each compared with its own statement by its id.
 func TestAMoveToARepositoryWithNoRunReadsNoDataOfItsDeployEvals(t *testing.T) {
+	t.Parallel()
 	r := newDeployRepoRig(t, false, nil)
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	before := map[string]evalListResponse{}
@@ -401,17 +505,26 @@ func TestAMoveToARepositoryWithNoRunReadsNoDataOfItsDeployEvals(t *testing.T) {
 	keyed, kept := 0, 0
 	for _, shape := range shapes {
 		answer, _ := r.read(t, shape)
-		was := values(t, before[shape.name])
+		was := map[string]string{}
+		for index, line := range values(t, before[shape.name]) {
+			was[before[shape.name].Items[index].ID] = line
+		}
 		now := values(t, answer)
+		if len(now) != len(was) {
+			t.Errorf("%s: %d evals stated after the move, %d before", shape.name, len(now), len(was))
+		}
 		for index, item := range answer.Items {
 			if !evals.KeyedByDeployRepo(item.Definition) {
 				kept++
-				if now[index] != was[index] {
-					t.Errorf("%s: %s states otherwise after the move:\n\t%s\nwant\n\t%s", shape.name, item.ID, now[index], was[index])
+				if now[index] != was[item.ID] {
+					t.Errorf("%s: %s states otherwise after the move:\n\t%s\nwant\n\t%s", shape.name, item.ID, now[index], was[item.ID])
 				}
 				continue
 			}
 			keyed++
+			if len(item.Series) == 0 {
+				t.Errorf("%s: %s states no series, so none of them reads no data", shape.name, item.ID)
+			}
 			for _, series := range item.Series {
 				for name, value := range series.Window {
 					if value != nil {

@@ -23,9 +23,12 @@
 //     measured_at more than a day past its clock or before the floor (R18), and Load refuses a
 //     Now that would make it refuse one.
 //
-// Base writes only the tables the base head 02a7b3c6 has, for k8's and k13's negative controls:
-// the same issues, events, observations and delivery history and the same smaller projects, and no
-// reading (evalfixture.BaseLacks names what the base lacks).
+// Base writes, into a database the base's envoy-dispatch migrated (main at the commit this head
+// merges), the history main's Delivery page reads, for k8's and k13's negative controls: the same
+// issues, events, observations and delivery history, INFRA's project with its default repository,
+// and the same smaller projects, and no reading. What the base lacks of this head's tables it
+// reads from the base database's catalog (checkSchema, resetConsumers), never from a list fixed
+// here.
 //
 // OneProject writes the one-project fixture the Evals tab's checks k22 and k24 read
 // (dispatch://INFRA-2918, T27), whose base answers (GET /api/v1/delivery/timeline and
@@ -48,6 +51,11 @@
 // Scale multiplies every count (issues, events, pull requests, runs a day, the smaller projects'
 // issues, readings) and keeps every span of days and the shape of each row, so a small load in a
 // pod exercises every table and every read the full one does.
+//
+// K14 adds, for k14's writes and first paints (dispatch://INFRA-978, T19.9), two more projects at
+// INFRA's size, PAIR with two github_workflow sources and MIXED with a github_workflow source and
+// an events source, each with its failure history (k14.go). No other load holds them, so the
+// base's and this head's paint of the fixture read the same population as before.
 package evalbench
 
 import (
@@ -118,11 +126,15 @@ type Spec struct {
 	// TenTimes writes ten times the stated run rate: 200 deploy runs and 600 pull-request runs a
 	// day, the rate R13's 660 ms for the run-jobs read was measured at.
 	TenTimes bool
-	// Base writes only the base head's tables, for k8's and k13's negative controls: no reading.
+	// Base writes into the base's schema, main's at the commit this head merges, for k8's and
+	// k13's negative controls: no reading.
 	Base bool
 	// OneProject writes the one-project fixture of k22 and k24 (the package comment): INFRA alone,
 	// its pull requests in the deploy repository and one other, and no reading.
 	OneProject bool
+	// K14 adds the k14 projects (k14.go) after the smaller projects. A load of the base holds
+	// none: k14 measures this head.
+	K14 bool
 	// BuiltBy is the build the readings write records on the logged evals' day rows
 	// (eval_days.built_by): the server's stamped commit, so every family's rows carry the running
 	// build once the server's refresher has walked. Required where readings are written: neither
@@ -143,26 +155,37 @@ func (s Spec) scaled(count float64, floor int) int {
 // Counts is what one load wrote, by table, read back from the database once it is done.
 type Counts map[string]int64
 
-// countedTables are the tables Counts reads, in the order it prints them; the base head lacks the
-// last five.
+// countedTables are the tables Counts reads, in the order it prints them; it reads those the
+// database holds, so a load of the base counts none of the registry's. A k14 load counts the
+// k14CountedTables after them, which its failure histories write.
 var countedTables = []string{
 	"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings",
 	"delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
 	"session_titles", "eval_versions", "eval_series", "eval_readings", "eval_days",
 }
 
+var k14CountedTables = []string{"project_deploy_sources", "production_events", "delivery_reverts"}
+
 // Load writes the fixture spec names into the database, which the server must have migrated and
 // nothing else written, and answers the counts it then holds. logf reports each step as it ends.
 //
 // The server's consumers that read the feeds this load writes (the Legion facts consumer and the
-// eval day-row refresher) committed their cursors over the empty store when the server that
-// migrated it booted; Load deletes those rows last, so the next server to boot starts each
-// consumer at the heads of the feeds and reads every project whole, as on a store a seeder wrote
-// before any pass ran, rather than paging through the history as a stream of new changes. At this
-// head resetConsumers then writes the keyword fill's cursor as caught up with the loaded log
-// (keywordFillCaughtUpQuery). Under OneProject it then checks the rows it wrote
-// (CheckOneProject), and refuses the load where a check fails.
+// eval day-row refresher, those of them the base runs at the base) committed their cursors over
+// the empty store when the server that migrated it booted; Load deletes those rows last, so the
+// next server to boot starts each consumer at the heads of the feeds and reads every project
+// whole, as on a store a seeder wrote before any pass ran, rather than paging through the history
+// as a stream of new changes. resetConsumers then writes the keyword fill's cursor as caught up
+// with the loaded log (keywordFillCaughtUpQuery), at the base too, which runs the same fill. Under
+// OneProject it then checks the rows it wrote (CheckOneProject), and refuses the load where a
+// check fails.
 func Load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any)) (Counts, error) {
+	return load(ctx, database, spec, logf, true)
+}
+
+// load is Load, with writeReadings run only when readings is true: a unit test of the k14 projects'
+// load skips INFRA's 730-day logged-readings batches (14,600 sequential WriteReadings transactions
+// regardless of Scale) while running every other step of Load unchanged.
+func load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any), readings bool) (Counts, error) {
 	switch {
 	case spec.Scale <= 0 || spec.Scale > 1:
 		return nil, fmt.Errorf("the scale is above 0 and at most 1, not %g", spec.Scale)
@@ -172,6 +195,8 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		return nil, errors.New("-one-project writes into a database of this head or of the base head 82380570f8, and -base into one of the base head 02a7b3c6: name one")
 	case spec.readings() && spec.BuiltBy == "":
 		return nil, errors.New("name the build the readings' day rows record (the server's stamped commit)")
+	case spec.Base && spec.K14:
+		return nil, errors.New("the k14 projects are this head's measurement, and a load of the base holds none")
 	}
 	spec.Now = spec.Now.UTC()
 	pool := database.Pool
@@ -182,10 +207,15 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	}
 	// The one-project fixture writes no table the base head 82380570f8 lacks, so it reads no
 	// head off the schema.
+	var lacks []string
 	if !spec.OneProject {
-		if err := checkSchema(ctx, pool, spec.Base); err != nil {
+		var err error
+		if lacks, err = checkSchema(ctx, pool, spec.Base); err != nil {
 			return nil, err
 		}
+	}
+	if spec.Base {
+		logf("the base lacks %d of this head's %d derived tables, by its catalog: %s", len(lacks), len(evalfixture.DerivedTables), strings.Join(lacks, ", "))
 	}
 	if err := checkEmpty(ctx, pool); err != nil {
 		return nil, err
@@ -194,12 +224,12 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	step := func(what string) {
 		logf("%s done after %s", what, time.Since(started).Round(time.Second))
 	}
-	history, err := writeInfra(ctx, pool, spec)
+	history, err := writeProject(ctx, pool, spec, infraFixture)
 	if err != nil {
 		return nil, err
 	}
 	step("INFRA's issues, events, handoffs and observations")
-	if err := writeDelivery(ctx, pool, spec, history); err != nil {
+	if _, err := writeDelivery(ctx, pool, spec, history); err != nil {
 		return nil, err
 	}
 	step("INFRA's delivery history")
@@ -217,7 +247,13 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		projects = append(projects, SmallProjects...)
 		step("the nine smaller projects")
 	}
-	if spec.readings() {
+	if spec.K14 {
+		if err := writeK14(ctx, pool, spec, step); err != nil {
+			return nil, err
+		}
+		projects = append(projects, K14Projects...)
+	}
+	if spec.readings() && readings {
 		if err := writeReadings(ctx, database, spec, history, logf); err != nil {
 			return nil, err
 		}
@@ -226,7 +262,7 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	if err := evalfixture.SettleNumbers(ctx, pool, projects); err != nil {
 		return nil, err
 	}
-	if err := resetConsumers(ctx, pool, spec.Base); err != nil {
+	if err := resetConsumers(ctx, pool); err != nil {
 		return nil, err
 	}
 	// Autovacuum would analyze the loaded tables in its own time; the measurement reads plans,
@@ -245,29 +281,37 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 		}
 		step("the one-project checks")
 	}
-	return count(ctx, pool)
+	tables := countedTables
+	if spec.K14 {
+		tables = slices.Concat(countedTables, k14CountedTables)
+	}
+	return count(ctx, pool, tables)
 }
 
-// checkSchema refuses a database of the wrong head: this head's mode needs the tables the base
-// lacks, and the base mode refuses a database that holds them.
-func checkSchema(ctx context.Context, pool *store.Pool, base bool) error {
-	held, err := evalfixture.ExistingTables(ctx, pool, evalfixture.BaseLacks)
+// checkSchema refuses a database of the wrong head and answers which of this head's derived
+// tables (evalfixture.DerivedTables) its catalog does not hold. This head's mode needs every one
+// of them. The base mode refuses a database that holds this head's day rows
+// (evalfixture.HeadTable) and takes whatever else the base's catalog holds: the base is main at
+// the commit this head merges, and a merge of main can bring some of this head's tables, so what
+// the base lacks is read from the database, never fixed here.
+func checkSchema(ctx context.Context, pool *store.Pool, base bool) ([]string, error) {
+	held, err := evalfixture.ExistingTables(ctx, pool, evalfixture.DerivedTables)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if base && len(held) > 0 {
-		return fmt.Errorf("-base writes into the base head's schema, and this database holds %s, which are this head's", strings.Join(held, ", "))
-	}
-	if !base && len(held) < len(evalfixture.BaseLacks) {
-		var missing []string
-		for _, table := range evalfixture.BaseLacks {
-			if !slices.Contains(held, table) {
-				missing = append(missing, table)
-			}
+	var lacks []string
+	for _, table := range evalfixture.DerivedTables {
+		if !slices.Contains(held, table) {
+			lacks = append(lacks, table)
 		}
-		return fmt.Errorf("this head's mode writes into this head's schema, and the database lacks %s (a database of the base head takes -base)", strings.Join(missing, ", "))
 	}
-	return nil
+	switch {
+	case base && slices.Contains(held, evalfixture.HeadTable):
+		return nil, fmt.Errorf("-base writes into the base's schema, main's at the commit this head merges, and this database holds %s, which is this head's", evalfixture.HeadTable)
+	case !base && len(lacks) > 0:
+		return nil, fmt.Errorf("this head's mode writes into this head's schema, and the database lacks %s (a database of the base takes -base)", strings.Join(lacks, ", "))
+	}
+	return lacks, nil
 }
 
 // checkEmpty refuses a database that holds a project, an issue or a delivery row: the load's
@@ -287,56 +331,43 @@ func checkEmpty(ctx context.Context, pool *store.Pool) error {
 	return nil
 }
 
-// consumerResets are resetConsumers' statements, each with the table it empties: the Legion facts
-// consumer's cursors and project marks, and the day-row refresher's cursors, walks, serving
-// records, rebuilds with their staging, record of the rules its rows stand built under
-// (eval_days_rules at this head, eval_days_settings at the base head 82380570f8, which the one-project
-// fixture loads), and the stored figures it folded, whose mark of a project's built figures would
-// otherwise survive its walks. Each statement names its table, so the item-row census (api's
-// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads it as a write of no item row.
-var consumerResets = []struct{ table, statement string }{
-	{"issue_facts_cursor", `delete from issue_facts_cursor`},
-	{"issue_facts_computed", `delete from issue_facts_computed`},
-	{"eval_days_cursor", `delete from eval_days_cursor`},
-	{"eval_days_walks", `delete from eval_days_walks`},
-	{"eval_days_serving", `delete from eval_days_serving`},
-	{"eval_days_rules", `delete from eval_days_rules`},
-	{"eval_days_settings", `delete from eval_days_settings`},
-	{"eval_rebuilds", `delete from eval_rebuilds`},
-	{"eval_rebuild_walks", `delete from eval_rebuild_walks`},
-	{"eval_rebuild_firsts", `delete from eval_rebuild_firsts`},
-	{"eval_rebuild_days", `delete from eval_rebuild_days`},
-	{"eval_rebuild_members", `delete from eval_rebuild_members`},
-	{"eval_rebuild_range_figures", `delete from eval_rebuild_range_figures`},
-	{"eval_rebuild_day_figures", `delete from eval_rebuild_day_figures`},
-	{"eval_rebuild_reverify", `delete from eval_rebuild_reverify`},
-	{"eval_figures_built", `delete from eval_figures_built`},
-	{"eval_range_figures", `delete from eval_range_figures`},
-	{"eval_day_figures", `delete from eval_day_figures`},
-}
-
 // resetConsumers deletes what the consumers of the loaded feeds committed over the empty store
-// (Load): each of consumerResets whose table the database holds, so a base head's schema, which
-// lacks this head's tables, is reset as its own consumers left it. Outside base it then writes
-// the keyword fill's cursor as caught up with the loaded log (keywordFillCaughtUpQuery).
-func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
-	tables := make([]string, len(consumerResets))
-	for index, reset := range consumerResets {
-		tables[index] = reset.table
+// (Load): the Legion facts consumer's cursors and project marks, and the day-row refresher's
+// cursors, walks, serving records, rebuilds with their staging, and the rules its rows stand built
+// under (eval_days_rules, or eval_days_settings at the base head 82380570f8, which the one-project
+// fixture loads), and the stored figures it folded, with the marks of their stale cuts, whose mark
+// of a project's built figures would otherwise survive its walks. It then writes the keyword
+// fill's cursor as caught up with the loaded log (keywordFillCaughtUpQuery). Each statement names
+// its table, so the item-row census (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads
+// it as a write of no item row. This head runs every one of these consumers but the one of
+// eval_days_settings; a base, main at the commit this head merges or a head the one-project
+// fixture loads, runs those whose tables its catalog holds, so the reset deletes from the tables
+// of these the catalog holds and writes the fill's cursor where it holds the fill's table; a list
+// of what main runs would go stale at the next merge of main.
+func resetConsumers(ctx context.Context, pool *store.Pool) error {
+	statements := []string{`delete from issue_facts_cursor`, `delete from issue_facts_computed`,
+		`delete from eval_days_cursor`, `delete from eval_days_walks`, `delete from eval_days_serving`,
+		`delete from eval_days_rules`, `delete from eval_days_settings`, `delete from eval_rebuilds`, `delete from eval_rebuild_walks`,
+		`delete from eval_rebuild_firsts`, `delete from eval_rebuild_days`, `delete from eval_rebuild_members`,
+		`delete from eval_rebuild_range_figures`, `delete from eval_rebuild_day_figures`, `delete from eval_rebuild_reverify`,
+		`delete from eval_figures_built`, `delete from eval_range_figures`, `delete from eval_day_figures`, `delete from eval_figure_cuts_stale`}
+	tableOf := func(statement string) string { return strings.TrimPrefix(statement, "delete from ") }
+	tables := []string{keywordFillTable}
+	for _, statement := range statements {
+		tables = append(tables, tableOf(statement))
 	}
 	held, err := evalfixture.ExistingTables(ctx, pool, tables)
 	if err != nil {
 		return err
 	}
-	for _, reset := range consumerResets {
-		if !slices.Contains(held, reset.table) {
-			continue
-		}
-		if _, err := pool.Exec(ctx, reset.statement); err != nil {
-			return fmt.Errorf("reset consumers (%s): %w", reset.statement, err)
+	statements = slices.DeleteFunc(statements, func(statement string) bool { return !slices.Contains(held, tableOf(statement)) })
+	fill := slices.Contains(held, keywordFillTable)
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("reset consumers (%s): %w", statement, err)
 		}
 	}
-	if base {
+	if !fill {
 		return nil
 	}
 	if _, err := pool.Exec(ctx, keywordFillCaughtUpQuery, textversions.RulesVersion); err != nil {
@@ -345,12 +376,16 @@ func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
 	return nil
 }
 
+// keywordFillTable is the keyword fill's cursor table, which keywordFillCaughtUpQuery writes.
+const keywordFillTable = "search_text_versions_fill"
+
 // keywordFillCaughtUpQuery writes the keyword fill's one cursor row as production's stands once
 // its one backfill, at the deploy, is done: at the newest event of the loaded log, with that
 // event's created_at, which the fill checks the log against (events.EventLogWasReset), and no
 // reach, which the fill computes on its next read. The row names no holder, as a fill with no hold
 // writes it (textversions' holderArg), so the first batch of a serving fill takes it over
-// (holdCheckQuery); the rules version is $1 (textversions.RulesVersion), the running build's. It
+// (holdCheckQuery); the rules version is $1 (textversions.RulesVersion), the running build's,
+// which at the base is the same, since this head changes no rule of the fill main runs. It
 // overwrites the row the migrating server's fill wrote at no event, or writes one where it wrote
 // none. The keyword rows themselves are not written, since no read the bench measures reads them.
 // A backfill of the loaded log by the server would take hours at the stated rate, which is
@@ -364,9 +399,9 @@ const keywordFillCaughtUpQuery = `
 	   set event_id = excluded.event_id, event_at = excluded.event_at, reach = null,
 	       holder = excluded.holder, rules = excluded.rules, updated_at = now()`
 
-// count reads how many rows each of countedTables holds, those the database has.
-func count(ctx context.Context, pool *store.Pool) (Counts, error) {
-	held, err := evalfixture.ExistingTables(ctx, pool, countedTables)
+// count reads how many rows each of tables holds, those the database has.
+func count(ctx context.Context, pool *store.Pool, tables []string) (Counts, error) {
+	held, err := evalfixture.ExistingTables(ctx, pool, tables)
 	if err != nil {
 		return nil, err
 	}
@@ -381,10 +416,10 @@ func count(ctx context.Context, pool *store.Pool) (Counts, error) {
 	return counts, nil
 }
 
-// Lines is the counts as one line a table, in countedTables' order.
+// Lines is the counts as one line a table, in countedTables' order and then k14CountedTables'.
 func (c Counts) Lines() []string {
 	var lines []string
-	for _, table := range countedTables {
+	for _, table := range slices.Concat(countedTables, k14CountedTables) {
 		if rows, held := c[table]; held {
 			lines = append(lines, fmt.Sprintf("%s=%d", table, rows))
 		}

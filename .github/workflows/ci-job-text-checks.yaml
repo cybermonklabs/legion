@@ -1,6 +1,6 @@
 name: CI job text-checks
 
-# The steps of ci.yaml's `text-checks` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#text-checks` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,14 +9,14 @@ name: CI job text-checks
 #
 # What runs here is the tests whose subject is text: a guide's wording against the code it
 # pins, a file copied from one tree to another, the imports a package may have, the Dispatch
-# API's nine static source checks - its eight source guards and one_expression_guard_test.go -
+# API's ten static source checks - its nine source guards and one_expression_guard_test.go -
 # which read the module's own source, and the two pure pins of the daemon's supervise table,
 # which read that package's own source and, with it, the source of every package it imports,
-# since their type-check resolves imports from source (table_test.go:99). None of them starts a
+# since their type-check resolves imports from source (`packages/daemon/internal/supervise/table_test.go#readSealedSet`). None of them starts a
 # server, a container or a database, so none of them belongs in a Postgres-backed product
 # suite, where it waited behind that suite's fixtures and ran again on every change to the
 # module. Each module keeps its own package of them, internal/textcheck, and this job runs those
-# three packages, those checks' seventeen tests and those two pins; the three product lanes leave
+# three packages, those checks' twenty-three tests and those two pins; the three product lanes leave
 # exactly those out of their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE,
 # TEXT_CHECK_TESTS and SUPERVISE_TABLE_TESTS build both sides), so each of these tests runs
 # once per run of the router.
@@ -44,19 +44,19 @@ name: CI job text-checks
 # which pgconn imports for the password and service files it reads, golang.org/x/text, which
 # pgconn imports for its secure/precis, gopkg.in/yaml.v3, which internal/ghconfig imports, and
 # the standard library - because its checker's importer reads source rather than export data
-# (table_test.go:99). The timeout below still leaves the job about three times its cold run.
+# (`packages/daemon/internal/supervise/table_test.go#importer.ForCompiler`). The timeout below still leaves the job about three times its cold run.
 # setup-go caches nothing either
 # (`cache: false`), as in every job of ci.yaml.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -100,11 +100,11 @@ jobs:
       - name: Check the text packages/daemon pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/daemon
-      # The seventeen tests of the API's nine static source checks read the module's source and
+      # The twenty-three tests of the API's ten static source checks read the module's source and
       # open no database, so they run here rather than in the job that carries Postgres for that
       # package. They sit in the package they guard, beside its Postgres-backed tests, so this
       # step selects them by name: the list is generated in .github/scripts/ci_job_reads.py from
-      # TEXT_CHECK_TESTS, the same declaration that leaves exactly these seventeen out of envoy-go's
+      # TEXT_CHECK_TESTS, the same declaration that leaves exactly these twenty-three out of envoy-go's
       # plain step. A guard test added to or renamed in its file must be named there
       # (ci_job_reads.py refuses the file otherwise), and check-ci-filters.sh refuses this step
       # when its run: is not the text built from the list, naming this step and each test the one
@@ -115,12 +115,12 @@ jobs:
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestOnlyTheIssuePatchWritesTheRoute|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable|TestTheRouteWriterGuardSeesAPlantedWriter)$' ./internal/dispatch/api
+        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestEveryRouteThatWritesADocumentChecksItsWriter|TestNoForUpdateOnOwnerTables|TestNoServerPackageImportsTheFixtureWriters|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestOnlyTheIssuePatchWritesTheRoute|TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheJudgedWriterGuardSeesAPlantedWriter|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable|TestTheRouteWriterGuardSeesAPlantedWriter|TestTheSpecWriterExemptionsStillHold|TestTheSpecWriterGuardSeesAPlantedWriter)$' ./internal/dispatch/api
         working-directory: packages/envoy
       # The two pure pins of packages/daemon's supervise table: they hold the table to the
       # package's own source — a row or a named ignore for every event in every state, and one
       # event type per kind — which sealed() reads by parsing every non-test .go file of the
-      # package (internal/supervise/table_test.go:27-58). They open no database and start no
+      # package (`packages/daemon/internal/supervise/table_test.go#sealedSource`). They open no database and start no
       # process, so they belong here rather than in the daemon's Postgres-backed Go suite; they
       # sit in a package of machine-driving tests, so this step selects them by name, and the
       # daemon-go plain step skips exactly these two by name. The list is generated in

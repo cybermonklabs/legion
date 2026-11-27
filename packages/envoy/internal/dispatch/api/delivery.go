@@ -89,9 +89,9 @@ func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 
 // The query keys each delivery read takes one value of, in the order its shape declares them,
 // which a query names once at most (repeatedQueryKey): the fields of its route shape's query
-// struct (routeShapes' Params) that hold one value (oneValueQueryKeys), read once when the package
-// starts. Every facet the timeline and the measures filter by (deliveryFacets) is a list field
-// there, and so stays repeatable.
+// struct (routeShape.Params, in the route's file) that hold one value (oneValueQueryKeys), read
+// once when the package starts. Every facet the timeline and the measures filter by
+// (deliveryFacets) is a list field there, and so stays repeatable.
 var (
 	deliveryWindowOneValueKeys   = oneValueQueryKeys(deliveryWindowQuery{})
 	deliveryPipelineOneValueKeys = oneValueQueryKeys(deliveryPipelineQuery{})
@@ -186,6 +186,16 @@ func (bound windowBound) parsed() (*time.Time, error) {
 // delivery.ErrNoSettings, which the routes and the live views refuse as DELIVERY_NOT_CONFIGURED. A
 // delivery-on project whose sources are an events source alone gives no repository: its read counts
 // the population's pull requests and no run.
+//
+// Each source repository's rule is the one its stored day rows stand built under
+// (evals.BuiltSettingsOf, over the settings read here, so one read of them answers both): the
+// production rule and the deploy cards' jobs as the refresher recorded
+// them with the repository's rows (eval_days_rules), and the saved ones where it has recorded none
+// yet. The Evals tab reads the same, so between a save of a source's rule and the refresher's commit
+// that brings the rows to it the timeline, the measures, the Pipeline and a deploy run's drill-down
+// answer the old rule, and from that commit on the new one: one page shows one state. Which
+// repositories they read, the population and every field the record does not keep (the workflows,
+// the bookkeeping) are the saved settings'.
 func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.SourceRules, error) {
 	projects, err := delivery.ListProjectSettings(ctx, q)
 	if err != nil {
@@ -193,6 +203,36 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 	}
 	if !slices.ContainsFunc(projects, func(project delivery.ProjectSettings) bool { return project.Delivery }) {
 		return nil, delivery.ErrNoSettings
+	}
+	saved := delivery.DeployRules(projects)
+	repos := make([]string, len(saved))
+	for i, rule := range saved {
+		repos[i] = rule.DeployRepo
+	}
+	built, err := evals.BuiltSettingsOf(ctx, q, saved, repos)
+	if err != nil {
+		return nil, err
+	}
+	recorded := make(map[string]*delivery.DeliverySettings, len(built))
+	for i, rule := range built {
+		recorded[delivery.RuleKey(repos[i])] = rule
+	}
+	for p := range projects {
+		project := &projects[p]
+		if !project.Delivery {
+			continue
+		}
+		for i, source := range project.Sources {
+			repo, ok := delivery.SourceRepoOf(source, project.DefaultRepo)
+			if !ok {
+				continue
+			}
+			if rule := recorded[delivery.RuleKey(repo)]; rule != nil {
+				source.ProductionJobNames, source.ProductionApplyStepName = rule.ProductionJobNames, rule.ProductionApplyStepName
+				source.StagingE2EJobName, source.StagingApplyJobName = rule.StagingE2EJobName, rule.StagingApplyJobName
+				project.Sources[i] = source
+			}
+		}
 	}
 	return delivery.NewSourceRules(projects), nil
 }
@@ -212,19 +252,13 @@ func (s *server) deliveryRules(w http.ResponseWriter, r *http.Request) (*deliver
 	return rules, true
 }
 
-// deliveryRuleKey is the key a repository's rule and its deploys are found by: its name in lower
-// case, as delivery.SourceRules.For finds one.
-func deliveryRuleKey(repo string) string {
-	return strings.ToLower(repo)
-}
-
 // deliveryApplies is the deploys among runs, every source repository's runs judged by that
-// repository's own rule (delivery.ProductionApplies), by the repository's deliveryRuleKey. A run of a
-// repository no rule reads is judged by none: the reads read no such run.
+// repository's own rule (delivery.ProductionApplies), by the repository's delivery.RuleKey. A run
+// of a repository no rule reads is judged by none: the reads read no such run.
 func deliveryApplies(rules *delivery.SourceRules, runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob) map[string][]delivery.Apply {
 	byRepo := map[string][]delivery.DeliveryRun{}
 	for _, run := range runs {
-		key := deliveryRuleKey(run.Repo)
+		key := delivery.RuleKey(run.Repo)
 		byRepo[key] = append(byRepo[key], run)
 	}
 	applies := make(map[string][]delivery.Apply, len(byRepo))
@@ -244,20 +278,19 @@ func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPull
 	if _, tracked := rules.For(pr.Repo); !tracked {
 		return nil, ""
 	}
-	return delivery.ContainingRun(pr, pr.Repo, applies[deliveryRuleKey(pr.Repo)]), pr.Repo
+	return delivery.ContainingRun(pr, pr.Repo, applies[delivery.RuleKey(pr.Repo)]), pr.Repo
 }
 
 // deliveryEvals reads the evals of slugs whose targets the deployment-wide delivery answers judge
 // by (dispatch://INFRA-978, D9): the project's whose deploy sources read every source repository,
-// where one delivery-on project owns them all (evals.Store.DeployRepoEvals of any of them), and
-// the catalogue's, whose targets are main's defaults, where two or more projects own them or none
-// is read, since no one project's targets judge figures of several projects.
-func (s *server) deliveryEvals(ctx context.Context, rules *delivery.SourceRules, slugs []string) (map[string]evals.Entry, error) {
-	repo := ""
-	if all := rules.All(); len(all) > 0 && !slices.ContainsFunc(all, func(rule delivery.DeliverySettings) bool { return rule.Project != all[0].Project }) {
-		repo = all[0].DeployRepo
-	}
-	return s.registry().DeployRepoEvals(ctx, repo, slugs)
+// where one delivery-on project owns them all, and the catalogue's, whose targets are main's
+// defaults, where two or more projects own them or none is read, since no one project's targets
+// judge figures of several projects. Which project owns them is read under the published default
+// repositories (evals.Store.DeployRepoEvals), not under the rules the answer's own rows are read
+// by, so a person's move of a default repository moves the judging project only once the
+// refresher publishes it, and the project's own targets judge meanwhile.
+func (s *server) deliveryEvals(ctx context.Context, slugs []string) (map[string]evals.Entry, error) {
+	return s.registry().DeployRepoEvals(ctx, slugs)
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -510,19 +543,21 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 	sources := rules.All()
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
-	// statement on the pool, so each already read its own snapshot), so running them at once
-	// loses no consistency they had. Each takes one connection under a hold mark of its own
-	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
-	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
+	// statement on the pool, or, the target evals' read, a read-only snapshot of its own,
+	// evals.Store.DeployRepoEvals), so running them at once loses no consistency they had. Each
+	// takes one connection under a hold mark of its own (store.ForConcurrentRead): on the
+	// request's shared mark one read's open cursor would refuse the rest. The run jobs depend on
+	// the runs, so they follow the runs within the runs' own read.
 	//
-	// A timeline request of one source repository therefore holds up to eight of the shared pool's
-	// connections (store.sharedPoolSize), and two more for each further source repository, for the
-	// length of its longest read, where it held one at a time (the window's pull requests beside
-	// its runs, and its runs' two reads of jobs, run side by side within their own read). That is
-	// fine because none of them holds a lock or opens a transaction, so none waits on another
-	// caller or makes another caller wait on it: the deadlock the pool's guard exists to prevent
-	// needs a caller already holding a connection, which ForConcurrentRead refuses. A read past
-	// the pool's free connections waits for one, as any request does.
+	// A timeline request of one source repository therefore holds up to nine of the shared pool's
+	// connections (store.sharedPoolSize), and three more for each further source repository, for the
+	// length of its longest read (each repository's runs read their two lists of jobs side by side,
+	// and its earlier rows their pull requests beside their runs, within their own read). That is
+	// fine because none of them takes a lock past the one any read takes of the tables it reads, a
+	// read-only snapshot no more than a statement does, so none waits on another caller or makes
+	// another caller wait on it: the deadlock the pool's guard exists to prevent needs a caller
+	// already holding a connection, which ForConcurrentRead refuses. A read past the pool's free
+	// connections waits for one, as any request does.
 	applies := make([]delivery.RunsWithJobs, len(sources))
 	deploys := make([]delivery.Deploys, len(sources))
 	waiting := make([][]delivery.WaitingPullRequest, len(sources))
@@ -573,7 +608,7 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 				return err
 			},
 			func(ctx context.Context) (err error) {
-				pop.targetEvals, err = s.deliveryEvals(ctx, rules, evals.DeliveryTargetSlugs)
+				pop.targetEvals, err = s.deliveryEvals(ctx, evals.DeliveryTargetSlugs)
 				return err
 			},
 			func(ctx context.Context) (err error) {
@@ -881,7 +916,8 @@ func nextUTCMidnight(t time.Time) time.Time {
 // getDeliveryRun answers GET /api/v1/delivery/runs/{id}: one run of a source repository of a
 // delivery-on project (readDeliveryRules) with every job it ran (readDeliveryRun,
 // deliveryRunDetail), for the drill-down's job lists. A run of a repository no such source reads
-// is no run of it, as the timeline lists none.
+// is no run of it, as the timeline lists none; its 404 names the repositories the sources read, or
+// says they read none, where every source is an events one.
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -928,7 +964,11 @@ func parseDeliveryRunID(value string) (int64, error) {
 func readDeliveryRun(ctx context.Context, pool *store.Pool, repos []string, runID int64) (delivery.DeliveryRun, error) {
 	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = any($1) and run_id = $2 order by repo limit 1`, repos, runID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return delivery.DeliveryRun{}, errorf(http.StatusNotFound, "NOT_FOUND", "no run %d of %s", runID, strings.Join(repos, " or "))
+		of := " of " + strings.Join(repos, " or ")
+		if len(repos) == 0 {
+			of = ": no deploy source of a delivery-on project reads a repository"
+		}
+		return delivery.DeliveryRun{}, errorf(http.StatusNotFound, "NOT_FOUND", "no run %d%s", runID, of)
 	}
 	return run, err
 }

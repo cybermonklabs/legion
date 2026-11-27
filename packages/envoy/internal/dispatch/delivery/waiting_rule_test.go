@@ -57,6 +57,7 @@ const (
 // another repository - the SQL's waiting set, each with the run that ships it, must equal the set
 // the Go rule derives from the runs on main, their jobs and the pull requests the handler reads.
 func TestTheWaitingSQLAgreesWithTheShippingRule(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	at := time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC)
 	day := func(d, h int) time.Time { return time.Date(2024, 3, d, h, 0, 0, 0, time.UTC) }
@@ -110,6 +111,7 @@ func TestTheWaitingSQLAgreesWithTheShippingRule(t *testing.T) {
 // rules agree when a production rule follows both sides of a job rename, and when a successful
 // listed job was stored before its configured apply step was recorded.
 func TestTheWaitingSQLAgreesWithTheShippingRuleForProductionJobNamesAndStepData(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	day := func(d int) time.Time { return time.Date(2024, 4, d, 0, 0, 0, 0, time.UTC) }
 	for _, test := range []struct {
@@ -180,6 +182,7 @@ func TestTheWaitingSQLAgreesWithTheShippingRuleForProductionJobNamesAndStepData(
 // or anywhere else, some runs are re-runs whose start moved 14 to 54 minutes past their creation,
 // and some are rows stored before created_at. Each round's seed is in its failure.
 func TestTheWaitingSQLAgreesWithTheShippingRuleOverMergeQueueHistories(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	for seed := range uint64(60) {
@@ -324,11 +327,8 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	if err != nil {
 		t.Fatalf("listRuns: %v", err)
 	}
-	ids := make([]int64, len(deployRuns))
-	for i, run := range deployRuns {
-		ids[i] = run.RunID
-	}
-	// The timeline reads every job of these runs and every other reader their production jobs
+	ids := runIDsOf(deployRuns)
+	// every is the reference read of every job of these runs, and judged is their production jobs
 	// alone; containment must answer the same deploys from either.
 	every, err := listEveryRunJobForRuns(ctx, pool, waitingRepo, ids)
 	if err != nil {

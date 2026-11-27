@@ -592,24 +592,34 @@ func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
 	}
 }
 
-// TestTheTablesARewriteUpdatesLeaveAFifthOfEachPageFree: eval_days, eval_range_figures and
-// eval_day_figures are created with fillfactor 80 (migrations 20261117100006 and
-// 20261120072042). A rewrite after a change of the delivery settings updates each row it sends
-// whose values moved (the upserts' `is distinct from` leaves the rest) and moves no column an
-// index holds, so the fifth of each page left free keeps each update on its page (HOT), writing
-// no index entry; at the default of 100 almost none is, and each table grows with every pass
-// until a vacuum.
-func TestTheTablesARewriteUpdatesLeaveAFifthOfEachPageFree(t *testing.T) {
+// TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize: eval_days, eval_range_figures and
+// eval_day_figures are created with fillfactor 80 (migrations 20261117100006 and 20261120072042).
+// A rewrite after a change of the delivery settings updates each row it sends whose values moved
+// (the upserts' `is distinct from` leaves the rest) and moves no column an index holds, so the
+// fifth of each page left free keeps each update on its page (HOT), writing no index entry; at the
+// default of 100 almost none is, and each table grows with every pass until a vacuum. eval_days is
+// also vacuumed after every 1,000 inserts, with its index pass, since a rewrite deletes and inserts
+// rows of it too and an insert reuses a deleted row's space only after a vacuum records it: at
+// autovacuum's defaults the table grew with every pass and was never vacuumed. The test reads the
+// options each table holds, not its size.
+func TestTheTablesARewriteUpdatesHoldTheOptionsThatKeepTheirSize(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
-	for _, table := range []string{"eval_days", "eval_range_figures", "eval_day_figures"} {
-		var options []string
+	want := map[string][]string{
+		"eval_days":          {"fillfactor=80", "autovacuum_vacuum_insert_threshold=1000", "autovacuum_vacuum_insert_scale_factor=0", "vacuum_index_cleanup=on"},
+		"eval_range_figures": {"fillfactor=80"},
+		"eval_day_figures":   {"fillfactor=80"},
+	}
+	for table, options := range want {
+		var held []string
 		if err := store.Pool.QueryRow(ctx,
-			`select coalesce(reloptions, '{}') from pg_class where oid = $1::regclass`, table).Scan(&options); err != nil {
+			`select coalesce(reloptions, '{}') from pg_class where oid = $1::regclass`, table).Scan(&held); err != nil {
 			t.Fatalf("read %s's options: %v", table, err)
 		}
-		if !slices.Contains(options, "fillfactor=80") {
-			t.Errorf("%s's options are %v; want fillfactor=80", table, options)
+		for _, option := range options {
+			if !slices.Contains(held, option) {
+				t.Errorf("%s's options are %v; want %s among them", table, held, option)
+			}
 		}
 	}
 }

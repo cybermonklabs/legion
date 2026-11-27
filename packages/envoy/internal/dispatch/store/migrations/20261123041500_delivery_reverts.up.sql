@@ -1,6 +1,6 @@
 -- 20261123041500_delivery_reverts.up.sql
 --
--- Every merged revert of a deploy repository (dispatch://INFRA-978, R7 and T12): a merged pull
+-- Every merged revert of a deploy repository (dispatch://INFRA-978, R7 and D5): a merged pull
 -- request whose body says `Reverts <owner>/<repo>#<n>`, the line GitHub's revert button writes
 -- (delivery.ParseRevert). It is recorded whoever authored it: the button's author is the person who
 -- pressed it, often outside every project's population, so delivery_pull_requests does not hold

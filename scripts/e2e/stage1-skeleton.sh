@@ -237,12 +237,15 @@ wrong_login="$pg_user:hunter2"
 # loaded, from the package whose manifest the gate read, speaking Envoy plugin interface 1, and
 # pi-envoy publishing interface 1 from a file an @sjawhar/pi-envoy manifest owns (the gate holds
 # the Envoy entry's file to a manifest of that name) — says why anything else should never have
-# run, and fails it. The gate's contract probe reads the pi-legion manifest where Oh My Pi finds it
-# under the pane's HOME and default profile: the daemon runs with HOME=$work/home and neither
-# profile variable, and the manifest there is the checkout's own, so it declares the contract this
-# checkout's daemon requires. The gate also asks the load probe for the task agents and skills the
-# role prompts name (LEGION_PROMPT_AGENTS, LEGION_PROMPT_SKILLS) and whether each of those agents'
-# models resolves (LEGION_AGENT_MODELS), and the stub answers that they all resolve.
+# run. The gate's contract probe reads the pi-legion manifest where Oh My Pi finds it under the
+# pane's HOME and default profile: the daemon runs with HOME=$work/home and neither profile
+# variable, and the manifest there is the checkout's name and version with the `legion` block a
+# pack writes (lib/pack-plugin.sh), since the checkout's own manifest declares no contract: its
+# daemonApiVersion is the one scripts/daemon-contract.sh prints for the working tree, so it
+# declares the contract this checkout's daemon requires. The gate also asks the load probe for
+# the task agents and skills the role prompts name (LEGION_PROMPT_AGENTS, LEGION_PROMPT_SKILLS)
+# and whether each of those agents' models resolves (LEGION_AGENT_MODELS), and the stub answers
+# that they all resolve.
 (umask 077 && printf 'stage1-operator-%s\n' "$project" >"$work/operator-token")
 cat >"$work/omp" <<'EOF'
 #!/bin/sh
@@ -264,9 +267,17 @@ chmod 0755 "$work/omp"
 export LEGION_OMP_PATH="$work/omp"
 plugins="$work/home/.omp/plugins/node_modules/@sjawhar"
 mkdir -p "$plugins/pi-legion" "$plugins/pi-envoy"
-jq '{name, version, legion}' "$root/packages/pi-legion/package.json" >"$plugins/pi-legion/package.json"
+contract=$(bash "$root/scripts/daemon-contract.sh")
+jq --argjson contract "$contract" '.legion.daemonApiVersion = $contract | {name, version, legion}' \
+  "$root/packages/pi-legion/package.json" >"$plugins/pi-legion/package.json"
 jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/package.json"
-pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
+# PATH is handed over by value, as the other e2e scripts hand theirs to the services they start
+# through held-port.py: start_kept runs `python3` by name (lib/rig.sh), and the first python3 can
+# be a version manager's shim that starts the interpreter with a PATH of its own. mise 2026.10.11's
+# python3 shim, in a mise-activated environment, put that environment's PATH in front of the
+# entries put first, so the daemon held-port.py starts would find that environment's tmux before
+# the real one put first above.
+pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home" PATH="$PATH")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not
 # (LEGION-791): a review_round_cap the default would not answer, a github_apps block whose
@@ -284,6 +295,7 @@ port: $port
 postgres_dsn: $LEGION_E2E_PG_DSN
 state_dir: $work/state
 operator_token_file: $work/operator-token
+admission_p0_bound: 3
 review_round_cap: 5
 # The wake pacing off (INFRA-976): this proof's waits are bounded, and at the default of 8 wakes a
 # minute every wake after the first would spend those waits queueing for its turn.
@@ -461,13 +473,14 @@ jq -e '(.capabilities | length) == 22
 }
 # The daemon's resolved settings ride the same document (LEGION-791, contract 35): the value the
 # fixture set over its default, a default the fixture left alone, the runtime, the envoy_url with
-# its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
-# App key — the App rides as its id and installations alone, and nothing anywhere in the document
-# reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
+# its authority shown as the mark of a URL with credentials (nothing of a userinfo's authority is
+# printed, its host included), and none of what the fixture planted as a credential, a credential
+# file or an App key — the App rides as its id and installations alone, and nothing anywhere in the
+# document reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
 jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
-  and .settings.envoy_url == "http://xxxxx@127.0.0.1:9020"
+  and .settings.envoy_url == "http://[a URL with credentials]"
   and ((.settings | has("postgres_dsn") or has("operator_token_file")) | not)
   and ([.. | strings | select(test("BEGIN|PRIVATE KEY|postgres://|fixture-envoy-password|://[^/@ ]+:[^/@ ]+@"))] | length) == 0
   and (.settings.github_apps.implement | keys) == ["app_id", "installations"]' \
@@ -475,6 +488,38 @@ jq -e '.settings.review_round_cap == 5
   echo "the state does not carry the resolved settings with the fixture's review_round_cap, the masked envoy_url and no credential, credential file or App key"
   exit 1
 }
+# The configured P0 bound (INFRA-5636, C3): `legion state`'s `P0:` line names 3 as the bound in
+# force and in legion.yaml with none set while the daemon runs, and `legion project set-p0-bound
+# --bound 0` is refused by the daemon: it exits 1, not a CLI usage exit 2, with the daemon's 400 on
+# stderr, and the same set on the operator route is answered 400 INVALID_P0_BOUND below. Stage 1's
+# daemon has no dispatch_url, so it runs no workflow and refuses every valid live change
+# P0_BOUND_UNAVAILABLE, and a bound of no whole number from 1 to 2147483647 INVALID_P0_BOUND first;
+# this step proves the configured bound and the floor of 1 on the real binary, so it reads the part
+# of the `P0:` line that names the bound and no count before it, and no words of the refusal's.
+want_p0_bound="P0 bound 3 in force, 3 in legion.yaml; none set while the daemon runs"
+p0_state=$("$work/legion" state --port "$port") || fail "legion state --port $port exited $?, want 0"
+p0_line=$(grep '^P0: ' <<<"$p0_state" || true)
+case "$p0_line" in
+*"$want_p0_bound"*) ;;
+*) fail "legion state printed P0 line '$p0_line', want one that carries '$want_p0_bound'" ;;
+esac
+p0_rc=0
+"$work/legion" project set-p0-bound --port "$port" --operator-token-file "$work/operator-token" \
+  --bound 0 --reason "stage 1 floor check" >"$work/p0-bound-out.log" 2>"$work/p0-bound-err.log" || p0_rc=$?
+[ "$p0_rc" = 1 ] ||
+  fail "legion project set-p0-bound --bound 0 exited $p0_rc, want 1 (stderr: $(cat "$work/p0-bound-err.log"))"
+grep -q '400' "$work/p0-bound-err.log" ||
+  fail "legion project set-p0-bound --bound 0 stderr did not name the daemon's 400: $(cat "$work/p0-bound-err.log")"
+# The CLI prints the refusal's sentence without its code; read the code off the same operator route
+# with the bearer in a 0600 curl config file, never on curl's command line.
+(umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(<"$work/operator-token")" >"$work/p0-bound-curl.cfg")
+p0_http=$(curl -sS -K "$work/p0-bound-curl.cfg" -o "$work/p0-bound-refusal.json" -w '%{http_code}' \
+  -H 'Content-Type: application/json' -X POST \
+  -d '{"bound":0,"reason":"stage 1 floor check"}' \
+  "http://127.0.0.1:$port/legion/v1/operator/project/p0-bound")
+if [ "$p0_http" != 400 ] || ! jq -e '.code == "INVALID_P0_BOUND"' "$work/p0-bound-refusal.json" >/dev/null; then
+  fail "POST /legion/v1/operator/project/p0-bound with bound 0 answered $p0_http $(cat "$work/p0-bound-refusal.json"), want 400 INVALID_P0_BOUND"
+fi
 "$work/legion" legions --json |
   jq -e --arg p "$project" --argjson port "$port" 'map(select(.team == $p and .port == $port)) | length == 1' || {
   echo "the legions registry does not carry exactly one entry for $project on $port"

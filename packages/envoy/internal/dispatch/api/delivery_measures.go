@@ -20,11 +20,108 @@ import (
 type deliveryMeasuresResponse struct {
 	Window     delivery.DeliveryWindowView    `json:"window"`
 	ComputedAt time.Time                      `json:"computed_at"`
-	Measures   measures.Result                `json:"measures"`
+	Measures   deliveryMeasures               `json:"measures"`
 	UnownedP0  []delivery.UnownedIssue        `json:"unowned_p0"`
 	Targets    measures.Targets               `json:"targets"`
 	Status     measures.Status                `json:"status"`
 	Freshness  delivery.DeliveryFreshnessView `json:"freshness"`
+}
+
+// deliveryMeasures is the `measures` of GET /api/v1/delivery/measures, of the timeline's measures
+// and of the live measures view: what measures.Result holds, written through the one projection
+// the three share (deliveryMeasuresOf). Only the failure measures are written otherwise. A
+// Delivery page of the previous build is still served while the two builds roll
+// (cmd/dispatch/README.md, "Two builds at once", "Response members"), and it reads
+// change_failure_rate.per_pr, change_failure_rate.per_deploy and time_to_restore with no null
+// guard. So change_failure_rate is always an object, never null, and carries those members with
+// every leaf null beside its own failed, total and rate, and time_to_restore stays with a null
+// median: this build's recovery time is failed_deployment_recovery, since that page would show a
+// figure at time_to_restore as its own broken-PR-to-fix median.
+type deliveryMeasures struct {
+	DeployFrequency   measures.DeployFrequency `json:"deploy_frequency"`
+	LeadTime          measures.LeadTime        `json:"lead_time"`
+	ChangeFailureRate deliveryChangeFailRate   `json:"change_failure_rate"`
+	// TimeToRestore is kept, its median always null, for the page of the previous build
+	// alone, which reads time_to_restore.median_minutes with no null guard. It goes with the old
+	// routes, after the roll (deliveryRetiredPRFlagCounts says when).
+	TimeToRestore deliveryRetiredTimeToRestore `json:"time_to_restore"`
+	// FailedDeploymentRecovery is failed-deploy-recovery's fold (measures.FoldRecovery), null
+	// where the window holds no day part of it.
+	FailedDeploymentRecovery *measures.Recovery `json:"failed_deployment_recovery"`
+	// DeploymentReworkRate is deployment-rework-rate's fold (measures.FoldReworkRate), null where
+	// the window holds no day part of it.
+	DeploymentReworkRate *measures.ReworkRate      `json:"deployment_rework_rate"`
+	ReworkShare          float64                   `json:"rework_share"`
+	DeployRunSuccess     measures.DeployRunSuccess `json:"deploy_run_success"`
+	Daily                []measures.DailyPoint     `json:"daily"`
+}
+
+// deliveryChangeFailRate is change-fail-rate's fold (measures.FoldChangeFailRate) as the measures
+// answer writes it: the deploys with a counted failure, every deploy and the first over the
+// second, each null where the window holds no day part of it ("no data", as the eval reads it),
+// beside PerPR and PerDeploy, which no build measures.
+type deliveryChangeFailRate struct {
+	Failed *int     `json:"failed"`
+	Total  *int     `json:"total"`
+	Rate   *float64 `json:"rate"`
+	// PerPR and PerDeploy are kept, every leaf null in every window, for the page of the build
+	// before the failure measures changed: it reads change_failure_rate.per_pr.rate, per_deploy.rate and
+	// per_deploy.upper_bound_rate with no null guard on the objects, and shows no value for a null
+	// among them. They go with the old routes, after the roll (deliveryRetiredPRFlagCounts says
+	// when).
+	PerPR     deliveryRetiredPRFlagCounts     `json:"per_pr"`
+	PerDeploy deliveryRetiredDeployFlagCounts `json:"per_deploy"`
+}
+
+// deliveryRetiredPRFlagCounts is change_failure_rate.per_pr as the previous Delivery page reads
+// it: the per-PR counts of failed-change flags and their rate, which that
+// build computed and no build computes now, so nothing sets a field and each is always null. The
+// three retired members (this, deliveryRetiredDeployFlagCounts and deliveryRetiredTimeToRestore)
+// and their nulls go when the old routes go: the next release, which removes GET and PUT
+// /api/v1/settings/delivery once the roll is over and no page of the earlier build is served,
+// removes them too (cmd/dispatch/README.md, "Two builds at once": a member is removed only once
+// no page still serving reads it).
+type deliveryRetiredPRFlagCounts struct {
+	Confirmed *int     `json:"confirmed"`
+	Pending   *int     `json:"pending"`
+	Rejected  *int     `json:"rejected"`
+	Reverts   *int     `json:"reverts"`
+	Total     *int     `json:"total"`
+	Rate      *float64 `json:"rate"`
+}
+
+// deliveryRetiredDeployFlagCounts is change_failure_rate.per_deploy as that page reads it: the
+// per-deploy counts of failed-change flags, their rate and its upper bound, every field always
+// null (deliveryRetiredPRFlagCounts says until when).
+type deliveryRetiredDeployFlagCounts struct {
+	Confirmed          *int     `json:"confirmed"`
+	Total              *int     `json:"total"`
+	Rate               *float64 `json:"rate"`
+	ConfirmedOrPending *int     `json:"confirmed_or_pending"`
+	UpperBoundRate     *float64 `json:"upper_bound_rate"`
+}
+
+// deliveryRetiredTimeToRestore is time_to_restore as that page reads it: its median from a broken
+// pull request's deploy to its fix's, always null (deliveryRetiredPRFlagCounts says until when).
+// The recovery time this build measures is deliveryMeasures.FailedDeploymentRecovery, under a name
+// of its own, since that page would show a figure here as its broken-PR-to-fix median.
+type deliveryRetiredTimeToRestore struct {
+	MedianMinutes *float64 `json:"median_minutes"`
+}
+
+// deliveryMeasuresOf is result as the measures answer writes it (deliveryMeasures): the change
+// fail rate's counts and rate where its fold has a value, null otherwise, and every retired leaf
+// null.
+func deliveryMeasuresOf(result measures.Result) deliveryMeasures {
+	written := deliveryMeasures{
+		DeployFrequency: result.DeployFrequency, LeadTime: result.LeadTime,
+		FailedDeploymentRecovery: result.TimeToRestore, DeploymentReworkRate: result.DeploymentReworkRate,
+		ReworkShare: result.ReworkShare, DeployRunSuccess: result.DeployRunSuccess, Daily: result.Daily,
+	}
+	if rate := result.ChangeFailureRate; rate != nil {
+		written.ChangeFailureRate = deliveryChangeFailRate{Failed: &rate.Failed, Total: &rate.Total, Rate: rate.Rate}
+	}
+	return written
 }
 
 // getDeliveryMeasures answers GET /api/v1/delivery/measures, computed from stored facts on
@@ -98,7 +195,8 @@ func deliveryMeasuresCompute(rules *delivery.SourceRules, pop deliveryPopulation
 // counts for two projects would count twice in a sum of theirs, so with no delivery-on project or
 // several they read null, "no data", each with no verdict. So do they for a window that starts
 // before the project's failures_measured_since, as its evals read one; and otherwise they are the
-// values its evals' read of the same window answers (dispatch://INFRA-978, k11).
+// values its evals' read of the same window answers (dispatch://INFRA-978, k11), written through
+// deliveryMeasuresOf.
 func deliveryMeasuresOver(rules *delivery.SourceRules, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	reached := map[int64]bool{}
 	for _, applies := range deliveryApplies(rules, pop.windowRuns, pop.windowJobs) {
@@ -122,7 +220,7 @@ func deliveryMeasuresOver(rules *delivery.SourceRules, pop deliveryPopulation, d
 	return deliveryMeasuresResponse{
 		Window:     delivery.DeliveryWindowView{From: from, To: to},
 		ComputedAt: now,
-		Measures:   result,
+		Measures:   deliveryMeasuresOf(result),
 		UnownedP0:  unowned,
 		Targets:    deliveryTargets(pop.targetEvals),
 		Status:     measuresStatus(pop.targetEvals, evals.ResultStatistics(result, len(unowned))),
@@ -167,8 +265,8 @@ func deliveryVerdictOf(entries map[string]evals.Entry, slug string, figures map[
 }
 
 // deliveryVerdict is whether figures, a delivery answer's own statistics of slug's eval, meet that
-// eval's target (deliveryVerdictOf): null where there is no verdict, or no figure it judges has a
-// value.
+// eval's target (deliveryVerdictOf): null where there is no verdict, or where no figure it judges
+// misses the target and one has no value (evals.VerdictOf).
 func deliveryVerdict(entries map[string]evals.Entry, slug string, figures map[string]evals.Statistics) *bool {
 	return verdictMet(deliveryVerdictOf(entries, slug, figures))
 }

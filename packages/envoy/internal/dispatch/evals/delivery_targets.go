@@ -26,6 +26,7 @@ import (
 // states, and PipelineSlugs the evals the Pipeline answer reads: the same six, whose targets it
 // states and two of which judge its lead-time cards, and pr-ci, whose job series' min_n ranks its
 // slowest jobs (PipelineMinN).
+// Targets of cards outside these six are judged on the Evals tab, which shows every card.
 var (
 	DeliveryTargetSlugs = []string{SlugDeployFrequency, SlugChangeFailRate, SlugMergeToProduction, SlugPROpenToMerge, SlugDeployRunSuccess, SlugUnownedP0}
 	PipelineSlugs       = append(slices.Clone(DeliveryTargetSlugs), SlugPRCI)
@@ -166,35 +167,37 @@ var deliveryJudges = func() map[string][]string {
 	return judges
 }()
 
-// DeployRepoEvals reads the current definition and series of each of slugs in the project of
-// deployRepo, by slug, in one snapshot. The deployment-wide answers count every project's rows, so
-// no row names their project; the one a repository names is its owner, the delivery-on project
-// whose deploy source reads it (delivery.DeployRules, compared without case; dispatch://INFRA-978,
-// D1 and T8), where a source that names no repository reads its project's published default
-// repository (eval_project_repos, the record the refresher's page commit moves in the commit that
-// makes the figures folded under it visible; owners.go), so the delivery routes and the Evals tab
-// judge by one state (INFRA-2916, the architect's ruling of 14:07Z) and a person's write of a
-// default repository moves neither until that commit. Where no source reads deployRepo, no project
-// is named, and where the project holds no version of a slug yet, the slug's catalogue entry
-// stands in: the definition and series the seed writes, whose target is main's
-// (measures.DefaultTargets). A slug neither holds is absent.
-func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []string) (map[string]Entry, error) {
+// DeployRepoEvals reads the current definition and series of each of slugs whose targets the
+// deployment-wide delivery answers judge by (dispatch://INFRA-978, D9), by slug, in one snapshot:
+// those of the project whose deploy sources read every deploy repository, where one delivery-on
+// project owns them all, and none of any project where two or more own them or none is read, since
+// no one project's targets judge figures of several projects. The deployment-wide answers count
+// every project's rows, so no row names their project; the one a repository names is its owner,
+// the delivery-on project whose deploy source reads it (delivery.DeployRules, compared without
+// case; dispatch://INFRA-978, D1), where a source that names no repository reads its project's
+// published default repository (eval_project_repos, the record the refresher's page commit moves
+// in the commit that makes the figures folded under it visible; owners.go), so the delivery routes
+// and the Evals tab judge by one state and a person's write of a default repository moves neither
+// until that commit: until then the project that owns every repository under the published
+// defaults judges, as it did before the write. Where no project is named, and where the project
+// holds no version of a slug yet, the slug's catalogue entry stands in: the definition and series
+// the seed writes, whose target is main's (measures.DefaultTargets). A slug neither holds is
+// absent.
+func (s *Store) DeployRepoEvals(ctx context.Context, slugs []string) (map[string]Entry, error) {
 	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
+		return nil, fmt.Errorf("begin the read of the deploy repositories' evals %v: %w", slugs, err)
 	}
 	defer tx.Rollback(ctx)
-	projects, _, err := publishedSettingsIn(ctx, tx)
+	projects, err := publishedSettingsIn(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("read the project whose deploy source reads %s: %w", deployRepo, err)
+		return nil, fmt.Errorf("read the projects whose deploy sources read the deploy repositories: %w", err)
 	}
 	entries := make(map[string]Entry, len(slugs))
-	for _, rule := range delivery.DeployRules(projects) {
-		if ruleKey(rule.DeployRepo) == ruleKey(deployRepo) {
-			if entries, err = projectEntries(ctx, tx, rule.Project, slugs); err != nil {
-				return nil, err
-			}
-			break
+	if rules := delivery.DeployRules(projects); len(rules) > 0 &&
+		!slices.ContainsFunc(rules, func(rule delivery.DeliverySettings) bool { return rule.Project != rules[0].Project }) {
+		if entries, err = projectEntries(ctx, tx, rules[0].Project, slugs); err != nil {
+			return nil, err
 		}
 	}
 	for _, slug := range slugs {
@@ -210,17 +213,16 @@ func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []
 
 // publishedSettingsIn is every project's delivery settings read in q (delivery.ListProjectSettings)
 // with each project's default repository its published one (eval_project_repos), none where it
-// publishes none yet, and the published default repositories themselves, by project, those of the
-// projects with no delivery settings among them: the settings a source that names no repository
-// is read under by a reader of the published state (DeployRepoEvals, ReadAttribution).
-func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.ProjectSettings, map[string]string, error) {
+// publishes none yet: the settings a source that names no repository is read under by a reader of
+// the published state (DeployRepoEvals).
+func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.ProjectSettings, error) {
 	projects, err := delivery.ListProjectSettings(ctx, q)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	rows, err := q.Query(ctx, `select project_key, repo from eval_project_repos`)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read the published default repositories: %w", err)
+		return nil, fmt.Errorf("read the published default repositories: %w", err)
 	}
 	published := map[string]string{}
 	var project, repo string
@@ -228,15 +230,21 @@ func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.Pr
 		published[project] = repo
 		return nil
 	}); err != nil {
-		return nil, nil, fmt.Errorf("read the published default repositories: %w", err)
+		return nil, fmt.Errorf("read the published default repositories: %w", err)
 	}
+	withDefaults(projects, published)
+	return projects, nil
+}
+
+// withDefaults sets, in place, each of projects' default repository to the one defaults holds for
+// it (by project), none where defaults holds none.
+func withDefaults(projects []delivery.ProjectSettings, defaults map[string]string) {
 	for i := range projects {
 		projects[i].DefaultRepo = nil
-		if repo, held := published[projects[i].Project]; held {
+		if repo, held := defaults[projects[i].Project]; held {
 			projects[i].DefaultRepo = new(repo)
 		}
 	}
-	return projects, published, nil
 }
 
 // ProjectEvals reads the current definition and series of each of slugs project holds, by slug,

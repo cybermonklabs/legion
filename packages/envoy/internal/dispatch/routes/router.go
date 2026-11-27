@@ -32,6 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -78,9 +79,10 @@ type AppContext struct {
 	// lifetime is AppContextOptions.Lifetime, which New passes to api.Register.
 	lifetime context.Context
 	// devSignInHost is the dashboard origin's host:port when the dev sign-in route is mounted,
-	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
-	// turn the route on without the origin check.
-	devSignInHost string
+	// and empty otherwise, and devSignInOrigin that origin, scheme://host:port, the one place the
+	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
+	// can turn the route on without the origin check.
+	devSignInHost, devSignInOrigin string
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -132,7 +134,9 @@ type AppContextOptions struct {
 	// machine's identity token every listener call presents in EnvoyToken's place instead
 	// (cmd/dispatch); empty presents none.
 	EnvoyGoogleAudience string
-	Docs                docs.API
+	// Docs is the document service, which BuildAppContext requires (api.NewDeps refuses none):
+	// its caller builds it and shuts it down once the router is done with it. See api.DepsInput.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -142,6 +146,9 @@ type AppContextOptions struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
+	// GitHubRate is the process's one count of its calls to GitHub (cmd/dispatch makes it once,
+	// for the rate reading); see api.DepsInput.
+	GitHubRate *githubrate.Counter
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
@@ -161,6 +168,8 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See api.Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -195,6 +204,9 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -211,7 +223,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
 	}
-	var devSignInHost string
+	var devSignInHost, devSignInOrigin string
 	if opts.DevSignIn {
 		if opts.Sessions == nil {
 			return nil, fmt.Errorf("BuildAppContext: DevSignIn requires a Sessions store")
@@ -220,7 +232,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		if err != nil {
 			return nil, fmt.Errorf("BuildAppContext: %w", err)
 		}
-		devSignInHost = host
+		// DevSignInOrigin has parsed ServerURL already, so this parse cannot fail.
+		parsed, _ := url.Parse(opts.ServerURL)
+		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
@@ -240,12 +254,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Renames:                opts.Renames,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
+		GitHubRate:             opts.GitHubRate,
 		OIDC:                   opts.OIDC,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
+		LegionStatusScope:      opts.LegionStatusScope,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -259,6 +275,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		DashboardEntry:         opts.DashboardEntry,
 		Build:                  opts.Build,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -270,21 +287,22 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		eventHead = func(context.Context) (int64, error) { return 0, errNoEventLog }
 	}
 	return &AppContext{
-		SigningKey:     opts.SigningKey,
-		WebDistDir:     opts.WebDistDir,
-		AssetStore:     opts.AssetStore,
-		Sessions:       opts.Sessions,
-		People:         opts.People,
-		Identity:       opts.Identity,
-		Store:          opts.Store,
-		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
-		SignIn:         opts.SignIn,
-		SignInRule:     opts.SignInRule,
-		InsecureCookie: opts.InsecureCookie,
-		devSignInHost:  devSignInHost,
-		apiDeps:        apiDeps,
-		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
+		SigningKey:      opts.SigningKey,
+		WebDistDir:      opts.WebDistDir,
+		AssetStore:      opts.AssetStore,
+		Sessions:        opts.Sessions,
+		People:          opts.People,
+		Identity:        opts.Identity,
+		Store:           opts.Store,
+		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
+		SignIn:          opts.SignIn,
+		SignInRule:      opts.SignInRule,
+		InsecureCookie:  opts.InsecureCookie,
+		devSignInHost:   devSignInHost,
+		devSignInOrigin: devSignInOrigin,
+		apiDeps:         apiDeps,
+		eventHead:       eventHead,
+		lifetime:        opts.Lifetime,
 	}, nil
 }
 
@@ -320,6 +338,9 @@ type router struct {
 	// eventHead is what GET /auth/whoami answers as event_head: the context's own (AppContext's
 	// eventHead) when it names one, else the registered API server's (api.Background's EventHead).
 	eventHead func(context.Context) (int64, error)
+	// agent is the agent GET /auth/whoami draws the dashboard for when a request carries no
+	// browser credential: the registered API server's (api.Background's Agent).
+	agent func(*http.Request) (api.AgentCaller, bool)
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -352,12 +373,14 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
 	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
+	// The proxy's calls to GitHub are the API's, as every row's of the table are.
+	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, api.TagGitHubCalls(r.apiGithubRest)))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
 	if r.eventHead == nil {
 		r.eventHead = background.EventHead
 	}
+	r.agent = background.Agent
 	mux.HandleFunc("/", r.staticHandler)
 	if ctx.devSignInHost != "" {
 		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
@@ -542,9 +565,17 @@ type whoamiAnswer struct {
 	Login     string `json:"login"`
 }
 
-// authWhoami answers the signed-in person and event_head, the decimal id at or below which every
-// event is final (api.Background's EventHead), read after the sign-in check and before the answer
-// is written. The page starts every read
+// whoamiAgentAnswer is what GET /auth/whoami answers an agent: a person's fields, kind "agent",
+// and session, the session its credential proved or null where it proved none, which a person's
+// answer does not carry at all.
+type whoamiAgentAnswer struct {
+	whoamiAnswer
+	Session *string `json:"session"`
+}
+
+// authWhoami answers who the dashboard is drawn for, and event_head, the decimal id at or below
+// which every event is final (api.Background's EventHead), read after the sign-in check and before
+// the answer is written. The page starts every read
 // the event feed keeps current only once whoami has answered, and resumes its first events
 // subscription from event_head, so a change committed while it loads is replayed rather than
 // missed. A head it cannot answer is a 503, never a whoami without it: a page that took a missing
@@ -554,11 +585,63 @@ type whoamiAnswer struct {
 // or persisted), which ends on its own and which the page asks again for as long as it lasts.
 // Every other failure (the database or the horizon's pool not answering) is
 // EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error.
+//
+// A browser credential decides first: a request carrying a session cookie or an IAP assertion is
+// answered for the person it names, or refused as it is refused, whatever Authorization header it
+// carries beside it. A request carrying neither, whose Authorization header the API takes for an
+// agent - the code every API route resolves its caller by, which GET /api/v1/whoami answers from
+// (api.Background's Agent) - is answered kind "agent", the session its credential proved (null
+// where it proved none), and a login that is the label the web app keys that viewer's own state by
+// (the writes and drafts it keeps, and the word to its other tabs of who is signed in):
+//
+//   - the lowercase email of the person the credential acts for, where it names one (a personal
+//     token's owner, the person of a broker-issued token);
+//   - else agent:<session>, where the credential proved a session (a broker-issued token naming a
+//     service and no person);
+//   - else agent (the shared agent token, a pod's service-account token).
+//
+// The access-log line names that caller as GET /api/v1/whoami's does, since the same code notes
+// it. A bearer the API refuses is answered as a request with no bearer is.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
+	if !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
+		if agent, ok := r.agent(req); ok {
+			head, ok := r.whoamiEventHead(w, req)
+			if !ok {
+				return
+			}
+			api.WriteJSON(w, http.StatusOK, whoamiAgentAnswer{
+				whoamiAnswer: whoamiAnswer{EventHead: head, Kind: "agent", Login: agentLogin(agent)},
+				Session:      agent.Session,
+			})
+			return
+		}
+	}
 	email, ok := r.login(w, req)
 	if !ok {
 		return
 	}
+	head, ok := r.whoamiEventHead(w, req)
+	if !ok {
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: head, Kind: "user", Login: email})
+}
+
+// agentLogin is the login GET /auth/whoami answers agent by, by the rule authWhoami states.
+func agentLogin(agent api.AgentCaller) string {
+	switch {
+	case agent.Owner != nil:
+		return *agent.Owner
+	case agent.Session != nil:
+		return "agent:" + *agent.Session
+	default:
+		return "agent"
+	}
+}
+
+// whoamiEventHead is authWhoami's event_head in decimal, or false once it has answered the 503
+// that says why it has none.
+func (r *router) whoamiEventHead(w http.ResponseWriter, req *http.Request) (string, bool) {
 	head, err := r.eventHead(req.Context())
 	if err != nil {
 		// A read the page's own leaving cut short says nothing of the database.
@@ -567,12 +650,12 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		}
 		if errors.Is(err, api.ErrEventHeadUnproven) {
 			writeCodeError(w, http.StatusServiceUnavailable, "no event id is proven final yet; ask again", "EVENT_HEAD_UNAVAILABLE")
-			return
+			return "", false
 		}
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
-		return
+		return "", false
 	}
-	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email})
+	return strconv.FormatInt(head, 10), true
 }
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
@@ -583,8 +666,9 @@ func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub)
 }
 
-// login is the signed-in person the request's cookie names, and the caller its access-log line
-// names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.
+// login is the signed-in person the request's browser credential names, and the caller its
+// access-log line names: the /auth routes and the GitHub proxy resolve a person here and nowhere
+// else. The agent GET /auth/whoami answers is the API's to resolve (authWhoami).
 func (r *router) login(w http.ResponseWriter, req *http.Request) (string, bool) {
 	login, err := r.ctx.Identity.Login(req)
 	if err != nil {
@@ -842,8 +926,12 @@ func isBrowserRoute(normalized string) bool {
 	}
 	// Issue routes carry user-controlled segments (artifact slugs, ask/comment
 	// ids) that may legitimately contain a dot, so the file-extension
-	// heuristic below must never apply to them.
+	// heuristic below must never apply to them. A person's page carries one
+	// too, and it always holds a dot: a login is an email.
 	if normalized == "/issues" || strings.HasPrefix(normalized, "/issues/") {
+		return true
+	}
+	if strings.HasPrefix(normalized, "/people/") {
 		return true
 	}
 	return !strings.Contains(filepath.Base(normalized), ".")

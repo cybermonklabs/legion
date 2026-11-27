@@ -1,6 +1,11 @@
-// Package proxyrules holds the airlock's rules file and the two answers the broker's proxy
-// port takes from it: whether a request may carry a secret, and the request with the
-// grant's placeholder swapped for the secret's real value in the headers the rules name.
+// Package proxyrules holds the airlock's rules and the two answers the broker's proxy port
+// takes from them: whether a request may carry a secret, and the request with the grant's
+// placeholder swapped for the secret's real value in the headers its kind names. The rules are
+// the profiles file's kinds - for each, the hosts a credential of the kind may go to, the
+// headers it goes into and the methods and paths it may travel on - and one binding for each
+// name the policy serves behind the proxy: the kind its secret's proxy tag names, or a
+// transitional inline rule, and its profile's own allow, which narrows that one name and
+// never widens its kind.
 //
 // The package holds no HTTP and no database code, because a Lean model of exactly these
 // functions is proved and a differential fuzz test drives the Go functions against the
@@ -20,74 +25,97 @@ package proxyrules
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
-// Allow is one method and path prefix a secret may travel on.
+// Allow is one method and path prefix a credential may travel on. A kind's row holds no host,
+// and binds the method and prefix on every host of its kind. A profile's row may hold Host, one
+// of its kind's hosts, and then allows the request on that host alone.
 type Allow struct {
 	Method     string `json:"method"`
 	PathPrefix string `json:"pathPrefix"`
+	Host       string `json:"host,omitempty"`
 }
 
-// SecretRule is one secret's entry: where its value may go and in which headers, and who decides
-// a request for it. An entry is a proxy block, so it binds its value to at least one host:
-// Validate refuses an entry that names none.
-type SecretRule struct {
-	Name    string   `json:"name"`
-	Hosts   []string `json:"hosts"`
-	Headers []string `json:"headers"` // nil: the default ["authorization"]; empty: no header
-	Allow   []Allow  `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string   `json:"kind"`    // "", "aws" or "azure"
-	Judge   *uint32  `json:"judge"`   // the judge's longest lifetime, in seconds
-	// Guidance is what the model judge reads, as the key owner's instruction, when it decides a
-	// request for this key: when to grant it. It is no part of the Lean model, which decides
-	// nothing a request for the key may become, and no part of Digest's fingerprint.
-	Guidance string `json:"guidance,omitempty"`
+// Kind is one kind of the profiles file's kinds part: where a credential of the kind may go and
+// in which headers, for every secret whose proxy tag names it. Name is one lowercase word.
+// Variables, Ways, PlaceholderPrefix and MaxGrant are no part of the decision: the policy load
+// reads Ways and MaxGrant (CheckKind), the release reads Variables and PlaceholderPrefix.
+type Kind struct {
+	Name      string   `json:"name"`
+	Hosts     []string `json:"hosts"`
+	Headers   []string `json:"headers"` // nil: the default ["authorization"]; empty: no header
+	Variables []string `json:"variables"`
+	Ways      []string `json:"ways"`
+	Allow     []Allow  `json:"allow"` // nil: any method and path; empty: nothing allowed
+	// PlaceholderPrefix opens each placeholder of the kind in place of the default prefix, for a
+	// client that checks a key's shape before it sends it.
+	PlaceholderPrefix string `json:"placeholder_prefix,omitempty"`
+	// MaxGrant is a Go duration that caps the max-grant tag of each secret of the kind.
+	MaxGrant string `json:"max_grant,omitempty"`
 }
 
-// Guidance is the judge's guidance for this name, "" when the file names no such secret or its
-// entry carries none.
-func (r Rules) Guidance(name string) string {
-	if s := r.Lookup(name); s != nil {
-		return s.Guidance
-	}
-	return ""
-}
-
-// HeaderNames is the headers this entry's value travels in: the entry's own list, or the one
-// default header when the entry names none ("headers" absent). An entry whose list is empty
+// HeaderNames is the headers a credential of this kind travels in: the kind's own list, or the
+// one default header when the kind names none ("headers" absent). A kind whose list is empty
 // names no header at all, and this answers that empty list.
 //
 // It is the one place the default lives. Rewrite swaps in these headers and nothing else, and
 // `envoy-broker profiles check` reports what a file adds and removes against them, so the report
 // says what the swap does rather than what a second copy of the default says it does. The slice
-// an entry names points into that entry, as Rules.Lookup's does; the default is a fresh slice.
-func (s SecretRule) HeaderNames() []string {
-	if s.Headers == nil {
+// a kind names points into that kind; the default is a fresh slice.
+func (k Kind) HeaderNames() []string {
+	if k.Headers == nil {
 		return []string{"authorization"}
 	}
-	return s.Headers
+	return k.Headers
 }
 
-// KindAWS and KindAzure are the two kinds a rules entry may name (SecretRule.Kind), beside the
-// empty kind of a value a header simply carries. Validate allows no other, and each of them
-// says what the value behind the name is rather than where it may go: an AWS key pair, which
-// the proxy signs a call again with, and an azure-login secret, whose federated token is
-// exchanged for an access token. They are here rather than private to each reader because
-// three packages - the proxy's aws.go and azure.go and the broker's own release
-// (internal/cipher/requests) - each held a constant of the same string, and a kind is one
-// wire word for all of them.
+// The ways a credential of a kind can go into a call (Kind.Ways, Binding.Way). The secret's
+// type picks its way (policy's WayOf): no type swaps a stored value in, and an AWS key pair of
+// the aws kind is signed with again; github-app, github-installations, google-login,
+// google-service-account and anthropic-federation mint a token and swap it in; azure-login
+// exchanges at Microsoft's token endpoint; and a capability the broker mints for a grant of its
+// own and holds is swapped in with a DPoP proof. A way joins these when a path of the proxy takes
+// it, and not before: a kind that lists a way no path takes would say its credential goes in a
+// way it never goes, so CheckKind refuses one.
 const (
-	KindAWS   = "aws"
-	KindAzure = "azure"
+	WaySwap     = "swap"
+	WayMint     = "mint"
+	WaySign     = "sign"
+	WayExchange = "exchange"
+	WayDPoP     = "dpop"
 )
 
-// Rules is the whole airlock.json file.
+// Ways is every way a kind may list, in the order a refusal names them.
+var Ways = []string{WaySwap, WayMint, WaySign, WayExchange, WayDPoP}
+
+// Binding is one name behind the proxy: the kind its proxy tag (or its profile's transitional
+// proxy string) names, the way its secret's type takes into a call, and its profile's own allow,
+// which narrows the kind's and never widens it. Inline is the rule of a transitional proxy block
+// of kind dpop, a capability the broker mints and holds whose host no kind declares; a binding
+// names a kind or holds an inline rule, never both. Inline goes when a kind with the dpop way
+// replaces the profiles file's dpop blocks: each such capability's grant then names that kind,
+// and no binding holds a rule of its own.
+type Binding struct {
+	Name   string  `json:"name"`
+	Kind   string  `json:"kind"`
+	Way    string  `json:"way"`
+	Allow  []Allow `json:"allow"` // nil: no allow of the profile's own; empty: nothing allowed
+	Inline *Kind   `json:"inline,omitempty"`
+}
+
+// Rules is what the airlock decides from: the profiles file's kinds, and one binding for each
+// name the policy serves behind the proxy. The kinds are the file's; the bindings are the
+// policy load's, since a secret is behind the proxy when its proxy tag names a kind.
 type Rules struct {
-	Secrets []SecretRule `json:"secrets"`
+	Kinds []Kind    `json:"kinds"`
+	Names []Binding `json:"names"`
 }
 
 // Grant names the secret a connection carries and the placeholder the command holds for it.
@@ -102,84 +130,197 @@ type Request struct {
 	// ConnectPort is the port the CONNECT named. Only 443 may carry a value: the three
 	// names the decision compares carry no port, so 443 is the only port the rules speak
 	// about, and another port of one name is another service.
-	ConnectPort uint16      `json:"connectPort"`
-	SNI         string      `json:"sni"`
-	HostHeader  string      `json:"hostHeader"`
-	Method      string      `json:"method"`
-	Path        string      `json:"path"`
-	Headers     [][2]string `json:"headers"`
-	Query       string      `json:"query"`
-	Body        string      `json:"body"`
+	ConnectPort uint16 `json:"connectPort"`
+	SNI         string `json:"sni"`
+	HostHeader  string `json:"hostHeader"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	// RawPath is the path as the command sent it, percent-encoding kept (URL.EscapedPath):
+	// the one form that tells an encoded "/" or "\" from a "/".
+	RawPath string      `json:"rawPath"`
+	Headers [][2]string `json:"headers"`
+	Query   string      `json:"query"`
+	Body    string      `json:"body"`
 }
 
-// maxJudgeSeconds is the longest lifetime a judge entry may ask for.
-const maxJudgeSeconds = 900
+// CipherRepositoryHeader is the request header a command names a repository in, for the
+// broker to mint a GitHub token for that one repository. The broker reads it nowhere yet, and
+// a command may send it all the same, so the proxy removes it from every request it reads
+// (Rewrite, and the sign path of internal/cipher/proxy, which does not go through Rewrite)
+// before it forwards it: no service ever sees it. It is held ASCII-lower-cased, which is how
+// every header name in this package is compared.
+const CipherRepositoryHeader = "cipher-repository"
 
-// Validate reports why the file is not valid, naming the entry by its secret name and its
-// index. It reads the entries in order and reports the first failure: a repeated name, a judge
-// above 900 seconds, a kind other than "", "aws" or "azure", an entry that names no host, or a
-// host that binds the secret nowhere (HostShapeOK). An entry is a proxy block, and one that binds
-// its value to no host would hold the value back and carry it nowhere, so it is refused here
+// kindNameOK reports whether a kind's name is one lowercase word: a-z alone, never empty.
+func kindNameOK(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range len(name) {
+		if name[i] < 'a' || name[i] > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+// Validate reports why the rules are not valid, naming the kind or the binding by its name and
+// its index. It reads the kinds in order, then the bindings, and reports the first failure: a
+// repeated kind name, a kind name that is not one lowercase word, a kind that names no host, or
+// a host that binds the kind nowhere (HostShapeOK); a repeated binding name, a binding that names
+// both a kind and an inline rule, a kind the rules do not declare, or an inline rule that names no
+// host or a host that binds nowhere. A kind binds its credential to at least one host, and a kind
+// of no host would hold every value of the kind back and carry it nowhere, so it is refused here
 // (theorem T4 of the model) rather than left to Decide, which still refuses every proxy request
 // for one ("secret not behind airlock"). Whether it answers nil is the same answer as the Lean
 // model's validate, so a new refusal here is a new refusal there.
 func Validate(rules Rules) error {
-	seen := make(map[string]bool, len(rules.Secrets))
-	for i, s := range rules.Secrets {
+	kinds := make(map[string]bool, len(rules.Kinds))
+	for i, k := range rules.Kinds {
+		at := fmt.Sprintf("kinds[%d] %q", i, k.Name)
 		switch {
-		case seen[s.Name]:
-			return fmt.Errorf("%s: the name is repeated", entry(i, s))
-		case s.Judge != nil && *s.Judge > maxJudgeSeconds:
-			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
-		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
-			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
-		case len(s.Hosts) == 0:
-			return fmt.Errorf("%s: the entry names no host", entry(i, s))
+		case kinds[k.Name]:
+			return fmt.Errorf("%s: the name is repeated", at)
+		case !kindNameOK(k.Name):
+			return fmt.Errorf("%s: the name is not one lowercase word", at)
 		}
-		// A host HostShapeOK refuses binds the secret nowhere although the entry names it to bind
-		// one: the command gets its placeholder and no call of it is ever swapped.
-		for _, h := range s.Hosts {
-			if !HostShapeOK(h) {
-				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
+		if err := hostsOK(at, k.Hosts); err != nil {
+			return err
+		}
+		kinds[k.Name] = true
+	}
+	names := make(map[string]bool, len(rules.Names))
+	for i, b := range rules.Names {
+		at := fmt.Sprintf("names[%d] %q", i, b.Name)
+		switch {
+		case names[b.Name]:
+			return fmt.Errorf("%s: the name is repeated", at)
+		case b.Inline != nil && b.Kind != "":
+			return fmt.Errorf("%s: the binding names the kind %q and holds an inline rule", at, b.Kind)
+		case b.Inline == nil && !kinds[b.Kind]:
+			return fmt.Errorf("%s: the kind %q is no kind of the rules", at, b.Kind)
+		}
+		if b.Inline != nil {
+			if err := hostsOK(at, b.Inline.Hosts); err != nil {
+				return err
 			}
 		}
-		seen[s.Name] = true
+		names[b.Name] = true
 	}
 	return nil
 }
 
-// entry names one entry of the file as a Validate error opens with.
-func entry(i int, s SecretRule) string {
-	return fmt.Sprintf("secrets[%d] %q", i, s.Name)
-}
-
-// Lookup finds a secret's entry, or nil. Every entry of a valid file binds at least one host
-// (Validate), so the broker holds back the value of a name that has one, and releases the value
-// of a name that has none. The entry points into r, so a caller that keeps it keeps the rules it
-// came from.
-func (r Rules) Lookup(name string) *SecretRule {
-	for i := range r.Secrets {
-		if r.Secrets[i].Name == name {
-			return &r.Secrets[i]
+// hostsOK holds one kind's hosts, or one inline rule's, to Validate's rule: at least one, each a
+// host HostShapeOK accepts. A host it refuses binds the credential nowhere although the kind
+// names it to bind one: the command gets its placeholder and no call of it is ever swapped.
+func hostsOK(at string, hosts []string) error {
+	if len(hosts) == 0 {
+		return fmt.Errorf("%s: names no host", at)
+	}
+	for _, h := range hosts {
+		if !HostShapeOK(h) {
+			return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the credential nowhere", at, h, "*.")
 		}
 	}
 	return nil
 }
 
-// JudgeSeconds is the longest lifetime the file lets the judge decide for this secret, and
-// whether it lets it decide at all: (0, false) when the file names no such secret, and when the
-// entry it names has no "judge". Every reader of the bound goes through it, so no caller holds
-// a *SecretRule of its own and decides for itself what a nil Judge means.
-//
-// It is no new rule: Validate refuses a file whose entry asks for more than maxJudgeSeconds, and
-// the Lean model's judgeOK and theorem T3 are that same bound proved, so what this answers for a
-// valid file is at most 900 seconds.
-func (r Rules) JudgeSeconds(name string) (uint32, bool) {
-	s := r.Lookup(name)
-	if s == nil || s.Judge == nil {
-		return 0, false
+// CheckKind holds the fields of one kind that the decision does not read to the policy load's
+// rules: each way one of Ways, at least one, none twice; a kind row that names no host, since a
+// kind's rows bind every host of the kind; a max_grant that is a Go duration of at least a
+// second, where it is set; and each variable a shell name. It answers nil or the first refusal,
+// without the kind's name, which its caller adds.
+func CheckKind(k Kind) error {
+	if len(k.Ways) == 0 {
+		return fmt.Errorf("ways names no way; a kind takes at least one of %s", strings.Join(Ways, ", "))
 	}
-	return *s.Judge, true
+	seen := map[string]bool{}
+	for _, w := range k.Ways {
+		switch {
+		case !slices.Contains(Ways, w):
+			return fmt.Errorf("ways names %q, which is not one of %s", w, strings.Join(Ways, ", "))
+		case seen[w]:
+			return fmt.Errorf("ways names %q twice", w)
+		}
+		seen[w] = true
+	}
+	for _, a := range k.Allow {
+		if a.Host != "" {
+			return fmt.Errorf("allow row %s %s names the host %q: a kind's row binds every host of its kind, and only a profile's row names one", a.Method, a.PathPrefix, a.Host)
+		}
+	}
+	if k.MaxGrant != "" {
+		d, err := time.ParseDuration(k.MaxGrant)
+		if err != nil || d < time.Second {
+			return fmt.Errorf("max_grant %q is not a Go duration of at least a second", k.MaxGrant)
+		}
+	}
+	for _, v := range k.Variables {
+		if !shellName(v) {
+			return fmt.Errorf("variables names %q, which is no shell variable name", v)
+		}
+	}
+	return nil
+}
+
+// shellName reports whether v is a POSIX shell variable name: a letter or underscore, then
+// letters, digits and underscores.
+func shellName(v string) bool {
+	if v == "" {
+		return false
+	}
+	for i := range len(v) {
+		c := v[i]
+		switch {
+		case c == '_', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Lookup finds a name's binding, or nil. The binding points into r, so a caller that keeps it
+// keeps the rules it came from.
+func (r Rules) Lookup(name string) *Binding {
+	for i := range r.Names {
+		if r.Names[i].Name == name {
+			return &r.Names[i]
+		}
+	}
+	return nil
+}
+
+// Kind finds a kind of the rules by its name, or nil.
+func (r Rules) Kind(name string) *Kind {
+	for i := range r.Kinds {
+		if r.Kinds[i].Name == name {
+			return &r.Kinds[i]
+		}
+	}
+	return nil
+}
+
+// KindOf is the kind a binding is decided under: its inline rule, or the kind it names; nil for
+// a nil binding and for a kind the rules do not declare, which a valid file never holds.
+func (r Rules) KindOf(b *Binding) *Kind {
+	switch {
+	case b == nil:
+		return nil
+	case b.Inline != nil:
+		return b.Inline
+	default:
+		return r.Kind(b.Kind)
+	}
+}
+
+// HostsOf is the hosts a name is bound to (its kind's), nil for a name the rules do not bind.
+func (r Rules) HostsOf(name string) []string {
+	if k := r.KindOf(r.Lookup(name)); k != nil {
+		return k.Hosts
+	}
+	return nil
 }
 
 // HostBound reports whether host matches one of hosts: the same name, or a "*.suffix"
@@ -207,12 +348,13 @@ func HostBound(hosts []string, host string) bool {
 	}
 }
 
-// HostShapeOK reports whether an entry host is one the airlock can bind a request to: a host
-// name, which HostBound holds exactly, or "*." and one, a suffix it looks up. A label is
-// letters, digits and hyphens, never empty and never starting or ending with a hyphen, and the
-// last label is not all digits. Validate holds every entry host to it, and config holds the
-// local stack's stand-in token authority (BROKER_AIRLOCK_TEST_AZURE_AUTHORITY) to it, since a
-// token request reaches the proxy only at a host an entry binds.
+// HostShapeOK reports whether a host of a kind or of an inline rule is one the airlock can bind a
+// request to: a host name, which HostBound holds exactly, or "*." and one, a suffix it looks up.
+// A label is letters, digits and hyphens, never empty and never starting or ending with a
+// hyphen, and the last label is not all digits. Validate holds every host of the rules to it,
+// and config holds the local stack's stand-in token authority
+// (BROKER_AIRLOCK_TEST_AZURE_AUTHORITY) to it, since a token request reaches the proxy only at a
+// host a kind or an inline rule binds.
 //
 // The host a request carries is a name alone: the CONNECT target's host, with its port taken
 // off and compared against 443 on its own. So a host written with a scheme, a path, a port, or
@@ -221,8 +363,8 @@ func HostBound(hosts []string, host string) bool {
 // An IPv4 address matches the CONNECT host of a request to it, but check also holds the TLS
 // name to that host, and a TLS client names no address there: RFC 6066 section 3 keeps a
 // literal address out of server_name, and Go's crypto/tls and curl send none for one. So check
-// refuses every request to such an entry "sni mismatch", on a connection the proxy decrypts
-// because the entry binds its host, where without the entry it would be a tunnel. A host name
+// refuses every request to such a host "sni mismatch", on a connection the proxy decrypts
+// because the kind binds its host, where without the kind it would be a tunnel. A host name
 // is told from a dotted-decimal address by its last label, which in a host name is never all
 // digits (RFC 1123 section 2.1), and that is the test here: it refuses an IPv4 literal, "*."
 // over a suffix only an address ends in, and any other host whose last label is all digits,
@@ -250,17 +392,90 @@ func HostShapeOK(host string) bool {
 }
 
 // allowOK reports whether allow covers the request. A nil list allows any method and path;
-// an empty list allows nothing.
+// an empty list allows nothing. A row allows a request of its method whose path its prefix
+// holds (prefixOK) and, for a row that names a host, whose CONNECT host is that host, compared
+// after fold.ASCII as every host here is.
 func allowOK(allow []Allow, r *Request) bool {
 	if allow == nil {
 		return true
 	}
 	for _, a := range allow {
-		if a.Method == r.Method && strings.HasPrefix(r.Path, a.PathPrefix) {
+		if a.Method == r.Method && (a.Host == "" || fold.ASCII(a.Host) == r.ConnectHost) && prefixOK(a.PathPrefix, r.Path) {
 			return true
 		}
 	}
 	return false
+}
+
+// AllowHosts is the hosts an allow narrows its kind's to, and whether it narrows them, by
+// allowOK's host rule: a row that names a host allows a request to that host alone, and a row
+// that names none allows one to every host of the kind. So an allow that is missing (nil), or
+// that holds a row of no host, does not narrow the hosts, and it answers nil and false: the
+// kind's hosts stand. Otherwise it answers each host its rows name, once and in the order they
+// first name it, after fold.ASCII, as allowOK compares a row's host, and true; so two rows of
+// "API.GitHub.com" and "api.github.com" are one host, as they are to the proxy. For an allow that
+// is present and empty, which allows nothing, that is an empty list that is not nil, since such an
+// allow reaches no host.
+//
+// It is the one statement of this rule for every reader that shows or compares where a name's
+// credential may go: the approval page an approver reads, and `envoy-broker profiles check`'s
+// widens report.
+func AllowHosts(allow []Allow) (hosts []string, narrowed bool) {
+	if allow == nil {
+		return nil, false
+	}
+	hosts = []string{}
+	for _, row := range allow {
+		if row.Host == "" {
+			return nil, false
+		}
+		if host := fold.ASCII(row.Host); !slices.Contains(hosts, host) {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts, true
+}
+
+// prefixOK reports whether a path prefix holds path: the path is the prefix, or continues it at
+// a "/" boundary, which is a prefix that ends with "/" or a path whose next character is "/".
+// So "/storage-limit" holds "/storage-limit" and "/storage-limit/7" and not "/storage-limitX",
+// which a plain starts-with would let through to another route.
+func prefixOK(prefix, path string) bool {
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	return len(path) == len(prefix) || strings.HasSuffix(prefix, "/") || path[len(prefix)] == '/'
+}
+
+// Covers reports whether old covers row by the conservative cover rule, which may refuse a row
+// old does cover and never accepts one it does not: an old list that is missing (nil) covers
+// every row; otherwise a row of old of the same method covers it when the row's prefix equals the
+// old prefix or continues it at a "/" boundary (prefixOK), and the old row names no host or the
+// row's host. The policy load holds a profile's rows to its kind's allow by it, and `envoy-broker
+// profiles check --against` holds each served name's rows under the new file to its rows under the
+// old one.
+func Covers(old []Allow, row Allow) bool {
+	if old == nil {
+		return true
+	}
+	for _, o := range old {
+		if o.Method == row.Method && (o.Host == "" || fold.ASCII(o.Host) == fold.ASCII(row.Host)) && prefixOK(o.PathPrefix, row.PathPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Outside is each row of rows that old does not cover (Covers), in the order rows names them,
+// nil when old covers every one.
+func Outside(old, rows []Allow) []Allow {
+	var out []Allow
+	for _, row := range rows {
+		if !Covers(old, row) {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // methodOverrideHeaders are the header names a service may read the request's method from
@@ -278,6 +493,60 @@ func hasMethodOverride(r *Request) bool {
 			if fold.ASCII(h[0]) == n {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// methodOverrideParameter is the query parameter name a service may read the request's method
+// from instead of the method on the request line: Laravel, Symfony and Express's method-override
+// middleware read "_method".
+const methodOverrideParameter = "_method"
+
+// hasMethodOverrideParameter reports whether the query, as the command sent it, holds a parameter
+// that a service reads as "_method", whatever its value or none. The query is split on "&" and on
+// ";" (PHP's arg_separator.input may hold either, and a split on more can only refuse more), and a
+// part's name is its text before its first "=", or the whole part when it has none. Each name is
+// read as those services read it, since a name compared as it was sent would let
+// "_meth%6Fd=DELETE" through to one that decodes it:
+//   - it is decoded with url.QueryUnescape, which reads "+" as a space, as Express's querystring
+//     and PHP's $_GET do;
+//   - it is cut at its first NUL byte, as PHP and Symfony's HeaderUtils::parseQuery cut a decoded
+//     name, so "_method%00x" is "_method" there;
+//   - its leading spaces are dropped, and ".", " " and "[" are read as "_", so ".method" and
+//     "+_method" are "_method" too. PHP reads "." and a space so; it drops a name that opens with
+//     "[" rather than reading it as "_", so "[method" is refused here though PHP reads no
+//     "_method" in it, which only refuses more;
+//   - and it is compared after fold.ASCII.
+//
+// A name that does not decode, a "%" with no two hex digits after it, is one no reader of the
+// airlock's can say the service does not read as "_method", so it counts as one. As with the
+// header, the value is the service's to read, so the airlock refuses the parameter rather than
+// deciding which method it names.
+//
+// Two "_method"s are not refused. A "_method[]" or "_method[x]" parameter: PHP makes
+// $_GET['_method'] an array of it, which Symfony's getMethod does not read, and Express's
+// method-override middleware reads no key "_method[]". And a "_method" field of a form body,
+// which Rails, Laravel and Symfony honour: the decision reads no body, which internal/cipher/proxy
+// streams to the service unread.
+func hasMethodOverrideParameter(query string) bool {
+	for _, part := range strings.Split(strings.ReplaceAll(query, ";", "&"), "&") {
+		raw, _, _ := strings.Cut(part, "=")
+		name, err := url.QueryUnescape(raw)
+		if err != nil {
+			return true
+		}
+		if i := strings.IndexByte(name, 0); i >= 0 {
+			name = name[:i]
+		}
+		read := []byte(strings.TrimLeft(name, " "))
+		for i, c := range read {
+			if c == '.' || c == ' ' || c == '[' {
+				read[i] = '_'
+			}
+		}
+		if fold.ASCII(string(read)) == methodOverrideParameter {
+			return true
 		}
 	}
 	return false
@@ -302,46 +571,123 @@ func hasDotSegment(path string) bool {
 	return false
 }
 
-// check is the one decision both Decide and Rewrite take: the entry the request may carry,
-// or the reason it may not. The reasons, and the order they are reported in, are the Lean
-// model's.
+// hasEmptySegment reports whether the path holds an empty segment: two slashes in a row. A
+// reader that merges them reads "/a//b" as "/a/b" and one that does not reads another route, so
+// under an allow list the airlock carries neither (check). A trailing slash is no empty segment
+// here.
+func hasEmptySegment(path string) bool {
+	return strings.Contains(path, "//")
+}
+
+// hasEncodedSlash reports whether the path as the command sent it holds a percent-encoded "/",
+// "%2F" or "%2f". The decoded path reads it as a separator and a service may read it as a byte of
+// one segment, so an allow prefix would bound one path and the service read another.
+func hasEncodedSlash(rawPath string) bool {
+	return strings.Contains(fold.ASCII(rawPath), "%2f")
+}
+
+// hasBackslash reports whether the path as the command sent it holds a "\", literal or
+// percent-encoded ("%5C" or "%5c"). A reader that takes "\" for a "/" (the WHATWG URL standard
+// does, for an https URL) reads "/v1/x\..\..\admin" as "/admin", outside the "/v1/" prefix the
+// literal path is inside, so an allow prefix would bound one path and the service read another.
+// The proxy fills RawPath from URL.EscapedPath, which writes a literal "\" as "%5C"; both
+// spellings are read here so that the rule does not rest on that.
+func hasBackslash(rawPath string) bool {
+	return strings.Contains(rawPath, `\`) || strings.Contains(fold.ASCII(rawPath), "%5c")
+}
+
+// hasDotSegmentParameter reports whether the path holds a segment whose text before its first
+// ";" is "." or "..": "/v1/..;/admin", "/v1/..;x/admin" or "/a/.;/b". Tomcat, Jetty and Spring
+// cut a ";" parameter off a segment before they resolve dot segments, so they read
+// "/v1/..;/admin" as "/admin", where the whole-segment dot rule (hasDotSegment) sees no dot
+// segment. It reads the decoded path, which holds a ";" for a ";" the command sent as "%3B" and a
+// "." for a "%2E", so each of those spellings is read too.
+func hasDotSegmentParameter(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if before, _, _ := strings.Cut(segment, ";"); before == "." || before == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// decodedEscapes are what a once-decoded path holds where the command sent a "%" escaped: the
+// escape of a "/", a "." and a "\", and of a "%" itself, held ASCII-lower-cased as the path is
+// compared.
+var decodedEscapes = []string{"%2f", "%2e", "%5c", "%25"}
+
+// hasDoubleEncoding reports whether the decoded path holds "%2F", "%2E", "%5C" or "%25", in either
+// case. A "%" reaches the decoded path only from a "%25" the command sent, however it spelled the
+// rest ("%252F", "%25%32%46", "%252%46" and "%25%32f" all decode to "%2F"), so a server that
+// decodes a second time reads a "/", a "." or a "\" there, and one that decodes three times or
+// more reads one behind a "%25". An allow prefix would then bound one path and that server read
+// another. The other path rules read the path as sent and as decoded once, which hold no such
+// character.
+func hasDoubleEncoding(path string) bool {
+	folded := fold.ASCII(path)
+	for _, e := range decodedEscapes {
+		if strings.Contains(folded, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// Admit is every rule of the decision that reads no value: the kind the request may carry, or
+// the reason it may not. The proxy asks it of a request to a minted capability before its value
+// exists, so a request it refuses mints nothing. check asks it first and reads the one rule left,
+// a header already carrying the value, after it, so Decide and Rewrite refuse every value with
+// the same reason. The reasons, and the order they are reported in, are the Lean model's.
 //
-// Two of the eleven refusals are about the request rather than about the entry. The CONNECT
-// port must be 443: every name the decision compares - the CONNECT host, the TLS name and
-// the Host header - carries no port, so 443 is the only port the rules speak about, and
-// another port of one name is another service. It is read above the two name comparisons
-// because the port is part of what the CONNECT named.
+// The name's binding gives its kind, whose hosts and allow bind every secret of the kind, and its
+// profile's own allow, which narrows that one name: a request goes through only when both allow
+// it, so a profile never widens its kind.
 //
-// A path that holds a dot segment is refused whatever the entry's allow list says, an entry
-// with no allow list included: an entry's path prefix bounds the path the service will read,
-// and a reader that resolves dot segments first - which is what RFC 3986 section 5.2.4 says
-// a path means - reads "/v1/../admin" as "/admin", outside a "/v1/" prefix the literal path
-// is inside. A path two readers resolve differently is a path neither can be held to, so it
-// is refused rather than resolved here, which keeps one path in the decision and in what is
-// forwarded. It is read directly above the allow list because it is what makes that rule
-// mean what it says.
+// Two of the refusals are about the request's port and names. The CONNECT port must be 443:
+// every name the decision compares - the CONNECT host, the TLS name and the Host header - carries
+// no port, so 443 is the only port the rules speak about, and another port of one name is another
+// service. It is read above the two name comparisons because the port is part of what the
+// CONNECT named.
 //
-// A request carrying a method override header is refused when, and only when, the entry has
-// an allow list. allowOK compares the method on the request line, while a service that reads
-// X-HTTP-Method-Override (Google's APIs do) or one of its two other spellings acts on the
-// method that header names, so an entry allowing {POST, /prefix} would carry the value on a
-// PATCH or a DELETE under that prefix. The header is refused rather than the method it names,
-// because which services read it, and which of them read which spelling, is not something the
-// rules file says. An entry with no allow list allows every method already, so such a header
-// takes nothing away from it and is not refused. It is read directly below the allow list,
-// for the same reason the dot segment is read directly above it: it is what makes that rule
-// mean what it says.
-func check(rules Rules, g Grant, value string, r *Request) (*SecretRule, string) {
+// A path that holds a dot segment is refused for every kind: no client means one, and a reader
+// that resolves it (RFC 3986 section 5.2.4) reads another path than the literal one. A path that
+// holds an empty segment, a dot segment with a ";" parameter or an escaped "/", ".", "\" or "%"
+// left after one decoding, or a raw path that holds a percent-encoded "/" or a "\" in any
+// spelling, is refused when, and only when, the kind or the profile has an allow list: an allow
+// prefix bounds the path the service will read, and a reader that merges slashes, cuts ";"
+// parameters before it resolves dot segments, decodes "%2F", takes "\" for "/" or decodes twice
+// first reads another path than the literal one the prefix holds. With neither list every path of
+// the kind's hosts is allowed already, so such a path escapes no prefix, and real clients send
+// them: Cloud Storage's JSON API names the object dir/obj as "dir%2Fobj", and an S3 key may hold
+// "//". The path rules are read directly above the allow lists because they are what makes those
+// rules mean what they say.
+//
+// A request carrying a method override header, or a method override parameter in its query, is
+// refused when, and only when, the kind or the profile has an allow list. allowOK compares the
+// method on the request line, while a service that reads X-HTTP-Method-Override (Google's APIs
+// do), one of its two other spellings, or a "_method" parameter acts on the method that names,
+// so a list allowing {POST, /prefix} would carry the value on a PATCH or a DELETE under that
+// prefix. The header and the parameter are refused rather than the method they name, because
+// which services read them is not something the rules say. With neither list every method is
+// allowed already, so they take nothing away and are not refused. They are read directly below
+// the allow lists, for the same reason the path rules are read directly above them.
+func Admit(rules Rules, g Grant, r *Request) (*Kind, string) {
 	if g.Placeholder == "" {
 		return nil, "empty placeholder"
 	}
-	sr := rules.Lookup(g.Secret)
-	switch {
-	case sr == nil:
+	b := rules.Lookup(g.Secret)
+	if b == nil {
 		return nil, "unknown secret"
-	case len(sr.Hosts) == 0:
+	}
+	k := rules.KindOf(b)
+	if k == nil || len(k.Hosts) == 0 {
 		return nil, "secret not behind airlock"
-	case !HostBound(sr.Hosts, r.ConnectHost):
+	}
+	// listed is whether the kind or the profile has an allow list, which the rules that keep a
+	// list meaning what it says are read under.
+	listed := k.Allow != nil || b.Allow != nil
+	switch {
+	case !HostBound(k.Hosts, r.ConnectHost):
 		return nil, "host not bound"
 	case r.ConnectPort != 443:
 		return nil, "connect port is not 443"
@@ -351,20 +697,44 @@ func check(rules Rules, g Grant, value string, r *Request) (*SecretRule, string)
 		return nil, "host header mismatch"
 	case hasDotSegment(r.Path):
 		return nil, "path has a dot segment"
-	case !allowOK(sr.Allow, r):
+	case listed && hasEmptySegment(r.Path):
+		return nil, "path has an empty segment"
+	case listed && hasEncodedSlash(r.RawPath):
+		return nil, "path has an encoded slash"
+	case listed && hasBackslash(r.RawPath):
+		return nil, "path has a backslash"
+	case listed && hasDotSegmentParameter(r.Path):
+		return nil, "path has a parameter on a dot segment"
+	case listed && hasDoubleEncoding(r.Path):
+		return nil, "path has a double-encoded character"
+	case !allowOK(k.Allow, r):
 		return nil, "not allowed by rule"
-	case sr.Allow != nil && hasMethodOverride(r):
+	case !allowOK(b.Allow, r):
+		return nil, "not allowed by the profile's rule"
+	case listed && hasMethodOverride(r):
 		return nil, "request carries a method override header"
+	case listed && hasMethodOverrideParameter(r.Query):
+		return nil, "request carries a method override parameter"
+	}
+	return k, ""
+}
+
+// check is the one decision both Decide and Rewrite take: Admit's rules and then the one rule
+// that reads the value.
+func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
+	k, why := Admit(rules, g, r)
+	if k == nil {
+		return nil, why
 	}
 	// A request that already carries the real value learnt it somewhere other than this
 	// swap, so the airlock refuses it rather than forwarding it. The scan reads every
-	// header, not only the ones the entry names, and an entry with a kind is not exempt.
+	// header, not only the ones the kind names, and no way is exempt.
 	for _, h := range r.Headers {
 		if Carries(value, h[1]) {
 			return nil, "request already carries the value"
 		}
 	}
-	return sr, ""
+	return k, ""
 }
 
 // Decide reports whether the request may carry the secret, and the reason it may not.
@@ -373,25 +743,47 @@ func Decide(rules Rules, g Grant, value string, r *Request) (bool, string) {
 	return why == "", why
 }
 
-// Rewrite returns the request with the placeholder swapped for value in the headers the
-// entry names, or nil when Decide refuses. It changes no header name, no header order, not
-// the query and not the body.
+// Rewrite returns the request with the placeholder swapped for value in the headers the kind
+// names, and with every Cipher-Repository header removed, or nil when Decide refuses. It changes
+// no other header's name, keeps the order of the headers it keeps, and leaves the query and the
+// body as they came.
 func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
-	sr, _ := check(rules, g, value, r)
-	if sr == nil {
+	k, _ := check(rules, g, value, r)
+	if k == nil {
 		return nil
 	}
-	names := sr.HeaderNames()
+	return swap(k, g.Placeholder, value, r)
+}
+
+// SwapForScan returns a copy of r with the placeholder replaced by a space in the headers kind
+// names, and with every Cipher-Repository header removed. It takes no decision: the caller has
+// already decided with Rewrite or Decide. The proxy port's leftover scan calls it to read the
+// request as the command wrote it with only the swapped placeholder separated by a space, so text
+// on either side of it is never joined into a false prefix match. No value parameter is exposed:
+// every caller outside proxyrules that needs a value goes through Rewrite, which decides first.
+func SwapForScan(kind *Kind, placeholder string, r *Request) *Request {
+	return swap(kind, placeholder, " ", r)
+}
+
+// swap is the body Rewrite and SwapForScan share: placeholder swapped for value in the headers
+// kind names, and every Cipher-Repository header removed. Rewrite is check and then swap, as the
+// Lean model's rewriteReq is check and then the same filter and map over the headers (keepHeader,
+// swapHeader), so the contract with that model is the contract of check and Rewrite as before.
+func swap(k *Kind, placeholder, value string, r *Request) *Request {
+	names := k.HeaderNames()
 	out := *r
-	out.Headers = make([][2]string, len(r.Headers))
-	for i, h := range r.Headers {
-		out.Headers[i] = h
+	out.Headers = make([][2]string, 0, len(r.Headers))
+	for _, h := range r.Headers {
+		if fold.ASCII(h[0]) == CipherRepositoryHeader {
+			continue
+		}
 		for _, n := range names {
 			if fold.ASCII(h[0]) == fold.ASCII(n) {
-				out.Headers[i][1] = substitute(g.Placeholder, value, h[1])
+				h[1] = substitute(placeholder, value, h[1])
 				break
 			}
 		}
+		out.Headers = append(out.Headers, h)
 	}
 	return &out
 }

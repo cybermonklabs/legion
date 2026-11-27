@@ -9,11 +9,12 @@
 // the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
 // controller probe, which is another module and so needs this package public.
 //
-// It imports the standard library alone (deps_test.go), so a client links nothing of the server
-// by reading its bodies, and clients_test.go holds each of those clients to these types: one that
-// encodes or decodes a body of its own, even one field of one, fails it. The load-test harness's
-// main package also calls Dispatch, NATS and Cloud SQL, so the test reads its listener client
-// instead, and holds the main package to naming no listener route of its own.
+// It imports the standard library and httpoutage, which imports nothing else (deps_test.go), so a
+// client links nothing of the server by reading its bodies, and clients_test.go holds each of those
+// clients to these types: one that encodes or decodes a body of its own, even one field of one,
+// fails it. The load-test harness's main package also calls Dispatch, NATS and Cloud SQL, so the
+// test reads its listener client instead, and holds the main package to naming no listener route
+// of its own.
 //
 // A request's fields are omitempty but where the listener reads an absent field differently from
 // an empty one: the listener only decodes a request, so each client sends the fields it sets. A
@@ -24,7 +25,39 @@
 // always written them with.
 package listenerwire
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/sjawhar/envoy/httpoutage"
+)
+
+// FaultStatus is the one outage status the listener answers its API routes with for its own
+// lasting answer, so its clients read it as the listener answering, not as an outage, though it
+// is a 5xx: the listener gives it the same way however often it is asked, and with no Retry-After.
+// On the routes its Go clients call it means a record the listener cannot decode - a role's claim
+// record (GET /v1/roles/<role>) or a session's interest record (GET /v1/registry/<session_id> and
+// the interest reads) - or, on a write route (POST /v1/interests/unsubscribe, DELETE
+// /v1/sessions/<session_id> and the listener's other writes), an answer its store gave (a key the
+// store refuses, no key, a conditional write another writer beat, a record it cannot decode), and
+// on the listings of GET /v1/sessions and GET /v1/interests/ a failure of the copy they serve from
+// other than a refill, which is their 503. Its bus failing, which asking again can clear, it
+// answers 503 with Retry-After: 1, never this. The listener writes it through this constant, and
+// Outage excepts it.
+const FaultStatus = http.StatusInternalServerError
+
+// Outage reports whether status, the answer of a route of the listener's API to a caller that
+// presents the listener's bearer token, is the listener not answering now, which asking again a
+// little later can clear: an outage (httpoutage.Is) but FaultStatus, the listener's own lasting
+// answer. The listener's bus failing is its 503, which clears; a 502, 503 or 504 also comes from a
+// gateway in front of a listener that is gone; and a 408, a 429, a 501 or a 505 comes only from
+// something in front of the listener, since the listener, a Go server, answers no 408 and neither
+// 501 nor 505 on the routes its Go clients call, and its 429s reach no caller that presents its
+// bearer token (they answer a DPoP token presented too often, an agent's sending and the relay
+// socket).
+func Outage(status int) bool {
+	return httpoutage.Is(status) && status != FaultStatus
+}
 
 // SessionState is what a session's last registration says about it: live, unresponsive or gone.
 // The listener's internal/session declares its values (session.Live, session.Unresponsive and
@@ -58,9 +91,10 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
-// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
-// request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling; a send's or publish's 503 that may have
+// stored the message, CodeMaybeStored; and a role claim's 503 that stands with no handover
+// recorded, CodeHandoverUnrecorded); every other answer leaves it out. Expected names the request
+// fields the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
@@ -74,6 +108,29 @@ type APIError struct {
 // same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeHandoverUnrecorded is the code of POST /v1/roles/set's 503 for a claim that landed and
+// stands, and names the session it replaces (previous_session_id), whose handover of that
+// session's unread messages was not recorded: the rule that holds a handover to one principal
+// could not be read, or the handover record did not store. The claimant holds the role; a caller
+// claims again (Retry-After: 1), and the claim it makes again judges and writes the handover.
+// Every other 503 of that route is a claim that wrote nothing.
+const CodeHandoverUnrecorded = "handover_unrecorded"
+
+// ReadsHeader is the request header in which a client of the send and the publish routes names
+// the answers it reads beyond the whole envelope every client release reads, as a comma-separated
+// list of tokens; the listener reads it on those two routes alone. ReadsKeyTaken is the one token
+// there is: the key-taken answer, which a request gets for a copy another sender stored under its
+// message id. That answer carries the copy's event_id, topic, dedupe_key, times and expects_reply
+// with Duplicate, and leaves every other string field empty, so a client that parses each answer
+// as a whole envelope (@legion/envoy-client before it sent this header) rejects it. A request that
+// does not name ReadsKeyTaken gets, for such a copy, the envelope the listener built for it, with
+// Duplicate: a whole envelope, as a listener before the key-taken answer gave every repeat.
+// @legion/envoy-client names ReadsKeyTaken on a send or a publish that names its source_session.
+const (
+	ReadsHeader   = "Envoy-Reads"
+	ReadsKeyTaken = "key-taken"
+)
 
 // EdgeRefusal is the body of an edge listener's refusal of a request its token's projects do not
 // cover (ENVOY_EDGE_PROJECTS). Reason names the rule: token_not_admitted, topic_not_in_project,
@@ -133,7 +190,9 @@ type SendRequest struct {
 
 // PublishRequest is the body of POST /v1/messages/publish: a message for a topic, a role's among
 // them. Keep false asks the listener to refuse a role nobody holds with its 404 rather than keep
-// the message for the role's next holder, which is what it does when Keep is absent.
+// the message for the role's next holder, which is what it does when Keep is absent. A role
+// message whose MessageBody names no SourceSession is refused with that 404 whatever Keep says,
+// since the dead letter of a kept copy that expires goes to the source session alone.
 type PublishRequest struct {
 	MessageBody
 	Topic string `json:"topic,omitempty"`
@@ -141,7 +200,17 @@ type PublishRequest struct {
 }
 
 // SendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
-// this message, so the stream stored nothing new; the publish still reached the agent's subject.
+// another request's copy of this message, so the stream stored nothing new; the publish still
+// reached the agent's subject. The envelope then comes from the copy the stream holds, read back
+// at the sequence its duplicate verdict named (the listener's publishHeld): that copy whole, for
+// its own sender, whose source and source_session are the request's, a token's session where the
+// request presents one; the key-taken answer, for a request that names ReadsKeyTaken
+// (ReadsHeader); and the envelope the listener built for this request, for any other, which no
+// stored message carries. A copy that names no session is whole only for its own request (the
+// same event_id). A verdict that names this request's own copy, which a resend after a closed
+// connection can, answers that copy with no Duplicate. A copy that cannot be read is the 503 with
+// Retry-After: 1 that the listener writes under its storedCopyUnreadablePrefix, never an envelope
+// the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow in the listener's module). It can only be
 // true for a send whose dedupe key names the upstream event
@@ -153,10 +222,11 @@ type PublishRequest struct {
 // listener's answer reads as.
 type SendResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
-	// (the listener's expectsReplyAnswer). It shadows the embedded envelope's own field: of two
-	// fields sharing one JSON name encoding/json writes the shallower, so these bytes are what
-	// the answer carries and every SendResponse the listener builds fills them.
+	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
+	// dialect the request spoke where the two agree (the listener's expectsReplyAnswer). It
+	// shadows the embedded envelope's own field: of two fields sharing one JSON name
+	// encoding/json writes the shallower, so these bytes are what the answer carries and every
+	// SendResponse the listener builds fills them.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Recipient    string          `json:"recipient"`
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
@@ -186,16 +256,24 @@ type SendResponse struct {
 // kept copy's hour in Unix milliseconds, named as the publish route's kept answer names them
 // (PublishResponse). The message reaches the session that holds the role then, live, through the
 // lane's walk. It carries no recipient_state and no state: the message was not stored for the
-// target, so nothing about the target was read.
+// target, so nothing about the target was read. The envelope is the copy the lane holds, as
+// PublishResponse's kept answer gives it: whole for its own sender, and, with Duplicate, the
+// key-taken answer or the envelope built for the request for a copy another sender kept under the
+// same key (SendResponse).
 type KeptSendResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
-	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
+	// ExpectsReply is this answer's expects_reply: the kept copy's, written in the dialect the
+	// request spoke where the two agree, shadowing the embedded envelope's own field exactly as
+	// SendResponse.ExpectsReply does.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Recipient    string          `json:"recipient"`
 	Holder       string          `json:"holder,omitempty"`
 	Kept         bool            `json:"kept"`
 	KeptUntil    int64           `json:"kept_until"`
+	// Duplicate reports that the kept copy is another request's, as PublishResponse.Duplicate
+	// reports it for the publish route's kept answer. Absent means false, which is what an older
+	// listener's answer reads as.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 // NoLiveSessionRefusal is the 404 of a send, or of a registry lookup, for a session the listener
@@ -222,11 +300,12 @@ type NoLiveSessionRefusal struct {
 // holds the role and the message waits on the role's kept lane until KeptUntil for the next
 // session that holds it live; 404, nothing was kept. Each field is left out when it is empty, so
 // a role send carries no recipient count and a publish to a topic the stream captures carries the
-// envelope and its counts alone.
+// envelope and its counts alone, and Duplicate where the stream already held the message.
 type PublishResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
-	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
+	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
+	// dialect the request spoke where the two agree, shadowing the embedded envelope's own field
+	// exactly as SendResponse.ExpectsReply does.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Holder       string          `json:"holder,omitempty"`
 	HolderState  SessionState    `json:"holder_state,omitempty"`
@@ -253,6 +332,17 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Duplicate reports that the stream already held another request's copy of this message,
+	// under this one's message id, so it stored nothing new and the envelope comes from the copy it
+	// holds (the listener's publishHeld) as a send's does (SendResponse). Only a
+	// publish whose dedupe key names its event gets a message id
+	// (contracts.DedupeKeyNamesTheUpstreamEvent in the listener's module), so only such a repeat
+	// gets it: the shared transport's, under the idempotency_key it mints once per message, among
+	// them. A role send's 200 carries it for a forward the stream already held for its holder (the
+	// listener's roleSend.deliveredHeld), whatever the key's form, since every forward has a
+	// message id, and its 202 for a repeat whose kept copy is another request's (roleSend.kept).
+	// Absent means false, which is what an older listener's answer reads as.
+	Duplicate bool `json:"duplicate,omitempty"`
 	// Warnings names a role send's role when its topic named it in the old form, the role alone,
 	// with its new form, project first ("<old> is the old form of <new>; name <new>",
 	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
@@ -366,6 +456,22 @@ type SessionRegistration struct {
 type DeleteSessionResponse struct {
 	Deleted *bool  `json:"deleted"`
 	Reason  string `json:"reason,omitempty"`
+}
+
+// SessionSuccessors is what GET /v1/sessions/<session_id>/successors answers: the sessions that
+// replaced SessionID, sorted and each once - each a handover record names as its successor
+// (bus.Client.HandoverSuccessors), and each that replaced one of those in turn, while each last
+// registered as the principal SessionID did - which the listener copies that session's unread
+// messages to. Successors is the empty list, never null, for a session no record names.
+// Principal is that principal, the one each session Successors names last registered as, in the
+// form internal/ciphertoken spells, which names the credential's kind and scope beside the person
+// or service (Caller.Principal, IdentityPrincipal; empty for a credential that proves none), and
+// empty where Successors is. Dispatch reads it to let such a session answer a delivery attempt
+// the replaced session holds, on a credential that acts for that principal.
+type SessionSuccessors struct {
+	SessionID  string   `json:"session_id"`
+	Principal  string   `json:"principal"`
+	Successors []string `json:"successors"`
 }
 
 // Interest is one session's persisted Envoy topic subscriptions, as the listener's interest bucket
@@ -546,7 +652,8 @@ type RoleHolder struct {
 }
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a
-// role send through POST /v1/messages/publish that kept nothing answers. HolderState says which
+// role send through POST /v1/messages/publish that kept nothing answers: one with keep false, one
+// that names no source session (its Error says so), or one whose keep failed. HolderState says which
 // of the three states the claim's holder is in, so a caller can tell a holder that is merely
 // unresponsive - stalled, still claiming, still being stored for - from one that is gone.
 // ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a

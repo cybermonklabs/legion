@@ -195,8 +195,11 @@ rm -f "$healthz_file"
 # contract grows, so the check reads `.status` alone and not the whole body. `jq -e` exits non-zero
 # for a body that is not JSON, for an object that holds no `status`, and for any `status` but `ok`,
 # so a URL that answers something which is not a health body still fails the run.
-[ "$healthz_status" = 200 ] && printf '%s' "$healthz_body" | jq -e '.status == "ok"' >/dev/null 2>&1 ||
+if [ "$healthz_status" = 200 ] && printf '%s' "$healthz_body" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+  :
+else
   fail "LEGION_E2E_DAEMON_URL $LEGION_E2E_DAEMON_URL is not a Legion daemon: GET /healthz answered $healthz_status $healthz_body"
+fi
 
 dispatch_token=$(cat "$DISPATCH_TOKEN_FILE") || fail "could not read DISPATCH_TOKEN_FILE"
 [ -n "$dispatch_token" ] || fail "DISPATCH_TOKEN_FILE is empty"
@@ -654,13 +657,11 @@ $push_t_body
 }
 
 # cache <issue KEY> <pod> [container]: the named pod's legion.dev/issue label matches the issue,
-# its fetch container's log carries the producer's exact, anchored cache-stream-with-delta success
-# line (packages/daemon/cmd/legion/workspace_fetch.go:83, the form workspace_fetch_test.go:572
-# pins, with the duration fields permissive enough for Go's own minute-and-above format, 1m2.345s),
-# and the daemon's state shows that issue's repository's cache ready.
-cache_success_re='^workspace-init fetch: [0-9,]+ bytes from the repository cache .+ in [0-9a-zµ.]+, its history verified in [0-9a-zµ.]+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs?\)$'
+# its `workspace-init` log carries the producer's exact, anchored cache-stream-with-delta success
+# line, and the daemon's state shows that issue's repository cache ready.
+cache_success_re='^workspace-init: [0-9,]+ bytes from the repository cache .+ in [0-9a-zµ.]+, its history verified in [0-9a-zµ.]+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs?\)$'
 cache_check() {
-  local key=$1 pod=$2 container=${3:-workspace-fetch} repo ready logs_file ok=1
+  local key=$1 pod=$2 container=${3:-workspace-init} repo ready logs_file ok=1
   command -v kubectl >/dev/null || fail "cache: kubectl is required and is not on PATH"
   require_pod_for_issue "$pod" "$key"
   logs_file="$MULTIREPO_EVIDENCE_DIR/cache-logs-$key.raw"
@@ -864,13 +865,10 @@ negative_no_repo() {
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
   local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
+  # lib/multi-repo-none-note.jq: the daemon's latest repository note is the none-note, and a message
+  # its author deleted is no note.
   local latest_is_none
-  latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
-    [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and ((.payload.body | startswith("Legion did not admit this issue:")) or (.payload.body | startswith("Legion keeps "))))]
-    | sort_by(.seq) | last
-    | if . == null then false else (.payload.body | startswith($none + "\n\n<!-- legion-outbox:")) end
-  ' "$events_file")
+  latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" -f "$script_dir/lib/multi-repo-none-note.jq" "$events_file")
   [ "$latest_is_none" = "true" ] || ok=0
 
   summary "negative-no-repo-$key" "issues has($key): $has
@@ -947,10 +945,9 @@ negative_repo_edit() {
   # $dispatch_repo_now for the one it refused), never the operator's LEGION_E2E_REPO_X, which the
   # case-insensitive comparisons above tolerate differing from but a literal quote must not.
   note="Legion keeps $b_repo as this issue's repository; the change to $dispatch_repo_now in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for $dispatch_repo_now instead."
-  has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" '
-    any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and (.payload.body | startswith($note + "\n\n<!-- legion-outbox:")))
-  ' "$events_file")
+  # lib/multi-repo-kept-note.jq: the daemon posted the note, and a message its author deleted is no
+  # note.
+  has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" -f "$script_dir/lib/multi-repo-kept-note.jq" "$events_file")
   [ "$has_note" = "true" ] || ok=0
 
   summary "negative-repo-edit-$child" "baseline: repo=$b_repo last_seq=$b_last_seq

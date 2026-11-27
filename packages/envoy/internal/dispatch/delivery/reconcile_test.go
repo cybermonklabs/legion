@@ -28,6 +28,7 @@ import (
 // delivery -- no envelope is published anywhere in this test) is found and stored by reconcile's
 // own merged-PR search, complete, through the same upsert intake uses.
 func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -90,6 +91,7 @@ func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
 // found by the deploy workflow's run listing and upserted with its jobs, and with GitHub's
 // created_at beside run_started_at, which a re-run moves past it.
 func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	settings.ProductionApplyStepName = new("Run ./.github/actions/apply")
@@ -155,11 +157,12 @@ func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
 // its source's last_error, and last_reconcile_at is left exactly as it was -- never advanced
 // as if the pass had actually done something. Blocking per the acceptance gate.
 func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileAt(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	before, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings before reconcile: %v", err)
+		t.Fatalf("getTestRule before reconcile: %v", err)
 	}
 
 	fake := newFakeGitHub(t)
@@ -173,7 +176,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 
 	after, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after reconcile: %v", err)
+		t.Fatalf("getTestRule after reconcile: %v", err)
 	}
 	if after.LastError == nil || !strings.Contains(*after.LastError, "Actions") {
 		t.Fatalf("settings.LastError = %v, want an error naming the missing Actions permission", after.LastError)
@@ -188,6 +191,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 // completed with real session/issue attribution survives a reconcile pass that re-finds the same
 // PR via its merged-PR search, which carries no session data at all.
 func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -237,6 +241,7 @@ func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
 // RecordReconcileSuccess's own "last_error = null" is exercised here through the real reconcile
 // path, not just the bare SQL statement.
 func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	if err := RecordReconcileError(ctx, pool, deliveryRepo, "the installation lacks Actions: read on acme/widgets"); err != nil {
@@ -260,7 +265,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 
 	after, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after reconcile: %v", err)
+		t.Fatalf("getTestRule after reconcile: %v", err)
 	}
 	if after.LastError != nil {
 		t.Fatalf("settings.LastError = %v, want nil once a pass has actually succeeded", *after.LastError)
@@ -274,6 +279,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 // whose completing fetch answers a permanent 404 is marked unfetchable (not retried every pass
 // forever), and a later successful fetch of the same pull request clears it again.
 func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -347,11 +353,12 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 // a healthy pass -- last_reconcile_at must not advance past a window this pass left incompletely
 // fetched.
 func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	before, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings before reconcile: %v", err)
+		t.Fatalf("getTestRule before reconcile: %v", err)
 	}
 
 	fake := newFakeGitHub(t)
@@ -397,7 +404,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 
 	after, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after reconcile: %v", err)
+		t.Fatalf("getTestRule after reconcile: %v", err)
 	}
 	if after.LastError == nil {
 		t.Fatal("settings.LastError is nil, want the jobs-listing failure recorded by name")
@@ -420,6 +427,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 // independent successful write of its jobs -- here, standing in for intake.go's own live-webhook
 // UpsertRunJobs call, which already runs through the same shared upsert.
 func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -457,7 +465,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 	reconcile.runOnce(ctx)
 	after, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after first pass: %v", err)
+		t.Fatalf("getTestRule after first pass: %v", err)
 	}
 	if after.LastError != nil {
 		t.Fatalf("settings.LastError = %q, want nil: a permanently 404ing run's jobs must not fail the whole pass", *after.LastError)
@@ -511,6 +519,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 // starting (never more than the ones already in flight when it happened), and the pass must be
 // reported failed, not successful.
 func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConcurrency(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -561,7 +570,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 
 	after, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after reconcile: %v", err)
+		t.Fatalf("getTestRule after reconcile: %v", err)
 	}
 	if after.LastError == nil {
 		t.Fatal("settings.LastError is nil, want the rate limit recorded and the pass reported failed")
@@ -578,6 +587,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 // rate limit (reverting to "log and keep going") makes this red: the third run's jobs endpoint
 // would be called, defeating the "no further GitHub request" assertion below.
 func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -655,7 +665,7 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 	reconcile.fail(ctx, deliveryRepo, err)
 	settings, getErr := getTestRule(ctx, pool)
 	if getErr != nil {
-		t.Fatalf("GetSettings after fail: %v", getErr)
+		t.Fatalf("getTestRule after fail: %v", getErr)
 	}
 	if settings.LastError == nil {
 		t.Fatal("settings.LastError is nil, want the rate limit recorded")
@@ -961,6 +971,7 @@ func leasedReconciles(t *testing.T, ctx context.Context, pool *store.Pool, recon
 // lookup -- records failed, with that answer as its cause; and the next pass, which GitHub
 // answered, records succeeded.
 func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
 	answerGitHub(t, fake, nil)
@@ -1359,7 +1370,7 @@ func listedWorkflows(listings []workflowListing) []string {
 	return sortedSet(listed)
 }
 
-// Each source repository is walked with its own rule (dispatch://INFRA-978, T7): with three sources
+// Each source repository is walked with its own rule (dispatch://INFRA-978, D1): with three sources
 // in three repositories, two of one project, a pass lists each repository's own deploy and
 // pull-request checks workflows and no other repository's, stores each repository's run with its
 // jobs judged by that repository's production rule, keeps each listing's progress under the
@@ -1371,7 +1382,10 @@ func TestTheReconcileWalksEachDeployRepositoryWithItsOwnRule(t *testing.T) {
 	runIDs := map[string]int64{"acme/widgets": 901, "acme/gadgets": 902, "acme/tools": 903}
 	runs := map[string][]map[string]any{}
 	for _, rule := range []DeliverySettings{widgetsRule, gadgetsRule, toolsRule} {
-		runs[rule.DeployRepo+" "+rule.DeployWorkflowPath] = []map[string]any{backfillRun(runIDs[rule.DeployRepo], created)}
+		id := runIDs[rule.DeployRepo]
+		run := backfillRun(id, created)
+		run["head_sha"] = fmt.Sprintf("%040d", id)
+		runs[rule.DeployRepo+" "+rule.DeployWorkflowPath] = []map[string]any{run}
 	}
 	fake := newListingsFake(t, runs)
 
@@ -1407,6 +1421,17 @@ func TestTheReconcileWalksEachDeployRepositoryWithItsOwnRule(t *testing.T) {
 		if !maps.Equal(got, wantSteps) {
 			t.Errorf("the apply steps recorded on %s's run = %v, want its own rule's, %v", repo, got, wantSteps)
 		}
+		deploys, err := CurrentDeploys(ctx, pool, repo)
+		if err != nil {
+			t.Fatalf("read program deploys for %s: %v", repo, err)
+		}
+		if repo == toolsRule.DeployRepo {
+			if len(deploys) != 0 {
+				t.Errorf("the failed apply of %s recorded a program deploy: %+v", repo, deploys)
+			}
+		} else if len(deploys) != 1 || deploys[0].Program != "delivery" || deploys[0].Commit != run.HeadSHA {
+			t.Errorf("program deploys for %s = %+v, want its production run at %s", repo, deploys, run.HeadSHA)
+		}
 	}
 	for repo, rule := range sourcesByRepo(t, ctx, pool) {
 		if rule.LastReconcileAt == nil || rule.LastError != nil {
@@ -1421,7 +1446,7 @@ func TestTheReconcileWalksEachDeployRepositoryWithItsOwnRule(t *testing.T) {
 	}
 }
 
-// A pass records its outcome on each source repository's own source (dispatch://INFRA-978, T7): the
+// A pass records its outcome on each source repository's own source (dispatch://INFRA-978, D1): the
 // App not installed on acme/gadgets fails that repository's permission check, which its source
 // records in last_error with its last_reconcile_at left alone, and no workflow of it is listed;
 // the other two repositories are still walked, and their sources record the pass's success, the
@@ -1456,7 +1481,7 @@ func TestAReconcileRecordsItsOutcomeOnEachOwner(t *testing.T) {
 }
 
 // Two source repositories under one step kind keep their own run progress (dispatch://INFRA-978,
-// T7): delivery_reconcile_progress is keyed by step alone and a row of another scope is replaced,
+// D1): delivery_reconcile_progress is keyed by step alone and a row of another scope is replaced,
 // so under one step name each repository would restart the other's 28-day listing every pass.
 // Each keeps its own row across three passes, and the second and third passes list each from its
 // own progress less the overlap, never from the backfill window's start.

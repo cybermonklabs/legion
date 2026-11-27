@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -283,7 +283,7 @@ func TestADestinationTheParserRefusesReadsNoVisibility(t *testing.T) {
 	guard := New(Options{
 		Check:      leakguardtest.Write(t, t.TempDir(), passes),
 		Visibility: answers(Public, &asked),
-		Env:        fixtureenv.Isolated(t.TempDir()),
+		Env:        withRules(t, fixtureenv.Isolated(t.TempDir())),
 	})
 	// An owner GitHub serves none under: a name beginning with a hyphen.
 	err := guard.Text(bound(t), TextRequest{Repo: "-invented-org/invented-repo", Text: "a clean title\n"})
@@ -348,8 +348,10 @@ func stopsAfterItsInput(pids string) string {
 // the setup failure it must be, and how long the push took, once the stop the guard made of the
 // check has also ended the check's sleep (sleepEnded). onceSleeping, when it is not nil, runs as
 // soon as the check has written its sleep's pid, and the row then requires that sleep's end. The
-// shared check runs before a push reads anything of its repository, so the push needs none.
-func stoppedPush(t *testing.T, ctx context.Context, onceSleeping func()) (*SetupFailure, time.Duration) {
+// shared check runs before a push reads anything of its repository, so the push needs none. It
+// also answers the path of the file the check wrote its sleep's pid to, whose time of writing
+// bounds when the check had started (TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound).
+func stoppedPush(t *testing.T, ctx context.Context, onceSleeping func()) (*SetupFailure, time.Duration, string) {
 	t.Helper()
 	pids := filepath.Join(t.TempDir(), "sleep")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), stopsAfterItsInput(pids)), Public)
@@ -385,13 +387,12 @@ func stoppedPush(t *testing.T, ctx context.Context, onceSleeping func()) (*Setup
 	<-watched
 	failed := setupFailure(t, err)
 	sleepEnded(t, pids, onceSleeping != nil)
-	return failed, took
+	return failed, took, pids
 }
 
 // answered runs call and waits for it to return with the test binary's deadline as its only bound
-// (testwait.Receive). Each call here is a read under a stand-in that does not answer on its own,
-// so only the guard's stop can end it: a stop that never comes fails the row by name before the
-// package's timeout, and a stop that a loaded machine makes slow passes.
+// (testwait.Receive): a call that never returns fails the row by name before the package's
+// timeout, and one a loaded machine makes slow passes.
 func answered(t *testing.T, what string, call func()) {
 	t.Helper()
 	done := make(chan struct{})
@@ -463,45 +464,103 @@ func says(t *testing.T, failed *SetupFailure, wants ...string) {
 	}
 }
 
+// stopSaid is the sentence the stop beneath err says of program, in the whole seconds the guard
+// counted, once that stop is held to the deadline of ctx, the caller's context. The guard counts
+// from the moment it started program (Guard.run), so the start it counted from is the deadline
+// less the bound, and the moment of the stop is that start plus the run. The start must come no
+// earlier than called, when the test made the call, and before the deadline, since the bound is
+// what was left of it; the stop no earlier than the deadline, which is what ended program, and no
+// later than now, after the call answered. So the bound is more than 0 and no more than the
+// caller's, and the run no shorter than the bound. No comparison rounds to a second, so however
+// long the guard took before it started program, the verdict is the same.
+func stopSaid(t *testing.T, ctx context.Context, err error, program string, called time.Time) string {
+	t.Helper()
+	answered := time.Now()
+	var stopped *stoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("%v carries no stop of %s beneath it", err, program)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("the caller's context has no deadline to hold the stop to")
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("the caller's context ended with %v, want its deadline to have stopped %s", ctx.Err(), program)
+	}
+	began := deadline.Add(-stopped.bound)
+	ended := began.Add(stopped.ran)
+	if stopped.program != program || stopped.cancelled || began.Before(called) || !began.Before(deadline) ||
+		ended.Before(deadline) || ended.After(answered) {
+		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the call and %s before the deadline, "+
+			"ended %s after the deadline and %s before the call answered; want a stop of %s by the deadline, begun after the "+
+			"call and before the deadline, ended at or after the deadline and before the call answered",
+			err, stopped.program, stopped.cancelled, began.Sub(called), deadline.Sub(began), ended.Sub(deadline), answered.Sub(ended), program)
+	}
+	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s",
+		program, int64(stopped.ran.Round(time.Second)/time.Second), int64(stopped.bound.Round(time.Second)/time.Second))
+}
+
 // A shared check its bound stops is a setup failure that names the check, the time it ran and
 // the bound it had, once, so a person reading the line can tell a check given too little time
 // from one that hung. The seconds are read against the caller's bound (stoppedByItsBound), never
 // for an exact count: the bound is what was left of the caller's deadline when the check started,
-// and on a loaded machine the guard's own work before the check takes longer. The kill reaches the
-// sleep bash started in the check's own process group (stoppedPush): a sleep the kill missed would
-// hold the output pipe open, and exec would wait its WaitDelay for it.
+// and on a loaded machine the guard's own work before the check takes longer. Where the stand-in
+// wrote its sleep's process id before the bound ended, the bound also has a floor: the check
+// started before that file was written, so the bound is no shorter than what was left of the
+// deadline when the file was written, less 50 ms for the file's coarser clock. Rounding to whole
+// seconds keeps that order, so the floor needs no more slack. The floor is what a wrong bound
+// fails, so the caller's bound is 10 s, long enough that the stand-in has written its process id
+// before it ends: at a load average of 1,500, a bound of 2 s left the file unwritten in some runs.
+// Where there is no file there is no floor to read; a file written after the deadline, before the
+// stop reached the stand-in, gives a floor of 0 s or less, which any bound meets, so the test asks
+// for no floor either way. A run with no file says in its log that it read no floor, and any other
+// failure to read the file fails the test, since it says nothing of when the stand-in wrote. The
+// kill reaches the sleep bash started in the check's own process group (stoppedPush): a sleep the
+// kill missed would hold the output pipe open, and exec would wait its WaitDelay for it.
 func TestASharedCheckStoppedByItsBoundNamesTheCheckItsTimeAndItsBound(t *testing.T) {
-	const theBound = 2 * time.Second
+	const theBound = 10 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), theBound)
 	defer cancel()
-	failed, _ := stoppedPush(t, ctx, nil)
+	failed, _, pids := stoppedPush(t, ctx, nil)
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("the push answered %q inside the caller's %s: the caller's deadline did not stop the check", failed.Error(), theBound)
 	}
 	stoppedByItsBound(t, failed, theBound)
+	written, err := os.Stat(pids)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		t.Logf("the stand-in wrote no process id before its bound ended: no floor read")
+	case err != nil:
+		t.Fatal(err)
+	default:
+		deadline, _ := ctx.Deadline()
+		floor := wholeSeconds(deadline.Sub(written.ModTime()) - 50*time.Millisecond)
+		if _, bound, _ := sharedStop(t, failed); bound < floor {
+			t.Errorf("the setup failure says %q: a bound of %d s, want one no shorter than the %d s left of the deadline when the stand-in wrote its sleep's process id, after the check had started",
+				failed.Error(), bound, floor)
+		}
+	}
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
 	}
 }
 
-// theCancel is the sentence a setup failure says of a shared check a cancel stopped
-// (stoppedError.said): the whole seconds the check ran.
-var theCancel = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by a cancel$`)
-
 // A shared check that a cancel stops, under a context with no deadline, says that a cancel
-// stopped it and how long it ran: there is no bound to name. The cancel comes once the check has
-// started its sleep (stoppedPush), so the row reads the kill reaching that sleep in every run, and
-// the run is read against the push's own time, never for an exact count.
+// stopped it and how long it ran: there is no bound to name. The cancel comes 2 s after the check
+// started its sleep (stoppedPush), so the check has run at least that long however late it started,
+// and the row reads the kill reaching that sleep in every run. The run is read between that floor
+// (stoppedByACancel) and the push's own time, never for an exact count.
 func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
+	const after = 2 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	failed, took := stoppedPush(t, ctx, cancel)
-	said := theCancel.FindStringSubmatch(failed.Why)
-	if said == nil {
-		t.Fatalf("the setup failure says %q, want the shared check stopped by a cancel", failed.Error())
-	}
-	if ran, err := strconv.ParseInt(said[1], 10, 64); err != nil || ran > wholeSeconds(took) {
-		t.Errorf("the setup failure says %q: a run of %s s, want one no longer than the push's own %s", failed.Error(), said[1], took.Round(time.Millisecond))
+	failed, took, _ := stoppedPush(t, ctx, func() {
+		time.Sleep(after)
+		cancel()
+	})
+	stoppedByACancel(t, failed, after)
+	if ran, _, _ := sharedStop(t, failed); ran > wholeSeconds(took) {
+		t.Errorf("the setup failure says %q: a run of %d s, want one no longer than the push's own %s", failed.Error(), ran, took.Round(time.Millisecond))
 	}
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
@@ -573,9 +632,10 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 // The bound is what was left of the caller's deadline when the child started (Guard.run), so the
-// row reads the figures the guard made (stoppedAtTheCallersDeadline), never a count of seconds the
-// test supposes: on a loaded machine the guard's own work before the child, the shared check above
-// all, takes longer and leaves the child less of the caller's 2 s.
+// row reads the figures the guard made, never a count of seconds the test supposes: on a loaded
+// machine the guard's own work before the child, the shared check above all, takes longer and
+// leaves the child less of the caller's 2 s. The line is held to the stop beneath it, and the stop
+// to the caller's deadline (stopSaid), never to the two seconds whole.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	// neverAnswers is the PATH entry of a directory whose one program is name, which sleeps past
 	// any test binary's deadline, in front of the test's own PATH: the guard's lookup finds it
@@ -590,7 +650,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	t.Run("the gh visibility read", func(t *testing.T) {
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh")),
+			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh"))),
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -599,16 +659,15 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		answered(t, "the text whose gh visibility read never answers", func() {
 			err = guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		})
-		failed := setupFailure(t, err)
-		stopped := stoppedAtTheCallersDeadline(t, ctx, began, failed, "gh")
-		says(t, failed, fmt.Sprintf("could not be read: gh ran %d s and was stopped by its bound of %d s", wholeSeconds(stopped.ran), wholeSeconds(stopped.bound)))
+		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git"))
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the
-		// commits the push would add, which is the read the stand-in git never answers.
+		// repository's remotes and then for the commits the push would add, which are reads the
+		// stand-in git never answers.
 		req := PushRequest{
 			Dir:     t.TempDir(),
 			Remote:  "origin",
@@ -618,27 +677,6 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		var err error
 		began := time.Now()
 		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
-		failed := setupFailure(t, err)
-		stopped := stoppedAtTheCallersDeadline(t, ctx, began, failed, "git")
-		says(t, failed, fmt.Sprintf("the push's commits could not be read: git ran %d s and was stopped by its bound of %d s", wholeSeconds(stopped.ran), wholeSeconds(stopped.bound)))
+		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", began))
 	})
-}
-
-// stoppedAtTheCallersDeadline is the stop of program beneath failed, the *stoppedError the
-// guard's run made, and fails the test unless the caller's deadline is what stopped program: ctx
-// ended by that deadline, and the bound the guard gave program is more than none, no more than ctx
-// had left when the call began at began, and no more than program ran, since a child is stopped
-// at its deadline and never before. The figures are the guard's own, read where run made them.
-func stoppedAtTheCallersDeadline(t *testing.T, ctx context.Context, began time.Time, failed *SetupFailure, program string) *stoppedError {
-	t.Helper()
-	var stopped *stoppedError
-	if !errors.As(failed, &stopped) || stopped.program != program || stopped.cancelled {
-		t.Fatalf("the setup failure %q carries no stop of %s by its bound", failed.Error(), program)
-	}
-	deadline, _ := ctx.Deadline()
-	if left := deadline.Sub(began); !errors.Is(ctx.Err(), context.DeadlineExceeded) || stopped.bound <= 0 || stopped.bound > left || stopped.ran < stopped.bound {
-		t.Fatalf("%s ran %s and was stopped by a bound of %s; the caller's context ended with %v, and had %s left when the call began; want its deadline to stop %s, under a bound more than none, no more than that and no more than %s ran",
-			program, stopped.ran, stopped.bound, ctx.Err(), left, program, program)
-	}
-	return stopped
 }

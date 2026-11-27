@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/envoy/internal/dispatch/delivery/testdata/dev-only-run-jobs.json TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob
+
 import (
 	"encoding/json"
 	"log/slog"
@@ -28,9 +30,9 @@ const deliveryRuleProject = "DELIVERY"
 // saveDeliveryRule saves rule as the delivery settings the delivery routes read
 // (readDeliveryRules): deliveryRuleProject's, with delivery on and one github_workflow source naming
 // rule's repository under rule (deliverytest.SaveRules), the project made where it does not exist.
-// A second save replaces the source. It answers the rule as the routes read it, its bookkeeping
-// included.
-func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySettings) delivery.DeliverySettings {
+// A second save replaces the source. It fails the test unless the routes then read a rule of
+// rule's repository.
+func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySettings) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict (key) do nothing`, deliveryRuleProject); err != nil {
 		t.Fatalf("make the project %s: %v", deliveryRuleProject, err)
@@ -38,11 +40,9 @@ func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySett
 	if _, err := deliverytest.SaveRules(t.Context(), pool, deliveryRuleProject, rule); err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", deliveryRuleProject, err)
 	}
-	saved, read := seededDeliveryRules(t, pool).For(rule.DeployRepo)
-	if !read {
+	if _, read := seededDeliveryRules(t, pool).For(rule.DeployRepo); !read {
 		t.Fatalf("no deploy source reads %s once saved", rule.DeployRepo)
 	}
-	return saved
 }
 
 // seededDeliveryRules is the rules the delivery routes read now (readDeliveryRules).
@@ -73,6 +73,7 @@ func sourceRulesOf(rules ...delivery.DeliverySettings) *delivery.SourceRules {
 }
 
 func TestGetDeliveryTimelineWithoutSettingsIs404(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/timeline", nil, "alice")
 	if response.Code != http.StatusNotFound {
@@ -81,6 +82,7 @@ func TestGetDeliveryTimelineWithoutSettingsIs404(t *testing.T) {
 }
 
 func TestGetDeliveryTimelineRejectsMalformedWindow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
@@ -102,6 +104,7 @@ func TestGetDeliveryTimelineRejectsMalformedWindow(t *testing.T) {
 }
 
 func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	pool := database.Pool
 	ctx := t.Context()
@@ -237,6 +240,7 @@ func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
 // TestDeliveryProductionRuleSelectsLaterAppliedListedJob keeps every delivery reader on the
 // applied job when one run holds two listed names: the first job stood down, the second applied.
 func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx, pool := t.Context(), database.Pool
 	const stoodDownName, appliedName, step = "production-apply / production-apply", "production / production-apply", "Run apply"
@@ -301,6 +305,7 @@ func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
 // ships a waiter after `from` was created before `from`, so the window's own runs (created at or
 // after `from`) do not hold it.
 func TestGetDeliveryTimelineAnswersThePullRequestsStillWaitingAtFrom(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	pool := database.Pool
 	ctx := t.Context()
@@ -391,6 +396,7 @@ func waitingEqual(got, want []delivery.DeliveryWaitingPRView) bool {
 // window starts after run 700's head commit and before its creation, so the run read must select
 // by creation to hold the run that shipped #1 at all.
 func TestGetDeliveryTimelineCreditsAMergeQueueMergeToTheDeployCreatedAfterIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	pool := database.Pool
 	ctx := t.Context()
@@ -499,6 +505,7 @@ func deliveryPRIDs(prs []delivery.DeliveryPRView) []string {
 // and that facet_counts count each facet with every other facet and the search applied and its own
 // selection ignored, while color_counts ignore every facet.
 func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
 	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
@@ -613,6 +620,7 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 // to acme/arch's api and one on an issue attached to acme/docs' docs each carry their component,
 // both are counted, and selecting the second source's component selects its pull request.
 func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
 	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
@@ -667,6 +675,7 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 // repository run with every job it ran, by start (a job that never started last), and refuses a
 // run id that is not a positive integer or names no run.
 func TestGetDeliveryRunListsEveryJob(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
 	if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/runs/7", nil, "alice"); response.Code != http.StatusNotFound {
@@ -738,6 +747,7 @@ func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 // job's name alone. The run on main with neither configured name is the warning's case, a renamed
 // or misconfigured job, and shows the capture sees the WARN when one is written.
 func TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
 	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
@@ -815,6 +825,7 @@ func TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob(t *testing.T) {
 // record a warning still has it logged: a lost warning hides a misconfiguration that counts no
 // deploy, where a repeated one costs a log line.
 func TestAConfigurationWarningIsLoggedOnceAcrossServers(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	first, database, deps := newTestServer(t, testServerOptions{})
 	second := http.NewServeMux()
 	second.HandleFunc("GET /api/v1/delivery/timeline", directServer(deps).getDeliveryTimeline)
@@ -899,6 +910,7 @@ func TestAConfigurationWarningIsLoggedOnceAcrossServers(t *testing.T) {
 // (delivery_settings.last_error) reaches the API's freshness object by name, not just the
 // database -- a stale-but-healthy pass and a failing one must be distinguishable on the wire.
 func TestGetDeliveryTimelineSurfacesReconcileErrorOnFreshness(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
 	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
@@ -927,6 +939,7 @@ func TestGetDeliveryTimelineSurfacesReconcileErrorOnFreshness(t *testing.T) {
 // value under each colour-by facet, so newDeliveryRow must give each of them one, a placeholder
 // where the pull request has none (no issue, no session).
 func TestNewDeliveryRowGivesEveryColourFacetAValue(t *testing.T) {
+	t.Parallel()
 	bare := newDeliveryRow(delivery.DeliveryPRView{Repo: "acme/widgets", Author: "octocat", Components: []string{}})
 	for _, facet := range deliveryColorFacets {
 		if len(bare.values[facet]) == 0 {

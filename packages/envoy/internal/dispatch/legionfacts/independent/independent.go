@@ -8,18 +8,20 @@
 //
 // It is the second side of that requirement's check (k1 and k9), which compares every fact of
 // every issue against a reading of the requirement. A check whose two sides are one function can
-// never fail, so this package imports neither legion/metrics nor legionfacts: it reads `events`,
-// `handoffs` and `legion_observations` itself, with statements of its own, and works the numbers
-// out from the requirement's words. Where this reading and the computation disagree, one of them
-// is wrong and the check has found it.
+// never fail, so this package imports nothing it is compared with, legion/metrics among them: it
+// reads `events`, `handoffs` and `legion_observations` itself, with statements of its own, and
+// works the numbers out from the requirement's words. Where this reading and the computation
+// disagree, one of them is wrong and the check has found it.
 //
-// It takes the scope and the window as arguments and answers both beside every count it reports
-// (Report), because a check whose two sides read different scopes proves nothing. cmd prints
-// that report as JSON, which is what a tester re-runs.
+// It takes the scope and the window as arguments and answers both beside the facts it reads
+// (Reading), so a caller can print what it read: the check's test logs them beside the scope and
+// window of the computation it compares with, and cmd prints the reading's report as JSON
+// (Report), with every count beside the scope and the window, which is what a tester re-runs.
 package independent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,28 +33,32 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Scope is what one reading covers: the project whose issues it reads. Every count it reports
-// names it, so two sides of a comparison cannot read two scopes and read as one.
+// Scope is what one reading covers: the project whose issues it reads. A reading names the scope
+// it read (Reading.Scope), so a caller can print it.
 type Scope struct {
 	Project string
 }
 
-// String is the scope in one word, which is what a report prints and a check compares.
+// String is the scope in one word, the project, as a caller prints it.
 func (s Scope) String() string { return s.Project }
 
 // Window is the stretch of time one reading measures over: To is the moment of the computation,
-// which is where an open issue's work time runs to, and From is where the reading starts.
+// which bounds what the reading takes from the log (the issues created by To, and their events,
+// titles, handoffs and observations as of To) and is where an open issue's work time runs to.
+// An issue's parent and its close come from its current `issues` row, as legion/metrics reads
+// them, and not as of To: the close counts where the row's closed_at is by To, so an issue closed
+// by To and opened again after it reads open at To, and a parent set after To is the parent the
+// reading walks.
 //
-// R1 covers every issue the project has Legion phase work for, open or closed, so From narrows
-// no issue out of the answer: it is the start of the history the reading takes in, and a reading
-// of the whole project is From the zero moment. It is reported because the two sides of a
-// comparison must be read to have measured the same stretch.
+// R1 covers every issue the project has Legion phase work for from the beginning of the project's
+// history up to To, so From must be the zero moment; Read refuses a non-zero From rather than
+// ignoring it and reporting a window it did not read.
 type Window struct {
 	From time.Time
 	To   time.Time
 }
 
-// String is the window as a reader of a report compares it: two moments, each in UTC, and
+// String is the window in one line, as a caller prints it: two moments, each in UTC, and
 // `beginning` for a From that names no moment.
 func (w Window) String() string {
 	from := "beginning"
@@ -101,8 +107,14 @@ type Reading struct {
 }
 
 // Read answers the facts of every issue the scope has Legion phase work for, open or closed, as
-// of the window's end.
+// of the window's end, read in one repeatable-read snapshot when db can begin a transaction.
 func Read(ctx context.Context, db Querier, scope Scope, window Window) (Reading, error) {
+	if !window.From.IsZero() {
+		return Reading{}, fmt.Errorf("independent.Read covers the whole history up to To; non-zero Window.From %s is unsupported", window.From.UTC().Format(time.RFC3339))
+	}
+	if window.To.IsZero() {
+		return Reading{}, fmt.Errorf("independent.Read requires a non-zero Window.To")
+	}
 	held, err := readPopulation(ctx, db, scope, window)
 	if err != nil {
 		return Reading{}, err

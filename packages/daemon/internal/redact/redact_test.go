@@ -2,14 +2,18 @@ package redact
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net"
+	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,27 +50,39 @@ var urlCredentialsCases = []struct {
 	{
 		name: "a userinfo with a password",
 		text: "clone https://user:" + planted + "@github.com/o/r.git failed",
-		want: "clone https://github.com/o/r.git failed",
+		want: "clone https://" + URLWithCredentials + "/o/r.git failed",
 	},
 	{
 		name: "a token as the user name",
 		text: "fetch https://" + planted + "@github.com/o/r.git: exit status 128",
-		want: "fetch https://github.com/o/r.git: exit status 128",
+		want: "fetch https://" + URLWithCredentials + "/o/r.git: exit status 128",
 	},
 	{
-		name: "everything up to the authority's last @",
+		name: "an authority with two @, nothing of it kept",
 		text: "https://a@" + planted + "@host.example:8443/p",
-		want: "https://host.example:8443/p",
+		want: "https://" + URLWithCredentials + "/p",
+	},
+	{
+		// A password holding an unencoded "@" and no host after it: its tail is not printed as a
+		// host, as it was when the rule kept what followed the last "@" (`ssword` here).
+		name: "a password holding an @ and no host",
+		text: "dial http://user:p" + "@" + planted + "ssword no such host",
+		want: "dial http://" + URLWithCredentials + " no such host",
+	},
+	{
+		name: "a password holding an @, then a host",
+		text: "dial http://user:p" + "@" + planted + "ssword@host.example/x refused",
+		want: "dial http://" + URLWithCredentials + "/x refused",
 	},
 	{
 		name: "a URL inside %q quotes",
 		text: fmt.Sprintf("parse %q: invalid port", "postgres://"+plantedUserinfo+"@db.example:5432/legion?sslmode=disable&password="+planted),
-		want: `parse "postgres://db.example:5432/legion": invalid port`,
+		want: `parse "postgres://` + URLWithCredentials + `/legion": invalid port`,
 	},
 	{
 		name: "a URL inside <…>",
 		text: "see <https://u:" + planted + "@host.example/x?sig=" + planted + "> now",
-		want: "see <https://host.example/x> now",
+		want: "see <https://" + URLWithCredentials + "/x> now",
 	},
 	{
 		name: "a URL inside single quotes and one inside backticks",
@@ -76,7 +92,7 @@ var urlCredentialsCases = []struct {
 	{
 		name: "two URLs in one text",
 		text: "a https://h.example/?t=" + planted + " then HTTP://" + planted + "@g.example:8080/p?q=" + planted + "#f",
-		want: "a https://h.example/ then HTTP://g.example:8080/p#f",
+		want: "a https://h.example/ then HTTP://" + URLWithCredentials + "/p#f",
 	},
 	{
 		name: "a query after a port with no path",
@@ -99,19 +115,37 @@ var urlCredentialsCases = []struct {
 		want: "https://h.example/\u00a0more",
 	},
 	{
+		// The inner URL's "@" is past the outer one's host too, so the outer is written whole.
 		name: "a URL in the path of another",
 		text: "https://archive.example/web/https://u:" + planted + "@h.example/x?t=" + planted,
-		want: "https://archive.example/web/https://h.example/x",
+		want: "https://" + URLWithCredentials,
 	},
 	{
 		name: "a URL in the fragment of another",
 		text: "https://h.example/#next=https://" + planted + "@g.example/?t=" + planted + "#top",
-		want: "https://h.example/#next=https://g.example/#top",
+		want: "https://" + URLWithCredentials,
 	},
 	{
 		name: "a URL in the query of another",
 		text: "https://h.example/login?next=https://" + planted + "@g.example/ done",
-		want: "https://h.example/login done",
+		want: "https://" + URLWithCredentials + " done",
+	},
+	{
+		// A credential holding a "?" written as the user: url.Parse reads its head as the host,
+		// and nothing of the head is printed.
+		name: "an @ in the query, past a head read as the host",
+		text: "dial https://madeUpHead0123?" + planted + "@host.example/x refused",
+		want: "dial https://" + URLWithCredentials + " refused",
+	},
+	{
+		name: "an @ in the path, past a head read as the host",
+		text: "dial https://madeUpHead0123/" + planted + "@host.example/x refused",
+		want: "dial https://" + URLWithCredentials + " refused",
+	},
+	{
+		name: "a URL with no @ past its host keeps its path",
+		text: "https://h.example/a/b?x=1#f",
+		want: "https://h.example/a/b#f",
 	},
 	{
 		name: "a fragment kept",
@@ -124,9 +158,74 @@ var urlCredentialsCases = []struct {
 		want: "https://h.example/p#which?that",
 	},
 	{
-		name: "an @ in the path kept",
+		// An "@" past the host is where a credential holding a "/" written as the user lands, so a
+		// path's own "@" (a scoped npm package, a user page) is written as the mark too: the
+		// decided cost of reading no "@" past a host as safe.
+		name: "an @ in the path takes the mark",
 		text: "https://h.example/@user/p",
-		want: "https://h.example/@user/p",
+		want: "https://" + URLWithCredentials,
+	},
+	{
+		// A file URL names a path on this machine and has no userinfo to hold a credential: a
+		// scoped package's "@" stays, as the plugin module URL `legion controller start` names.
+		name: "a file URL keeps its path's @",
+		text: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1 which",
+		want: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1 which",
+	},
+	{
+		name: "a FILE URL in upper case keeps its path's @",
+		text: "FILE:///srv/@scope/x",
+		want: "FILE:///srv/@scope/x",
+	},
+	{
+		// A scheme that ends in "file" is another scheme: the rule holds for it.
+		name: "a scheme that ends in file takes the mark",
+		text: "notfile://h.example/@user/p",
+		want: "notfile://" + URLWithCredentials,
+	},
+	{
+		// An "@" in a file URL's query (here a URL with a credential written in it) marks the file
+		// URL whole, as it would any other.
+		name: "an @ in a file URL's query",
+		text: "see file:///plugins/https://h.example/p?u=" + planted + "@g.example end",
+		want: "see file://" + URLWithCredentials + " end",
+	},
+	{
+		// The local file URL's query is pending when the URL in its path, with an "@" past its
+		// host, is written whole as the mark: the mark covers that query, which is not removed
+		// again.
+		name: "a URL with an @ past its host in a file URL's path",
+		text: "see file:///plugins/https://h.example/@x/p?u=1 end",
+		want: "see file:///plugins/https://" + URLWithCredentials + " end",
+	},
+	{
+		name: "a localhost file URL keeps its path's @",
+		text: "file://LocalHost/srv/@scope/x",
+		want: "file://LocalHost/srv/@scope/x",
+	},
+	{
+		// A file URL that names a host is no local path: a credential holding a "/", "?" or "#"
+		// written as its user puts the head where the host goes, and every such URL takes the mark.
+		name: "a file URL with a host and an @ in its path",
+		text: "file://madeUpHead0123/" + planted + "@host.example/x",
+		want: "file://" + URLWithCredentials,
+	},
+	{
+		name: "a file URL with a host and an @ in its fragment",
+		text: "File://madeUpHead0123#" + planted + "@host.example/x",
+		want: "File://" + URLWithCredentials,
+	},
+	{
+		name: "a file URL with a host and an @ in its query",
+		text: "file://madeUpHead0123?" + planted + "@host.example/x",
+		want: "file://" + URLWithCredentials,
+	},
+	{
+		// A local file URL whose query holds a URL with a password holding a "#": the "@" stands in
+		// the file URL's fragment, which marks it whole.
+		name: "a local file URL with an @ in its fragment",
+		text: "file:///a?q=https://u:madeUpHead0123#" + planted + "@h/",
+		want: "file://" + URLWithCredentials,
 	},
 	{
 		name: "a ? in prose with no URL",
@@ -138,6 +237,138 @@ var urlCredentialsCases = []struct {
 		text: "9://u@h.example/?q and ://u@h.example/?q",
 		want: "9://u@h.example/?q and ://u@h.example/?q",
 	},
+	{
+		name: "a file: URL's query kept",
+		text: "loaded file:///a.js?mtime=1, then",
+		want: "loaded file:///a.js?mtime=1, then",
+	},
+	{
+		name: "a FILE: URL's query kept",
+		text: "loaded FILE:///a.js?mtime=1, then",
+		want: "loaded FILE:///a.js?mtime=1, then",
+	},
+	{
+		name: "a file: URL's userinfo written as the mark, its query kept",
+		text: "file://" + planted + "@host.example/a.js?mtime=1",
+		want: "file://" + URLWithCredentials + "/a.js?mtime=1",
+	},
+	{
+		name: "two file: URLs as legion probe-image prints them",
+		text: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+		want: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+	},
+	{
+		name: "a query whose names are harmless and a credential's removed whole",
+		text: "get https://h/p?mtime=1&X-Amz-Signature=" + planted + " done",
+		want: "get https://h/p done",
+	},
+	{
+		name: "a scheme that ends in file is no file: URL",
+		text: "xfile://h.example/p?token=" + planted + " and profile://h.example/q?" + planted,
+		want: "xfile://h.example/p and profile://h.example/q",
+	},
+	{
+		name: "a URL in a file: URL's query is a URL of its own",
+		text: "file:///a.js?next=https://h.example/?token=" + planted + "#f",
+		want: "file:///a.js?next=https://h.example/#f",
+	},
+	{
+		// An "@" in a file: URL's query is past that URL's host, so the file: URL is the mark
+		// whole, as any URL with an "@" past its host is.
+		name: "a URL with userinfo in a file: URL's query marks the file: URL",
+		text: "file:///a.js?next=https://" + planted + "@h.example/?token=" + planted + "#f",
+		want: "file://" + URLWithCredentials,
+	},
+	{
+		name: "a file: URL in another's query goes with that query",
+		text: "https://h.example/p?a=file:///a.js?mtime=1&token=" + planted + " done",
+		want: "https://h.example/p done",
+	},
+}
+
+// HostShown writes a URL's host as the mark in an error that names it, and prints no error for a
+// host that is not ASCII, whose ASCII form (`xn--…`) the error names instead. The hosts are made up.
+func TestHostShownPrintsNoHostOfAURLWithCredentials(t *testing.T) {
+	lookup := errors.New("dial tcp: lookup madeuptail0123.invalid: no such host")
+	if got := HostShown("madeuptail0123.invalid", "", lookup); got != "dial tcp: lookup "+URLWithCredentials+": no such host" {
+		t.Errorf("an ASCII host = %q, want it written as the mark", got)
+	}
+	if got := HostShown("madeuptail0123\u00f6.invalid", "", errors.New("dial tcp: lookup xn--madeuptail0123-8ib.invalid: no such host")); got != NotASCIIHostError {
+		t.Errorf("a host that is not ASCII = %q, want %q", got, NotASCIIHostError)
+	}
+	if got := HostShown("", "", errors.New("dial tcp: connect: connection refused")); got != "dial tcp: connect: connection refused" {
+		t.Errorf("no host = %q, want the text as it is", got)
+	}
+	// A password's head of digits that url.Parse read as the port: the dialer's connect error names
+	// it after the resolved address, and its refusal of an out-of-range port quotes it.
+	connect := errors.New("dial tcp 192.0.2.7:48213: connect: connection refused")
+	if got := HostShown("legion", "48213", connect); got != "dial tcp 192.0.2.7:"+URLWithCredentials+": connect: connection refused" {
+		t.Errorf("a port = %q, want it written as the mark", got)
+	}
+	if got := HostShown("legion", "1", errors.New("dial tcp 192.0.2.7:12345: connect: connection refused")); got != "dial tcp 192.0.2.7:12345: connect: connection refused" {
+		t.Errorf("a port that begins another = %q, want the other kept", got)
+	}
+	invalid := &net.OpError{Op: "dial", Net: "tcp", Err: &net.AddrError{Err: "invalid port", Addr: "98765432"}}
+	if got := HostShown("legion", "98765432", invalid); got != AddressError {
+		t.Errorf("an address the dialer refused = %q, want %q", got, AddressError)
+	}
+}
+
+// A port written with leading zeros (a password's head of digits that url.Parse read as the port,
+// `0048213`) is dialed as a number and printed without them: a real request to a closed port
+// written so prints neither the port as written nor its digits, and the password stays out. The
+// password is made up.
+func TestRequestErrorMasksAPortWrittenWithLeadingZeros(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	route := "http://op:" + "madeuphead0123" + "@127.0.0.1:00" + port + "/x"
+	response, err := http.Get(route)
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("the request to a closed port got an answer")
+	}
+	shown := RequestError("the server", route, err).Error()
+	if !strings.Contains(shown, "dial tcp "+URLWithCredentials+":"+URLWithCredentials+": ") {
+		t.Errorf("RequestError = %q, want the dial's host and port written as the mark", shown)
+	}
+	for _, part := range []string{":" + port, ":00" + port, "madeuphead"} {
+		if strings.Contains(shown, part) {
+			t.Errorf("RequestError = %q, which holds %q", shown, part)
+		}
+	}
+}
+
+// RequestError names a request's route through URL and its error through the URL rule and
+// HostShown, and unwraps to the request's own error, so a deadline and a *url.Error are still read.
+// A route that does not parse is named in fixed words. The credentials are made up.
+func TestRequestErrorNamesNoCredentialAndKeepsTheRequestsError(t *testing.T) {
+	route := "http://legion:madeuphead0123" + "@madeuptail0123.invalid/v1/x"
+	dial := &url.Error{Op: "Get", URL: route, Err: errors.New("dial tcp: lookup madeuptail0123.invalid: no such host")}
+	err := RequestError("the server", route, dial)
+	if want := "http://" + URLWithCredentials + "/v1/x: dial tcp: lookup " + URLWithCredentials + ": no such host"; err.Error() != want {
+		t.Errorf("RequestError = %q, want %q", err, want)
+	}
+	var transport *url.Error
+	if !errors.As(err, &transport) || transport != dial {
+		t.Errorf("RequestError unwraps to %v, want the request's *url.Error", errors.Unwrap(err))
+	}
+	timedOut := &url.Error{Op: "Get", URL: route, Err: context.DeadlineExceeded}
+	if err := RequestError("the server", route, timedOut); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("RequestError(%v) is not a deadline", err)
+	}
+	notParsed := &url.Error{Op: "parse", URL: route, Err: errors.New(`invalid port ":madeuphead0123" after host`)}
+	if err := RequestError("the server", route, notParsed); err.Error() != "the server: its address does not parse as a URL" {
+		t.Errorf("RequestError(a parse error) = %q", err)
+	}
+	if err := RequestError("the server", "http://server.example/v1/x?token=madeUpQueryToken0123", errors.New("dial tcp: connection refused")); err.Error() != "http://server.example/v1/x: dial tcp: connection refused" {
+		t.Errorf("RequestError(no credential) = %q, want the route without its query and the error as it is", err)
+	}
 }
 
 func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
@@ -157,6 +388,9 @@ func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 	}
 }
 
+// schemeRunes are the characters a scheme holds, for urlCredentialsQuadratic's own reading of it.
+const schemeRunes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-."
+
 // urlCredentialsQuadratic is URLCredentials as it was before it kept its searches: the same rule,
 // which for each "://" searches again to the URL's end, three times, so a run of "://" that
 // nothing ends (`a://a://…`) takes it time quadratic in the run's length. It is kept as the
@@ -168,16 +402,18 @@ func urlCredentialsQuadratic(text string) string {
 		return text
 	}
 	var out strings.Builder
-	// text[:kept] is written to out or removed. Every removal starts after a "://", so kept is 0
-	// until the first one.
+	// text[:kept] is written to out or replaced. Every replacement starts after a "://", so kept
+	// is 0 until the first one.
 	kept := 0
-	remove := func(from, to int) {
+	replace := func(from, to int, with string) {
 		if kept == 0 {
 			out.Grow(len(text))
 		}
 		out.WriteString(text[kept:from])
+		out.WriteString(with)
 		kept = to
 	}
+	remove := func(from, to int) { replace(from, to, "") }
 	// A URL's query is removed once the search for the next "://" passes its start: a URL in the
 	// path before it has the same query, and a userinfo of that URL comes first in the text.
 	query, fragment := -1, -1
@@ -198,8 +434,25 @@ func urlCredentialsQuadratic(text string) string {
 		}
 		end := at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
 		host := at + orLen(strings.IndexAny(text[at:end], "/?#"), end-at)
-		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
-			remove(at, at+u+1)
+		start := sep
+		for start > 0 && strings.IndexByte(schemeRunes, text[start-1]) >= 0 {
+			start--
+		}
+		scheme, authority := text[start:sep], text[at:host]
+		pathEnd := host + orLen(strings.IndexAny(text[host:end], "?#"), end-host)
+		local := strings.EqualFold(scheme, "file") && (authority == "" || strings.EqualFold(authority, "localhost")) &&
+			strings.IndexByte(text[pathEnd:end], '@') < 0
+		if strings.IndexByte(text[host:end], '@') >= 0 && !local {
+			replace(at, end, URLWithCredentials)
+			at = end
+			query = -1
+			continue
+		}
+		if strings.IndexByte(text[at:host], '@') >= 0 {
+			replace(at, host, URLWithCredentials)
+		}
+		if fileSchemeEndsAt(text, sep) {
+			continue
 		}
 		frag := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
 		if q := strings.IndexByte(text[host:frag], '?'); q >= 0 {
@@ -224,7 +477,7 @@ func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		texts = append(texts, tc.text)
 	}
-	pieces := []string{"https", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	pieces := []string{"https", "file", "FILE", "localhost", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
 	random := rand.New(rand.NewPCG(4193, 4463))
 	for range 5000 {
 		some := []string{"a", "://"}
@@ -318,13 +571,13 @@ func TestHandlerOptionsGiveEveryTextOfALineThroughTheURLRule(t *testing.T) {
 	want := map[string]any{
 		"level":    "INFO",
 		"msg":      "fetch https://h.example/a failed",
-		"remote":   "https://g.example/o/r.git",
-		"url":      "https://h.example/p",
+		"remote":   "https://" + URLWithCredentials + "/o/r.git",
+		"url":      "https://" + URLWithCredentials + "/p",
 		"error":    `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`,
-		"target":   "https://h.example/p",
+		"target":   "https://" + URLWithCredentials + "/p",
 		"named":    "see https://h.example/",
 		"count":    3.0,
-		"replaced": "by the caller's own https://h.example/",
+		"replaced": "by the caller's own https://" + URLWithCredentials + "/",
 		"g":        map[string]any{"inner": "https://h.example/"},
 	}
 	if !reflect.DeepEqual(line, want) {
@@ -348,8 +601,8 @@ func TestHandlerOptionsOfNilAreTheZeroOptionsWithTheURLRule(t *testing.T) {
 	log.Debug("not written")
 	log.Info("read", "url", "https://"+planted+"@h.example/")
 	got := logged.String()
-	if strings.Contains(got, "not written") || strings.Contains(got, planted) || !strings.Contains(got, "url=https://h.example/") {
-		t.Fatalf("logged %q, want the Info line alone, with the URL's userinfo removed", got)
+	if strings.Contains(got, "not written") || strings.Contains(got, planted) || !strings.Contains(got, `url="https://`+URLWithCredentials+`/"`) {
+		t.Fatalf("logged %q, want the Info line alone, with the URL's authority as the mark of its credentials", got)
 	}
 }
 

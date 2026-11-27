@@ -95,6 +95,7 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := directServer(deps).beginMeaningScan(ctx)
@@ -142,6 +143,7 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 // It reads the error's text too. The Go side no longer names which setting failed, since there
 // is one Exec to name; Postgres's own message still does, and that is what the server logs.
 func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
+	// Not parallel: it writes the package variable searchMeaningScan.
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	healthy := searchMeaningScan
@@ -177,6 +179,7 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 // statement would wait for that lock until the test binary's deadline guard fails the case by
 // name.
 func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
+	// Not parallel: it writes the package variable searchMeaningScan (endMeaningStatementsAt).
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -227,6 +230,7 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // thing, so the keyword stage has the item to fall back on and the meaning stage has a reason
 // to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
+	// Not parallel: it writes the package variable searchMeaningScan (endMeaningStatementsAt).
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -238,8 +242,9 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	key := createSearchIssue(t, handler, "MBOUND", title, spec)
 	processAllPending(t, database, embedder)
 
-	// The check searched by meaning on this server before the bound was shortened.
-	healthy := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	// The check searched by meaning on this database, under the case's bound (meaningVerdictServer),
+	// before the bound on its statement was shortened.
+	healthy := meaningVerdictServer(t, srv.deps).relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}

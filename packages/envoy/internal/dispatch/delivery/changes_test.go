@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // latestChange is the change log's newest seq, which a test reads after its setup so its
@@ -130,10 +131,22 @@ func nextNotification(t *testing.T, ctx context.Context, conn *pgx.Conn, wait ti
 	return notification
 }
 
+// notified is the next notification conn receives, for a notification the test knows is coming:
+// its one bound is testwait's (testwait.Context), so a slow one fails nothing.
+func notified(t *testing.T, conn *pgx.Conn) *pgconn.Notification {
+	t.Helper()
+	notification, err := conn.WaitForNotification(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("wait for a notification: %v", err)
+	}
+	return notification
+}
+
 // TestAPullRequestUpsertWithNewContentLogsOneChange: a new pull request logs one change carrying
 // its merge time, and a later upsert that changes its title logs a second with that time on both
 // sides.
 func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	before := latestChange(t, ctx, pool)
@@ -165,6 +178,7 @@ func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
 // attribution pass over rows whose issue did not change, and a run and its jobs written again with
 // the same facts -- logs no change.
 func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
@@ -219,6 +233,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 // TestARunChangeLogsItsKindAndItsLaterTime: a run logs its kind and the later of its head commit
 // and its start, and a job of it logs the run's kind and the same time.
 func TestARunChangeLogsItsKindAndItsLaterTime(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	before := latestChange(t, ctx, pool)
@@ -259,6 +274,7 @@ type freshnessPayload struct {
 // every reconcile pass make on a source log no change, and each committed one notifies
 // delivery_freshness with the source's three freshness values.
 func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	conn := listenConn(t, ctx, pool, "delivery_freshness")
@@ -315,6 +331,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 // stamp is a moment the database's clock reached just now. It never moves backward: a later stamp
 // already in the row stays.
 func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	seedDeliverySettings(t, ctx, pool)
@@ -341,6 +358,7 @@ func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
 // ahead of the database's, a change the database dates 25 hours old goes and one it dates 23 hours
 // old stays.
 func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	if _, err := pool.Exec(ctx, `delete from delivery_changes`); err != nil {
@@ -380,6 +398,7 @@ func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
 // and one of four-byte characters, each commit and notify a payload under Postgres's 8,000-byte
 // limit, rather than failing the settings write.
 func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	conn := listenConn(t, ctx, pool, "delivery_freshness")
@@ -403,6 +422,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 // TestEveryLoggedChangeNotifiesAtCommit: a change notifies delivery_changes once its transaction
 // commits, and not before.
 func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	conn := listenConn(t, ctx, pool, "delivery_changes")
 	tx, err := pool.Begin(ctx)
@@ -493,6 +513,7 @@ func TestADirectChangeWaitsForTheWriterBeforeItSoNoCursorSkipsIt(t *testing.T) {
 // members' writes, and a settings change each log their change; settings written again unchanged
 // log none.
 func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -582,6 +603,10 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 // 20261123010254, as 20261120111107 for the singleton), so no reader begins anything for it: no day
 // row, delivery window or intake reads either column. A save that moves a value logs and announces
 // its change, carrying the project, whoever makes it.
+//
+// Postgres hands a listener the notifications of committed transactions in commit order, so a
+// sentinel sent after the save has committed is the next notification on the channel unless the
+// save announced one first: the silence is read with no wait of the test's own.
 func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -597,8 +622,12 @@ func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	if changes := changesAfter(t, ctx, pool, before); len(changes) != 0 {
 		t.Errorf("the same settings saved by another person logged %+v, want nothing", changes)
 	}
-	if notification := nextNotification(t, ctx, listener, time.Second); notification != nil {
-		t.Errorf("the same settings saved by another person announced %q on %s, want nothing", notification.Payload, SettingsChannel)
+	const sentinel = "sentinel"
+	if _, err := pool.Exec(ctx, `select pg_notify($1, $2)`, SettingsChannel, sentinel); err != nil {
+		t.Fatalf("send the sentinel on %s: %v", SettingsChannel, err)
+	}
+	if notification := notified(t, listener); notification.Payload != sentinel {
+		t.Fatalf("the same settings saved by another person announced %q on %s before the sentinel, want nothing", notification.Payload, SettingsChannel)
 	}
 
 	settings.PRChecksRollupJobName = new("checks-complete")
@@ -609,14 +638,15 @@ func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	if len(changes) == 0 || slices.ContainsFunc(changes, func(c Change) bool { return c.Kind != ChangeKindSettings || c.Repo != deliveryProject }) {
 		t.Errorf("a new roll-up job saved by another person logged %+v, want settings changes of %s alone", changes, deliveryProject)
 	}
-	if notification := nextNotification(t, ctx, listener, 10*time.Second); notification == nil || notification.Payload != deliveryProject {
-		t.Errorf("a new roll-up job announced %+v on %s, want the project %s", notification, SettingsChannel, deliveryProject)
+	if notification := notified(t, listener); notification.Payload != deliveryProject {
+		t.Errorf("a new roll-up job saved by another person announced %q on %s, want the project %s", notification.Payload, SettingsChannel, deliveryProject)
 	}
 }
 
 // TestDeletingAPullRequestLogsItsOldMergeTime: a deleted pull request logs its merge time as the
 // time before and none after.
 func TestDeletingAPullRequestLogsItsOldMergeTime(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, changeTestPR(13, merged, "chore: task")); err != nil {

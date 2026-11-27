@@ -134,7 +134,7 @@ func DeployRules(projects []ProjectSettings) []DeliverySettings {
 // Population is LEGION-294's population rule as a reader of a merged pull request applies it: the
 // authors whose merges count and the repositories whose merges do not. With per-project settings it
 // is the union of every delivery-on project's authors and excluded repositories (dispatch://INFRA-978,
-// T7): a pull request is stored once, whichever project's rule admits it, and an excluded repository
+// D1): a pull request is stored once, whichever project's rule admits it, and an excluded repository
 // is excluded for every project. Both lists are sorted and hold each value once.
 type Population struct {
 	Authors       []string
@@ -193,7 +193,7 @@ func NewSourceRules(projects []ProjectSettings) *SourceRules {
 		}
 	}
 	rules := newSourceRules(DeployRules(projects), Population{Authors: sortedSet(authors), ExcludedRepos: sortedSet(excluded)}, defaults)
-	rules.searchScope = searchProgressScopeOf(firstOfEach(authors), firstOfEach(excluded), firstOfEach(repos))
+	rules.searchScope = searchProgressScopeOf(appendUnique(nil, authors...), appendUnique(nil, excluded...), appendUnique(nil, repos...))
 	return rules
 }
 
@@ -201,7 +201,7 @@ func NewSourceRules(projects []ProjectSettings) *SourceRules {
 func newSourceRules(rules []DeliverySettings, population Population, defaults map[string]*string) *SourceRules {
 	byRepo := make(map[string]int, len(rules))
 	for i, rule := range rules {
-		byRepo[strings.ToLower(rule.DeployRepo)] = i
+		byRepo[RuleKey(rule.DeployRepo)] = i
 	}
 	return &SourceRules{rules: rules, byRepo: byRepo, population: population, defaults: defaults}
 }
@@ -223,13 +223,18 @@ func ReadSourceRules(ctx context.Context, q Querier) (*SourceRules, error) {
 	return NewSourceRules(projects), nil
 }
 
+// RuleKey is the key a repository's rule is found by (For): its name in lower case.
+func RuleKey(repo string) string {
+	return strings.ToLower(repo)
+}
+
 // For is the rule of repo, in any case, and false where no delivery-on project's source reads it.
 // A nil SourceRules holds no rule.
 func (r *SourceRules) For(repo string) (DeliverySettings, bool) {
 	if r == nil {
 		return DeliverySettings{}, false
 	}
-	i, ok := r.byRepo[strings.ToLower(repo)]
+	i, ok := r.byRepo[RuleKey(repo)]
 	if !ok {
 		return DeliverySettings{}, false
 	}
@@ -268,17 +273,13 @@ func sortedSet(values []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(values)))
 }
 
-// firstOfEach is values in their order, each at its first place alone.
-func firstOfEach(values []string) []string {
-	seen := make(map[string]bool, len(values))
-	once := make([]string, 0, len(values))
-	for _, value := range values {
-		if !seen[value] {
-			seen[value] = true
-			once = append(once, value)
-		}
+// lowerSortedSet is repos in lower case, sorted, each once.
+func lowerSortedSet(repos []string) []string {
+	lower := make([]string, len(repos))
+	for i, repo := range repos {
+		lower[i] = strings.ToLower(repo)
 	}
-	return once
+	return sortedSet(lower)
 }
 
 func deref(value *string) string {
@@ -288,8 +289,10 @@ func deref(value *string) string {
 	return *value
 }
 
+// projectSettingsColumns reads failures_measured_since as the date it is, which pgx answers as
+// midnight UTC of that day whatever the session's time zone.
 const projectSettingsColumns = `s.project_key, s.delivery, p.default_repo, s.population_authors, s.excluded_repos,
-	s.failure_sources, s.failures_measured_since::timestamptz, s.updated_by, s.updated_at`
+	s.failure_sources, s.failures_measured_since, s.updated_by, s.updated_at`
 
 const deploySourceColumns = `id::text, kind, repo, deploy_workflow_path, production_job_names, production_apply_step_name,
 	staging_e2e_job_name, staging_apply_job_name, pr_checks_workflow_path, pr_checks_rollup_job_name,
@@ -301,10 +304,6 @@ func scanProjectSettings(row pgx.Row) (ProjectSettings, error) {
 	if err := row.Scan(&settings.Project, &settings.Delivery, &settings.DefaultRepo, &settings.PopulationAuthors,
 		&settings.ExcludedRepos, &settings.FailureSources, &settings.FailuresMeasuredSince, &updatedBy, &settings.UpdatedAt); err != nil {
 		return ProjectSettings{}, err
-	}
-	if settings.FailuresMeasuredSince != nil {
-		day := settings.FailuresMeasuredSince.UTC()
-		settings.FailuresMeasuredSince = &day
 	}
 	if err := json.Unmarshal(updatedBy, &settings.UpdatedBy); err != nil {
 		return ProjectSettings{}, fmt.Errorf("decode the delivery settings author of %s: %w", settings.Project, err)
@@ -466,12 +465,7 @@ func LockProject(ctx context.Context, tx pgx.Tx, project string) error {
 // default-repository write that would each make one repository the source of a delivery-on project
 // see each other's commit.
 func LockRepositories(ctx context.Context, tx pgx.Tx, repos []string) error {
-	sorted := slices.Clone(repos)
-	for i := range sorted {
-		sorted[i] = strings.ToLower(sorted[i])
-	}
-	slices.Sort(sorted)
-	for _, repo := range slices.Compact(sorted) {
+	for _, repo := range lowerSortedSet(repos) {
 		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6901, hashtext($1))`, repo); err != nil {
 			return fmt.Errorf("lock the deploy repository %s: %w", repo, err)
 		}
@@ -484,13 +478,9 @@ func LockRepositories(ctx context.Context, tx pgx.Tx, repos []string) error {
 func RepositoryOwner(ctx context.Context, tx pgx.Tx, repo, project string) (string, bool, error) {
 	var other string
 	err := tx.QueryRow(ctx, `
-		select s.project_key
-		from project_deploy_sources src
-		join project_delivery_settings s on s.project_key = src.project_key
-		join projects p on p.key = s.project_key
-		where s.delivery and src.kind = 'github_workflow' and s.project_key <> $2
-		  and lower(coalesce(src.repo, p.default_repo)) = lower($1)
-		order by s.project_key limit 1
+		select src.project_key from project_deploy_sources src
+		where `+sourceOfRepo+` and src.project_key <> $2
+		order by src.project_key limit 1
 	`, repo, project).Scan(&other)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
@@ -514,10 +504,12 @@ func sharedRepository(repo, other string, index *int) *SettingsError {
 // settings. With delivery on, a github_workflow source that names no repository needs the project's
 // default repository (R2, DELIVERY_NO_DEFAULT_REPOSITORY), and no repository may be a source of
 // another delivery-on project (D1, DELIVERY_REPOSITORY_SHARED); the checks and the write run under
-// each repository's lock. The save replaces the project's sources: a source whose repository and
-// rule are both unchanged keeps its row, its id and its bookkeeping; every other source is written
-// afresh, and its repository's reconcile progress is cleared, so the next reconcile imports it from
-// the start, as the singleton's save did.
+// each repository's lock. Whatever the switch says, two github_workflow sources may not read one
+// repository (DELIVERY_SETTINGS_INPUT), and two that name none read one, the project's default
+// repository, whether the project has one or not. The save replaces the project's sources: a
+// source whose repository and rule are both unchanged keeps its row, its id and its bookkeeping;
+// every other source is written afresh, and its repository's reconcile progress is cleared, so the
+// next reconcile imports it from the start, as the singleton's save did.
 func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, actor model.Actor) (ProjectSettings, error) {
 	input.Sources = slices.Clone(input.Sources)
 	for i, source := range input.Sources {
@@ -532,7 +524,7 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 		return ProjectSettings{}, err
 	}
 	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1 for key share`, input.Project).Scan(&defaultRepo); err != nil {
+	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, input.Project).Scan(&defaultRepo); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ProjectSettings{}, ErrProjectNotFound
 		}
@@ -540,6 +532,10 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 	}
 	repos := make([]string, len(input.Sources))
 	var lock []string
+	// unnamed is the first github_workflow source that reads no repository, which a project with
+	// delivery off and no default repository keeps: a second is the same repository as far as the
+	// one-repository-per-source index is concerned (migration 20261123010254).
+	unnamed := -1
 	for i, source := range input.Sources {
 		repo, ok := SourceRepoOf(DeploySource{Kind: source.Kind, Repo: source.Repo}, defaultRepo)
 		if source.Kind != SourceKindGitHubWorkflow {
@@ -554,6 +550,15 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 					Source:  new(i),
 				}
 			}
+			if unnamed >= 0 {
+				return ProjectSettings{}, &SettingsError{
+					Code:    CodeDeliverySettingsInput,
+					Message: fmt.Sprintf("sources %d and %d both name no repository, so both read the project's default repository: a repository is one source of a project", unnamed, i),
+					Field:   "repo",
+					Source:  new(i),
+				}
+			}
+			unnamed = i
 			continue
 		}
 		for j := range i {
@@ -616,8 +621,8 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 			failures_measured_since = excluded.failures_measured_since,
 			updated_by = excluded.updated_by,
 			updated_at = now()
-	`, input.Project, input.Delivery, nonNilList(input.PopulationAuthors), nonNilList(input.ExcludedRepos),
-		nonNilList(input.FailureSources), since, actorJSON); err != nil {
+	`, input.Project, input.Delivery, nonNil(input.PopulationAuthors), nonNil(input.ExcludedRepos),
+		nonNil(input.FailureSources), since, actorJSON); err != nil {
 		return ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
 	}
 	if err := replaceSources(ctx, tx, input, previous.Sources, defaultRepo); err != nil {
@@ -727,7 +732,7 @@ func replaceSources(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, 
 // repoStep names one repository's row of a run step's progress. delivery_reconcile_progress is
 // keyed by step alone (migration 0083), and a row recorded under another scope is replaced, so two
 // source repositories under one step name would each restart the other's import every pass: each
-// run step's name carries its repository instead (dispatch://INFRA-978, T7). The names without a
+// run step's name carries its repository instead (dispatch://INFRA-978, D1). The names without a
 // repository are the release before this one's.
 func repoStep(step, repo string) string {
 	return step + "/" + strings.ToLower(repo)
@@ -737,11 +742,7 @@ func repoStep(step, repo string) string {
 // (repoStep), so the next reconcile imports the repository's runs from the start of the backfill
 // window.
 func ClearRepositoryProgress(ctx context.Context, tx pgx.Tx, repos []string) error {
-	lower := make([]string, len(repos))
-	for i, repo := range repos {
-		lower[i] = strings.ToLower(repo)
-	}
-	for _, repo := range slices.Compact(slices.Sorted(slices.Values(lower))) {
+	for _, repo := range lowerSortedSet(repos) {
 		if _, err := tx.Exec(ctx, `
 			delete from delivery_reconcile_progress
 			where (starts_with(step, 'runs/') or starts_with(step, 'backfill/')) and right(step, length($1) + 1) = '/' || $1
@@ -752,13 +753,19 @@ func ClearRepositoryProgress(ctx context.Context, tx pgx.Tx, repos []string) err
 	return nil
 }
 
+// InputRefusal is the DELIVERY_SETTINGS_INPUT refusal of field, of the source of index where it is
+// a source's (nil where it is not), its message the field and the reason format and args give.
+func InputRefusal(index *int, field, format string, args ...any) *SettingsError {
+	return &SettingsError{Code: CodeDeliverySettingsInput, Message: field + ": " + fmt.Sprintf(format, args...), Field: field, Source: index}
+}
+
 // ValidateProjectSettings refuses an input no reader could read, naming its field and its source,
-// before any statement runs: the tables' checks hold the same rules (migration 20261123010254).
-// PutProjectSettings runs it, and the settings route runs it before it asks GitHub anything.
+// before any statement runs (InputRefusal): the tables' checks hold the same rules (migration
+// 20261123010254), but for a job name or a workflow path of white space alone, which they would
+// store and no reader could match. PutProjectSettings runs it, and the settings route runs it
+// before it asks GitHub anything.
 func ValidateProjectSettings(input ProjectSettingsInput) error {
-	refuse := func(index *int, field, format string, args ...any) error {
-		return &SettingsError{Code: CodeDeliverySettingsInput, Message: field + ": " + fmt.Sprintf(format, args...), Field: field, Source: index}
-	}
+	refuse := InputRefusal
 	if input.Delivery && len(input.Sources) == 0 {
 		return refuse(nil, "sources", "delivery on needs at least one deploy source")
 	}
@@ -775,7 +782,7 @@ func ValidateProjectSettings(input ProjectSettingsInput) error {
 					return refuse(index, "repo", "%q is not a GitHub repository owner/name", *source.Repo)
 				}
 			}
-			if deref(source.DeployWorkflowPath) == "" {
+			if strings.TrimSpace(deref(source.DeployWorkflowPath)) == "" {
 				return refuse(index, "deploy_workflow_path", "a github_workflow source names its deploy workflow")
 			}
 			if len(source.ProductionJobNames) == 0 {
@@ -786,7 +793,7 @@ func ValidateProjectSettings(input ProjectSettingsInput) error {
 					return refuse(index, "production_job_names", "a production job name is empty")
 				}
 			}
-			if deref(source.PRChecksWorkflowPath) == "" {
+			if strings.TrimSpace(deref(source.PRChecksWorkflowPath)) == "" {
 				return refuse(index, "pr_checks_workflow_path", "a github_workflow source names its pull-request checks workflow")
 			}
 		case SourceKindEvents:
@@ -819,40 +826,28 @@ func ValidateProjectSettings(input ProjectSettingsInput) error {
 	return nil
 }
 
-func nonNilList(list []string) []string {
-	if list == nil {
-		return []string{}
-	}
-	return list
-}
-
 // ReconciledThrough is how far the reconcile has imported rule's repository: the earliest recorded
 // progress of its deploy workflow's and its pull-request checks workflow's run listings (their
 // runsStep rows under runsProgressScope) and of every installation's merged-pull-request search,
 // and nil until each listing has a row and every installation's search row is under the search's
-// current scope (searchProgressScope of the rules q holds now): a change of the population or of
-// the set of source repositories searches every installation afresh, and a source's numbers count
-// the pull requests that search stores. A source saved at T has imported its backfill window once
-// this is later than T, which is what a reader waits on before it reads the source's numbers
+// current scope (searchProgressScope of rules, every project's rules as q holds them now,
+// ReadSourceRules, which a reader of several sources reads once): a change of the population or
+// of the set of source repositories searches every installation afresh, and a source's numbers
+// count the pull requests that search stores. A source saved at T has imported its backfill window
+// once this is later than T, which is what a reader waits on before it reads the source's numbers
 // (dispatch://INFRA-978, D3); last_reconcile_at moves after the first regular pass, long before
 // that.
-func ReconciledThrough(ctx context.Context, q Querier, rule DeliverySettings) (*time.Time, error) {
-	rules, err := ReadSourceRules(ctx, q)
-	if err != nil {
-		return nil, err
-	}
+func ReconciledThrough(ctx context.Context, q Querier, rule DeliverySettings, rules *SourceRules) (*time.Time, error) {
 	// The reconcile lists the pull-request checks workflow on its own only where it is another file
 	// than the deploy workflow (runOnce), so a source with one workflow waits for one listing.
-	steps := [][2]string{{runsStep(DeliveryRunKindDeploy, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath)}}
+	names := []string{runsStep(DeliveryRunKindDeploy, rule.DeployRepo)}
+	scopes := []string{runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath)}
 	if rule.PRChecksWorkflowPath != rule.DeployWorkflowPath {
-		steps = append(steps, [2]string{runsStep(DeliveryRunKindPRChecks, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath)})
-	}
-	names, scopes := make([]string, len(steps)), make([]string, len(steps))
-	for i, step := range steps {
-		names[i], scopes[i] = step[0], step[1]
+		names = append(names, runsStep(DeliveryRunKindPRChecks, rule.DeployRepo))
+		scopes = append(scopes, runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath))
 	}
 	var through *time.Time
-	err = q.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		with runs as (
 			select p.through from delivery_reconcile_progress p
 			join unnest($1::text[], $2::text[]) as want(step, scope) on want.step = p.step and want.scope = p.scope

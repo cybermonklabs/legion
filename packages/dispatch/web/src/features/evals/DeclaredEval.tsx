@@ -167,6 +167,7 @@ function DeclaredChart({
       data-declared-kind={kindName}
     >
       {texts.heading === null ? null : (
+        // Its definition's words, drawn as plain text: `eval-chart-heading`
         <h4 className={`text-xs font-semibold uppercase ${textMutedOnSurface}`}>{texts.heading}</h4>
       )}
       {model === null ? (

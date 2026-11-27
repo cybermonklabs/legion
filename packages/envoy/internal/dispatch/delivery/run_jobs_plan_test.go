@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"slices"
@@ -8,15 +9,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // The run jobs read names the jobs it reads in SQL, and the name is a key of the read and not a
 // filter after it: `EXPLAIN (ANALYZE, BUFFERS)` of ListRunJobsForRuns' statement reads
-// delivery_run_jobs through its primary key (repo, run_id, name) under an index condition that
-// holds the name predicate, and answers only the named jobs of each run. Unfiltered, this read
-// cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13), most of it the
-// pull-request runs' dozens of jobs no caller of it reads.
+// delivery_run_jobs through delivery_run_jobs_named (repo, name, run_id) alone, an index-only scan
+// under an index condition that holds the repository, the names and the runs, which fetches no heap
+// page once the table is vacuumed (requireTheNamedJobsReadIsIndexOnly), and answers only the named
+// jobs of each run. Unfiltered, this read cost 660 ms a call at ten times the stated run rate
+// (dispatch://INFRA-2916, R13), most of it the pull-request runs' dozens of jobs no caller of it
+// reads.
 func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -37,16 +41,7 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	}
 	named := []string{"production / production-apply", "staging / staging-apply"}
 
-	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, named)
-	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
-		t.Fatalf("the run jobs read reads %v; want delivery_run_jobs alone:\n%s", read, raw)
-	}
-	scan := indexScanOf(t, plan, raw, "delivery_run_jobs", "delivery_run_jobs_pkey")
-	for _, key := range []string{"repo =", "run_id = ANY", "name = ANY"} {
-		if !strings.Contains(scan.Cond, key) {
-			t.Fatalf("the run jobs read's index condition %q holds no %q; want each of repo, run_id and name to key the primary key:\n%s", scan.Cond, key, raw)
-		}
-	}
+	requireTheNamedJobsReadIsIndexOnly(t, ctx, pool, runs, named)
 
 	byRun, err := ListRunJobsForRuns(ctx, pool, "acme/widgets", runs, named)
 	if err != nil {
@@ -73,16 +68,17 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	}
 }
 
-// The timeline's reads of its deploy runs' jobs read the named jobs of each run through the
-// primary key (runJobsNamedForRunsQuery) and each run's failed jobs through
-// delivery_run_jobs_failed (runJobsFailedForRunsQuery), the partial index that holds the failed
-// jobs alone, so they read in proportion to the runs' failures rather than every job they ran:
-// `EXPLAIN (ANALYZE, BUFFERS)` of each statement reads delivery_run_jobs through its one index and
-// through nothing else. Postgres plans no condition a partial index's predicate implies, so the
-// failed read's index condition is the repository and the run, and its failure predicate is the
-// index's own, read from pg_index. Each run's jobs the two answer (namedAndFailedJobs) are its
-// named jobs and its failed ones, in ListRunJobs' order, and FailedJobs, RootFailingJob,
-// Production.Job and the deploys answer from them what they answer from every job the run holds.
+// The timeline's reads of its deploy runs' jobs read the named jobs of each run through
+// delivery_run_jobs_named (runJobsNamedForRunsQuery, requireTheNamedJobsReadIsIndexOnly) and each
+// run's failed jobs through delivery_run_jobs_failed (runJobsFailedForRunsQuery), the partial index
+// that holds the failed jobs alone, so they read in proportion to the runs' failures rather than
+// every job they ran: `EXPLAIN (ANALYZE, BUFFERS)` of each statement reads delivery_run_jobs
+// through its one index and through nothing else. Postgres plans no condition a partial index's
+// predicate implies, so the failed read's index condition is the repository and the run, and its
+// failure predicate is the index's own, read from pg_index. Each run's jobs the two answer
+// (namedAndFailedJobs) are its named jobs and its failed ones, in ListRunJobs' order, and
+// FailedJobs, RootFailingJob, Production.Job and the deploys answer from them what they answer from
+// every job the run holds.
 func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -136,30 +132,26 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	}
 	names := production.JudgedJobNames()
 
-	named, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, names)
+	// The failed read is planned before the vacuum the named read's plan needs
+	// (requireTheNamedJobsReadIsIndexOnly): once the one page of these sixteen jobs is all-visible,
+	// Postgres 18.6 reads their failures by an index-only scan of delivery_run_jobs_named, which
+	// holds every column the read answers, rather than through the partial index and the heap page.
+	// The partial index's case rests on its holding a few in a hundred of a repository's jobs, which
+	// a fixture of sixteen cannot show.
 	failedPlan, failedRaw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsFailedForRunsQuery, "acme/widgets", runs, names)
-	for _, read := range []struct {
-		what, index string
-		plan        json.RawMessage
-		raw         string
-		keys        []string
-	}{
-		{"named", "delivery_run_jobs_pkey", named, raw, []string{"repo =", "run_id = ANY", "name = ANY"}},
-		{"failed", "delivery_run_jobs_failed", failedPlan, failedRaw, []string{"repo =", "run_id = ANY"}},
-	} {
-		if scanned := scannedRelations(t, read.plan); !slices.Equal(scanned, []string{"delivery_run_jobs"}) {
-			t.Fatalf("the timeline's %s jobs read reads %v; want delivery_run_jobs alone:\n%s", read.what, scanned, read.raw)
-		}
-		if explaintest.SeqScansRelation(t, read.plan, "delivery_run_jobs") {
-			t.Fatalf("the timeline's %s jobs read scans delivery_run_jobs whole:\n%s", read.what, read.raw)
-		}
-		scan := indexScanOf(t, read.plan, read.raw, "delivery_run_jobs", read.index)
-		for _, key := range read.keys {
-			if !strings.Contains(scan.Cond, key) {
-				t.Fatalf("the %s read's index condition %q holds no %q; want each of %q to key %s:\n%s", read.what, scan.Cond, key, read.keys, read.index, read.raw)
-			}
+	if scanned := scannedRelations(t, failedPlan); !slices.Equal(scanned, []string{"delivery_run_jobs"}) {
+		t.Fatalf("the timeline's failed jobs read reads %v; want delivery_run_jobs alone:\n%s", scanned, failedRaw)
+	}
+	if explaintest.SeqScansRelation(t, failedPlan, "delivery_run_jobs") {
+		t.Fatalf("the timeline's failed jobs read scans delivery_run_jobs whole:\n%s", failedRaw)
+	}
+	scan := indexScanOf(t, failedPlan, failedRaw, "delivery_run_jobs_failed")
+	for _, key := range []string{"repo =", "run_id = ANY"} {
+		if !strings.Contains(scan.Cond, key) {
+			t.Fatalf("the failed read's index condition %q holds no %q; want the repository and the run to key delivery_run_jobs_failed:\n%s", scan.Cond, key, failedRaw)
 		}
 	}
+	requireTheNamedJobsReadIsIndexOnly(t, ctx, pool, runs, names)
 	var predicate string
 	if err := pool.QueryRow(ctx, `select coalesce(pg_get_expr(indpred, indrelid), '') from pg_index where indexrelid = 'delivery_run_jobs_failed'::regclass`).Scan(&predicate); err != nil {
 		t.Fatalf("read delivery_run_jobs_failed's predicate: %v", err)
@@ -238,5 +230,136 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 	}
 	if answered != failures {
 		t.Errorf("listRunJobsFailedForRuns with no name answers %d jobs, want the %d that failed", answered, failures)
+	}
+}
+
+// requireTheNamedJobsReadIsIndexOnly vacuums delivery_run_jobs, as autovacuum keeps a table that is
+// written, and holds the plan of runJobsNamedForRunsQuery over runs and names to one Index Only
+// Scan of delivery_run_jobs_named, whose index condition holds the repository, the names and the
+// runs, and which fetches no row from the heap: the vacuum marked every page of the table
+// all-visible in the visibility map, which an index-only scan reads in place of the heap.
+//
+// A vacuum marks a page all-visible only where each row's committed hint is set, and the hint of a
+// row whose transaction committed asynchronously waits for that commit to be flushed, as the test
+// servers' synchronous_commit off leaves the jobs' writes for a moment. A synchronous commit
+// flushes the log past every commit before it, but only where its transaction wrote to the log:
+// a temporary table's catalog rows are such a write, and the commit drops the table.
+func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool *store.Pool, runs []int64, names []string) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the synchronous commit: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range []string{`set local synchronous_commit = on`, `create temporary table log_flush () on commit drop`} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit synchronously: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `vacuum (analyze) delivery_run_jobs`); err != nil {
+		t.Fatalf("vacuum delivery_run_jobs: %v", err)
+	}
+	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, names)
+	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
+		t.Fatalf("the run jobs read by name reads %v; want delivery_run_jobs alone:\n%s", read, raw)
+	}
+	scan := indexScanOf(t, plan, raw, "delivery_run_jobs_named")
+	if scan.NodeType != "Index Only Scan" {
+		t.Fatalf("the run jobs read by name reads delivery_run_jobs_named by an %s; want an Index Only Scan:\n%s", scan.NodeType, raw)
+	}
+	for _, key := range []string{"repo =", "name = ANY", "run_id = ANY"} {
+		if !strings.Contains(scan.Cond, key) {
+			t.Fatalf("the run jobs read's index condition %q holds no %q; want each of repo, name and run_id to key delivery_run_jobs_named:\n%s", scan.Cond, key, raw)
+		}
+	}
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Index == "delivery_run_jobs_named" && node.HeapFetches != 0 {
+			t.Fatalf("the run jobs read by name fetched %g rows from the heap of the vacuumed table; want none:\n%s", node.HeapFetches, raw)
+		}
+	}
+}
+
+// TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale plans the run-jobs reads with nothing
+// switched off, as the planner plans them for any reader, under each plan-cache mode (the plan made
+// for the arguments' own values and the generic plan a cached statement settles on), over 20,000
+// deploy runs with 100,000 jobs, about one in thirty of them failed, analyzed. Neither read scans
+// delivery_run_jobs whole or reads another relation. The named read reads it through
+// delivery_run_jobs_named (repo, name, run_id) or the primary key (repo, run_id, name), the two
+// indexes whose three columns are each in its index condition, the job's name among them; the
+// failed read through delivery_run_jobs_failed or the primary key, and no other index.
+func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	// The triggers that log each change take a lock and write a row for each of the hundred
+	// thousand rows, which this test's database, its own, does not need logged.
+	for _, trigger := range []struct{ table, name string }{
+		{"delivery_runs", "delivery_runs_changed"},
+		{"delivery_run_jobs", "delivery_run_jobs_changed"},
+	} {
+		if _, err := pool.Exec(ctx, "alter table "+trigger.table+" disable trigger "+trigger.name); err != nil {
+			t.Fatalf("stop logging %s's changes: %v", trigger.table, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, url, head_branch, event)
+		select 'acme/widgets', n, 'deploy', lpad(n::text, 40, '0'), at - interval '5 minutes', at, at,
+			'https://github.com/acme/widgets/actions/runs/' || n, 'main', 'push'
+		from generate_series(1, 20000) n, lateral (select now() - interval '365 days' + n * interval '25 minutes' as at) moment
+	`); err != nil {
+		t.Fatalf("seed the deploy runs: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
+		select r.repo, r.run_id, job.name, r.started_at, r.started_at + interval '10 minutes',
+			case when (r.run_id * 7 + job.slot) % 33 = 0 then 'failure' else 'success' end
+		from delivery_runs r,
+			(values (0, 'build'), (1, 'lint'), (2, 'test / unit'), (3, 'production / production-apply'), (4, 'notify-release')) job(slot, name)
+	`); err != nil {
+		t.Fatalf("seed the runs' jobs: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `analyze delivery_runs, delivery_run_jobs`); err != nil {
+		t.Fatalf("analyze the seeded runs: %v", err)
+	}
+	runs := []int64{19998, 19999, 20000}
+	for _, read := range []struct {
+		name    string
+		sql     string
+		names   []string
+		indexes []string
+		keys    []string // the index condition's keys, where the read's name must be among them
+	}{
+		{"named", runJobsNamedForRunsQuery, []string{"production / production-apply", "notify-release"},
+			[]string{"delivery_run_jobs_named", "delivery_run_jobs_pkey"}, []string{"repo =", "run_id = ANY", "name = ANY"}},
+		{"failed", runJobsFailedForRunsQuery, []string{"production / production-apply"},
+			[]string{"delivery_run_jobs_failed", "delivery_run_jobs_pkey"}, nil},
+	} {
+		statement := explaintest.Statement{SQL: read.sql, Args: []any{"acme/widgets", runs, read.names}}
+		for _, mode := range explaintest.PlanCacheModes {
+			plan := json.RawMessage(explaintest.ExplainBuffered(t, ctx, pool, statement, mode, "json"))
+			outline := explaintest.Outline(t, plan)
+			if explaintest.SeqScansRelation(t, plan, "delivery_run_jobs") {
+				t.Fatalf("under %s the %s read scans delivery_run_jobs whole:\n%s", mode, read.name, outline)
+			}
+			if scanned := scannedRelations(t, plan); !slices.Equal(scanned, []string{"delivery_run_jobs"}) {
+				t.Fatalf("under %s the %s read reads %v, want delivery_run_jobs alone:\n%s", mode, read.name, scanned, outline)
+			}
+			scans := explaintest.IndexScans(t, plan)
+			if len(scans) == 0 {
+				t.Fatalf("under %s the %s read reads no index:\n%s", mode, read.name, outline)
+			}
+			for _, scan := range scans {
+				if !slices.Contains(read.indexes, scan.Index) {
+					t.Fatalf("under %s the %s read reads through %s, want one of %v:\n%s", mode, read.name, scan.Index, read.indexes, outline)
+				}
+				for _, key := range read.keys {
+					if !strings.Contains(scan.Cond, key) {
+						t.Fatalf("under %s the %s read's index condition %q holds no %q, which must key %s:\n%s", mode, read.name, scan.Cond, key, scan.Index, outline)
+					}
+				}
+			}
+			t.Logf("under %s the %s read reads %v", mode, read.name, scans)
+		}
 	}
 }

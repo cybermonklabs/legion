@@ -21,36 +21,50 @@ import (
 // facts count, so it is left out of the root's parts. Every other hour is its phase's. It reads
 // the observed timeline or the status-history fallback alike, so it needs no observation.
 
-// The three parts issueParts names outside the table below. breakdownPerson is the board's
+// The two parts issueParts names outside the table below. breakdownPerson is the board's
 // awaiting-a-person column, which holds the hours an ask held as well as the hours of that
-// phase. breakdownChildren and breakdownOther are no column of the board: the hours a root
-// waited while a child worked, and the hours no other part took.
+// phase. breakdownOther is no column of the board: the hours no other part took.
 const (
-	breakdownPerson   = legion.ColumnAwaiting
-	breakdownChildren = "waiting_on_children"
-	breakdownOther    = "other"
+	breakdownPerson = legion.ColumnAwaiting
+	breakdownOther  = "other"
 )
 
-// breakdownParts are the parts in the order a page draws them, each with the phases whose hours
-// it holds. Their ids are the board's columns, which the legion package declares
-// (legion.ColumnDesign and the rest, and legion.PhaseColumns, which they follow), with waiting on
-// children and other beside them: retro is a part of its own, and merging holds merging and
-// awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), so an issue's retro hours are under
-// `retro` and on no merger figure, as retro is on the implementer's bar of metric 2.
-var breakdownParts = []struct {
+// breakdownPart is one part an issue's hours are shared out over: its id, and the phases whose
+// hours it holds.
+type breakdownPart struct {
 	id     string
 	phases []string
-}{
-	{legion.ColumnDesign, []string{phaseDesign}},
-	{legion.ColumnPlanning, []string{legion.PhasePlanning}},
-	{legion.ColumnImplementing, []string{legion.PhaseImplementing}},
-	{legion.ColumnTesting, []string{legion.PhaseTesting}},
-	{legion.ColumnReviewing, []string{legion.PhaseReviewing}},
-	{legion.ColumnAccepting, []string{legion.PhaseAccepting}},
-	{legion.ColumnRetro, []string{legion.PhaseRetro}},
-	{legion.ColumnMerging, []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}},
-	{breakdownPerson, []string{legion.PhaseAwaitingPerson}},
-	{legion.ColumnHeld, []string{legion.PhaseHeld}},
+}
+
+// breakdownParts are the parts an issue's hours are shared out over, each with the phases whose
+// hours it holds, read off legion.Columns (partsOf): each column that holds a phase, with the
+// phases the board places in it. So retro is a part of its own and
+// merging holds merging and awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), as the
+// board's table has them: an issue's retro hours are under `retro` and on no merger figure, as
+// retro is on the implementer's bar of metric 2.
+var breakdownParts = partsOf(legion.Columns)
+
+// partsOf is the parts of columns: each column that holds a phase, in the order columns lists
+// them, with its phases as the timeline names them. The queue holds no phase and is no part.
+// The one phase the timeline names otherwise is `admitted`, the phase the board places in its
+// design column: the timeline reads it as design where the issue holds a slot and as queued,
+// which is on no bar, where it holds none (phaseDesign, phaseQueued), so that part holds design.
+func partsOf(columns []legion.Column) []breakdownPart {
+	parts := make([]breakdownPart, 0, len(columns))
+	for _, column := range columns {
+		if len(column.Phases) == 0 {
+			continue
+		}
+		phases := make([]string, 0, len(column.Phases))
+		for _, phase := range column.Phases {
+			if phase == legion.PhaseAdmitted {
+				phase = phaseDesign
+			}
+			phases = append(phases, phase)
+		}
+		parts = append(parts, breakdownPart{id: column.ID, phases: phases})
+	}
+	return parts
 }
 
 // personClaim and childrenClaim are the two places in the precedence issueParts takes its hours
@@ -67,9 +81,9 @@ func precedenceIndex(segment Segment) int {
 }
 
 // issueParts shares the issue's bar hours out over the breakdown's parts, each hour once: an
-// ask's hours to waiting on a person, then each phase's own. The hours it waited while a child
-// worked are the second answer, outside the parts.
-func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.Duration) {
+// ask's hours to waiting on a person, the hours it waited while a child worked removed outside
+// the parts, then each phase's own.
+func (c *computation) issueParts(issue *Issue) map[string]time.Duration {
 	view := c.viewOf(issue)
 	rest := normalize(c.barSpansOf(issue))
 	spent := map[string]time.Duration{}
@@ -79,14 +93,12 @@ func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.D
 		rest = subtract(rest, taken)
 	}
 	take(breakdownPerson, view.claims(personClaim))
-	take(breakdownChildren, view.claims(childrenClaim))
-	children := spent[breakdownChildren]
-	delete(spent, breakdownChildren)
+	rest = subtract(rest, view.claims(childrenClaim))
 	for _, part := range breakdownParts {
 		take(part.id, phaseSpansOf(view.timeline, part.phases...))
 	}
 	spent[breakdownOther] += totalOf(rest)
-	return spent, children
+	return spent
 }
 
 // IssueFacts is one issue's Legion facts: when it opened and closed, the hours by breakdown part
@@ -110,7 +122,7 @@ type IssueFacts struct {
 	Tree         string
 
 	// TreeDepth is how many child_of links lie between the issue and the root Tree names, zero
-	// for the root itself (Population.treeDepth).
+	// for the root itself (computation.treeDepth).
 	TreeDepth int
 
 	// SlotHours is how long the issue held an admission slot of its own, from its own `slot`
@@ -189,7 +201,7 @@ func (p *Population) factsIssues(wanted map[string]bool) iter.Seq[*Issue] {
 // PhaseHours, which is `{}` for an issue whose work took no measured time.
 func (c *computation) factsOf(issue *Issue) IssueFacts {
 	population, key := c.population, issue.Key
-	spent, _ := c.issueParts(issue)
+	spent := c.issueParts(issue)
 	parts := map[string]float64{}
 	for id, here := range spent {
 		if hours(here) > 0 {

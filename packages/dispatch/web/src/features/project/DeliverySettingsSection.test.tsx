@@ -1,14 +1,18 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { DISPATCH_LOGIN_HEADER } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { answerRequests } from "../../__tests__/network";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
+import { keepPageSession } from "../../api/agent-session";
 import { ApiError, api, NetworkError } from "../../api/client";
 import {
   evalDetailQuery,
@@ -17,12 +21,23 @@ import {
   itemsViewQuery,
   projectTimelineViewQuery,
 } from "../../api/queries";
-import type { ProjectDeliverySettings, ProjectDeploySource } from "../../api/types";
+import type {
+  AuthenticatedUser,
+  ProjectDeliverySettings,
+  ProjectDeploySource,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsSection } from "./DeliverySettingsSection";
 
-// The editor's states (dispatch://INFRA-978, the plan's "The editor's states"): one test per row,
-// each driving the row's event on the row's state and reading what the row says shows.
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+// The editor's states (dispatch://INFRA-978): one test per state and event, each driving the
+// event on the state and reading what then shows.
 
 const PROJECT = "ACME";
 const DEFAULT_REPO = "acme/widgets";
@@ -115,8 +130,14 @@ function savedLater(overrides: Partial<ProjectDeliverySettings> = {}): ProjectDe
   return { ...record, updated_at: "2026-11-21T09:00:00Z", ...overrides };
 }
 
-function renderSection(defaultRepo: string | null = DEFAULT_REPO): QueryClient {
+/** The section of PROJECT, drawn for `viewer` (`/auth/whoami`'s answer) where one is given, which
+ *  is in the cache before the first render. */
+function renderSection(
+  defaultRepo: string | null = DEFAULT_REPO,
+  viewer?: AuthenticatedUser
+): QueryClient {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (viewer !== undefined) queryClient.setQueryData<AuthenticatedUser>(["whoami"], viewer);
   render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -258,6 +279,7 @@ test("with delivery off Save keeps the stored fields", async () => {
   };
   const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
   const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(stored);
+  const { targets: _eachEvalsOwn, ...storedFields } = stored;
 
   try {
     renderSection();
@@ -269,8 +291,10 @@ test("with delivery off Save keeps the stored fields", async () => {
     await user.click(screen.getByRole("button", { name: SAVE }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put.mock.calls[0]?.[0]).toBe(PROJECT);
-    // Every stored field goes back as stored, and no target: each eval keeps its own.
+    // The stored fields, including those hidden while delivery is off, go back unchanged; the
+    // targets, each its eval's own, are not sent, so each eval keeps the target it holds.
     expect(sentBody(put)).toEqual({
+      ...storedFields,
       delivery: false,
       excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
       failure_sources: ["check_results", "reverts"],
@@ -406,14 +430,12 @@ test("a target that is neither a number nor off is refused before any request", 
     expect(target).toHaveAttribute("aria-invalid", "true");
     expect(put).not.toHaveBeenCalled();
 
-    // `off` is a target too, and the same button then saves it beside the stored numbers.
+    // `off` is a target too, and the same button then saves it, and no target left as read.
     await replace(user, target, " off ");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: SAVE }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
-    expect(sentBody(put)).toMatchObject({
-      targets: { ...record.targets, "deploy-frequency": "off" },
-    });
+    expect(sentBody(put)).toHaveProperty("targets", { "deploy-frequency": "off" });
   } finally {
     cleanup();
     get.mockRestore();
@@ -600,6 +622,33 @@ test("a save restarts the fields from the stored record and refreshes the evals"
   }
 });
 
+test("a failed re-read of a loaded record keeps the editor and the draft", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockRejectedValue(new ApiError(500, { code: "INTERNAL", error: "database unavailable" }));
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "hubot");
+
+    // A re-read that fails - a window regaining focus, another save's refresh - leaves the record
+    // the section already holds, and the fields drawn from it, as they were.
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["project-delivery-settings", PROJECT] })
+    );
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(["project-delivery-settings", PROJECT])?.status).toBe("error");
+    expect(screen.queryByText("Couldn't load the delivery settings.")).not.toBeInTheDocument();
+    expect(deliverySwitch()).toBeChecked();
+    expect(field("Population authors").value).toBe("hubot");
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
 test("each refusal shows the server's message and keeps the draft", async () => {
   const user = userEvent.setup();
   const refusals: [number, string, string][] = [
@@ -622,6 +671,11 @@ test("each refusal shows the server's message and keeps the draft", async () => 
       409,
       "DELIVERY_SETTINGS_ACCESS",
       "source 0 reads acme/elsewhere, which Dispatch's GitHub App cannot read: the GitHub App is not installed on acme/elsewhere",
+    ],
+    [
+      409,
+      "DELIVERY_SETTINGS_CHANGED",
+      "another write moved project ACME's delivery settings, or a target this save names, under each of its 2 attempts: read them again and save again",
     ],
     [
       403,
@@ -1084,5 +1138,242 @@ test("a project holds one events source at most", async () => {
   } finally {
     cleanup();
     get.mockRestore();
+  }
+});
+
+/** What Dispatch received of one save: the body, and the login its `Dispatch-Login` named. */
+interface ReceivedSave {
+  readonly body: Record<string, unknown>;
+  readonly login: string | null;
+}
+
+/** Saves a project whose delivery is off as `viewer` (`/auth/whoami`'s answer), through the page's
+ *  own write path and client, and answers what Dispatch received. */
+async function saveAs(viewer: AuthenticatedUser): Promise<ReceivedSave> {
+  const user = userEvent.setup();
+  const stored: ProjectDeliverySettings = { ...record, delivery: false };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
+  const received = Promise.withResolvers<ReceivedSave>();
+  answerRequests(
+    http.put(`/api/v1/projects/${PROJECT}/settings/delivery`, async ({ request }) => {
+      const body = (await request.json()) as Record<string, unknown>;
+      received.resolve({ body, login: request.headers.get(DISPATCH_LOGIN_HEADER) });
+      return Response.json(stored);
+    })
+  );
+
+  try {
+    renderSection(DEFAULT_REPO, viewer);
+    await user.click(await screen.findByRole("button", { name: SAVE }));
+    const save = await received.promise;
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    return save;
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+}
+
+test("an agent viewer's save names the session its credential proved as its writer, and no person", async () => {
+  // The session whoami answers is the one the save names, whatever the page's address named.
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({
+      event_head: "0",
+      kind: "agent",
+      login: "agent:ses_from_whoami",
+      session: "ses_from_whoami",
+    });
+    expect(save.body.actor).toEqual({ id: "ses_from_whoami", kind: "session" });
+    expect(save.body.delivery).toBe(false);
+    expect(save.login).toBeNull();
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("an agent viewer whose credential proves no session names the one the page's first address named", async () => {
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({ event_head: "0", kind: "agent", login: "agent", session: null });
+    expect(save.body.actor).toEqual({ id: "ses_from_the_address", kind: "session" });
+    expect(save.login).toBeNull();
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("a person's save names no writer in its body, and names the person in Dispatch-Login", async () => {
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({ event_head: "0", kind: "user", login: "alice" });
+    expect(save.body).not.toHaveProperty("actor");
+    expect(save.login).toBe("alice");
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("an agent viewer that names no session is told to open the page with one, and its save is not sent", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+  // Neither the credential (`session: null`) nor the page's first address names a session.
+  keepPageSession("");
+
+  try {
+    renderSection(DEFAULT_REPO, {
+      event_head: "0",
+      kind: "agent",
+      login: "agent",
+      session: null,
+    });
+    await user.click(await screen.findByRole("button", { name: SAVE }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `An agent saves these settings as one of its sessions, and this page names none: open it at /projects/${PROJECT}/settings?session=<your session>.`
+    );
+    expect(put).not.toHaveBeenCalled();
+    // The draft stays, as for every refusal made before a request.
+    expect(deliverySwitch()).toBeChecked();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save sends back each field of the record it read that the form does not edit, one it does not know included", async () => {
+  const user = userEvent.setup();
+  // A newer build adds `code_groups` to the record: this build's editor does not know it, so a
+  // save — delivery on or delivery off — sends it back unchanged rather than dropping it.
+  const withUnknown = { ...record, code_groups: ["x"] };
+  const later = { ...withUnknown, updated_at: "2026-11-21T09:00:00Z" };
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(withUnknown)
+    .mockResolvedValue(later);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(later);
+
+  try {
+    renderSection();
+    expect(await screen.findByRole("switch", { name: "Delivery" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const unedited = {
+      code_groups: ["x"],
+      default_repo: withUnknown.default_repo,
+      project: withUnknown.project,
+      updated_by: withUnknown.updated_by,
+    };
+    expect(sentBody(put, 0)).toMatchObject({ ...unedited, updated_at: withUnknown.updated_at });
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+
+    await user.click(deliverySwitch());
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({ ...unedited, delivery: false });
+    expect(sentBody(put, 1)).not.toHaveProperty("targets");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save with delivery on sends no target the reader left as drawn, so one another write moved while the form was open stands", async () => {
+  const user = userEvent.setup();
+  // Another write moves deploy-frequency's target while the form is open. The record's re-read
+  // answers it under the settings' own write time, which a target's write leaves as it was, so the
+  // fields are not drawn again and the box still holds the target it was drawn with.
+  const moved = { ...record, targets: { ...record.targets, "deploy-frequency": 30 } };
+  const saved = savedLater({ population_authors: ["hubot"], targets: moved.targets });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValueOnce(moved)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "hubot");
+    // A box the reader empties keeps its eval's target as well.
+    await user.clear(field("Change failure rate (a share from 0 to 1)"));
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["project-delivery-settings", PROJECT] })
+    );
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(field("Deploy frequency (deploys a day)").value).toBe("20");
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({ delivery: true, population_authors: ["hubot"] });
+    expect(sentBody(put)).toHaveProperty("targets", {});
+    // The fields start over from what the server stored: the target the other write set.
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    expect(field("Deploy frequency (deploys a day)").value).toBe("30");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a changed target box sends that target alone", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ targets: { ...record.targets, "merge-to-production": 30 } });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Merge to production (minutes)"), "30");
+    // A box retyped to the number it was drawn with holds no change.
+    await replace(user, field("Deploy frequency (deploys a day)"), " 20.0 ");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toHaveProperty("targets", { "merge-to-production": 30 });
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("turning delivery off sends no target, so one another write moved while the form was open stands", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ delivery: false });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    // The record was read before another write moved a target, and the page has not read it
+    // again. An edit of a target box goes with the other hidden fields once delivery is off.
+    await replace(user, field("Deploy frequency (deploys a day)"), "12");
+    await user.click(deliverySwitch());
+    await user.click(screen.getByRole("button", { name: SAVE }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({
+      delivery: false,
+      population_authors: record.population_authors,
+    });
+    expect(sentBody(put)).not.toHaveProperty("targets");
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
   }
 });

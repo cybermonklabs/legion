@@ -38,11 +38,20 @@ import (
 //     is how the record of production events names each pull request a row ships or blames
 //     (production_events.pull_requests), and, after `revert:`, a revert row's source_ref.
 //
-// The pass writes no other column, updated_at included, and appends no event. It never writes
-// repo_projects, the event log, the text of documents, comments, asks and messages, the reference
-// tables read from that text (refs, block_refs, graph_edges), architecture_snapshots.files, a
-// daemon's own readings (legion_current, legion_observations) or github_rate_limits, whose scope
-// names no repository.
+// Beside those fields the pass writes only the stale marks of the eval figures' cuts a rename
+// moves (markRenamedCuts). It writes no other column, updated_at included, and appends no event.
+// It never writes repo_projects, the event log, the text of documents, comments, asks and
+// messages, the reference tables read from that text (refs, block_refs, graph_edges),
+// architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations) or
+// github_rate_limits, whose scope names no repository. Nor does it write the eval registry's rows
+// built from the fields it writes: the repositories of the day rows and their members (eval_days
+// and eval_day_members, repo), the stored figures (eval_range_figures and eval_day_figures, repo
+// and deploy_repo), the settings the release before records the rows built under
+// (eval_days_settings) and a rebuild's staged rows, which the refresher builds again from the
+// renamed fields once their changes wake it; nor the eval readings' attributes (eval_readings),
+// which hold what their writers sent, and the logged evals' day rows kept from them. The deploy
+// repository of the day rows and their members (deploy_repo) and the repository of the rule they
+// stand built under (eval_days_rules.repo) it writes, with the owner keys (repoRenameLines).
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -52,7 +61,7 @@ import (
 
 // repoRenameLockNamespace is the first key of the transaction advisory lock each line of the pass
 // takes ("RNAM"), with 0 as its second key. Two processes that boot at once take turns on each
-// line, and the second finds nothing left to write. It is the two-key form, which Postgres keeps
+// line, and the second finds no field left to write. It is the two-key form, which Postgres keeps
 // apart from the single-key locks. The other first keys of the two-key space are the copy locks'
 // (docs.copiedAsksLockNamespace), the owner locks' (OwnerLockNamespace), the owner lock gate's
 // (OwnerLockGateNamespace), the loop leases' (duty.leaseNamespace), the test hooks' (the api
@@ -63,8 +72,9 @@ import (
 const repoRenameLockNamespace int32 = 0x524E414D
 
 // repoRenameLockTimeout is how long a statement of the pass waits for a lock: the advisory lock
-// of a line that another process is writing, or a row that a request holds. A line that waits
-// longer fails and is logged, and the next boot writes it.
+// of a line that another process is writing, the table lock a line takes first
+// (repoRenameLine.lock) while a writer of that table runs, or a row that a request holds. A line
+// that waits longer fails and is logged, and the next boot writes it.
 const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 
 // repoRenamesLeftTimeout bounds each count of the rows left on an old name, the one before the
@@ -178,8 +188,9 @@ func countRepoRenamesLeftBounded(ctx context.Context, pool *Pool, renames []repo
 }
 
 // rewriteRepoRenameLine runs line's statements for each pair in one transaction and commits it,
-// and answers the rows it wrote and the rows it deleted. It logs its writes and its deletions only
-// once they are committed, so a line that fails logs nothing but its error.
+// and answers the rows it wrote and the rows it deleted: after the pass's lock, the line's lock
+// where it has one, and then its steps. It logs its writes and its deletions only once they are
+// committed, so a line that fails logs nothing but its error.
 func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine, renames []repoRename) (int64, int64, error) {
 	// A line is a transaction like any other, so it is marked like any other: nothing it runs may
 	// take a second pooled connection while it is open.
@@ -195,6 +206,11 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, 0)`, repoRenameLockNamespace); err != nil {
 		return 0, 0, fmt.Errorf("take the pass's lock: %w", err)
 	}
+	if line.lock != "" {
+		if _, err := tx.Exec(ctx, line.lock); err != nil {
+			return 0, 0, fmt.Errorf("lock the line's tables: %w", err)
+		}
+	}
 	type written struct {
 		field string
 		rows  int64
@@ -207,7 +223,7 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	var writes []written
 	var deletions []deletion
 	var rows int64
-	for _, r := range renames {
+	for _, r := range line.renamesOf(renames) {
 		for _, step := range line.steps(r) {
 			if step.deletes {
 				keys, err := deletedKeys(ctx, tx, step.sql)
@@ -264,7 +280,7 @@ func countRepoRenamesLeft(ctx context.Context, pool *Pool, renames []repoRename)
 	}
 	var terms []string
 	for _, line := range repoRenameLines {
-		for _, r := range renames {
+		for _, r := range line.renamesOf(renames) {
 			var tables []tableRows
 			for _, step := range line.steps(r) {
 				i := slices.IndexFunc(tables, func(t tableRows) bool { return t.table == step.table })
@@ -291,18 +307,42 @@ func countRepoRenamesLeft(ctx context.Context, pool *Pool, renames []repoRename)
 // repoRename is one pair, as the statements of the pass are built from it. The names go into the
 // statements as literals (QuoteLiteral), as RewriteSQL puts the URL rule there, so a statement
 // takes no parameters.
+//
+// respell is set on a pair's respelling (respelling), which a line that keys a deploy source by its
+// repository runs before the pair (repoRenameLine.respells): it moves each other spelling of case
+// of the pair's new name to the new name itself, so the pair's rows, the new name's and the runs
+// they are built from stand under one key, the new name in lower case (RepoRename).
 type repoRename struct {
 	RepoRename
-	url RepoURLRule
+	url     RepoURLRule
+	respell bool
+}
+
+// respelling is r's respelling (repoRename.respell).
+func (r repoRename) respelling() repoRename {
+	return repoRename{RepoRename: r.RepoRename, url: r.url, respell: true}
 }
 
 // from and to are the pair's old and new name as SQL literals.
 func (r repoRename) from() string { return QuoteLiteral(r.From) }
 func (r repoRename) to() string   { return QuoteLiteral(r.To) }
 
-// named is true where column, a repository name, is the old name in any case.
+// named is true where column, a repository name, is the old name in any case; for a respelling,
+// the new name in a case other than its own.
 func (r repoRename) named(column string) string {
+	if r.respell {
+		return `(lower(` + column + `) = ` + r.to() + ` and ` + column + ` <> ` + r.to() + `)`
+	}
 	return `lower(` + column + `) = ` + r.from()
+}
+
+// held is true where column, a repository name, is the new name as the line leaves it in place:
+// in any case for a pair, and as spelled for a respelling, which moves every other spelling.
+func (r repoRename) held(column string) string {
+	if r.respell {
+		return column + ` = ` + r.to()
+	}
+	return `lower(` + column + `) = ` + r.to()
 }
 
 // urlNamed is true where column, a URL, names the old name by the URL rule: the pattern RewriteSQL
@@ -329,8 +369,30 @@ func (r repoRename) tokenReplacement() string {
 type repoRenameLine struct {
 	// fields names the line's fields, as the ERROR line of a line that failed names them.
 	fields string
+	// lock, where it is set, is a statement the line runs once, after the pass's lock and before
+	// its first step, that takes a table lock its steps must hold before any row lock of theirs.
+	lock string
 	// steps are the line's statements for one pair, in the order they run.
 	steps func(r repoRename) []repoRenameStep
+	// respells is set on a line whose fields key a deploy source by its repository: the rule its
+	// rows stand built under, the rows and their members, the source key and the runs and jobs the
+	// refresher builds them from (evals' keptRepos, sourceKey). It runs its steps for each pair's
+	// respelling before the pair's (renamesOf), so a repository a read selects by its rule's exact
+	// spelling (evals.DeployReposIn) stands under one key once the pair's rows join the new name's.
+	respells bool
+}
+
+// renamesOf is the renames line runs its steps for, in order: each pair, after its respelling
+// where line respells.
+func (line repoRenameLine) renamesOf(renames []repoRename) []repoRename {
+	if !line.respells {
+		return renames
+	}
+	all := make([]repoRename, 0, 2*len(renames))
+	for _, r := range renames {
+		all = append(all, r.respelling(), r)
+	}
+	return all
 }
 
 // repoRenameStep is one statement of a line. table is the table that the statement writes or
@@ -344,7 +406,7 @@ type repoRenameLine struct {
 // INFO, under the field table.write. deletes is true where the statement deletes the colliding
 // rows of table: it returns the key of each row it deleted, as text, and each is counted and
 // logged at WARN. A step that neither writes nor deletes is a statement whose rows a write step of
-// the line counts already.
+// the line counts already, or one that writes no field of the pass (markRenamedCuts).
 type repoRenameStep struct {
 	table, where string
 	write        string
@@ -375,10 +437,12 @@ func urlWrite(r repoRename, table, column string) repoRenameStep {
 }
 
 // collisions deletes each row of table under the old name whose key, with the new name for its
-// repository, is the key of another row: a row under the new name in any case, or a row under the
-// old name whose repository sorts first. The key is the table's repo column and keys. The
-// subquery reads the table as the statement began, so of two rows under the old name the one that
-// sorts first stays for the write after this.
+// repository, is the key of another row: a row under the new name the line leaves in place
+// (repoRename.held), or a row under the old name whose repository sorts first. The key is the
+// table's repo column and keys. The subquery reads the table as the statement began, so of two rows
+// under the old name the one that sorts first stays for the write after this. For a respelling the
+// old name is the new name in another spelling of case (repoRename.named), and the row it keeps is
+// the one spelled as the new name itself.
 func collisions(r repoRename, table string, keys ...string) repoRenameStep {
 	same := ""
 	key := `'repo', d.repo`
@@ -394,8 +458,37 @@ func collisions(r repoRename, table string, keys ...string) repoRenameStep {
 			where ` + r.named("d.repo") + `
 			  and exists (
 				select 1 from ` + table + ` t
-				where (lower(t.repo) = ` + r.to() + ` or (` + r.named("t.repo") + ` and t.repo < d.repo))` + same + `)
+				where (` + r.held("t.repo") + ` or (` + r.named("t.repo") + ` and t.repo < d.repo))` + same + `)
 			returning jsonb_build_object(` + key + `)::text`,
+	}
+}
+
+// sharedSources deletes each github_workflow source that the new name makes read a repository
+// another github_workflow source reads already: a source of its own project, or of another project
+// where both have delivery on, whose repository, the one it names or else its project's default
+// repository, is the new name. A rename would otherwise break the rule delivery's
+// PutProjectSettings holds every save to, that a repository is one such source of a project
+// (DELIVERY_SETTINGS_INPUT) and the source of one delivery-on project at most
+// (DELIVERY_REPOSITORY_SHARED). where is the condition, on project_deploy_sources' columns with no
+// alias, that a source reads the old name as the line finds it, and reads the same of the source d
+// and its project's row dp. The source that reads the new name already stays, as a collision's row
+// under the new name does, and the one deleted is logged with its whole row, its rule with it, so
+// the project loses none of its settings unsaid.
+func sharedSources(r repoRename, where, reads string) repoRenameStep {
+	deliveryOn := func(project string) string {
+		return `exists (select 1 from project_delivery_settings s where s.project_key = ` + project + ` and s.delivery)`
+	}
+	return repoRenameStep{
+		table:   "project_deploy_sources",
+		where:   where,
+		deletes: true,
+		sql: `delete from project_deploy_sources d using projects dp
+			where dp.key = d.project_key and d.kind = 'github_workflow' and ` + reads + `
+			  and exists (
+				select 1 from project_deploy_sources t join projects tp on tp.key = t.project_key
+				where t.kind = 'github_workflow' and t.id <> d.id and ` + r.held("coalesce(t.repo, tp.default_repo)") + `
+				  and (t.project_key = d.project_key or (` + deliveryOn("d.project_key") + ` and ` + deliveryOn("t.project_key") + `)))
+			returning jsonb_build_object('repo', d.repo, 'project_key', d.project_key, 'source', to_jsonb(d))::text`,
 	}
 }
 
@@ -408,9 +501,19 @@ func nameLine(table, column string) repoRenameLine {
 }
 
 // ownerNamed is true where column, an owner key of the eval day rows (evals.OwnerKey), holds the
-// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers.
+// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers, and
+// '|' + its lists where it carries any, which name projects alone. For a respelling it is true where
+// column is a source key (':' + repository + '||>~', evals.sourceKey) of the new name in another
+// spelling of case: the refresher keys a source key by its runs' repository, which the runs line
+// respells, where the other keys of a repository take the spelling of the pull requests they
+// count, whose spelling of the new name the pass leaves as it is.
 func ownerNamed(r repoRename, column string) string {
-	return `lower(split_part(` + column + `, '|', 1)) = ` + QuoteLiteral(":"+strings.ToLower(r.From))
+	repo := `split_part(` + column + `, '|', 1)`
+	if r.respell {
+		return `(lower(` + repo + `) = ` + QuoteLiteral(":"+r.To) + ` and ` + repo + ` <> ` + QuoteLiteral(":"+r.To) +
+			` and substr(` + column + `, length(` + repo + `) + 1) = '||>~')`
+	}
+	return `lower(` + repo + `) = ` + QuoteLiteral(":"+strings.ToLower(r.From))
 }
 
 // ownerRenamed is column, an owner key, with the new name for its repository.
@@ -434,32 +537,169 @@ func ownerWrite(r repoRename, table string, evalIDs bool) repoRenameStep {
 	}
 }
 
-// ownerCollisions deletes each row of table under an owner key of the old name whose key, with the
-// new name for its repository, is the key of another row, as collisions does for a repo column.
-// The eval id of a row holds its owner key too (ownerWrite rewrites both), so the keys compare
-// the slug that follows it rather than the id.
-func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep {
+// ownerCollisions deletes each row of table under an owner key of the old name, in its column
+// owner, whose key, as the rename writes it, is the key of another row: a row under the renamed
+// owner key (ownerRenamed), or a row under another owner key of the old name that renames to the
+// same key and sorts first. The rename keeps what follows the repository in an owner key, its
+// sharers and its lists, so two owner keys of the old name rename to one key only where they hold
+// the old name in two spellings of case, which ownerNamed matches; two that differ in their
+// sharers or their lists, such as the plain key and a key that carries a list, rename to two
+// keys, and the rows of both stay. The eval id of a row holds its owner key too (ownerWrite
+// rewrites both), so the keys compare the slug that follows it rather than the id. The subquery
+// reads the table as the statement began, so of two rows under the old name that rename to one
+// key the one that sorts first stays for the write after this.
+//
+// Where keys hold deploy_repo (eval_days, eval_day_members), the line writes the new name in place
+// of a deploy repository of the old name too, in any case, whatever the row's owner key
+// (nameWrite), so a row moves where either names the old name, and the keys compare both as the
+// line writes them: a row the line leaves keeps its key, whatever it names, and the moving row of
+// that key goes; of two moving rows that move to one key, the one a read selected stays, whose
+// deploy repository is spelled as a recorded rule (eval_days_rules, which the line renames after
+// them), and otherwise the one whose owner key, and then deploy repository, sorts first. Only a row
+// that moves, or one under an owner key or a deploy repository of the new name, can hold the key a
+// moving row moves to, so the subquery reads those alone, and it finds a row's twin by the equality
+// of the two as the line writes them. The line moves the new name's other spellings before the
+// pair's rows (repoRenameLine.respells), so the rows of the new name are spelled as it by then.
+func ownerCollisions(r repoRename, table, owner string, keys ...string) repoRenameStep {
+	deployed := slices.Contains(keys, "deploy_repo")
+	// moves is true where the line writes the key of the row of prefix p ("d.", "t." or none).
+	moves := func(p string) string {
+		if deployed {
+			return `(` + ownerNamed(r, p+owner) + ` or ` + r.named(p+"deploy_repo") + `)`
+		}
+		return `(` + ownerNamed(r, p+owner) + `)`
+	}
+	// written is column of the row of prefix p as the line writes it.
+	written := func(p, column string) string {
+		if column == "deploy_repo" {
+			return `(case when ` + r.named(p+column) + ` then ` + r.to() + ` else ` + p + column + ` end)`
+		}
+		return `(case when ` + ownerNamed(r, p+column) + ` then ` + ownerRenamed(r, p+column) + ` else ` + p + column + ` end)`
+	}
+	// first is what orders two moving rows of one key, of which the lesser stays.
+	first := func(p string) string { return p + owner }
+	held := moves("t.") + ` or split_part(t.` + owner + `, '|', 1) = ` + QuoteLiteral(":"+r.To)
+	if deployed {
+		first = func(p string) string {
+			return `(` + p + `deploy_repo not in (select repo from eval_days_rules), ` + p + owner + `, ` + p + `deploy_repo)`
+		}
+		held += ` or t.deploy_repo = ` + r.to()
+	}
 	same := ""
-	key := `'project_key', d.project_key`
+	key := `'` + owner + `', d.` + owner
 	for _, column := range keys {
-		if column == "eval_id" {
-			same += ` and substr(t.eval_id, length(t.project_key) + 1) = substr(d.eval_id, length(d.project_key) + 1)`
-		} else {
+		switch column {
+		case "eval_id":
+			same += ` and substr(t.eval_id, length(t.` + owner + `) + 1) = substr(d.eval_id, length(d.` + owner + `) + 1)`
+		case "deploy_repo":
+			same += ` and ` + written("t.", column) + ` = ` + written("d.", column)
+		default:
 			same += ` and t.` + column + ` = d.` + column
 		}
 		key += `, '` + column + `', d.` + column + `::text`
 	}
 	return repoRenameStep{
 		table:   table,
-		where:   ownerNamed(r, "project_key"),
+		where:   moves(""),
 		deletes: true,
 		sql: `delete from ` + table + ` d
-			where ` + ownerNamed(r, "d.project_key") + `
+			where ` + moves("d.") + `
 			  and exists (
 				select 1 from ` + table + ` t
-				where (t.project_key = ` + ownerRenamed(r, "d.project_key") + `
-					or (` + ownerNamed(r, "t.project_key") + ` and t.project_key < d.project_key))` + same + `)
+				where (` + held + `)
+				  and ` + written("t.", owner) + ` = ` + written("d.", owner) + same + `
+				  and (not ` + moves("t.") + ` or ` + first("t.") + ` < ` + first("d.") + `))
 			returning jsonb_build_object(` + key + `)::text`,
+	}
+}
+
+// markRenamedCuts marks stale (eval_figure_cuts_stale) the stored eval figures' cut of the old name
+// and the cut of the new name of each project whose published default (eval_days_defaults) the
+// line's write after it moves from the old name, or that holds stored figures of a cut of the old
+// name (eval_range_figures, eval_day_figures), each name matched in any case: the old name's cut
+// under each spelling the stored figures hold it in, and, of a published default, under the old
+// name. It marks them as evals.markStaleCuts marks the cuts a move of a default moves, but for every
+// eval (evals null): a cut no mark holds at generation 1, and one a mark holds at its next
+// generation, its first paint owed and its refold to begin again from the cut's last end day
+// (ready_through and next_day null), for every eval whatever the standing mark named. It takes the
+// cuts in the byte order of their keys, the order every writer of the marks takes them in. The boot
+// folds the first paint of each mark after this pass and before it serves
+// (evals.FoldFirstPaintsAtBoot).
+//
+// Beside those it marks, for every eval alike, each cut of each project whose stored figures fold
+// the old name as their deploy repository (deploy_repo, in any case), or the new name in another
+// spelling of case, whose rows the line's respelling moved (repoRenameLine.respells): the cut that
+// holds the project's union of its deploy repositories (`*`) beside them, which a read of the cut
+// reads. The line moved those rows to the new name, with the rule they stand built under
+// (eval_days_rules), so those figures fold rows that stand under another name, and, where the new
+// name held a rule and rows already, each project's union now folds the new name's rows of the
+// same keys in place of the old name's, under the new name's rule. And where that rule, which the
+// line keeps as it stands, names a project no rule of the old name names, it marks that project's
+// cut of each repository a row of the new name's source key (lists {>~}, evals.sourceKey) stands
+// in: from the line's commit that project reads the source key's moved rows
+// (eval_project_owners), which none of its stored figures fold. The line renames the old name's
+// rule after this, so it reads that rule as it stands, and the new name's spellings before it, so
+// it reads the new name's rule and source key spelled as the new name. A later run finds no rule
+// left on the old name, so it marks no cut through the new name's rule, and marks again only the
+// cuts of a project that still holds stored figures of the old name or a respelling of the new one
+// as their deploy repository, which the refold of the cut deletes.
+//
+// It runs just after lockRenamedDefaults, which holds the moved defaults' locks before any mark is
+// written, and just before nameWrite writes eval_days_defaults. A later run finds no default left
+// on the old name, so it marks no cut through a default and leaves the mark of such a cut, and its
+// refold, as the run before it left them; it marks again only the cuts of a project that still
+// holds stored figures of the old name, which the refold of the old name's cut deletes. A project
+// that published the new name before the rename has no cut marked for its default.
+//
+// Its where is false: a mark holds no field the pass writes, and the mark of the old name's cut
+// names the old name until the refresher's refold clears it, so the count of the rows left reads no
+// mark. The line's write steps keep the line in that count until it commits, and the marks with it.
+func markRenamedCuts(r repoRename) repoRenameStep {
+	named, deployNamed := r.named("repo"), `(`+r.named("deploy_repo")+` or `+r.respelling().named("deploy_repo")+`)`
+	return repoRenameStep{
+		table: "eval_figure_cuts_stale",
+		where: "false",
+		sql: `with old as (
+				select project_key, ` + r.from() + ` as repo from eval_days_defaults where ` + named + `
+				union select project_key, repo from eval_range_figures where ` + named + `
+				union select project_key, repo from eval_day_figures where ` + named + `
+			), deployed as (
+				select project_key, repo from eval_range_figures where ` + deployNamed + `
+				union select project_key, repo from eval_day_figures where ` + deployNamed + `
+				union select rule.project_key, held.repo
+				from eval_days_rules rule
+				join projects p on p.key = rule.project_key
+				cross join lateral (
+					select distinct d.repo from eval_day_owners o join eval_days d on d.project_key = o.owner
+					where o.lists = '{>~}' and o.repo = ` + r.to() + `
+				) held
+				where rule.repo = ` + r.to() + `
+				  and exists (select 1 from eval_days_rules was where ` + r.named("was.repo") + `)
+				  and not exists (select 1 from eval_days_rules was where ` + r.named("was.repo") + ` and was.project_key = rule.project_key)
+			)
+			insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals)
+			select project_key, repo, 1, null, null, null
+			from (select project_key, repo from old union select project_key, ` + r.to() + ` from old union select project_key, repo from deployed) cut
+			order by project_key collate "C", repo collate "C"
+			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, ready_through = null, next_day = null, evals = null`,
+	}
+}
+
+// lockRenamedDefaults locks the default rows nameWrite on eval_days_defaults moves for update, in
+// the byte order of their keys, before markRenamedCuts writes any mark: the place and the order
+// the eval tables' lock order gives the defaults (evals/defaults.go), which evals.publishDefaults
+// keeps too, every default row in the byte order of its key and then the marks, in one
+// transaction. So a refresher of another process that publishes a move beside the pass waits for
+// the line, or the line for it, and the two never wait on each other in a cycle, however many
+// projects publish the old name. Keeping the lock in its own step leaves markRenamedCuts with no
+// row lock beside its read of projects (api's TestNoForUpdateOnOwnerTables), while markRenamedCuts
+// still writes every mark in one sorted statement. Its where is false for the reason
+// markRenamedCuts' is.
+func lockRenamedDefaults(r repoRename) repoRenameStep {
+	return repoRenameStep{
+		table: "eval_days_defaults",
+		where: "false",
+		sql:   `select project_key from eval_days_defaults where ` + r.named("repo") + ` order by project_key collate "C" for update`,
 	}
 }
 
@@ -473,16 +713,29 @@ func excludedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(excluded_repos) e(repo) where ` + r.named("e.repo") + `)`
 }
 
-// excludedWrite rewrites each excluded repository of table that is the old name, in its place, and
-// drops none, so the search scope that lists them (delivery's searchProgressScope) stays the scope
-// the progress line writes into the stored progress.
-func excludedWrite(r repoRename, table string) repoRenameStep {
-	where := excludedNamed(r)
-	return repoRenameStep{table: table, where: where, write: "excluded_repos", sql: `
-		update ` + table + ` set excluded_repos = array(
+// excludedRewritten is the excluded repositories of a row with each that is the old name written
+// as the new name, in its place, and none dropped, so the search scope that lists them (delivery's
+// searchProgressScope) stays the scope the progress line writes into the stored progress.
+func excludedRewritten(r repoRename) string {
+	return `array(
 			select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
-			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
-		where ` + where}
+			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)`
+}
+
+// settingsExcludedWrite rewrites delivery_settings' excluded repositories (excludedRewritten). The
+// statement spells its table, so the writers census (api's item_writer_census_test.go) reads that
+// it writes no item row.
+func settingsExcludedWrite(r repoRename) repoRenameStep {
+	return repoRenameStep{table: "delivery_settings", where: excludedNamed(r), write: "excluded_repos", sql: `
+		update delivery_settings set excluded_repos = ` + excludedRewritten(r) + `
+		where ` + excludedNamed(r)}
+}
+
+// projectSettingsExcludedWrite is settingsExcludedWrite for project_delivery_settings.
+func projectSettingsExcludedWrite(r repoRename) repoRenameStep {
+	return repoRenameStep{table: "project_delivery_settings", where: excludedNamed(r), write: "excluded_repos", sql: `
+		update project_delivery_settings set excluded_repos = ` + excludedRewritten(r) + `
+		where ` + excludedNamed(r)}
 }
 
 // stepNamed is true where column, a step of delivery_reconcile_progress, is a run step or a
@@ -510,7 +763,7 @@ func renamedPullRequest(r repoRename, entry string) string {
 }
 
 // revertRefNamed is true where column, a source_ref of production_events, is a revert row's
-// (revert:owner/repo#n, signals' revertSourceRef) of the old name.
+// (revert:owner/repo#n, signals' RevertSourceRef) of the old name.
 func revertRefNamed(r repoRename, column string) string {
 	return `(starts_with(` + column + `, 'revert:') and ` + pullRequestNamed(r, `substr(`+column+`, 8)`) + `)`
 }
@@ -530,7 +783,20 @@ func pullRequestsNamed(r repoRename) string {
 // or a URL that names one, but for those the package comment says the pass never writes.
 var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
-	nameLine("projects", "default_repo"),
+	{
+		// A github_workflow source that names no repository reads its project's default
+		// repository, so the new name can make such a source read a repository another source
+		// reads already, which is deleted first (sharedSources).
+		fields: "projects.default_repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				sharedSources(r,
+					`kind = 'github_workflow' and repo is null and exists (select 1 from projects p where p.key = project_key and `+r.named("p.default_repo")+`)`,
+					`d.repo is null and `+r.named("dp.default_repo")),
+				nameWrite(r, "projects", "default_repo"),
+			}
+		},
+	},
 	// The repository each issue's stored Legion facts name (legionfacts.ReadRepos), resolved
 	// from the two lines above when the row was computed. Its trigger logs each row it writes
 	// as an issue_facts change (20261117100002), so the day-row refresher writes that issue's
@@ -540,13 +806,85 @@ var repoRenameLines = []repoRenameLine{
 	// members and their owed days (evals.OwnerKey, migration 20261117100006): the key holds the
 	// repository's name, and so does the eval id of each row, so the pass rewrites both. A row
 	// under the new name already (a repository renamed to one that holds rows) is left, and the
-	// old name's row of the same key goes, as every other line's collision does. The day-row
-	// refresher writes the new name's rows again from their input, and the eval_days change each
-	// write logs wakes the views that read them.
+	// old name's row of the same key goes, as every other line's collision does. The rename keeps
+	// a key's sharers and lists, so two keys of the old name meet only where they hold it in two
+	// spellings of case, and one row of the two stays; the plain key and a key that carries a list
+	// rename to two keys, and the rows of both move (ownerCollisions). The day-row refresher
+	// writes the new name's rows again from their input, and the eval_days change each write logs
+	// wakes the views that read them.
+	//
+	// The keys themselves (eval_day_owners) take the new name first, under the same rule. The
+	// eval_days change trigger records the key of each row a statement writes or deletes
+	// (eval_days_change_log, 20261117100014), so a write of the day rows first would record each
+	// renamed key, and the line would then delete and log the owner row of every key it moves as
+	// a collision. The trigger records again, too, the old key of each day row the line moves or
+	// deletes, so after the day rows the line deletes each owner row of the old name whose renamed
+	// key stands, unlogged: keys the owner write counted already.
+	//
+	// So the line writes owner rows before day rows, where the change trigger, the one other
+	// writer of both, writes the owner row of a key in the statement that writes the key's day
+	// rows, after them. The line therefore takes eval_days' own lock (lock), in share row exclusive
+	// mode, before any owner row, and after the rules' lock alone (below): the place the eval
+	// tables' lock order gives eval_days (evals/defaults.go). The lock waits for each running
+	// transaction that wrote day rows, such as a refresher of another process that the changes of
+	// the lines above woke during a roll, and holds off every later write of day rows until the line
+	// commits, while reads go on; so no writer of day rows holds a row the line waits for, or waits
+	// for an owner row the line wrote. A rebuild's stage writes owner rows and no day row (evals'
+	// recordOwners), so it and the line wait for each other in turn. The lock waits under the pass's
+	// lock timeout (repoRenameLockTimeout), as every lock of the pass does.
+	//
+	// The deploy repository of the day rows and their members (deploy_repo: the rows of the evals
+	// that read the deploy repository, each repository's computed as if it were the one) and the
+	// rule they stand built under (eval_days_rules, migration 20261123020640) take the new name in
+	// the same line, a deploy repository of the old name in any case, so a renamed source keeps its
+	// rows and its rule, with its project and its start: the refresher's pass finds the source's
+	// rule recorded under the name the source and its runs hold (evals' syncSettings, syncKept) and
+	// builds none of its rows again, and the reader of the repository's source key (':' +
+	// repository + '||>~', evals.sourceKey), the project its rule records (eval_project_owners),
+	// reads the key under its rule in every snapshot. They stand under one key, the new name in
+	// lower case, with the runs and jobs they are built from (the runs line), so the refresher's
+	// first pass finds one repository, its runs, its rows and its rule under one name
+	// (refresh.keptRepos, syncKept): the line first moves the new name's other spellings of case in
+	// the rule's repository, the rows' deploy repository and the source key to the new name itself
+	// (its respelling, respells), keeping each moved rule's fields and times, and then the old
+	// name's. A row that moves to the key of a row that stays goes and the twin stays, the two
+	// columns compared as the line writes them (ownerCollisions): of the new name's spellings the
+	// one spelled as the new name, and of the old name and the new the new name's, so the new
+	// name's rule stays with its project, its start and its fields, and a read counts each such row
+	// once. The rules move last, once markRenamedCuts has read the old name's. Their lock comes
+	// first, before eval_days' (lock): a refresher's page commit and a settings rewrite's
+	// publication write their rule rows before their first day row (evals.recordRules,
+	// evals.recordRule), as the eval tables' lock order has them, so the line waits for such a
+	// transaction holding no lock that one waits for, and one that comes after the line's lock
+	// waits for the line holding no row the line writes. The release before writes no rule.
+	//
+	// The published defaults (eval_days_defaults) take the new name in the same transaction, so
+	// the refresher sees no move of a default and marks no cut stale itself. But a project's own
+	// Legion rows of an issue whose chain names no repository are stored under
+	// legionfacts.DefaultRepo (':default'), never under a name, and a read folds them into the
+	// cut of the default the project publishes: no row of them moves, and no change the pass's
+	// writes log names them, so their stored figures stay in the old name's cut and the new
+	// name's holds none of them. So the line, just before it writes the defaults, marks both cuts
+	// of each project whose default it moves stale, every eval of them (markRenamedCuts), with
+	// those default rows locked first, in the byte order of their keys, as the eval tables' lock
+	// order has them and evals.publishDefaults takes them (every default, then the marks), so a
+	// refresher of another process publishing beside it waits rather than deadlocks. The
+	// refresher's next pass folds every marked cut again (evals.refoldStaleCuts, which every pass
+	// runs), and a read of a marked cut folds the day rows until then.
 	{
-		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
+		fields: "eval_days.project_key, .deploy_repo, eval_day_members.project_key, .deploy_repo, eval_days_owed.project_key, " +
+			"eval_day_owners.owner, eval_days_defaults.repo, eval_days_rules.repo",
+		lock:     `lock table eval_days_rules, eval_days in share row exclusive mode`,
+		respells: true,
 		steps: func(r repoRename) []repoRenameStep {
-			var steps []repoRenameStep
+			steps := []repoRenameStep{
+				ownerCollisions(r, "eval_day_owners", "owner"),
+				{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
+					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
+						` where ` + ownerNamed(r, "owner"),
+				},
+			}
 			for _, one := range []struct {
 				table string
 				keys  []string
@@ -555,21 +893,23 @@ var repoRenameLines = []repoRenameLine{
 				{"eval_day_members", []string{"family", "deploy_repo", "row_key"}},
 				{"eval_days_owed", []string{"family", "day"}},
 			} {
-				steps = append(steps, ownerCollisions(r, one.table, one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
+				steps = append(steps, ownerCollisions(r, one.table, "project_key", one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
+				if slices.Contains(one.keys, "deploy_repo") {
+					steps = append(steps, nameWrite(r, one.table, "deploy_repo"))
+				}
 			}
-			return append(steps,
-				repoRenameStep{
-					table: "eval_day_owners", where: ownerNamed(r, "owner"), deletes: true,
-					sql: `delete from eval_day_owners d where ` + ownerNamed(r, "d.owner") + `
-						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)
-						returning jsonb_build_object('owner', d.owner)::text`,
-				},
-				repoRenameStep{
-					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
-					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
-						` where ` + ownerNamed(r, "owner"),
-				},
-				nameWrite(r, "eval_days_defaults", "repo"))
+			steps = append(steps, repoRenameStep{
+				table: "eval_day_owners", where: ownerNamed(r, "owner"),
+				sql: `delete from eval_day_owners d where ` + ownerNamed(r, "d.owner") + `
+					and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)`,
+			})
+			// A respelling moves no published default (projects.default_repo is in lower case) and
+			// marks no cut: the pair's marks after it read the figures it left (markRenamedCuts),
+			// after the pair's defaults are locked, as the eval tables' lock order has them.
+			if !r.respell {
+				steps = append(steps, lockRenamedDefaults(r), markRenamedCuts(r), nameWrite(r, "eval_days_defaults", "repo"))
+			}
+			return append(steps, collisions(r, "eval_days_rules"), nameWrite(r, "eval_days_rules", "repo"))
 		},
 	},
 	nameLine("check_results", "commit_repo"),
@@ -618,6 +958,20 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
+		fields: "commit_holds.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "commit_holds", "commit_sha", "merge_sha"),
+				nameWrite(r, "commit_holds", "repo"),
+			}
+		},
+	},
+	// A program's current deploy is its newest row under the repository's name
+	// (delivery.CurrentDeploys), so the rows recorded under the old name join the new name's
+	// history rather than leave the program with no deploy until its next one. No key of the
+	// table holds the repository, so nothing collides.
+	nameLine("deploys", "repo"),
+	{
 		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
 		// at its first place, as delivery's citedIssues keeps each URL once.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
@@ -645,11 +999,19 @@ var repoRenameLines = []repoRenameLine{
 		// jobs. Each other run is copied under the new name, its jobs are pointed at the copy, and
 		// the old run, which no job names any more, is deleted. The copy goes through the row's
 		// jsonb, so it carries every column of the table, a column a later migration adds
-		// included.
-		fields: "delivery_runs.repo, .url with delivery_run_jobs.repo",
+		// included. The run's trigger logs the copy's insert and the old row's delete as changes
+		// (delivery_runs_changed), so the refresher rewrites the days of each moved run, and of the
+		// member it stood counted as before, from the change log. The refresher keys a deploy
+		// source's rows by its runs' repository (evals' keptRepos), so the line first moves the runs
+		// of the new name in another spelling of case to the new name itself the same way (its
+		// respelling, respells), as the eval tables' line moves the rule and the rows: then the old
+		// name's runs and the new name's stand under one repository. A respelling leaves each run's
+		// URL as GitHub gave it.
+		fields:   "delivery_runs.repo, .url with delivery_run_jobs.repo",
+		respells: true,
 		steps: func(r repoRename) []repoRenameStep {
 			where := r.named("repo")
-			return []repoRenameStep{
+			steps := []repoRenameStep{
 				collisions(r, "delivery_runs", "run_id"),
 				{table: "delivery_runs", where: where, write: "repo", sql: `
 					insert into delivery_runs
@@ -659,8 +1021,11 @@ var repoRenameLines = []repoRenameLine{
 					where ` + r.named("stored.repo")},
 				nameWrite(r, "delivery_run_jobs", "repo"),
 				{table: "delivery_runs", where: where, sql: `delete from delivery_runs where ` + where},
-				urlWrite(r, "delivery_runs", "url"),
 			}
+			if r.respell {
+				return steps
+			}
+			return append(steps, urlWrite(r, "delivery_runs", "url"))
 		},
 	},
 	{
@@ -678,19 +1043,23 @@ var repoRenameLines = []repoRenameLine{
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				nameWrite(r, "delivery_settings", "deploy_repo"),
-				excludedWrite(r, "delivery_settings"),
+				settingsExcludedWrite(r),
 			}
 		},
 	},
 	{
 		// A project's github_workflow sources read one repository each
 		// (project_deploy_sources_one_per_repo), so a source under the old name whose project has
-		// one under the new name is deleted, and that one stays. A source that names none reads its
-		// project's default repository, which the projects line writes.
+		// one under the new name is deleted, and that one stays; so is one whose new name another
+		// source of its project reads through the default repository, or a source of another
+		// delivery-on project reads, where its own project has delivery on (sharedSources). A
+		// source that names none reads its project's default repository, which the projects line
+		// writes.
 		fields: "project_deploy_sources.repo",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				collisions(r, "project_deploy_sources", "project_key"),
+				sharedSources(r, `kind = 'github_workflow' and `+r.named("repo"), `d.repo is not null and `+r.named("d.repo")),
 				nameWrite(r, "project_deploy_sources", "repo"),
 			}
 		},
@@ -698,7 +1067,7 @@ var repoRenameLines = []repoRenameLine{
 	{
 		fields: "project_delivery_settings.excluded_repos",
 		steps: func(r repoRename) []repoRenameStep {
-			return []repoRenameStep{excludedWrite(r, "project_delivery_settings")}
+			return []repoRenameStep{projectSettingsExcludedWrite(r)}
 		},
 	},
 	{
@@ -741,13 +1110,13 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
-		// The record of production events names a repository in three fields: a row's repo, each
-		// pull request a row ships or blames, and a revert row's source_ref, which names the revert
-		// as delivery_reverts names it and which the revert's signal reads its row back by, so it
-		// moves with delivery_reverts.repo and the signal writes no second row. source_ref is a key
-		// with project_key, so a revert row under the old name whose twin the new name holds is
-		// deleted, and the twin stays. Each pull request is rewritten in its place.
-		fields: "production_events.source_ref, .repo, .pull_requests",
+		// The record of production events names a repository in four fields: a row's repo and its
+		// url, each pull request a row ships or blames, and a revert row's source_ref, which names
+		// the revert as delivery_reverts names it and which the revert's signal reads its row back
+		// by, so it moves with delivery_reverts.repo and the signal writes no second row.
+		// source_ref is a key with project_key, so a revert row under the old name whose twin the
+		// new name holds is deleted, and the twin stays. Each pull request is rewritten in its place.
+		fields: "production_events.source_ref, .repo, .url, .pull_requests",
 		steps: func(r repoRename) []repoRenameStep {
 			named, pulls := revertRefNamed(r, "source_ref"), pullRequestsNamed(r)
 			return []repoRenameStep{
@@ -764,6 +1133,7 @@ var repoRenameLines = []repoRenameLine{
 				{table: "production_events", where: named, write: "source_ref", sql: `
 					update production_events set source_ref = ` + renamedRevertRef(r, "source_ref") + ` where ` + named},
 				nameWrite(r, "production_events", "repo"),
+				urlWrite(r, "production_events", "url"),
 				{table: "production_events", where: pulls, write: "pull_requests", sql: `
 					update production_events set pull_requests = array(
 						select case when ` + pullRequestNamed(r, "e.pr") + ` then ` + renamedPullRequest(r, "e.pr") + ` else e.pr end
@@ -778,11 +1148,9 @@ var repoRenameLines = []repoRenameLine{
 		// deleted, and the twin stays.
 		fields: "production_deploy_rules.repo",
 		steps: func(r repoRename) []repoRenameStep {
-			where := r.named("repo")
 			return []repoRenameStep{
 				collisions(r, "production_deploy_rules"),
-				{table: "production_deploy_rules", where: where, write: "repo", sql: `
-					update production_deploy_rules set repo = lower(` + r.to() + `) where ` + where},
+				nameWrite(r, "production_deploy_rules", "repo"),
 			}
 		},
 	},

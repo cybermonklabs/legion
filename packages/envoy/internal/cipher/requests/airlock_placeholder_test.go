@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -23,47 +25,64 @@ const (
 	testCACertificate = "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
 )
 
-// newPlaceholderFixture is newAirlockFixture with the airlock actually in force: the Machine
-// holds rules, the proxy's URL and its certificate, so a release of a name the rules name takes
-// the placeholder path. Each rule is the proxy block of a profile of its own name
-// (rulesProfiles), as a real broker's rules are its profiles' proxy blocks, so each name's
-// recorded fingerprint is its profile's; apps are the github-app secrets the test stores, each
-// served by a profile of its own name. The profiles file is returned so a test can roll one entry
-// under a live grant (rollProfiles).
+// newPlaceholderFixture is newAirlockFixture with the airlock actually in force: its profiles file
+// declares rules' kinds, or policytest.Kinds where rules declares none, and puts each name rules
+// binds behind its binding's kind (rulesProfiles), and the Machine holds the proxy's URL and its
+// certificate, so a release of such a name takes the placeholder path. Each binding is a profile
+// of the binding's own name whose proxy string names its kind, so each name's recorded
+// fingerprint is its profile's, and a test that stores the name's secret again keeps it behind
+// the proxy; apps are the github-app secrets the test stores, each served by a profile of its own
+// name. The profiles file is returned so a test can roll one entry under a live grant
+// (rollProfiles).
 func newPlaceholderFixture(t *testing.T, rules proxyrules.Rules, apps ...string) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, file string) {
 	t.Helper()
 	file = rulesProfiles(t, rules, apps...)
 	m, enrollmentID, key = newAirlockFixture(t, file)
-	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
+	m.AirlockProxyURL, m.ProxyRoots = testProxyURL, func() string { return testCACertificate }
 	return m, enrollmentID, key, file
 }
 
-// rulesProfiles is the profiles file of rules and apps: for each rule, a profile of the rule's own
-// name whose proxy block is that rule, and for each of apps a github block on
-// policytest.AppProfile's accounts, beside the rule's proxy block where a rule names it.
+// rulesProfiles is the profiles file of rules and apps: rules' kinds, or policytest.Kinds where it
+// declares none; for each binding, a profile of the binding's own name whose proxy string names the
+// binding's kind; and for each of apps a github block on policytest.AppProfile's accounts, beside
+// the binding's proxy string where a binding names it. The policy works out each binding's way, and
+// a profile's allow narrows only under its source's proxy-narrowed tag, so a binding that sets a
+// way, an allow or an inline rule is a test bug.
 func rulesProfiles(t *testing.T, rules proxyrules.Rules, apps ...string) string {
 	t.Helper()
 	const github = `"github": {"accounts": ["acme", "ada"], "permissions": {"metadata": "read"}}`
-	var entries []string
-	named := map[string]bool{}
-	for _, rule := range rules.Secrets {
-		proxy, err := json.Marshal(policy.ProxyBlock{Hosts: rule.Hosts, Headers: rule.Headers, Allow: rule.Allow, Kind: rule.Kind, Judge: rule.Judge, Guidance: rule.Guidance})
+	kinds := policytest.Kinds
+	if rules.Kinds != nil {
+		declared, err := json.Marshal(rules.Kinds)
 		if err != nil {
 			t.Fatal(err)
 		}
-		entry := `{"name": "` + rule.Name + `", "proxy": ` + string(proxy)
-		if slices.Contains(apps, rule.Name) {
+		kinds = string(declared)
+	}
+	var entries []string
+	named := map[string]bool{}
+	for _, binding := range rules.Names {
+		if binding.Way != "" || binding.Allow != nil || binding.Inline != nil {
+			t.Fatalf("the binding %+v sets more than its name and its kind, which is all the fixture writes", binding)
+		}
+		entry := `{"name": "` + binding.Name + `", "proxy": "` + binding.Kind + `"`
+		if slices.Contains(apps, binding.Name) {
 			entry += ", " + github
 		}
 		entries = append(entries, entry+"}")
-		named[rule.Name] = true
+		named[binding.Name] = true
 	}
 	for _, app := range apps {
 		if !named[app] {
 			entries = append(entries, policytest.AppProfile(app))
 		}
 	}
-	return policytest.ProfilesFile(entries...)
+	return policytest.KindsFileOf(kinds, entries...)
+}
+
+// bound is rules of policytest.Kinds that put each of names behind its kind (rulesProfiles).
+func bound(names ...proxyrules.Binding) proxyrules.Rules {
+	return proxyrules.Rules{Names: names}
 }
 
 // appNames is the name of each of stored that is a github-app secret, which newPlaceholderFixture
@@ -78,9 +97,11 @@ func appNames(stored ...secrets.LocalSecret) []string {
 	return apps
 }
 
-// rule is one entry of a test's rules file: the name, the hosts it is bound to, and its kind.
-func rule(name, kind string) proxyrules.SecretRule {
-	return proxyrules.SecretRule{Name: name, Hosts: []string{"api.example.com"}, Kind: kind}
+// rule is one name a test puts behind the proxy, and the kind of the fixture's profiles file it is
+// behind: of policytest.Kinds, example (api.example.com) for a stored value, a minted token or an
+// exchange alike, and aws (*.amazonaws.com) for a stored key pair the proxy signs a call with.
+func rule(name, kind string) proxyrules.Binding {
+	return proxyrules.Binding{Name: name, Kind: kind}
 }
 
 // deliveries reads what each name of a request was released as: 'inject' or 'proxy'.
@@ -122,12 +143,12 @@ func placeholderRows(t *testing.T, m *Machine, grantID string) map[string]string
 	return out
 }
 
-// wellFormed fails t unless placeholder is one: the prefix and 32 characters of the alphabet.
-func wellFormed(t *testing.T, what, placeholder string) {
+// wellFormed fails t unless got is a placeholder: the prefix and 32 characters of the alphabet.
+func wellFormed(t *testing.T, what, got string) {
 	t.Helper()
-	rest, ok := strings.CutPrefix(placeholder, PlaceholderPrefix)
-	if !ok || len(rest) != PlaceholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(PlaceholderAlphabet, r) }) {
-		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, PlaceholderLength, PlaceholderAlphabet)
+	rest, ok := strings.CutPrefix(got, placeholder.Prefix)
+	if !ok || len(rest) != placeholder.Length || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(placeholder.Alphabet, r) }) {
+		t.Errorf("%s = %q; want %s and %d characters of %s", what, got, placeholder.Prefix, placeholder.Length, placeholder.Alphabet)
 	}
 }
 
@@ -158,10 +179,10 @@ func grantOf(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKe
 
 // TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest: a grant of one name the rules name and
 // one they do not releases the ordinary value and no other, answers the proxy, the certificate,
-// the placeholder and the entry's hosts for the name it holds back, and records which of the two
-// went out as a placeholder.
+// the placeholder and the hosts of its kind for the name it holds back, and records which of the
+// two went out as a placeholder.
 func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	requestID, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 
@@ -188,7 +209,7 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 		t.Errorf("AUTO_TOKEN's slots = %v; want the value slot holding %q", got, held.Value)
 	}
 	if !slices.Equal(held.Hosts, []string{"api.example.com"}) {
-		t.Errorf("AUTO_TOKEN's hosts = %v; want the entry's, which the command keeps off its NO_PROXY", held.Hosts)
+		t.Errorf("AUTO_TOKEN's hosts = %v; want its kind's, which the command keeps off its NO_PROXY", held.Hosts)
 	}
 	if release.Airlock.ProxyPassword != held.Value {
 		t.Errorf("proxy password = %q; want AUTO_TOKEN's only placeholder %q", release.Airlock.ProxyPassword, held.Value)
@@ -203,7 +224,7 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 // for as long as it lives, so a session that releases twice — a retry, or a second process —
 // finds the strings already in its environment still working, and the table grows no row.
 func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 
 	first, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
@@ -237,11 +258,12 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 	)
 	for _, c := range []struct {
 		name string
-		// entryKind is the airlock entry's kind, secret the secret the fixture serves, and
-		// minted what its minter answers ("" for a stored secret, which has none).
-		entryKind string
-		secret    secrets.LocalSecret
-		minted    string
+		// kind is the kind of policytest.Kinds the secret is behind, example where it names
+		// none; secret the secret the fixture serves, and minted what its minter answers ("" for
+		// a stored secret, which has none).
+		kind   string
+		secret secrets.LocalSecret
+		minted string
 		// real is the value that must appear nowhere in the answer, and want the slots the
 		// release must mint, each checked against where its placeholder landed.
 		real  string
@@ -272,11 +294,11 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 			},
 		},
 		{
-			name:      "an AWS key pair",
-			entryKind: "aws",
-			secret:    policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
-			real:      "real-secret-access-key",
-			want:      []string{SlotAWSAccessKeyID, SlotAWSSecretAccessKey, SlotAWSSessionToken},
+			name:   "an AWS key pair",
+			kind:   "aws",
+			secret: policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
+			real:   "real-secret-access-key",
+			want:   []string{SlotAWSAccessKeyID, SlotAWSSecretAccessKey, SlotAWSSessionToken},
 			check: func(t *testing.T, held AirlockName) {
 				var got map[string]string
 				if err := json.Unmarshal([]byte(held.Value), &got); err != nil {
@@ -329,7 +351,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("SHAPE_KEY", c.entryKind)}}, appNames(c.secret)...)
+			m, enr, key, _ := newPlaceholderFixture(t, bound(rule("SHAPE_KEY", cmp.Or(c.kind, "example"))), appNames(c.secret)...)
 			retag(t, m, c.secret)
 			if c.minted != "" {
 				m.Minters = map[string]Minter{c.secret.Tags[policy.TagType]: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -362,7 +384,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 // share that table's automatic grant.
 func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 	const azureMint = `{"tenant_id":"tenant","client_id":"client","federated_token":"real-federated-token","expires_at":"2100-01-01T00:00:00Z"}`
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AZURE_LOGIN", "azure")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AZURE_LOGIN", "example")))
 	retag(t, m, policytest.TypeSecret("AZURE_LOGIN", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`))
 	m.Minters = map[string]Minter{policy.TypeAzureLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: azureMint}, nil
@@ -410,10 +432,11 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 	)
 	minted := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
-		name      string
-		entryKind string
-		secret    secrets.LocalSecret
-		mint      string
+		name string
+		// kind is the kind of policytest.Kinds the secret is behind, example where it names none.
+		kind   string
+		secret secrets.LocalSecret
+		mint   string
 		// approve is for a type whose release refuses an automatic grant (azure-login).
 		approve  bool
 		want     map[string]string
@@ -428,9 +451,9 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			want:   map[string]string{SlotValue: "stored-real-value"},
 		},
 		{
-			name:      "a stored AWS key pair",
-			entryKind: "aws",
-			secret:    policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
+			name:   "a stored AWS key pair",
+			kind:   "aws",
+			secret: policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
 			want: map[string]string{
 				SlotAWSAccessKeyID:     "AKIAREALKEYID",
 				SlotAWSSecretAccessKey: "re" + "al-secret-access-key",
@@ -446,7 +469,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		},
 		{
 			name:      "an Azure login",
-			entryKind: "azure",
+			kind:      "example",
 			secret:    policytest.TypeSecret("SHAPE_KEY", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`),
 			mint:      azureMint,
 			approve:   true,
@@ -456,7 +479,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("SHAPE_KEY", c.entryKind)}}, appNames(c.secret)...)
+			m, enr, key, _ := newPlaceholderFixture(t, bound(rule("SHAPE_KEY", cmp.Or(c.kind, "example"))), appNames(c.secret)...)
 			retag(t, m, c.secret)
 			wantExpires := time.Time{}
 			if c.mint != "" {
@@ -518,7 +541,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 // slot, so the command and the proxy agree on which of the grant's equally powerful placeholders
 // is the password.
 func TestTheProxyPasswordIsTheFirstPairInSortedOrder(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AWS_KEY", "aws"), rule("ZULU_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AWS_KEY", "aws"), rule("ZULU_TOKEN", "example")))
 	retag(t, m,
 		policytest.Secret("AWS_KEY", fixtureOperator, policy.TierAgent, `{"access_key_id":"AKIAONE","secret_access_key":"two"}`),
 		policytest.Secret("ZULU_TOKEN", fixtureOperator, policy.TierAgent, "zulu-v1"),

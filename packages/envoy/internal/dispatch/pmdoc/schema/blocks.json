@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 6,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -124,6 +124,11 @@
           "kind": "block[]",
           "targets": ["plan_task"],
           "scope": "document"
+        },
+        "steps": {
+          "kind": "string",
+          "since": 5,
+          "creatable_since": 5
         }
       },
       "since": 3,
@@ -157,6 +162,17 @@
           "kind": "string",
           "since": 4,
           "creatable_since": 4
+        },
+        "subject": {
+          "kind": "enum",
+          "choices": ["code", "production", "graph"],
+          "since": 6,
+          "creatable_since": 7
+        },
+        "program": {
+          "kind": "string",
+          "since": 6,
+          "creatable_since": 7
         }
       },
       "since": 3,

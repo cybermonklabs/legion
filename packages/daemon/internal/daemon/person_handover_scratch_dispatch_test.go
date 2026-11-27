@@ -2,18 +2,21 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -22,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -210,27 +214,46 @@ func (e scratchEvent) version() int {
 // factID is the event as the daemon's processed_events names it.
 func (e scratchEvent) factID() string { return fmt.Sprintf("dispatch-%d", e.ID) }
 
-// scratchReview is one review of a document as Dispatch's review routes serve it.
+// scratchReview is one review of a document as Dispatch's review routes serve it, with Dispatch's
+// time of it (created_at), which the approval read's at and the review's event share.
 type scratchReview struct {
-	Version int          `json:"version"`
-	State   string       `json:"state"`
-	Actor   scratchActor `json:"actor"`
-	Reason  *string      `json:"reason"`
+	Version   int          `json:"version"`
+	State     string       `json:"state"`
+	Actor     scratchActor `json:"actor"`
+	Reason    *string      `json:"reason"`
+	CreatedAt time.Time    `json:"created_at"`
 }
 
 // personHandoverRig is one proof's rig: the scratch Dispatch, the daemon's configuration and
 // database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
 // writes. The spec document every issue is created with gives its primary document a settled
-// version 1 to approve.
+// version 1 to approve. architects keeps, by tree, the launch and the registered session of each
+// architect admit launched, which ready reports ready; tune, when set, adjusts the daemon's test
+// overrides at each boot, as a proof that holds the outbox or a registration sets them.
+// experimentSource, set before boot, is the random source the booted daemon draws a `random`
+// experiment with; nil is the daemon's own. daemonLog, set before boot, also receives the
+// daemon's log, as a live proof keeps it for its evidence; nil keeps it in logs alone.
 type personHandoverRig struct {
-	t       *testing.T
-	baseURL string
-	cfg     config.Config
-	pool    *store.Pool
-	logs    *syncBuffer
-	github  string
-	rt      *fake.Runtime
-	d       *daemon
+	t                *testing.T
+	baseURL          string
+	cfg              config.Config
+	pool             *store.Pool
+	logs             *syncBuffer
+	github           string
+	rt               *fake.Runtime
+	d                *daemon
+	architects       map[string]rigArchitect
+	tune             func(*overrides)
+	experimentSource func(uint64) (uint64, error)
+	daemonLog        io.Writer
+}
+
+// rigArchitect is one launch of a tree's architect and the session the rig registered for it:
+// what its grants are minted with and what its ready reports.
+type rigArchitect struct {
+	launch  runtime.SpawnSpec
+	session string
+	secret  string
 }
 
 // personHandoverSpec is the spec every issue of these proofs is created with.
@@ -244,9 +267,24 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
-	natsURL := testnats.URL(t)
-	baseURL, token := startScratchDispatchWithNATS(t, natsURL)
-	cfg := workflowConfig(t, natsURL)
+	return newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, admissionCap)
+}
+
+// newPersonHandoverRigOn is newPersonHandoverRig over the scratch Dispatch board describes: the
+// NATS server it publishes its events on, a server the caller holds (the package's own, or the
+// one a live proof's script runs), which the daemon consumes Dispatch's events from and which
+// holds no stream of an earlier run, the checkout it runs from, and where its output goes
+// besides. A live proof whose script owns the broker and runs the driver from the checkout's root
+// (register_gate_basis_live_test.go, plan_experiment_live_test.go) names all three; every other
+// proof takes newPersonHandoverRig.
+func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissionCap int) *personHandoverRig {
+	t.Helper()
+	if board.natsURL == "" {
+		t.Fatal("newPersonHandoverRigOn was given no NATS server, and the daemon reads Dispatch's events off one")
+	}
+	scratch := startScratchDispatchOn(t, board)
+	baseURL := scratch.base
+	cfg := workflowConfig(t, board.natsURL)
 	// Dispatch takes a project key of at most ten characters; workflowConfig's is longer.
 	cfg.Project = "P" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
@@ -259,7 +297,7 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	// default, so every notice row the daemon queues stays in its outbox for the proof to count.
 	cfg.ControllerWakeInterval = time.Hour
 	cfg.DispatchURL = baseURL
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(scratch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the scratch Dispatch bearer: %v", err)
 	}
 	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
@@ -272,7 +310,7 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t)}
+	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
 }
 
 // boot starts the daemon on the rig's configuration and database, on a fresh fake runtime, its log
@@ -289,8 +327,16 @@ func (r *personHandoverRig) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
+	o.experimentSource = r.experimentSource
+	if r.tune != nil {
+		r.tune(&o)
+	}
 	r.rt = rt
-	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	var logged io.Writer = r.logs
+	if r.daemonLog != nil {
+		logged = io.MultiWriter(r.logs, r.daemonLog)
+	}
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }
 
 // create creates an issue of the rig's project through Dispatch's API as identity, with fields
@@ -416,23 +462,32 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 	return listed
 }
 
-// editDocument applies ops to artifactID as a session through Dispatch's edits route, which
-// versions the document in the route's own transaction, and answers the version it wrote.
+// editDocument applies ops to artifactID as the person through Dispatch's edits route, which
+// versions the document in the route's own transaction, and answers the version it wrote. Each
+// document it edits is the spec of a labelled root. Once the daemon's role-holder publications
+// have marked the project, Dispatch refuses such a write from a session that is no architect of
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these parked roots.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
+	r.t.Helper()
+	return r.editAs(artifactID, asPerson, ops...)
+}
+
+// editAs is editDocument as identity: asPerson is the person at a browser.
+func (r *personHandoverRig) editAs(artifactID string, identity scratchIdentity, ops ...map[string]string) int {
 	r.t.Helper()
 	var edited struct {
 		Version *struct {
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, asSession)
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{"ops": ops}, &edited, identity)
 	if edited.Version == nil {
 		r.t.Fatalf("the edit of %s wrote no version", artifactID)
 	}
 	return edited.Version.Number
 }
 
-// revise replaces find with with in artifactID as a session and answers the new version.
+// revise replaces find with with in artifactID as the person and answers the new version.
 func (r *personHandoverRig) revise(artifactID, find, with string) int {
 	r.t.Helper()
 	return r.editDocument(artifactID, map[string]string{"op": "replace", "find": find, "with": with})
@@ -453,6 +508,341 @@ func (r *personHandoverRig) uploadDocument(key, name, content string) string {
 		r.t.Fatalf("Dispatch uploaded %s to %s as %+v; want a second document with an id, not the primary one", name, key, uploaded.Artifact)
 	}
 	return uploaded.Artifact.ID
+}
+
+// requestChanges is the person's request for changes on the latest settled version of artifactID
+// at a browser, with reason: a review of state changes_requested, posted as approve posts an
+// approval, which Dispatch must take and record in the person's name.
+func (r *personHandoverRig) requestChanges(artifactID, reason string) scratchReview {
+	r.t.Helper()
+	status, answer := dispatchAnswerWith(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews",
+		map[string]any{"state": "changes_requested", "reason": reason}, signedInAsThePerson)
+	var review scratchReview
+	if status == http.StatusCreated {
+		if err := json.Unmarshal(answer, &review); err != nil {
+			r.t.Fatalf("decode the changes request on %s from %s: %v", artifactID, answer, err)
+		}
+	}
+	if status != http.StatusCreated || review.State != "changes_requested" || review.Actor != (scratchActor{Kind: "user", ID: "smoke"}) {
+		r.t.Fatalf("the person's changes request on %s = %d %s; want 201 and a changes request in the person's name", artifactID, status, answer)
+	}
+	return review
+}
+
+// requestApproval asks the person to approve the latest version of artifactID, as an architect's
+// session does (`dispatch request-approval`), with summary, and answers the ask Dispatch opened
+// for the request.
+func (r *personHandoverRig) requestApproval(artifactID, summary string) string {
+	r.t.Helper()
+	return r.approvalRequest(artifactID, map[string]any{"summary": summary})
+}
+
+// approvalRequest posts request to artifactID's approval-requests route as a session, and answers
+// the ask Dispatch opened for it.
+func (r *personHandoverRig) approvalRequest(artifactID string, request map[string]any) string {
+	r.t.Helper()
+	var requested struct {
+		Ask *struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}
+	dispatchCallAs(r.t, r.baseURL, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests", request, &requested, asSession)
+	if requested.Ask == nil || requested.Ask.ID == "" {
+		r.t.Fatalf("Dispatch opened no ask for the approval request %v of %s", request, artifactID)
+	}
+	return requested.Ask.ID
+}
+
+// writeDocument writes content as key's document name, as the person uploads one: a new document,
+// or the next version of the document of that name, whose role Dispatch reads from the name
+// (verification.md, decisions.md). It answers the document's id. The person writes it because,
+// once the daemon's role-holder publications have marked the project, Dispatch refuses an upload of
+// an issue's spec or Verification document from a session that is no architect of its tree (403
+// DOCUMENT_WRITER_NOT_ARCHITECT), as editDocument says. An upload that replaces a
+// document key already holds names the token of the version it replaces, as Dispatch's upload
+// route requires (PRECONDITION_REQUIRED otherwise), and a first upload names none
+// (documentToken). Dispatch refuses a check whose `serves` names a block its block index does not
+// hold (CheckBlockPointers), so a refusal naming a block no document holds is asked again while a
+// version written just before is indexed; any other refusal fails the proof. A refused upload
+// writes nothing, so the token read before the first upload holds for every upload asked again.
+func (r *personHandoverRig) writeDocument(key, name, content string) string {
+	t := r.t
+	t.Helper()
+	var uploaded struct {
+		Artifact struct {
+			ID      string `json:"id"`
+			Primary bool   `json:"primary"`
+		} `json:"artifact"`
+	}
+	upload := map[string]any{"name": name, "content": content}
+	if token := r.documentToken(key, name); token != "" {
+		upload["precondition"] = map[string]string{"document": token}
+	}
+	var last []byte
+	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", upload, asPerson)
+		last = answer
+		switch {
+		case status == http.StatusOK || status == http.StatusCreated:
+			if err := json.Unmarshal(answer, &uploaded); err != nil {
+				t.Fatalf("decode the upload of %s to %s from %s: %v", name, key, answer, err)
+			}
+			return true
+		case strings.Contains(string(answer), "which no document holds"):
+			return false
+		}
+		t.Fatalf("Dispatch refused %s on %s: %d %s", name, key, status, answer)
+		return false
+	})
+	if uploaded.Artifact.ID == "" || uploaded.Artifact.Primary {
+		t.Fatalf("Dispatch took %s on %s as %+v (%s); want a document with an id, not the primary one", name, key, uploaded.Artifact, last)
+	}
+	return uploaded.Artifact.ID
+}
+
+// documentToken is the token of the version key's document name stands at now, which an upload
+// replacing it names, and "" where key holds no document of that name, whose upload is a first
+// one: the issue's document text read by name or slug (GET
+// /api/v1/issues/{key}/artifacts/{name}/text, what `dispatch doc-read` prints as `Document
+// token:`), which answers 404 ARTIFACT_NOT_FOUND for no such document. Any other answer fails the
+// proof.
+func (r *personHandoverRig) documentToken(key, name string) string {
+	r.t.Helper()
+	path := "/api/v1/issues/" + key + "/artifacts/" + url.PathEscape(name) + "/text"
+	status, answer := dispatchAnswerAs(r.t, r.baseURL, http.MethodGet, path, nil, asSession)
+	switch status {
+	case http.StatusOK:
+		var text struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(answer, &text); err != nil {
+			r.t.Fatalf("decode the text read of %s's document %s from %s: %v", key, name, answer, err)
+		}
+		if text.Token == "" {
+			r.t.Fatalf("the text read of %s's document %s names no token: %s", key, name, answer)
+		}
+		return text.Token
+	case http.StatusNotFound:
+		var refusal struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(answer, &refusal); err == nil && refusal.Code == "ARTIFACT_NOT_FOUND" {
+			return ""
+		}
+	}
+	r.t.Fatalf("GET %s as %s = %d: %s, want 200 with the document's token or 404 ARTIFACT_NOT_FOUND", path, asSession, status, answer)
+	return ""
+}
+
+// requirementsMarkdown is a primary document headed title whose requirement blocks are ids, in
+// that order, each with a sentence of its own: the requirements a view's checks serve.
+func requirementsMarkdown(title string, ids ...string) string {
+	return fmt.Sprintf("# %s\n\nWhat this issue states, one requirement to a block.\n\n", title) + requirementBlocks(ids...)
+}
+
+// requirementBlocks is the requirement blocks ids, in that order, each followed by a blank line.
+func requirementBlocks(ids ...string) string {
+	var text strings.Builder
+	for _, id := range ids {
+		text.WriteString(requirementBlock(id) + "\n")
+	}
+	return text.String()
+}
+
+// requirementBlock is the requirement block id, with a sentence of its own.
+func requirementBlock(id string) string {
+	return fmt.Sprintf(":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n", id, id, id)
+}
+
+// verificationCheck is one check of a Verification document: its id and the blocks its `serves` names, in
+// Dispatch's reference form; none writes a check that serves nothing.
+type verificationCheck struct {
+	id     string
+	serves []string
+}
+
+// checksMarkdown is a Verification document holding checks, in that order.
+func checksMarkdown(checks ...verificationCheck) string {
+	var text strings.Builder
+	text.WriteString("# Verification\n\n")
+	for _, check := range checks {
+		if len(check.serves) == 0 {
+			fmt.Fprintf(&text, ":::check{#%s surface=\"api\"}\nThe check %s.\n:::\n\n", check.id, check.id)
+			continue
+		}
+		fmt.Fprintf(&text, ":::check{#%s serves=\"%s\" surface=\"api\"}\nThe check %s.\n:::\n\n", check.id, strings.Join(check.serves, " "), check.id)
+	}
+	return text.String()
+}
+
+// specBlock is the reference to block id of key's primary document, as a check's `serves` names
+// it, the id percent-encoded as a reference carries it (EncodeBlockID: every byte but an ASCII
+// letter, digit or `-`).
+func specBlock(key, id string) string {
+	var encoded strings.Builder
+	for i := range len(id) {
+		c := id[i]
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' {
+			encoded.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&encoded, "%%%02X", c)
+	}
+	return "dispatch://" + key + "/spec#b-" + encoded.String()
+}
+
+// scratchAsk is one ask of an issue as Dispatch's ask listing serves it.
+type scratchAsk struct {
+	ID      string  `json:"id"`
+	Kind    string  `json:"kind"`
+	State   string  `json:"state"`
+	BlockID *string `json:"block_id"`
+}
+
+// asks is every ask of key, open or closed.
+func (r *personHandoverRig) asks(key string) []scratchAsk {
+	r.t.Helper()
+	var asks []scratchAsk
+	dispatchCall(r.t, r.baseURL, http.MethodGet, "/api/v1/issues/"+key+"/asks?state=all", nil, &asks)
+	return asks
+}
+
+// messages is the body of every message posted on key, oldest first, from its event log.
+func (r *personHandoverRig) messages(key string) []string {
+	r.t.Helper()
+	var bodies []string
+	for _, event := range r.issueEvents(key) {
+		if event.Type != "message.created" {
+			continue
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			r.t.Fatalf("decode the message event %+v of %s: %v", event, key, err)
+		}
+		bodies = append(bodies, payload.Body)
+	}
+	return bodies
+}
+
+// notices is every notice of kind the daemon has queued on key, oldest first, still in its
+// outbox: nothing answers the Envoy address the notice runner publishes to, so none is finished
+// but a notice whose architect has ended, such as one keyed by a root that closed, which the
+// outbox finishes without delivery (internal/daemon's TestANoticeForAnEndedArchitectFinishesWithoutDelivery).
+func (r *personHandoverRig) notices(key, kind string) []record.Notice {
+	r.t.Helper()
+	return noticesOfKind(r.t, r.pool, key, record.NoticeKind(kind))
+}
+
+// processed says whether the store holds the processed mark of source's event id
+// (record.Store.Processed), which outlasts the row it was written beside.
+func (r *personHandoverRig) processed(source, id string) bool {
+	r.t.Helper()
+	var marked bool
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
+		var err error
+		marked, err = record.NewStore().Processed(r.t.Context(), tx, source, id)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the processed mark %s %s: %v", source, id, err)
+	}
+	return marked
+}
+
+// roleMessages is the body of every message the daemon has queued to a role of key, oldest
+// first, still in its outbox, as notices are.
+func (r *personHandoverRig) roleMessages(key string) []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.t.Context(), `select payload->>'body' from outbox where kind = $1 and issue = $2 order by id`,
+		string(record.OutboxKindRoleMessage), key)
+	if err != nil {
+		r.t.Fatalf("read the role messages queued on %s: %v", key, err)
+	}
+	defer rows.Close()
+	var bodies []string
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			r.t.Fatalf("scan a role message queued on %s: %v", key, err)
+		}
+		bodies = append(bodies, body)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the role messages queued on %s: %v", key, err)
+	}
+	return bodies
+}
+
+// record is the daemon's own record of key, which it must hold.
+func (r *personHandoverRig) record(key string) record.Issue {
+	r.t.Helper()
+	return recordOf(r.t, r.pool, record.NewStore(), key)
+}
+
+// gates is every design-gate row the daemon records for key, by step.
+func (r *personHandoverRig) gates(key string) map[record.DesignStep]record.DesignGate {
+	r.t.Helper()
+	var gates map[record.DesignStep]record.DesignGate
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
+		var err error
+		gates, err = record.NewStore().GatesOf(r.t.Context(), tx, key)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the design gates of %s: %v", key, err)
+	}
+	return gates
+}
+
+// entryTask is the work the daemon raised role's entry of key's current phase with (the phases
+// row's EntryTask): the task its start gave the role.
+func (r *personHandoverRig) entryTask(key string, role claim.Role) string {
+	r.t.Helper()
+	var rows []record.PhaseRow
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
+		var err error
+		rows, err = record.NewStore().Phases(r.t.Context(), tx, key)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the phases of %s: %v", key, err)
+	}
+	for _, row := range rows {
+		if row.Role == role {
+			return row.EntryTask
+		}
+	}
+	r.t.Fatalf("the daemon records no %s phase of %s among %+v", role, key, rows)
+	return ""
+}
+
+// quiet waits until the daemon has applied the newest event of each of keys among those it always
+// reads as a fact (factEvent), so a record read next stands where every write made so far left
+// it: each later event of the issue is one the daemon applies behind it, in order.
+func (r *personHandoverRig) quiet(keys ...string) {
+	r.t.Helper()
+	for _, key := range keys {
+		events := r.issueEvents(key)
+		for i := len(events) - 1; i >= 0; i-- {
+			if factEvent(events[i].Type) {
+				r.applied(events[i])
+				break
+			}
+		}
+	}
+}
+
+// factEvent says whether an event of kind is one the daemon's Dispatch consumer always applies as
+// a fact, and so records as applied (processed_events): an issue's create, edit and close, a review
+// or a version of one of its documents, and an ask's opening, answer, resolution and hand-back
+// (intake's decodeDispatch). A message, a document's first upload and an ask's edit are not, or
+// not always.
+func factEvent(kind string) bool {
+	switch kind {
+	case "issue.created", "issue.updated", "issue.closed", "artifact.approved", "artifact.changes_requested", "artifact.version",
+		"ask.opened", "ask.answered", "ask.resolved", "ask.handed_back":
+		return true
+	}
+	return false
 }
 
 // personHandoverBlock is the decision block the carried case writes into a spec, and the option
@@ -541,12 +931,7 @@ func (r *personHandoverRig) newestEvent(key, kind string, want func(scratchEvent
 func (r *personHandoverRig) applied(event scratchEvent) {
 	r.t.Helper()
 	testwait.Eventually(r.t, fmt.Sprintf("the daemon to apply Dispatch event %s (%s, seq %d)", event.factID(), event.Type, event.Seq), func() bool {
-		var done bool
-		if err := r.pool.QueryRow(r.t.Context(), `select exists (select 1 from processed_events where source = 'dispatch' and event_id = $1)`, event.factID()).
-			Scan(&done); err != nil {
-			r.t.Fatalf("read whether the daemon applied %s: %v", event.factID(), err)
-		}
-		return done
+		return r.processed("dispatch", event.factID())
 	})
 }
 
@@ -703,7 +1088,8 @@ func (r *personHandoverRig) notQueued(key, status string, lines int) {
 
 // admit hands key, a labelled root, to Legion as the person's todo and waits for it to take a slot
 // and for Dispatch to show the daemon's in_progress; it answers a minter of the grants its launched
-// architect's registered session holds, as architectGrants does for the blockers proof.
+// architect's registered session holds, as architectGrants does for the blockers proof, and keeps
+// that launch and session for ready.
 func (r *personHandoverRig) admit(key string) func() string {
 	t := r.t
 	t.Helper()
@@ -711,14 +1097,7 @@ func (r *personHandoverRig) admit(key string) func() string {
 	settled(t, r.d, "admit "+key+" into a slot", func(s api.State) bool {
 		return slices.Contains(s.Admission.Active, key)
 	})
-	project, err := claim.ProjectToken(r.cfg.Project)
-	if err != nil {
-		t.Fatalf("the project token of %s: %v", r.cfg.Project, err)
-	}
-	architect, err := claim.NewToken(project, key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatalf("the architect claim token of %s: %v", key, err)
-	}
+	architect := r.architectToken(key)
 	testwait.Eventually(t, "the daemon to launch the architect of "+key, func() bool {
 		for _, call := range r.rt.Calls() {
 			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == architect {
@@ -727,9 +1106,48 @@ func (r *personHandoverRig) admit(key string) func() string {
 		}
 		return false
 	})
-	grant := architectGrants(t, r.d, lastLaunch(t, r.rt, architect), key)
+	launch := lastLaunch(t, r.rt, architect)
+	session, secret := registerLaunch(t, r.d, launch)
+	r.architects[key] = rigArchitect{launch: launch, session: session, secret: secret}
 	awaitDispatchStatus(t, r.baseURL, key, "in_progress")
-	return grant
+	return sessionGrants(t, r.d, session, secret, key)
+}
+
+// architectToken is the claim token of key's architect in the rig's project.
+func (r *personHandoverRig) architectToken(key string) claim.Token {
+	r.t.Helper()
+	return r.roleToken(key, claim.RoleArchitect)
+}
+
+// roleToken is the claim token of role on key in the rig's project.
+func (r *personHandoverRig) roleToken(key string, role claim.Role) claim.Token {
+	r.t.Helper()
+	project, err := claim.ProjectToken(r.cfg.Project)
+	if err != nil {
+		r.t.Fatalf("the project token of %s: %v", r.cfg.Project, err)
+	}
+	token, err := claim.NewToken(project, key, role)
+	if err != nil {
+		r.t.Fatalf("the %s claim token of %s: %v", role, key, err)
+	}
+	return token
+}
+
+// ready reports the architect of key, which admit launched and registered, ready, as its plugin
+// does once its agent has booted: the claim takes it and the daemon answers it with the catch-up
+// of the architect's tree (workflow's claimReady), which a relaunch's ready is answered with too.
+func (r *personHandoverRig) ready(key string) {
+	t := r.t
+	t.Helper()
+	architect, ok := r.architects[key]
+	if !ok {
+		t.Fatalf("no architect of %s was launched and registered by admit", key)
+	}
+	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: architect.launch.Claim, SessionID: architect.session, Secret: architect.secret, Generation: architect.launch.Generation,
+	}, false); status != http.StatusNoContent {
+		t.Fatalf("the ready of the architect of %s = %d; body %s", key, status, body)
+	}
 }
 
 // registerGate registers artifactID, key's primary document, at version 1 as key's architect, as
@@ -786,6 +1204,7 @@ func (r *personHandoverRig) cleaned(key string) {
 //     retitle's own sequence, no handover row is queued, and the one queue of step 2 is all the log
 //     holds.
 func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 
@@ -870,16 +1289,17 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  5. the person approves the spec of a parked labelled child, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root a session writes a decision block into the spec;
+//  7. the carried case: on a parked labelled root the person writes a decision block into the spec;
 //     the person approves it, which queues the root (todo, waiting), and parks it again; the
 //     person then answers the block, and Dispatch records a carried approval of the version the
 //     answer wrote, in the person's name: the daemon applies it writing nothing;
-//  8. the recorded parked root of step 1, its spec revised by a session, is approved by the person
+//  8. the recorded parked root of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, parked again by the person and its spec revised by a session, is approved
-//     again by the person at the new version: todo again, a second queue.
+//  9. the root of step 3, parked again by the person and its spec revised by the person, is
+//     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
@@ -921,8 +1341,10 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A parked labelled child.
-	child := r.create(asSession, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
+	// 5. A parked labelled child. The person files it: Dispatch refuses a session that is no
+	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
+	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
+	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
 	r.setStatus(child.Key, "backlog")
 	review = r.approve(child.PrimaryArtifactID)
 	r.applied(r.newestEvent(child.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
@@ -944,7 +1366,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	// 7. The carried case.
 	carried := r.create(asSession, "Regional wave decision pending", labelled)
 	r.setStatus(carried.Key, "backlog")
-	blockVersion := r.editDocument(carried.PrimaryArtifactID, map[string]string{"op": "insert", "after": "end", "markdown": personHandoverBlock})
+	blockVersion := r.editDocument(carried.PrimaryArtifactID, insertAtEnd(personHandoverBlock))
 	askID := r.blockAsk(carried.Key, "wave")
 	approved := r.approve(carried.PrimaryArtifactID)
 	if approved.Version != blockVersion {
@@ -1004,6 +1426,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 // It shows the boot path. It does not show a daemon down for longer than the event stream keeps a
 // message.
 func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 
 	// 1. The person's label falls while no daemon runs.
@@ -1079,6 +1502,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 //     todo under the daemon's own actor, admission.waiting names it, the daemon logged the one
 //     queue from source approval and left no handover row in its outbox.
 func TestPersonHandoverIsQueuedForAnApprovalMadeWithThePersonsTokenAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}

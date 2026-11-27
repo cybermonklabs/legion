@@ -1,5 +1,7 @@
 package architecture
 
+//ci:reads packages/envoy/scripts/fixtures/github/push.json push os.ReadFile(pushFixture)
+
 import (
 	"context"
 	"encoding/json"
@@ -19,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -39,11 +40,7 @@ func waitForPushWorkers(t *testing.T, importer *Importer) {
 		importer.running.wait()
 		close(idle)
 	}()
-	select {
-	case <-idle:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("push workers or flights still run after 30s; want every one returned")
-	}
+	testwait.Receive(t, "every push worker and flight to return", idle)
 }
 
 // pendingPushes counts the sources whose push worker importer still holds an entry for.
@@ -123,6 +120,7 @@ func (c *headClock) latestLookup() time.Time {
 // included) and a source on another repository do not import; the fake would answer each of
 // them, so it is the match that leaves them out.
 func TestAPushImportsEveryEnabledSourceOfItsRepositoryAndBranch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -183,6 +181,8 @@ func TestAPushImportsEveryEnabledSourceOfItsRepositoryAndBranch(t *testing.T) {
 // (syncCount.begin) keeps every worker out without it. The push is not dropped silently: Pushed
 // logs one WARN line naming its repository and branch, and no project, since it read no source.
 func TestAPushAfterCloseStartsNothing(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// capturePushLogs).
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, _ := newImporterFixture(t, fake)
 	logged := capturePushLogs(t)
@@ -216,6 +216,8 @@ func TestAPushAfterCloseStartsNothing(t *testing.T) {
 // waits for the worker, so the lines are logged once Close has returned. It fails where
 // importPushes logs the failure line of an import the stop cut short.
 func TestAPushWorkerStoppedByCloseSaysWhichPushesNoImportCovered(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// capturePushLogs).
 	fake, importer, database, before := movedSource(t)
 	logged := capturePushLogs(t)
 
@@ -263,6 +265,8 @@ func TestAPushWorkerStoppedByCloseSaysWhichPushesNoImportCovered(t *testing.T) {
 // The failure is on the source row too, as the five-minute import's failures are. It fails where
 // importPushes logs no failure line for an import that failed while the process ran.
 func TestAPushWhoseImportFailsWhileTheProcessRunsSaysSo(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// capturePushLogs).
 	fake := &fakeSource{t: t, files: validFiles(), branchMissing: true}
 	importer, database := newImporterFixture(t, fake)
 	logged := capturePushLogs(t)
@@ -311,6 +315,7 @@ func seedPush(importer *Importer, at time.Time) string {
 // removed and the worker returns. It fails where coverPushes lets an answer Close may have cut
 // short cover a push.
 func TestCoverPushesLetsNoAnswerCloseMayHaveCutShortCoverAPush(t *testing.T) {
+	t.Parallel()
 	pushed := time.Now()
 	servedAt := pushed.Add(time.Second)
 	for _, c := range []struct {
@@ -347,6 +352,8 @@ func TestCoverPushesLetsNoAnswerCloseMayHaveCutShortCoverAPush(t *testing.T) {
 // calls recordPush itself, as a Pushed that Close began behind, once it had read the sources,
 // would. It fails where recordPush drops such a push with no line.
 func TestARefusedBeginSaysThePushIsDropped(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// capturePushLogs).
 	importer := NewImporter(nil, nil, nil)
 	logged := capturePushLogs(t)
 	importer.Close()
@@ -367,6 +374,7 @@ func TestARefusedBeginSaysThePushIsDropped(t *testing.T) {
 // check needs a `CGO_ENABLED=1 go test -race` run of this test, which CI does not make: the
 // envoy-go-race job does not test this package.
 func TestAPushDuringAWorkersLastLookIsNotLost(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	_, database := newImporterFixture(t, fake)
@@ -425,14 +433,11 @@ type pushBus struct {
 
 // startPushBus starts a NATS server of the test's own and the real intakes on it, with importer
 // as what the delivery intake hands a push of a branch to, and returns once that intake has bound
-// its durable, so a push published after it is delivered at once. The delivery intake binds its
-// durable, and so routes a push, only while its settings cache holds the rule of a source
-// repository (delivery's Intake.Run), and the cache StartIntakes makes reads the projects' delivery
-// settings once, as it starts, since no wake is given: so a project's settings with one deploy
-// source are saved first. A push's handler reads none of its fields (delivery's
-// handlePushEnvelope), and the source's repository is acme/widgets, not archRepo: a push of archRepo
-// is routed whatever repository the settings name. The intakes read GitHub through the importer's
-// own App client, as the server's do, and a push costs them no call of theirs.
+// its durable, so a push published after it is delivered at once. No delivery settings are saved:
+// the delivery intake binds its durable and routes a push whatever the settings say (delivery's
+// Intake.Run), and a push's handler reads none of them (delivery's handlePushEnvelope). The
+// intakes read GitHub through the importer's own App client, as the server's do, and a push costs
+// them no call of theirs.
 // architecture.Run is not started, so no timer pass imports anything: every import the test sees
 // is one a push or the test itself started. The intakes stop before the importer closes, and the
 // pool with it, because newImporterFixture registered its cleanups first.
@@ -452,22 +457,10 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	if err != nil {
 		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
 	}
-	if _, err := database.Pool.Exec(t.Context(), `
-		insert into projects (key, name, default_assignee, default_repo) values ('DLVY', 'Delivery', 'alice', 'acme/widgets')
-		on conflict (key) do update set default_repo = excluded.default_repo
-	`); err != nil {
-		t.Fatalf("save the project whose deploy source the intakes read: %v", err)
-	}
-	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, "DLVY", delivery.DeliverySettings{
-		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
-		ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
-	}); err != nil {
-		t.Fatalf("save the delivery settings: %v", err)
-	}
 	ctx, cancel := context.WithCancel(t.Context())
 	stop, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, importer.github, events.NewBroker(), nil, nil, importer, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, leases, importer.github, events.NewBroker(), delivery.SettingsWakes{}, importer, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -477,12 +470,10 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 		stop()
 	})
 	pushes := &pushBus{publisher: publisher}
-	if !testwait.Holds(20*time.Second, 50*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 50*time.Millisecond, "the delivery intake to bind its durable", func() (string, bool) {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.PushBound
-	}) {
-		t.Fatalf("the delivery intake did not bind its durable within 20s: %s", pushes.durable())
-	}
+		return pushes.durable(), err == nil && info.PushBound
+	})
 	return pushes
 }
 
@@ -538,12 +529,10 @@ func (b *pushBus) awaitHandedOver(t *testing.T) {
 		t.Fatalf("read the stream: %v", err)
 	}
 	last := stream.State.LastSeq
-	if !testwait.Holds(20*time.Second, 50*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the delivery intake to acknowledge through stream sequence %d", last), func() (string, bool) {
 		info, err := b.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.NumPending == 0 && info.NumAckPending == 0 && info.AckFloor.Stream >= last
-	}) {
-		t.Fatalf("the delivery intake did not acknowledge through stream sequence %d within 20s: %s", last, b.durable())
-	}
+		return b.durable(), err == nil && info.NumPending == 0 && info.NumAckPending == 0 && info.AckFloor.Stream >= last
+	})
 }
 
 // durable says what the NATS server holds of the delivery intake's durable, for a failure's text.
@@ -590,8 +579,8 @@ func movedSource(t *testing.T) (*fakeSource, *Importer, *store.Store, int) {
 }
 
 // A push of a component source's branch, published on the bus as Envoy's webhook publishes it,
-// starts that source's import through the delivery intake, with delivery settings that name
-// another repository (startPushBus) and no timer pass running: within 10s of the push, and once.
+// starts that source's import through the delivery intake, with no delivery settings saved
+// (startPushBus) and no timer pass running, once.
 // A push to another branch, a push of a tag of the branch's name and a push of the same branch to
 // another repository start none. Pushes that arrive while the source's import runs, after its
 // head lookup, start one more import between them, whether a push or the five-minute import
@@ -599,19 +588,19 @@ func movedSource(t *testing.T) (*fakeSource, *Importer, *store.Store, int) {
 // of its own, because the fake's hold on blob reads is released once and for good, and each
 // counts imports by the fake's head lookups.
 func TestAPushToAComponentSourceStartsItsImport(t *testing.T) {
+	t.Parallel()
 	t.Run("a push to the source's branch imports it once", func(t *testing.T) {
 		fake := &fakeSource{t: t, files: validFiles()}
 		importer, database := newImporterFixture(t, fake)
 		pushes := startPushBus(t, importer, database)
 
 		pushes.push(t, "legion", "arch", "refs/heads/main")
-		if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
-			_, heads := fake.lookups()
-			return heads > 0
-		}) {
-			t.Fatalf("no import within 10s of a push of legion/arch's main: the fake GitHub saw no head lookup, and the intake's durable is %s",
-				pushes.durable())
-		}
+		testwait.UntilPolling(t, 50*time.Millisecond, "an import of legion/arch after a push of its main: a head lookup at the fake GitHub", func() (string, bool) {
+			if _, heads := fake.lookups(); heads > 0 {
+				return "", true
+			}
+			return "no head lookup; the intake's durable is " + pushes.durable(), false
+		})
 		pushes.awaitHandedOver(t)
 		waitForPushWorkers(t, importer)
 		if _, heads := fake.lookups(); heads != 1 {

@@ -265,6 +265,7 @@ function LanePlot({
   const { at } = place;
   return (
     <svg
+      // The lane's end names its newest reading's own words, as plain text: `eval-reading-note`
       aria-label={`${lane.row}${lane.end === null ? "" : `: ${lane.end.text}`}`}
       className="block w-full overflow-visible"
       data-lane={lane.row}
@@ -482,6 +483,7 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
                     data-lane-end
                     data-state={lane.end?.state}
                   >
+                    {/* Its newest reading's own words, as plain text: `eval-reading-note` */}
                     {lane.end?.text}
                   </span>
                 </div>

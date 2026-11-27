@@ -143,7 +143,7 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 // leasedPass runs one reconcile pass under the lease, for the tick due at due. Its period is
 // duty.LeasePeriod of the interval this loop ticks on (tickInterval).
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
+	duty.Exclusive(ctx, nil, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is
@@ -158,7 +158,7 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // thousands of GitHub requests, well past one installation's hourly rate limit, so no single pass
 // can finish one and a pass that forgets what it did could never converge.
 //
-// The outcome is recorded on each source repository's own source (dispatch://INFRA-978, T7): its
+// The outcome is recorded on each source repository's own source (dispatch://INFRA-978, D1): its
 // last_reconcile_at advances ONLY when every step that ran for it succeeded -- its own steps and
 // the steps every repository's numbers read (the merged pull-request search, the partial rows,
 // the head pass, the attribution); any failure (a missing permission, a rate limit, any other
@@ -182,12 +182,11 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // and RecordDeployedEvents all read a setting (the population, a source repository, its workflow
 // paths) or run against a source repository's own grants.
 //
-// The intake's NATS consumer is gated on the settings for a reason of its own, not for the one
-// above: it binds its durable only once the settings cache holds a rule (Intake.Run), and the
-// durable is created with no start policy (deliveryConsumerConfig, so JetStream's DeliverAll), so
-// a first bind in a deployment that never had settings would deliver the stream's whole 72-hour
-// backlog
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// The intake's NATS consumer follows the same split: it binds its durable and writes every
+// `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
+// work to the source repositories' rules (Intake.Run, route). Its first bind starts at the stream's
+// next sequence, so turning the intake on hands it none of the stream's 72-hour retained history
+// (heldDurable.takeOver, takeOverStart).
 //
 // It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub
 // (githubreads), recorded through RecordGitHubReads' recorder when it ends: the GitHub client
@@ -198,11 +197,12 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // An answer a step takes as data is no failure, and neither are the steps that read no GitHub nor
 // the runs backfills, which never fail the pass (the client still notes what they meet). It is
 // recorded on the context the lease handed the pass, so a pass this process's shutdown cut short
-// records nothing.
+// records nothing. Begin also names the read as the caller kind its calls to GitHub are counted
+// under, for the rate reading.
 func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
-	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
+	ctx, attempt := githubreads.Begin(ctx, githubreads.DeliveryReconcile)
+	defer githubreads.Finish(caller, attempt, r.gitHubReads, nil)
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
@@ -288,7 +288,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		record(repo, step, err)
 	}
 
-	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, searchProgressScope(rules), now))
+	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, now))
 	recordRead("", "reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
 	// The head pass ran at the top of the pass, before the settings were read; its failure is
 	// recorded here, so last_error names the steps in this list's order.
@@ -328,6 +328,11 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 			record(w.rule.DeployRepo, "record issue.deployed events", err)
 		} else if written > 0 {
 			slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "repo", w.rule.DeployRepo, "by", "reconcile")
+		}
+	}
+	for _, w := range walks {
+		if _, err := RecordProductionDeploys(ctx, r.pool, w.rule, r.events); err != nil {
+			record(w.rule.DeployRepo, "record production deploys", err)
 		}
 	}
 
@@ -454,7 +459,8 @@ const mergedPullRequestsStepPrefix = "merged_pull_requests/installation/"
 // plain errors.New, so a *githubapp.RateLimitError among them still answers errors.As for a
 // caller that needs to tell it apart from an ordinary failure, the same reason
 // reconcileWorkflow's own per-run aggregation keeps its typed error with %w.
-func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, scope string, until time.Time) error {
+func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, until time.Time) error {
+	scope := searchProgressScope(rules)
 	var mu sync.Mutex
 	var failures []error
 	blocked := map[int64]bool{}
@@ -892,9 +898,9 @@ func revertsStep(repo string) string {
 }
 
 // reconcileReverts records the merged reverts of the deploy repository repoFull that the intake
-// missed (dispatch://INFRA-978, T12): it searches the pull requests merged since the step's own
+// missed (dispatch://INFRA-978, R7): it searches the pull requests merged since the step's own
 // recorded progress whose body holds the word Reverts, whoever authored them (SearchMergedReverts),
-// and records each whose body GitHub's revert-button line opens (ParseRevert) from GitHub's own
+// and records each whose body holds GitHub's revert-button line (ParseRevert) from GitHub's own
 // answer for it and for the pull request it reverts (recordRevertFromGitHub). A pull request whose
 // body only mentions the word costs no call. Each completed window records the step's progress
 // while every window before it in this pass succeeded, as reconcileWorkflow's do, so a revert this
@@ -912,7 +918,7 @@ func (r *Reconcile) reconcileReverts(ctx context.Context, owner, name, repoFull 
 			if _, _, says := ParseRevert(pr.Body); !says || pr.MergedAt == nil {
 				continue
 			}
-			if _, err := recordRevertFromGitHub(ctx, r.pool, r.github, repoFull, pr.Number); err != nil {
+			if err := recordRevertFromGitHub(ctx, r.pool, r.github, repoFull, pr.Number); err != nil {
 				slog.Warn("dispatch delivery: reconcile a merged revert", "repo", repoFull, "number", pr.Number, "error", err)
 				failures = append(failures, fmt.Sprintf("#%d: %s", pr.Number, err))
 				blocked = true

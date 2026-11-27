@@ -18,21 +18,24 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// INFRA's delivery history, in deliverytest's shape at INFRA's stated rate: deliverytest writes
-// about nineteen pull requests a day and runs of four and ten jobs, and one database holds one of
-// its histories, so it cannot hold this one. The pull requests are spread over the last runDays
-// days, as the runs are, so every deploy ships the pull requests merged since the one before it,
-// as in production. Containment (delivery/containment.go) ships a pull request of the deploy
-// repository with the first successful production job of a deploy run created after its merge.
+// A project's delivery history at INFRA's size, in deliverytest's shape at INFRA's stated rate:
+// deliverytest writes about nineteen pull requests a day and runs of four and ten jobs, and one
+// database holds one of its histories, so it cannot hold this one. The pull requests are spread
+// over the last runDays days, as the runs are, so every deploy ships the pull requests merged since
+// the one before it, as in production. Containment (delivery/containment.go) ships a pull request of
+// a deploy repository with the first successful production job of a deploy run of that repository
+// created after its merge. INFRA's history has one deploy repository, the first of Repos; a project
+// the k14 load adds (k14.go) has one or two, each at INFRA's run rate.
 
 // The deploy workflow's eight jobs, in the order they run, and the PR-checks workflow's roll-up
 // job. The settings name the production apply, the staging apply and the staging end-to-end job.
 const (
-	productionJob   = "production-release / apply"
-	stagingApplyJob = "staging-release / apply"
-	stagingE2EJob   = "staging-e2e / run"
-	rollupJob       = "checks-complete"
-	firstRunID      = int64(9_000_000_001)
+	productionJob     = "production-release / apply"
+	productionPlanJob = "production-release / plan"
+	stagingApplyJob   = "staging-release / apply"
+	stagingE2EJob     = "staging-e2e / run"
+	rollupJob         = "checks-complete"
+	firstRunID        = int64(9_000_000_001)
 )
 
 // authors are the population authors every pull request is written by.
@@ -44,7 +47,7 @@ var deployStages = []struct {
 	median time.Duration
 }{
 	{"build / image", 6 * time.Minute}, {"build / assets", 4 * time.Minute}, {"migrate / check", 2 * time.Minute},
-	{stagingApplyJob, 4 * time.Minute}, {stagingE2EJob, 16 * time.Minute}, {"production-release / plan", 2 * time.Minute},
+	{stagingApplyJob, 4 * time.Minute}, {stagingE2EJob, 16 * time.Minute}, {productionPlanJob, 2 * time.Minute},
 	{productionJob, 6 * time.Minute}, {"notify / release", time.Minute},
 }
 
@@ -156,13 +159,15 @@ func between(rng *rand.Rand, low, high time.Duration) time.Duration {
 	return low + time.Duration(rng.Int64N(int64((high-low)/time.Second)+1))*time.Second
 }
 
-// planPullRequests draws the pull requests: spread over the last runDays days, three in five into
-// the deploy repository, each open about seventy minutes, one in five a rework, and most naming an
-// INFRA issue whose life holds the pull request, with that issue's implementer as its session.
-// Under OneProject each is the same draw in the deploy repository or the second of Repos alone
-// (oneProjectRepo), so the one-project fixture's pull requests are the full fixture's.
-func planPullRequests(spec Spec, history infraHistory) []plannedPR {
-	rng := newRand(spec.Seed, "pull requests")
+// planPullRequests draws the project's pull requests: spread over the last runDays days, three in
+// five into its default repository, each open about seventy minutes, one in five a rework, and most
+// naming an issue of the project whose life holds the pull request, with that issue's implementer
+// as its session. Under OneProject each is the same draw in INFRA's deploy repository or the
+// second of Repos alone (oneProjectRepo), so the one-project fixture's pull requests are the full
+// fixture's.
+func planPullRequests(spec Spec, history projectHistory) []plannedPR {
+	rng := history.fixture.rand(spec.Seed, "pull requests")
+	repos := history.fixture.repos
 	count := spec.scaled(pullRequests, 3)
 	start := spec.Now.Add(-runDays * 24 * time.Hour)
 	opened := make([]time.Time, len(history.issues))
@@ -174,11 +179,11 @@ func planPullRequests(spec Spec, history infraHistory) []plannedPR {
 		pr := &prs[i]
 		switch u := rng.Float64(); {
 		case u < 0.6:
-			pr.repo = Repos[0]
+			pr.repo = repos[0]
 		case u < 0.85:
-			pr.repo = Repos[1]
+			pr.repo = repos[1]
 		default:
-			pr.repo = Repos[2]
+			pr.repo = repos[2]
 		}
 		pr.merged = start.Add(within(rng, runDays*24*time.Hour))
 		pr.created = pr.merged.Add(-min(max(lasting(rng, 70*time.Minute, 1.1), 3*time.Minute), 5*24*time.Hour))
@@ -218,9 +223,10 @@ func planPullRequests(spec Spec, history infraHistory) []plannedPR {
 	return prs
 }
 
-// dailyRuns is how many deploy runs and PR-checks runs planRuns draws a day: deployRuns and
-// checkRuns at the spec's scale, ten times each under TenTimes. The history holds runDays days of
-// them, whose run ids are firstRunID on, in creation order.
+// dailyRuns is how many deploy runs and PR-checks runs planRuns draws a day for one deploy
+// repository: deployRuns and checkRuns at the spec's scale, ten times each under TenTimes. The
+// history holds runDays days of them, whose run ids are the repository's first run id on, in
+// creation order.
 func (s Spec) dailyRuns() (deploys, checks int) {
 	rate := 1
 	if s.TenTimes {
@@ -229,15 +235,21 @@ func (s Spec) dailyRuns() (deploys, checks int) {
 	return s.scaled(deployRuns, 1) * rate, s.scaled(checkRuns, 1) * rate
 }
 
-// planRuns draws the runs of the last runDays days (dailyRuns a day): deploy runs on main of the
-// deploy repository and PR-checks runs of its pull requests, in creation order.
-func planRuns(spec Spec, prs []plannedPR) []plannedRun {
-	rng := newRand(spec.Seed, "runs")
+// planRuns draws the runs of deploy, one of the project's deploy repositories, over the last
+// runDays days (dailyRuns a day): deploy runs on main and PR-checks runs of its pull requests, in
+// creation order. The draws of the project's first deploy repository are its "runs" stream, so
+// INFRA's are what they were; another's are a stream named for the repository.
+func planRuns(spec Spec, fixture projectFixture, deploy deployRepo, prs []plannedPR) []plannedRun {
+	part := "runs"
+	if deploy.repo != fixture.deploys[0].repo {
+		part += " " + deploy.repo
+	}
+	rng := fixture.rand(spec.Seed, part)
 	deploys, checks := spec.dailyRuns()
 	start := spec.Now.Add(-runDays * 24 * time.Hour)
 	var deployPRs []plannedPR
 	for _, pr := range prs {
-		if pr.repo == Repos[0] {
+		if pr.repo == deploy.repo {
 			deployPRs = append(deployPRs, pr)
 		}
 	}
@@ -406,10 +418,11 @@ func checkJobsOf(rng *rand.Rand, started time.Time) ([]jobRow, string, time.Time
 	return jobs, string(conclusion), last
 }
 
-// jobSource streams every run's jobs into COPY, drawing each run's jobs again from its draw, so
-// no list of every job is held.
+// jobSource streams every run's jobs of one deploy repository into COPY, drawing each run's jobs
+// again from its draw, so no list of every job is held.
 type jobSource struct {
 	spec   Spec
+	deploy deployRepo
 	runs   []plannedRun
 	run    int
 	jobs   []jobRow
@@ -423,7 +436,7 @@ func (s *jobSource) Next() bool {
 		if s.run >= len(s.runs) {
 			return false
 		}
-		s.id = firstRunID + int64(s.run)
+		s.id = s.deploy.firstRunID + int64(s.run)
 		s.jobs, s.at = s.runs[s.run].build(s.spec, s.id).jobs, 0
 		s.run++
 	}
@@ -433,14 +446,16 @@ func (s *jobSource) Next() bool {
 
 func (s *jobSource) Values() ([]any, error) {
 	job := s.jobs[s.at-1]
-	s.values = append(s.values[:0], Repos[0], s.id, job.name, job.started, job.completed, job.conclusion)
+	s.values = append(s.values[:0], s.deploy.repo, s.id, job.name, job.started, job.completed, job.conclusion)
 	return s.values, nil
 }
 
 func (s *jobSource) Err() error { return nil }
 
-// writeDelivery writes INFRA's delivery settings (putDeliverySettings), the pull requests, the
-// runs and their jobs.
+// writeDelivery writes the project's delivery settings (INFRA's through putDeliverySettings: one
+// source reading its default repository, the first of Repos, under Settings' rule; another
+// project's its fixture's sources, saveSettings), its pull requests, and the runs and their jobs
+// of each of its deploy repositories, and answers the pull requests.
 //
 // The three tables' triggers log each row into delivery_changes, the 24-hour feed of what changed
 // that the refresher and the live views read from their cursors. The history is no change any
@@ -448,15 +463,19 @@ func (s *jobSource) Err() error { return nil }
 // any pass. So the rows are written in one transaction that turns the three triggers off for its
 // own length (a DDL Postgres rolls back with the transaction, so a load that fails leaves them on),
 // rather than logging millions of rows no reader reads before the retention prunes them.
-func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
-	if err := putDeliverySettings(ctx, pool); err != nil {
-		return err
+func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history projectHistory) ([]plannedPR, error) {
+	fixture := history.fixture
+	if fixture.sources == nil {
+		if err := putDeliverySettings(ctx, pool, fixture.key); err != nil {
+			return nil, err
+		}
+	} else if err := saveSettings(ctx, pool, fixture.sources(spec)); err != nil {
+		return nil, err
 	}
 	prs := planPullRequests(spec, history)
-	runs := planRuns(spec, prs)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin the delivery history: %w", err)
+		return nil, fmt.Errorf("begin the delivery history of %s: %w", fixture.key, err)
 	}
 	defer tx.Rollback(ctx)
 	triggers := [][2]string{
@@ -464,10 +483,8 @@ func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history inf
 		{"delivery_runs", "delivery_runs_changed"},
 		{"delivery_run_jobs", "delivery_run_jobs_changed"},
 	}
-	for _, trigger := range triggers {
-		if _, err := tx.Exec(ctx, `alter table `+trigger[0]+` disable trigger `+trigger[1]); err != nil {
-			return fmt.Errorf("turn %s off for the load: %w", trigger[1], err)
-		}
+	if err := setTriggers(ctx, tx, triggers, false); err != nil {
+		return nil, err
 	}
 	prRows := make([][]any, len(prs))
 	for i, pr := range prs {
@@ -487,46 +504,62 @@ func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history inf
 		"created_at", "merged_at", "first_commit_at", "merge_commit_sha", "additions", "deletions", "rework", "issue_key",
 		"sessions", "partial", "attribution_title_keys", "attribution_cited_issues", "attribution_branch_keys",
 		"attribution_commit_keys"}, pgx.CopyFromRows(prRows)); err != nil {
-		return fmt.Errorf("copy the pull requests: %w", err)
+		return nil, fmt.Errorf("copy the pull requests of %s: %w", fixture.key, err)
 	}
-	runRows := make([][]any, len(runs))
-	for i, run := range runs {
-		row := run.build(spec, firstRunID+int64(i))
-		url := "https://github.com/" + Repos[0] + "/actions/runs/" + strconv.FormatInt(row.id, 10)
-		runRows[i] = []any{Repos[0], row.id, string(row.kind), row.prNumber, row.sha, row.headAt, row.started, row.created,
-			row.completed, row.conclusion, url, row.branch, row.event, row.completed != nil}
-	}
-	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"delivery_runs"}, []string{"repo", "run_id", "kind", "pr_number", "head_sha",
-		"head_commit_at", "started_at", "created_at", "completed_at", "conclusion", "url", "head_branch", "event",
-		"jobs_complete"}, pgx.CopyFromRows(runRows)); err != nil {
-		return fmt.Errorf("copy the runs: %w", err)
-	}
-	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"delivery_run_jobs"}, []string{"repo", "run_id", "name", "started_at",
-		"completed_at", "conclusion"}, &jobSource{spec: spec, runs: runs}); err != nil {
-		return fmt.Errorf("copy the run jobs: %w", err)
-	}
-	for _, trigger := range triggers {
-		if _, err := tx.Exec(ctx, `alter table `+trigger[0]+` enable trigger `+trigger[1]); err != nil {
-			return fmt.Errorf("turn %s on again: %w", trigger[1], err)
+	for _, deploy := range fixture.deploys {
+		runs := planRuns(spec, fixture, deploy, prs)
+		runRows := make([][]any, len(runs))
+		for i, run := range runs {
+			row := run.build(spec, deploy.firstRunID+int64(i))
+			url := "https://github.com/" + deploy.repo + "/actions/runs/" + strconv.FormatInt(row.id, 10)
+			runRows[i] = []any{deploy.repo, row.id, string(row.kind), row.prNumber, row.sha, row.headAt, row.started, row.created,
+				row.completed, row.conclusion, url, row.branch, row.event, row.completed != nil}
+		}
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"delivery_runs"}, []string{"repo", "run_id", "kind", "pr_number", "head_sha",
+			"head_commit_at", "started_at", "created_at", "completed_at", "conclusion", "url", "head_branch", "event",
+			"jobs_complete"}, pgx.CopyFromRows(runRows)); err != nil {
+			return nil, fmt.Errorf("copy the runs of %s: %w", deploy.repo, err)
+		}
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"delivery_run_jobs"}, []string{"repo", "run_id", "name", "started_at",
+			"completed_at", "conclusion"}, &jobSource{spec: spec, deploy: deploy, runs: runs}); err != nil {
+			return nil, fmt.Errorf("copy the run jobs of %s: %w", deploy.repo, err)
 		}
 	}
+	if err := setTriggers(ctx, tx, triggers, true); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the delivery history: %w", err)
+		return nil, fmt.Errorf("commit the delivery history of %s: %w", fixture.key, err)
+	}
+	return prs, nil
+}
+
+// setTriggers turns each trigger of triggers (its table and its name) on or off in tx, which a
+// rollback of tx turns back.
+func setTriggers(ctx context.Context, tx pgx.Tx, triggers [][2]string, on bool) error {
+	change, what := "disable", "off for the load"
+	if on {
+		change, what = "enable", "on again"
+	}
+	for _, trigger := range triggers {
+		if _, err := tx.Exec(ctx, `alter table `+trigger[0]+` `+change+` trigger `+trigger[1]); err != nil {
+			return fmt.Errorf("turn %s %s: %w", trigger[1], what, err)
+		}
 	}
 	return nil
 }
 
-// putDeliverySettings writes Settings in the shape the database holds: at this head INFRA's own
-// settings (evalfixture.PutDeliverySettings: one source reading its default repository, the first
-// of Repos), and in a database with no project_delivery_settings, a base head's, the one
-// delivery_settings row its routes read (baseSettingsStatement).
-func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
+// putDeliverySettings writes Settings for project in the shape the database holds: at this head the
+// project's own settings (evalfixture.PutDeliverySettings: one source reading its default
+// repository, the first of Repos), and in a database with no project_delivery_settings, a base
+// head's, the one delivery_settings row its routes read (baseSettingsStatement).
+func putDeliverySettings(ctx context.Context, pool *store.Pool, project string) error {
 	held, err := evalfixture.ExistingTables(ctx, pool, []string{"project_delivery_settings"})
 	if err != nil {
 		return err
 	}
 	if len(held) > 0 {
-		if _, err := evalfixture.PutDeliverySettings(ctx, pool, Project, Settings(), actor); err != nil {
+		if _, err := evalfixture.PutDeliverySettings(ctx, pool, project, Settings(), actor); err != nil {
 			return fmt.Errorf("write the delivery settings: %w", err)
 		}
 		return nil

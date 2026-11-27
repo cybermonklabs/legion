@@ -59,8 +59,10 @@ type WaitingLine struct {
 	columns map[string]string
 }
 
-// NewWaitingLine numbers the line and takes the blocker links. A key the daemon reports nothing
-// of takes no place: the board draws no card for it, so no reader has a card to put a place on.
+// NewWaitingLine numbers the line and takes the blocker links, by the admission block's one rule
+// of which entry names an issue's blockers (Admission.Blockers), which one issue's read names
+// them by too. A key the daemon reports nothing of takes no place: the board draws no card for
+// it, so no reader has a card to put a place on.
 // A field of the admission block it comes to read goes into SameLine too: a reader that holds a
 // line asks SameLine whether the next block builds another one.
 func NewWaitingLine(input WaitingLineInput) *WaitingLine {
@@ -84,9 +86,7 @@ func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 		line.order = append(line.order, key)
 		line.places[key] = len(line.places) + 1
 	}
-	for _, blocked := range input.Admission.Blocked {
-		line.blockers[blocked.Issue] = blocked.BlockedBy
-	}
+	line.blockers = input.Admission.Blockers()
 	return line
 }
 
@@ -137,7 +137,7 @@ func (l *WaitingLine) BlockedBy(key string) []string {
 // the board draws no card for: an issue the daemon reports nothing of, an issue whose phase no
 // column holds, and a child its tree has not started with a card above it in that tree, which
 // counts the child instead (CountedOn). Every other issue stands in the column of its phase, and
-// an issue the daemon's state queues stands in one whatever its phase (Column, board_rules.go).
+// an issue the daemon's state queues stands in one whatever its phase (ColumnOf, board_rules.go).
 //
 // It is the one place the rule is read: whether the board draws a card for an issue is whether
 // this answers a column of its own, so the two can never differ.
@@ -156,7 +156,7 @@ func (l *WaitingLine) Column(key string) string {
 	if l.unstarted(key, issue) && l.nearestCard(key) != "" {
 		return ""
 	}
-	held := Column(issue.Phase, issue.Slot, l.queued(key))
+	held := ColumnOf(issue.Phase, issue.Slot, l.queued(key))
 	l.columns[key] = held
 	return held
 }

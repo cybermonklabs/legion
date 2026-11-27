@@ -78,16 +78,16 @@ var decisionBlockGuardSees = []string{
 // once, and a writer added later gets it — to the server's own route inventory rather than to a
 // list of the paths that have it today.
 //
-// The inventory is the table (routes_table.go) with its test hooks in, read from the source so
-// that each row's handler is read with it, joined to the Go type each row takes (routeShapes,
-// routes_shapes.go). A row is in scope when its method is one register keys (keyedMethod: a POST
-// or a PATCH) and its request type carries a `body` string, the field every stored comment,
-// message, broadcast and handoff body is written into. A row in scope either runs the shared
-// check — somewhere in what its handler runs inside package api, a call of blockBoundError over a
-// call of itemblocks.Check, which is the one place DECISION_BLOCK_IN_BODY is worded — or stands
-// in decisionBlockExempt with the reason it does not. A row the shapes do not describe is named
-// too: without a request type the guard cannot tell whether it takes a body, and a guard that
-// cannot tell must not pass.
+// The inventory is the route declarations, test hooks included, read from the source so that each
+// route's handler is read with it (keyedRouteHandlers), joined to the Go type each route takes
+// (its declaration's Shape). A route is in scope when its method is one register keys
+// (keyedMethod: a POST or a PATCH) and its request type carries a `body` string, the field every
+// stored comment, message, broadcast and handoff body is written into. A route in scope either
+// runs the shared check — somewhere in what its handler runs inside package api, a call of
+// blockBoundError over a call of itemblocks.Check, which is the one place DECISION_BLOCK_IN_BODY
+// is worded — or stands in decisionBlockExempt with the reason it does not. A route whose
+// declaration states no shape is named too: without a request type the guard cannot tell whether
+// it takes a body, and a guard that cannot tell must not pass.
 //
 // The walk stops at the edge of package api, because blockBoundError is unexported and every path
 // to it is inside this package; a function literal a handler hands to another package is still
@@ -96,19 +96,21 @@ var decisionBlockGuardSees = []string{
 // a condition passes here, as it does in the other static guards of this package
 // (keyed_write_guard_test.go), and the route's own tests hold the branch.
 func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	for _, function := range []string{sharedBodyCheck, sharedBodyRefusal} {
 		if graph.named[function] == nil {
 			t.Fatalf("%s, the check this guard reads a body route by, is gone: point the guard at its replacement", function)
 		}
 	}
-	routes := decisionBlockRouteHandlers(t, graph)
+	routes := keyedRouteHandlers(t, graph)
 
 	var unchecked, unshaped, stale []string
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
 		checks := decisionBlockChecked(graph, routes[name])
 		reason, exempt := decisionBlockExempt[name]
-		shape, shaped := routeShapes[name]
+		route, _ := declaredRoute(name)
+		shape, shaped := route.Shape, route.Shape.stated()
 		switch {
 		case exempt:
 			t.Logf("%s: exempt — %s", name, reason)
@@ -116,7 +118,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 				stale = append(stale, fmt.Sprintf("%s: runs the check now, so its exemption (%s) is no longer true", name, reason))
 			}
 		case !shaped:
-			unshaped = append(unshaped, name+": no shape (routeShapes), so whether it takes a body cannot be read")
+			unshaped = append(unshaped, name+": no shape (its declaration's Shape), so whether it takes a body cannot be read")
 		case !requestCarriesBody(shape.Request):
 			t.Logf("%s: takes no body string", name)
 		case checks:
@@ -131,31 +133,38 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 			strings.Join(unchecked, "\n\t"))
 	}
 	if len(unshaped) > 0 {
-		t.Errorf("a POST or PATCH route has no request type to read:\n\t%s\nGive it one in routeShapes, which the OpenAPI document is reflected out of.", strings.Join(unshaped, "\n\t"))
+		t.Errorf("a POST or PATCH route has no request type to read:\n\t%s\nGive it one in its declaration's Shape, which the OpenAPI document is reflected out of.", strings.Join(unshaped, "\n\t"))
 	}
 	if len(stale) > 0 {
 		t.Errorf("an exemption describes the opposite of what its route does:\n\t%s\nDelete the route's line from decisionBlockExempt.", strings.Join(stale, "\n\t"))
 	}
-	if unmounted := routesNotMounted(maps.Keys(decisionBlockExempt)); len(unmounted) > 0 {
-		t.Errorf("decisionBlockExempt names routes the server does not serve: %s\nDelete each line, or point it at the row that replaced it.", strings.Join(unmounted, ", "))
+	var undeclared []string
+	for _, name := range slices.Sorted(maps.Keys(decisionBlockExempt)) {
+		if _, declared := declaredRoute(name); !declared {
+			undeclared = append(undeclared, name)
+		}
+	}
+	if len(undeclared) > 0 {
+		t.Errorf("decisionBlockExempt names routes the server does not serve: %s\nDelete each line, or point it at the route that replaced it.", strings.Join(undeclared, ", "))
 	}
 }
 
 // TestTheDecisionBlockGuardSeesWhatItGuards holds the guard to what it must see, so that a walk
-// that found nothing — a table it could not read, a handler it could not follow — could not pass
-// as a server that checks everything: the three writes the issue exists for are in its inventory,
-// each taking a body and each reaching the check.
+// that found nothing — declarations it could not read, a handler it could not follow — could not
+// pass as a server that checks everything: the three writes the issue exists for are in its
+// inventory, each taking a body and each reaching the check.
 func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
-	routes := decisionBlockRouteHandlers(t, graph)
+	routes := keyedRouteHandlers(t, graph)
 	for _, name := range decisionBlockGuardSees {
 		handlers, mounted := routes[name]
 		if !mounted {
-			t.Errorf("the guard reads no %s off the table", name)
+			t.Errorf("the guard reads no %s off the route declarations", name)
 			continue
 		}
-		shape, shaped := routeShapes[name]
-		if !shaped || !requestCarriesBody(shape.Request) {
+		route, _ := declaredRoute(name)
+		if !route.Shape.stated() || !requestCarriesBody(route.Shape.Request) {
 			t.Errorf("the guard reads no body string on %s, the route that stores one", name)
 		}
 		if !decisionBlockChecked(graph, handlers) {
@@ -169,6 +178,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 // is renamed, or whose body stops being a string, drops its route out of the inventory and takes
 // the rule off it in silence.
 func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
+	t.Parallel()
 	type embedded struct {
 		Body string `json:"body"`
 	}
@@ -202,42 +212,80 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 	}
 }
 
-// decisionBlockRouteHandlers is every POST and PATCH row of the table, by "<method> <pattern>",
-// with the handler bodies that row mounts. It is read from the source of routes() rather than from
-// a server's own table so that each row's handler comes with it: a handler read at run time is a
-// function value, and what this guard asks is what that function's source runs.
-func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
+// keyedRouteHandlers is every route declaration whose method register keys (a POST or a PATCH),
+// test hooks included, by "<method> <pattern>", with the handler bodies it names
+// (routeDeclHandlers), held to the routes the package registers: a declaration the source read
+// misses, or a handler it cannot follow, fails the test rather than leaving its route out.
+func keyedRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
-	table := graph.named["api.server.routes"]
-	if table == nil {
-		t.Fatal("the guard finds no routes table (api.server.routes)")
+	routes, declarations := routeDeclHandlers(t, graph, keyedMethod)
+	if declarations != len(routeRegistry) {
+		t.Fatalf("the guard read %d route declarations off the source, and the package registers %d", declarations, len(routeRegistry))
 	}
-	routes := map[string][]*lockFunction{}
-	ast.Inspect(table.body, func(node ast.Node) bool {
-		row, ok := node.(*ast.CompositeLit)
-		if !ok || len(row.Elts) != 5 {
-			return true
+	for _, name := range slices.Sorted(maps.Keys(routes)) {
+		if len(routes[name]) == 0 {
+			t.Errorf("the guard cannot follow the handler of %s", name)
 		}
-		method, ok := ast.Unparen(row.Elts[0]).(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
-			return false
-		}
-		pattern, ok := literalText(row.Elts[1], table.pkg, graph.constants)
-		if !ok {
-			t.Errorf("the guard cannot read the pattern of a %s row of the table", verb)
-			return false
-		}
-		routes[verb+" "+pattern] = graph.functionValue(row.Elts[4])
-		return false
-	})
+	}
 	if len(routes) == 0 {
-		t.Fatal("the guard reads no POST or PATCH row off the routes table")
+		t.Fatal("the guard reads no POST or PATCH route off the route declarations")
 	}
 	return routes
+}
+
+// routeDeclHandlers is every route declaration of graph's package api whose method keep keeps, by
+// "<method> <pattern>", with the handler bodies it names: none for a handler the graph does not
+// resolve, which its caller judges. It also answers how many declarations it read, of any method,
+// so a caller can hold that to the routes the package registers. It is read from the source
+// rather than from a server's own table so that each route's handler comes with it: a handler
+// read at run time is a function value, and what a guard asks is what that function's source
+// runs. A declaration is a routeDecl literal in a file of package api whose Method, Pattern and
+// Handler fields name an http.Method constant, a pattern and a method expression of the server;
+// one whose method or pattern this cannot read fails the test rather than leaving its route out.
+func routeDeclHandlers(t *testing.T, graph *lockGraph, keep func(verb string) bool) (map[string][]*lockFunction, int) {
+	t.Helper()
+	routes := map[string][]*lockFunction{}
+	declarations := 0
+	for _, source := range graph.sources {
+		if source.file.Name.Name != "api" {
+			continue
+		}
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			if typeName, ok := literal.Type.(*ast.Ident); !ok || typeName.Name != "routeDecl" || len(literal.Elts) == 0 {
+				return true
+			}
+			declarations++
+			fields := map[string]ast.Expr{}
+			for _, element := range literal.Elts {
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					if key, ok := pair.Key.(*ast.Ident); ok {
+						fields[key.Name] = pair.Value
+					}
+				}
+			}
+			method, ok := ast.Unparen(fields["Method"]).(*ast.SelectorExpr)
+			if !ok {
+				t.Errorf("%s: the guard cannot read the method of a route declaration", source.path)
+				return false
+			}
+			verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
+			if !keep(verb) {
+				return false
+			}
+			pattern, ok := literalText(fields["Pattern"], "api", graph.constants)
+			if !ok {
+				t.Errorf("%s: the guard cannot read the pattern of a %s route declaration", source.path, verb)
+				return false
+			}
+			routes[verb+" "+pattern] = graph.functionValue(fields["Handler"])
+			return false
+		})
+	}
+	return routes, declarations
 }
 
 // decisionBlockChecked reports whether running one of handlers runs the shared check: a call of

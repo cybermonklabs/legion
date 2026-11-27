@@ -60,7 +60,15 @@ Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
 naming the input. So the cloud-config is known at preview.
 
-The hub refuses these before it registers anything, with an error naming the input:
+The hub refuses these before it registers anything. Each refusal of an input is a
+`core.InputError` naming it: an entry of a list of strings by the list's own name, with its index
+in the message (`tags` for `tags[1] "…" must match …`); a user of `users` as `users`, or by the
+field's own path for its machine id (`users[0].machineId`); and the authorization's refusals of
+the listener's user as `listener`, with an empty `listener.nkey` as `listener.nkey` and a user of
+`users` named after `hostname` as `users`, and of the session user as `sessionUser`. A seed in the
+hub's own name and a missing provider refuse no input, so neither is one.
+
+It refuses:
 
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the
@@ -255,7 +263,8 @@ user's name or a rule entry before any of those, naming the path and not the val
 user and the session user are named by their inputs in the same refusals, as
 `listener "<h>": nkey repeats users[0] "example-host-a"` or
 `sessionUser "<name>": nkey is not a user public key …`; a user of `users` named `<h>` is refused
-as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`.
+as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`, naming
+`users`, since that entry is the one to rename.
 
 ### The auth service
 
@@ -1318,10 +1327,11 @@ log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits
 rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
 needs, when the log carries no time of the container runtime's, when authorization is not yet in
 force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when the
-mesh is not whole or the servers do not hold one password, when a route connection from another
-address named no server or was still open when the log was read, when the log holds no hangup
-that began the reload that loaded authorization, when the log holds a line the server did not
-write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
+mesh is not whole or the servers do not hold one password, when a pod's `/routez` still lists a
+closing route, with no address, to another hub server after the check's reads, when a route
+connection from another address named no server or was still open when the log was read, when the
+log holds no hangup that began the reload that loaded authorization, when the log holds a line the
+server did not write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
 StatefulSet or pod name is not a DNS label, whose pod uid is not a UUID, or whose CA entry is not a
 64-hex SHA-256, naming the field and not its value, since a record file can be edited and the
 check prints those fields unquoted. It prints no password,
@@ -1400,7 +1410,21 @@ reads with `--timestamps`.
   `isDuplicateServerName` runs for gateways alone, `gateway.go:1090`, `:1166`), so the process
   this check looks for can join as `<n>-1` and pass a check of names. Nor is the route's `port`
   6222: `/routez` gives the TCP peer's port, and a route a peer opened comes from an ephemeral
-  one, so one server's four routes to another showed four ports.
+  one, so one server's four routes to another showed four ports. A route with no `ip` is one the
+  server is closing: `/routez` gives the address from the route's socket as it is read
+  (`server/monitor.go:916-921`), and closing a route clears its socket
+  (`server/client.go:6153-6165`) while the server goes on to remove the route
+  (`server/client.go:6335`, `server/server.go:3795-3796`). Such a route had passed the route
+  login, since `/routez` lists a route only after `addRoute` (`server/route.go:894`). When the
+  check knows every server's id, it judges such a route's `remote_id` in each read that lists it:
+  one that is none of the hub's other servers' is exit 1. One that is another hub server's, or any
+  when an id is unknown, needs its address, so the check reads that `/routez` again, up to six
+  reads with waits of 20 to 320 ms between them. It judges every read's routes by the rules above,
+  so a later read never drops what an earlier one showed, takes the routes to the pod's peers from
+  the last read, and gives exit 2 for a route with no `ip` still in it. Run 45052294482 of
+  cybermonklabs/legion#4049 read envoy-nats-1's own route to an impostor, which the impostor was
+  refusing for its duplicate name, and named it a route "from an address that is no pod of the
+  hub: ip ".
 - **No peer that left had the password.** `/routez` shows only who still holds a route, so a
   process that read the password and then left passes it. The log keeps it: every
   `Route connection created` line (`server/route.go:2104`) names the connection's peer. The rule's
@@ -1709,7 +1733,13 @@ pod and its container.
 Each hub pod's `prom-exporter` container runs prometheus-nats-exporter 0.20.2 with the chart's
 arguments (`-connz -routez -subz -varz -prefix=nats -use_internal_server_id -jsz=all` and the
 server's monitoring URL), and Google Managed Prometheus scrapes it through the PodMonitoring `<n>`
-every 30 seconds. Its stream metrics, as the local cluster test logged them, are:
+every 30 seconds. The PodMonitoring's one metric relabeling rule drops each series whose name
+matches `nats_consumer_.+` before Managed Prometheus stores it, since each carries a consumer's
+`consumer_name` and `consumer_desc`, which every holder of `monitoring.timeSeries.list` in the
+project could read; `-jsz=streams` would have the exporter serve none of them, but it reads
+`/jsz?streams=true`, which carries no stream configuration, so the exporter would serve no
+`nats_stream_limit_bytes` or `nats_stream_limit_messages` either. Its stream metrics, as the
+local cluster test logged them, are:
 
 - `nats_stream_consumer_count`
 - `nats_stream_first_seq`

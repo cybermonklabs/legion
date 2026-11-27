@@ -377,6 +377,7 @@ function ColumnsPlot(props: {
           x={x}
           y={bottom - 3}
         >
+          {/* A reading's own words, drawn as plain text: `eval-reading-reason` */}
           {cut(reason, Math.max(4, Math.floor(width / 5)))}
           <title>{tip(one, point, "window")}</title>
         </text>
@@ -1243,6 +1244,7 @@ function RowsPlot(props: {
             x={4}
             y={headingY + 13}
           >
+            {/* Its definition's words, drawn as plain text: `eval-chart-heading` */}
             {heading}
           </text>
         )}
@@ -1266,6 +1268,7 @@ function RowsPlot(props: {
           y={y + 3}
         >
           {reason !== null ? (
+            // A reading's own words, drawn as plain text: `eval-reading-reason`
             cut(reason, Math.floor(labelWidth / 5))
           ) : value === null || bars.mockup !== null ? null : (
             <>
@@ -1514,6 +1517,7 @@ function FacetTable(props: {
                   <td className="px-1 py-1" data-cell={one.name} key={one.name}>
                     {!point.held ? null : point.values.value?.state === "absent" ? (
                       <span className={textMutedOnSurface}>
+                        {/* A reading's own words, drawn as plain text: `eval-reading-reason` */}
                         {point.reason === "" ? "not measured" : point.reason}
                       </span>
                     ) : (

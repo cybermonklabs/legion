@@ -97,7 +97,7 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 
 	settings, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings: %v", err)
+		t.Fatalf("getTestRule: %v", err)
 	}
 	if settings.LastError != nil || settings.LastReconcileAt == nil {
 		t.Fatalf("the pass recorded last_error %v and last_reconcile_at %v; want a successful pass", settings.LastError, settings.LastReconcileAt)

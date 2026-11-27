@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -123,7 +122,7 @@ func TestTheListReadsAnswerTheAnswerAndNoCharts(t *testing.T) {
 	bodies := map[string]json.RawMessage{
 		"GET /api/v1/projects/EVL/evals":   getBody(t, rig.handler, "/api/v1/projects/EVL/evals"),
 		"GET /api/v1/evals?project=EVL":    getBody(t, rig.handler, "/api/v1/evals?project=EVL"),
-		"the evals view's snapshot of EVL": conn.snapshot(t, 5*time.Second, "evals").Body,
+		"the evals view's snapshot of EVL": conn.snapshot(t, "evals").Body,
 	}
 	for _, what := range slices.Sorted(maps.Keys(bodies)) {
 		body := bodies[what]

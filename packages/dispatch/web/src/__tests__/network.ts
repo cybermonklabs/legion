@@ -22,6 +22,7 @@
  * node build, which intercepts neither `fetch` nor `XMLHttpRequest` here.
  */
 
+import type { WhoamiUser } from "@legion/contracts";
 import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
@@ -54,13 +55,27 @@ const shellHandlers: RequestHandler[] = [
   http.get("/auth/whoami", () =>
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
+  // Settings reads the scopes Dispatch says the signed-in person's own credential holds, and offers
+  // the Set P0 box only where they name p0 (`features/settings/AgentTokensSection.tsx`), so every
+  // test that renders Settings makes this read without being about scopes. The answer is the
+  // server's own for a person at a browser, who holds every scope of a person's own credential,
+  // p0 among them. A test about another answer - a build before p0, a read still out, a failed
+  // read - answers this route itself.
+  http.get("/api/v1/whoami", () =>
+    Response.json({
+      kind: "user",
+      login: "alice",
+      scopes: ["person", "approve", "p0"],
+    } satisfies WhoamiUser)
+  ),
   http.get("/api/v1/agents", () => Response.json([])),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
   // (`Sidebar`'s `projectsQuery` read in `features/sidebar/Sidebar.tsx`, drawn by
   // `NavigationContents` in `app.tsx`). The issue header reads the same `projectsQuery` key for
-  // every root issue, to learn which design steps are gated (`IssueHeader`'s read in
-  // `features/issue/IssueHeader.tsx`, `enabled: issue.parent === null`), and that is the reader
+  // every issue that is a root of its project, to learn which design steps are gated
+  // (`IssueHeader`'s read in `features/issue/IssueHeader.tsx`, `enabled: isProjectRoot(issue)`:
+  // no parent, or a parent of another project), and that is the reader
   // this answer exists for: without it, 36 rows of pages carrying the header fail on an unanswered
   // read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the palette's project
   // mode and three settings sections (`ArchitectureSourcesSection`, `ProjectsSection` and
