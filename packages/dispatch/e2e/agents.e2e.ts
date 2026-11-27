@@ -35,8 +35,9 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { holdFirstRequest } from "./editor";
+import { listTrigger, pickFromList } from "./filters";
 import { inboxList } from "./inbox-pane";
-import { type KeyedWrite, keyedWrite } from "./keyed-writes";
+import { distinctKeys, type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
@@ -336,8 +337,8 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
       new RegExp(`\\?agent=${planner.session_id}&${selected}assignee=everyone$`, "u")
     );
     const inbox = page.locator("main");
-    const chip = inbox.getByRole("link", { name: "Clear agent filter" });
-    await expect(chip).toHaveText("Asks from Planner · clear");
+    const chip = inbox.getByRole("button", { name: "Clear agent filter" });
+    await expect(chip).toHaveText("Asks from Planner×");
     await expect(inbox.locator('[data-inbox-section="agent"]')).toHaveCount(2);
     await expect(list.getByText("Second", { exact: true })).toBeVisible();
     await expect(list.getByText("Fourth", { exact: true })).toBeVisible();
@@ -349,7 +350,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     // Clearing the agent keeps the filter the pill arrived with, and the row it was reading.
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/\\?${selected}assignee=everyone$`, "u"));
-    await expect(inbox.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+    await expect(inbox.getByRole("button", { name: "Clear agent filter" })).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -1229,7 +1230,7 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
   await page.goto("/agents");
   await agents.getByRole("checkbox", { name: "Select all matching agents" }).click();
   await expect(composer).toBeVisible();
-  await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("btw");
+  await pickFromList(listTrigger(composer, "Delivery mode"), "BTW");
   return {
     agents,
     composer,
@@ -1364,18 +1365,18 @@ test("a typed broadcast survives clearing the selection and picking again, and a
     const header = agents.getByRole("checkbox", { name: "Select all matching agents" });
     const composer = page.getByRole("region", { name: "Broadcast" });
     const message = composer.getByRole("textbox", { name: "Broadcast message" });
-    const mode = composer.getByRole("combobox", { name: "Delivery mode" });
+    const mode = listTrigger(composer, "Delivery mode");
     const sends = page.getByRole("region", { name: "Sends" });
 
     await header.click();
     await message.fill("Keep this draft.");
-    await mode.selectOption("aside");
+    await pickFromList(mode, "Aside");
     // Clearing the selection takes the composer away; picking again brings the draft back.
     await header.click();
     await expect(composer).toHaveCount(0);
     await header.click();
     await expect(message).toHaveValue("Keep this draft.");
-    await expect(mode).toHaveValue("aside");
+    await expect(mode).toHaveAccessibleName("Delivery mode Aside");
 
     // Send hands the draft to the queue, so the composer goes with the selection. The server
     // refuses it, and the send's row keeps it: Restore draft puts the message, its mode and its
@@ -1412,7 +1413,7 @@ test("a typed broadcast survives clearing the selection and picking again, and a
     await expect(restore).toBeEnabled();
     await restore.click();
     await expect(message).toHaveValue("Keep this draft.");
-    await expect(mode).toHaveValue("aside");
+    await expect(mode).toHaveAccessibleName("Delivery mode Aside");
     await expect(
       composer.getByRole("heading", { name: "Broadcast to 2 of 2 selected" })
     ).toBeVisible();
@@ -1537,7 +1538,7 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
 
     await header.click();
     await message.fill("Refused first.");
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("aside");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "Aside");
     const refusal = await refuseBroadcasts(page);
     await composer.getByRole("button", { name: "Send to 2" }).click();
     const failed = row("Refused first.");
@@ -1563,8 +1564,12 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
       row("Refused first.").getByRole("link", { name: "Sent to 2 agents" })
     ).toBeVisible();
     await expect(sends.getByText(/^Could not send/)).toHaveCount(0);
-    expect(posted).toHaveLength(3);
-    expect(posted[0]).toEqual({
+    // Three writes, counted by key: a request the store sent again under its key, after a dropped
+    // answer, is the same write. The third is the refused one's message under a key of its own.
+    const keys = distinctKeys(posted);
+    expect(keys).toHaveLength(3);
+    const refused = posted[0];
+    expect(refused).toEqual({
       input: {
         body: "Refused first.",
         delivery: "aside",
@@ -1572,8 +1577,10 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
       },
       key: expect.any(String),
     });
-    expect(posted[2]).toEqual({ input: posted[0]?.input, key: expect.any(String) });
-    expect(posted[2]?.key).not.toBe(posted[0]?.key);
+    expect(posted.find((write) => write.key === keys[2])).toEqual({
+      input: refused?.input,
+      key: expect.any(String),
+    });
   } finally {
     await alice.close();
   }
@@ -1710,11 +1717,11 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
     await page.goto("/agents");
     const agents = page.getByRole("region", { name: "Agents" });
     const composer = page.getByRole("region", { name: "Broadcast" });
-    const mode = composer.getByRole("combobox", { name: "Delivery mode" });
+    const mode = listTrigger(composer, "Delivery mode");
     const message = composer.getByRole("textbox", { name: "Broadcast message" });
     await agents.getByRole("checkbox", { name: "Select all matching agents" }).click();
     await message.fill("Report status.");
-    await expect(mode).toHaveValue("btw");
+    await expect(mode).toHaveAccessibleName("Delivery mode BTW");
 
     // The label refuses rather than counting, and the reason rides the button itself: the
     // Excluded line, which names each agent, why, and the mode that would reach them. The line
@@ -1747,7 +1754,7 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
     expect(await getSentMessages()).toEqual([]);
 
     // The mode was the whole cause: switching to the one named brings Send back.
-    await mode.selectOption("steer");
+    await pickFromList(mode, "Send");
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();
     await expect(send).not.toHaveAttribute("title");

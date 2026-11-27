@@ -1,7 +1,8 @@
-import type { FormEvent, ReactNode } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import { RefusableButton } from "../../components/RefusableButton";
 import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/classes";
+import { focusOnDocument } from "../shell/roving";
 
 /**
  * The strip one title control holds, in both its states: closed it shows `idle`, the single
@@ -13,6 +14,12 @@ import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/c
  * `problem` is the answer to the press the host has, shown where the person pressed; `refusal` is
  * why no press is taken at all, which the submit says (`RefusableButton`). `children` is what the
  * host holds in the strip beside the control, in either state.
+ *
+ * Only a change of `open` moves the focus. Opening puts it in the Title box, so a keyboard reader
+ * types at once. Closing gives it back to `idle`, the control that opened the form - the strip's
+ * first button - when the focus went with the form, which leaves it on the document, or is still
+ * in the strip; a reader who has gone elsewhere on the page keeps their place, and a form drawn
+ * open takes no focus.
  */
 export function TitleForm({
   busyLabel,
@@ -50,8 +57,27 @@ export function TitleForm({
   readonly submitLabel: string;
   readonly title: string;
 }): ReactNode {
+  const strip = useRef<HTMLDivElement>(null);
+  const titleBox = useRef<HTMLInputElement>(null);
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (open === wasOpen.current) return;
+    wasOpen.current = open;
+    if (open) {
+      titleBox.current?.focus();
+      return;
+    }
+    const node = strip.current;
+    if (node !== null && (focusOnDocument() || node.contains(document.activeElement))) {
+      node.querySelector("button")?.focus();
+    }
+  }, [open]);
+
   return (
-    <div className={`flex min-w-0 flex-wrap items-center gap-2 ${open ? "w-full" : "shrink-0"}`}>
+    <div
+      className={`flex min-w-0 flex-wrap items-center gap-2 ${open ? "w-full" : "shrink-0"}`}
+      ref={strip}
+    >
       {open ? (
         <form
           aria-label={formLabel}
@@ -65,6 +91,7 @@ export function TitleForm({
               className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
               onChange={(event) => onTitleChange(event.target.value)}
               placeholder="Title"
+              ref={titleBox}
               required
               value={title}
             />

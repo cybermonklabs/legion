@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
+import { useAddressNavigate } from "../../lib/page-address";
 import {
   borderDefault,
   card,
@@ -96,8 +98,12 @@ export function ArtifactHeader({
   version: number | undefined;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
-  const navigate = useNavigate();
+  const navigate = useAddressNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
+  const versionLabels = new Map(versions.map((item) => [String(item.number), versionLabel(item)]));
+  // The list's value for the version shown: `""` is the current document, as the route says.
+  const shown = version === undefined ? "" : String(version);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
   // issue or project; its page is under the agent's session.
   const agentRoute = documentRoute(artifact);
@@ -195,17 +201,27 @@ export function ArtifactHeader({
         {showVersionPicker || toolbar !== undefined ? (
           <div className="flex min-w-0 flex-wrap items-center gap-3">
             {showVersionPicker ? (
-              <label
+              // The words beside the list are its trigger's name, which a screen reader hears
+              // from the trigger itself.
+              <div
                 className={`flex min-h-11 min-w-0 items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
               >
-                Version
-                <select
-                  aria-label="Version"
-                  className={`min-h-11 min-w-0 max-w-56 truncate rounded border px-2 py-2 font-normal ${inputClasses(true)}`}
-                  onChange={(event) => {
+                <span aria-hidden="true">Version</span>
+                <MultiSelect
+                  emptyMessage="No version matches that."
+                  label="Version"
+                  mode="single"
+                  onOpenChange={setVersionsOpen}
+                  onPick={(value) => {
+                    // The version shown already is no move, as a `<select>` set to the value it
+                    // holds fires nothing.
+                    if (value === shown) return;
                     // Both path builders read `version: undefined` as the unversioned route.
-                    const picked =
-                      event.target.value === "" ? undefined : Number(event.target.value);
+                    const picked = value === "" ? undefined : Number(value);
+                    // Pushed rather than replaced, as picking a version always has been: Back
+                    // returns the reader to the version they came from. The list put the focus
+                    // on its trigger before this pick, and the header the new route draws is the
+                    // same one, so the focus is on the trigger at the version picked.
                     navigate(
                       agentSession !== undefined
                         ? buildReferencePath(documentRoute(artifact, picked))
@@ -221,19 +237,20 @@ export function ArtifactHeader({
                               kind: "artifact",
                               slug: artifact.slug,
                               version: picked,
-                            })
+                            }),
+                      { replace: false }
                     );
                   }}
-                  value={version ?? ""}
-                >
-                  <option value="">Current</option>
-                  {versions.map((item) => (
-                    <option key={item.number} value={item.number}>
-                      {versionLabel(item)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  open={versionsOpen}
+                  optionLabel={(value) =>
+                    value === "" ? "Current" : (versionLabels.get(value) ?? `Version ${value}`)
+                  }
+                  options={["", ...versions.map((item) => String(item.number))]}
+                  searchLabel="Search versions"
+                  triggerClassName={`min-h-11 min-w-0 max-w-56 rounded border px-2 py-2 text-left font-normal ${inputClasses(true)}`}
+                  value={shown}
+                />
+              </div>
             ) : null}
             {toolbar === undefined ? null : (
               // Two boxes. The outer one wraps, because at 320 px the actions are wider than the
@@ -268,10 +285,13 @@ export function ArtifactHeader({
                       // load. A version route is normalised away first: the version the person
                       // was reading went with the document. That is the way back only while the
                       // route is still the removed document's (`drawn`): a removal that lands
-                      // after the reader moved on leaves them on the page they moved to.
+                      // after the reader moved on leaves them on the page they moved to. Pushed,
+                      // as this move always was, so Back returns to the address the reader
+                      // removed the document from.
                       if (drawn.current === removed.id) {
                         navigate(
-                          buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug })
+                          buildIssuePath({ key: issueKey, kind: "artifact", slug: removed.slug }),
+                          { replace: false }
                         );
                       }
                     }}

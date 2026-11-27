@@ -607,8 +607,9 @@ export async function readFootElements(): Promise<FootElements> {
     // Every foot element of the page layer a page of the rows that read the foot can show
     // (`FOOT_LAYERS` in `web/src/hooks/useFootInset.ts`), each by a selector that matches it and
     // no other element of those pages, and the Conversation's and the live view's `Jump to latest`.
-    // `readFootElements` leaves out each one a page does not show. The selection bar is the one
-    // toolbar with no name: the new issue page's view row is a toolbar named by its controls. The
+    // `readFootElements` leaves out each one a page does not show. The selection bar is the shared
+    // one, found by its mark (`CONTROL.selectionBar`): it is a named toolbar, as the new issue
+    // page's view row is, and each page names it its own way. The
     // live view's rows - its row of pickers and its switch lines - stand under its composer,
     // outside `agent-composer`, in the box `AgentConversationPage` registers. On a wide screen the
     // Agents page's composer, its queued sends above it, or both stand in the stuck box
@@ -616,7 +617,7 @@ export async function readFootElements(): Promise<FootElements> {
     // that box is `display: contents`, has no box and shows nothing here, and the composer sticks
     // by itself. `expectFootClear` reads all of them.
     const feet = Object.entries({
-      "the selection bar": '[role="toolbar"]:not([aria-label])',
+      "the selection bar": '[data-control="selection-bar"]',
       "the broadcast composer": 'section[aria-label="Broadcast"]',
       "the broadcast foot":
         'div.sticky.bottom-0:has(> section[aria-label="Broadcast"], > section[aria-label="Sends"])',

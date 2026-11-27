@@ -251,6 +251,8 @@ export function IssuePriorityLine({
       // `setOpen` is what refuses to reopen until the save has landed, and `aria-disabled` is
       // how the reader is told it is busy without focus being taken away.
       ariaDisabled={saving}
+      // The trigger draws its own look, a square holding "+", so it ends in no chevron.
+      chevron={false}
       disabled={disabled}
       emptyMessage={
         priorities.isPending

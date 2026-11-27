@@ -14,8 +14,11 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
+import { listTrigger, pickFromList } from "./filters";
+import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
 import { issueDetailsButton, issueDetailsRow, openIssueDetails } from "./issue-details";
+import { watchWrites } from "./keyed-writes";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -240,12 +243,12 @@ test("issue header copies its key and persists its title, status, and route", as
     await page.screenshot({
       path: testInfo.outputPath("issue-header-1280.png"),
     });
-    await heading.click();
+    await page.getByTestId("issue-header").getByRole("button", { name: "Edit title" }).click();
     const issueTitle = page.getByLabel("Issue title");
     await issueTitle.fill("First decision revised");
     await issueTitle.press("Enter");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ title: "First decision revised" });
-    await page.getByLabel("Status").selectOption("todo");
+    await pickFromList(listTrigger(page.getByTestId("issue-header"), "Status"), "Todo");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "todo" });
     await page.getByRole("button", { name: "Messages default to no route" }).click();
     await page.getByLabel("Message route").fill("role:legion-controller-core");
@@ -748,7 +751,7 @@ test("issue header keeps each group whole, its properties in Details, and the wh
 
     // The State group keeps the status and the priority on one line; Close and Details end the
     // header's last line together, after the labels.
-    const stateRow = await top(page.getByLabel("Status"));
+    const stateRow = await top(listTrigger(header, "Status"));
     expect(await top(page.getByLabel(/^Priority of /))).toBe(stateRow);
     expect(await top(close)).toBe(await top(detailsButton));
     expect(await top(close)).toBeGreaterThan(stateRow);
@@ -933,7 +936,7 @@ test("issue header delivers the click that ends a title edit to the control unde
   // `disabled` while their previous write is in flight, and a browser drops a click on a
   // disabled button.
   const pressWhileEditingTitle = async (control: Locator) => {
-    await page.getByTestId("issue-header").getByRole("heading", { level: 1 }).click();
+    await page.getByTestId("issue-header").getByRole("button", { name: "Edit title" }).click();
     await expect(page.getByLabel("Issue title")).toBeFocused();
     await expect(control).toBeEnabled();
     await expect(control).toBeVisible();
@@ -981,6 +984,91 @@ test("issue header delivers the click that ends a title edit to the control unde
   }
 });
 
+// The title's Edit title button opens its editor, and each way the reader ends the edit - Enter,
+// or a click on a plain part of the page outside the editor - saves it, closes it and draws the
+// heading and the button again. No field that takes typed text holds the focus then, so the
+// reader's next key goes to the page's keys: `x` writes no title and opens no editor, and `t`
+// starts the tab chord wherever the focus landed. `IssueHeader.test.tsx` sends these presses in
+// the order a browser sends them; this row has each engine send them.
+// `@firefox` and `@webkit`: the press that ends the edit blurs the title's text box - Enter by the
+// page's own `blur()`, a click on the page's text by the engine - and the blur saves the title and
+// closes the editor, whose commit takes the box away and draws Edit title in its place. So the row
+// rests on each engine firing that blur, and on the order in which it fires it and lets React
+// commit the save (`playwright.config.ts`).
+test("Enter in the title's editor, and a click outside it, close it and leave the next key to the page @firefox @webkit", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Title before the edits" });
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ height: 900, width: 1280 });
+    // Every PATCH of the issue, so a title a stray key wrote is caught even if a later read hid it.
+    const patched = watchWrites(page, "PATCH", `/api/v1/issues/${issue.key}`);
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const heading = (title: string) => header.getByRole("heading", { level: 1, name: title });
+    const editTitle = header.getByRole("button", { name: "Edit title" });
+    const editor = page.getByRole("textbox", { name: "Issue title" });
+    await expect(heading("Title before the edits")).toBeVisible();
+
+    /** Opens the editor with a click on Edit title and types `title` over what it holds. */
+    const typeTitle = async (title: string) => {
+      await editTitle.click();
+      await expect(editor).toBeFocused();
+      await editor.fill("");
+      await page.keyboard.type(title);
+      await expect(editor).toHaveValue(title);
+    };
+    /** The edit ended on `title`: saved, the editor gone, the heading and Edit title drawn again,
+     *  no field that takes typed text holding the focus, and an `x` typed then neither opens an
+     *  editor nor writes a title. */
+    const expectClosedOn = async (title: string) => {
+      await expect.poll(async () => (await getIssue(issue.key)).title).toBe(title);
+      await expect(editor).toHaveCount(0);
+      await expect(heading(title)).toBeVisible();
+      await expect(editTitle).toBeVisible();
+      // Every hand-off of the loss runs within a frame and a task of it, so it is done by now.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+      const holder = await focusHolder(page);
+      expect(holder.takesText, `the focus is in ${holder.name}, which takes text`).toBe(false);
+      await page.keyboard.press("x");
+      await expect(editor).toHaveCount(0);
+      await expect(heading(title)).toBeVisible();
+    };
+
+    // 1. Enter saves the title and closes the editor; `t` then starts the tab chord wherever the
+    // focus landed, as it does from the page, and its second key picks the tab.
+    await typeTitle("Saved by Enter");
+    await page.keyboard.press("Enter");
+    await expectClosedOn("Saved by Enter");
+    await page.keyboard.press("t");
+    await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
+    await page.keyboard.press("c");
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+
+    // 2. A click on the issue's key, plain text beside the title and no control, saves the title
+    // and closes the editor.
+    await typeTitle("Saved by a click outside");
+    await header.getByText(issue.key, { exact: true }).click();
+    await expectClosedOn("Saved by a click outside");
+
+    expect(patched.map(({ input }) => input)).toEqual([
+      { title: "Saved by Enter" },
+      { title: "Saved by a click outside" },
+    ]);
+  } finally {
+    await context.close();
+  }
+});
+
 test("issue header reassigns through the Assignee picker; a personal token's issues go to its owner", async ({
   browser,
 }, testInfo) => {
@@ -997,10 +1085,12 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
   try {
     await page.goto(`/issues/${issue.key}`);
     const control = page.getByLabel(`Assignee of ${issue.key}`);
-    await expect(control).toHaveValue("bob");
+    const people = page.getByRole("listbox", { name: `Assignee of ${issue.key} options` });
+    await expect(control).toHaveAccessibleName(`Assignee of ${issue.key} bob`);
     // Who has signed in is read only once the reader reaches for the control.
     await control.focus();
-    await expect(control.locator("option")).toHaveText(["Unassigned", "alice", "bob"]);
+    await control.click();
+    await expect(people.getByRole("option")).toHaveText(["Unassigned", "alice", "✓bob"]);
 
     // Anyone signed in may reassign: Alice takes it, and the header shows her at once.
     const patch = page.waitForRequest(
@@ -1008,10 +1098,10 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await control.selectOption("alice");
+    await people.getByRole("option", { exact: true, name: "alice" }).click();
     expect((await patch).postDataJSON()).toEqual({ assignee: "alice" });
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^alice$/ })
+      page.getByTestId("issue-header").getByText("alice", { exact: true })
     ).toBeVisible();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ assignee: "alice" });
     const events = await getIssueEvents(issue.key);
@@ -1027,12 +1117,15 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     });
 
     // Clearing it leaves the issue unassigned, and a reload agrees.
-    await control.selectOption("");
+    await control.click();
+    await people.getByRole("option", { exact: true, name: "Unassigned" }).click();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ assignee: null });
     await page.reload();
-    await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveValue("");
+    await expect(page.getByLabel(`Assignee of ${issue.key}`)).toHaveAccessibleName(
+      `Assignee of ${issue.key} Unassigned`
+    );
     await expect(
-      page.getByTestId("issue-header").locator("span", { hasText: /^Unassigned$/ })
+      page.getByTestId("issue-header").getByText("Unassigned", { exact: true })
     ).toBeVisible();
 
     // A session acting for Alice through her personal token creates issues assigned to her; a
@@ -1051,19 +1144,13 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
     );
     expect(child.assignee).toBe("alice");
     await page.goto(`/issues/${hers.key}`);
-    await expect(page.getByLabel(`Assignee of ${hers.key}`)).toHaveValue("alice");
+    await expect(page.getByLabel(`Assignee of ${hers.key}`)).toHaveAccessibleName(
+      `Assignee of ${hers.key} alice`
+    );
   } finally {
     await context.close();
   }
 });
-
-/** The repositories a repository box suggests: its own `<datalist>`, which is never drawn, so
- *  no role, text or visibility query reaches it. */
-async function repoSuggestions(box: Locator): Promise<string[]> {
-  return await box.evaluate((element) =>
-    Array.from((element as HTMLInputElement).list?.options ?? []).map((option) => option.value)
-  );
-}
 
 test("issue header suggests its project's default repository, and a child resolves to the repository the issue takes", async ({
   browser,
@@ -1089,30 +1176,34 @@ test("issue header suggests its project's default repository, and a child resolv
     // The repository is a row of Details; once opened, Details stays open for alice across the
     // reload and the other issue below.
     await openIssueDetails(page);
-    const control = page.getByLabel(`Repository of ${parent.key}`, { exact: true });
-    // The box holds the issue's own repository and it has none, so its placeholder names the
-    // project's default, which the issue inherits; the box's description says the same in
-    // words, which is what a screen reader hears.
-    await expect(control).toHaveValue("");
-    await expect(control).toHaveAttribute("placeholder", "acme/widgets");
-    await expect(control).toHaveAccessibleDescription(
-      "acme/widgets, inherited or the project's default"
+    // The visible badge; the trigger's name repeats its text from a span of its own.
+    const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
+    const control = page.getByLabel(`Repository of ${parent.key}`);
+    const repositories = page.getByRole("listbox", { name: `Repository of ${parent.key} options` });
+    // The badge names the project's default, which the issue inherits, and so does the trigger's
+    // name after its label, which is what a screen reader hears beside Inherit.
+    await expect(badge(/^acme\/widgets$/)).toBeVisible();
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${parent.key} acme/widgets, inherited or the project's default`
     );
-    // The box suggests the project's default repository; another project's is not offered.
-    await expect.poll(() => repoSuggestions(control)).toEqual(["acme/widgets"]);
+    // The list suggests the project's default repository after Inherit, the one picked; another
+    // project's default is not offered.
+    await control.focus();
+    await control.click();
+    await expect(repositories.getByRole("option")).toHaveText(["✓Inherit", "acme/widgets"]);
 
+    // A repository the list does not suggest is typed into its text box and given by the row
+    // that takes it.
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${parent.key}`
     );
-    await control.fill("acme/gadgets");
-    await control.press("Enter");
+    await page.getByRole("combobox", { name: "Search repositories" }).fill("acme/gadgets");
+    await repositories.getByRole("option", { exact: true, name: 'Use "acme/gadgets"' }).click();
     expect((await patch).postDataJSON()).toEqual({ repo: "acme/gadgets" });
-    // The issue has a repository of its own now: the box holds it, and a control inside the box
-    // clears it.
-    await expect(control).toHaveValue("acme/gadgets");
-    await expect(control).toHaveAccessibleDescription("acme/gadgets");
+    await expect(badge(/^acme\/gadgets$/)).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Repository of ${parent.key} acme/gadgets`);
     // The child names no repository of its own, so it resolves to its parent's.
     await expect
       .poll(() => getIssue(child.key))
@@ -1129,20 +1220,28 @@ test("issue header suggests its project's default repository, and a child resolv
       path: shot,
     });
 
-    // Clearing the box's own control clears the issue's repository: it resolves to the project's
-    // default again.
-    await header.getByRole("button", { name: `Clear the repository of ${parent.key}` }).click();
+    // The issue's own repository is in its list now, after the project's default, and picked;
+    // Inherit clears it: the issue resolves to the project's default again.
+    await control.click();
+    await expect(repositories.getByRole("option")).toHaveText([
+      "Inherit",
+      "acme/widgets",
+      "✓acme/gadgets",
+    ]);
+    await repositories.getByRole("option", { exact: true, name: "Inherit" }).click();
     await expect
       .poll(() => getIssue(parent.key))
       .toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
     await page.reload();
-    await expect(control).toHaveValue("");
-    await expect(control).toHaveAttribute("placeholder", "acme/widgets");
+    await expect(page.getByLabel(`Repository of ${parent.key}`)).toHaveAccessibleName(
+      `Repository of ${parent.key} acme/widgets, inherited or the project's default`
+    );
+    await expect(badge(/^acme\/widgets$/)).toBeVisible();
 
     // A project with no default repository has nothing to suggest, and its issues take a
-    // repository all the same: Details carries the row with an empty suggestion list. The box
-    // takes its suggestion from the project list, so the row waits until the bare issue's page
-    // reads that list, and then reads the box. A read that the page before it made for the
+    // repository all the same: Details carries the row, and its list offers Inherit alone. The
+    // list takes its suggestion from the project list, so the row waits until the bare issue's
+    // page reads that list, and then reads the list. A read that the page before it made for the
     // project.created event does not count.
     await createProject({ key: "BARE", name: "Bare" });
     const bare = await createIssue({ project: "BARE", title: "No default repository" });
@@ -1156,9 +1255,12 @@ test("issue header suggests its project's default repository, and a child resolv
     await projectsRead;
     await expect(issueDetailsRow(page, "parent")).toContainText("Parent");
     await expect(issueDetailsRow(page, "repository")).toContainText("Repository");
-    const bareControl = page.getByLabel(`Repository of ${bare.key}`, { exact: true });
-    await expect(bareControl).toHaveAttribute("placeholder", "owner/name");
-    expect(await repoSuggestions(bareControl)).toEqual([]);
+    const bareControl = page.getByLabel(`Repository of ${bare.key}`);
+    await expect(bareControl).toHaveAccessibleName(`Repository of ${bare.key} No repository`);
+    await bareControl.click();
+    await expect(
+      page.getByRole("listbox", { name: `Repository of ${bare.key} options` }).getByRole("option")
+    ).toHaveText(["✓Inherit"]);
   } finally {
     await context.close();
   }
@@ -1181,33 +1283,46 @@ test("an open issue's header follows its project's default repository as it is s
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     await openIssueDetails(page);
-    const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
-    // The box holds the issue's own repository, which it has none of, so what it resolves to is
-    // its placeholder, and the project's default is its suggestion.
-    await expect(control).toHaveAttribute("placeholder", "acme/widgets");
-    await expect.poll(() => repoSuggestions(control)).toEqual(["acme/widgets"]);
+    const header = page.getByTestId("issue-header");
+    const badge = (text: RegExp) => header.locator('span[aria-hidden="true"]', { hasText: text });
+    const control = page.getByLabel(`Repository of ${issue.key}`);
+    const repositories = page.getByRole("listbox", { name: `Repository of ${issue.key} options` });
+    /** The rows of the issue's Repository list, read with the list opened and closed again by
+     *  Escape, which picks nothing. */
+    const listed = async (rows: string[]): Promise<void> => {
+      await control.click();
+      await expect(repositories.getByRole("option")).toHaveText(rows);
+      await page.keyboard.press("Escape");
+      await expect(repositories).toHaveCount(0);
+    };
+    // The badge names what the issue resolves to, which it has no repository of its own for, and
+    // the project's default is the list's suggestion.
+    await expect(badge(/^acme\/widgets$/)).toBeVisible();
+    await listed(["✓Inherit", "acme/widgets"]);
 
     // A new default: the page shows it and suggests it without a reload.
     await putProjectDefaultRepository("CORE", "acme/gadgets");
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(control).toHaveAttribute("placeholder", "acme/gadgets");
-    await expect(control).toHaveAccessibleDescription(
-      "acme/gadgets, inherited or the project's default"
+    await expect(badge(/^acme\/gadgets$/)).toBeVisible();
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${issue.key} acme/gadgets, inherited or the project's default`
     );
-    await expect.poll(() => repoSuggestions(control)).toEqual(["acme/gadgets"]);
+    await listed(["✓Inherit", "acme/gadgets"]);
 
     // The default cleared: nothing resolves, and there is nothing to suggest.
     await putProjectDefaultRepository("CORE", null);
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(control).toHaveAttribute("placeholder", "owner/name");
-    await expect(control).toHaveAccessibleDescription("No repository");
-    await expect.poll(() => repoSuggestions(control)).toEqual([]);
+    await expect(badge(/^No repository$/)).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Repository of ${issue.key} No repository`);
+    await listed(["✓Inherit"]);
 
     // The default set again: the page shows it again.
     await putProjectDefaultRepository("CORE", "acme/widgets");
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(control).toHaveAttribute("placeholder", "acme/widgets");
-    await expect(control).toHaveValue("");
+    await expect(badge(/^acme\/widgets$/)).toBeVisible();
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${issue.key} acme/widgets, inherited or the project's default`
+    );
   } finally {
     await context.close();
   }
@@ -1215,8 +1330,8 @@ test("an open issue's header follows its project's default repository as it is s
 
 // @pr: INFRA-2543's whole point, which only the real stack can show: the server takes a
 // repository other than the project's default, and this is the one row that drives such a
-// repository through the page - typed into the box, written, and read back from the server on a
-// reload.
+// repository through the page - typed into the Repository list, given by the row that takes it,
+// written, and read back from the server on a reload.
 test("an issue takes a repository other than its project's default, and keeps it across a reload @pr", async ({
   browser,
 }) => {
@@ -1230,59 +1345,65 @@ test("an issue takes a repository other than its project's default, and keeps it
   try {
     await page.goto(`/issues/${issue.key}`);
     await openIssueDetails(page);
-    const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
-    await expect(control).toHaveValue("");
-    // The project's default is acme/widgets; the box suggests it and takes anything else.
-    await expect.poll(() => repoSuggestions(control)).toEqual(["acme/widgets"]);
+    const control = page.getByLabel(`Repository of ${issue.key}`);
+    const repositories = page.getByRole("listbox", { name: `Repository of ${issue.key} options` });
+    await expect(control).toHaveAccessibleName(
+      `Repository of ${issue.key} acme/widgets, inherited or the project's default`
+    );
+    // The project's default is acme/widgets; the list suggests it and takes anything else typed.
+    await control.click();
+    await expect(repositories.getByRole("option")).toHaveText(["✓Inherit", "acme/widgets"]);
 
     const written = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
         new URL(response.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await control.fill("other/elsewhere");
-    await control.press("Enter");
+    await page.getByRole("combobox", { name: "Search repositories" }).fill("other/elsewhere");
+    await repositories.getByRole("option", { exact: true, name: 'Use "other/elsewhere"' }).click();
     expect((await written).status()).toBe(200);
     await expect
       .poll(() => getIssue(issue.key))
       .toMatchObject({ repo: "other/elsewhere", resolved_repo: "other/elsewhere" });
 
-    // The server kept it: the page reads it back as the issue's own, with the box's own clear
-    // control beside it.
+    // The server kept it: the page reads it back as the issue's own, and its list holds it,
+    // picked, after the project's default.
     await page.reload();
-    await expect(control).toHaveValue("other/elsewhere");
-    await expect(
-      page
-        .getByTestId("issue-header")
-        .getByRole("button", { name: `Clear the repository of ${issue.key}` })
-    ).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Repository of ${issue.key} other/elsewhere`);
+    await control.click();
+    await expect(repositories.getByRole("option")).toHaveText([
+      "Inherit",
+      "acme/widgets",
+      "✓other/elsewhere",
+    ]);
   } finally {
     await context.close();
   }
 });
 
-/** Where `refusal` stands against the Repository box: wholly below it, and inside the cell the
- *  box's row gives its value. */
-async function refusalBelowBox(box: Locator, refusal: Locator) {
-  const [boxRect, refusalRect, cellRect] = await Promise.all([
-    box.boundingBox(),
+/** Where `refusal` stands against the Repository list's trigger: wholly below it, and inside the
+ *  cell the trigger's row of Details gives its value. */
+async function refusalBelowTrigger(trigger: Locator, refusal: Locator) {
+  const [triggerRect, refusalRect, cellRect] = await Promise.all([
+    trigger.boundingBox(),
     refusal.boundingBox(),
-    box.evaluate((node) => node.closest("dd")?.getBoundingClientRect().toJSON()),
+    trigger.evaluate((node) => node.closest("dd")?.getBoundingClientRect().toJSON()),
   ]);
-  if (boxRect === null || refusalRect === null || cellRect === undefined) {
-    throw new Error("expected the box, the refusal and the cell to have boxes");
+  if (triggerRect === null || refusalRect === null || cellRect === undefined) {
+    throw new Error("expected the trigger, the refusal and the cell to have boxes");
   }
   return {
-    below: refusalRect.y >= boxRect.y + boxRect.height - 0.5,
+    below: refusalRect.y >= triggerRect.y + triggerRect.height - 0.5,
     insideCell: refusalRect.x + refusalRect.width <= cellRect.right + 0.5,
   };
 }
 
-// The Repository line of today's Details wraps, so a refusal moves whole onto the line under the
-// box rather than standing beside it and squeezing it (dispatch://INFRA-5200, c-review F3). At
-// 360 px, both refusals the line draws: its own, for a name that is no `owner/name`, and the
-// server's, with its Retry.
-test("at 360 px the Repository line puts its own refusal and the server's under the box", async ({
+// The Repository line of today's Details wraps, so the server's refusal moves whole onto the line
+// under the list's trigger rather than standing beside it and squeezing it (dispatch://INFRA-5200,
+// c-review F3). At 360 px: a name that is no `owner/name` writes nothing, and the open list says
+// so itself, under its options, and stays open; a name that passes is written, and the server's
+// refusal of it, with its Retry, stands under the trigger inside the row's cell.
+test("at 360 px the Repository line puts the server's refusal under the list's trigger", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1295,14 +1416,29 @@ test("at 360 px the Repository line puts its own refusal and the server's under 
     await page.setViewportSize({ height: 800, width: 360 });
     await page.goto(`/issues/${issue.key}`);
     await openIssueDetails(page);
-    const control = page.getByLabel(`Repository of ${issue.key}`, { exact: true });
+    const trigger = page.getByLabel(`Repository of ${issue.key}`);
+    const repositories = page.getByRole("listbox", { name: `Repository of ${issue.key} options` });
+    // The open list's panel: its text box, its options and, under them, what it says.
+    const panel = repositories.locator("xpath=..");
+    const search = page.getByRole("combobox", { name: "Search repositories" });
     const line = page.getByTestId("issue-header");
 
-    await control.fill("acme gadgets");
-    await control.press("Enter");
-    const own = line.getByRole("alert").filter({ hasText: "Write the repository as owner/name." });
+    await trigger.click();
+    await search.fill("acme gadgets");
+    await search.press("Enter");
+    const own = panel.getByText("Write the repository as owner/name.");
     await expect(own).toBeVisible();
-    expect(await refusalBelowBox(control, own)).toEqual({ below: true, insideCell: true });
+    await expect(repositories, "the list closed on a name that is no owner/name").toBeVisible();
+    const [optionsRect, ownRect] = await Promise.all([
+      repositories.boundingBox(),
+      own.boundingBox(),
+    ]);
+    expect(
+      optionsRect !== null &&
+        ownRect !== null &&
+        ownRect.y >= optionsRect.y + optionsRect.height - 0.5,
+      "the list's refusal does not stand under its options"
+    ).toBe(true);
 
     const refusal = "repo must be owner/name, said the server";
     await page.route(`**/api/v1/issues/${issue.key}`, (route) =>
@@ -1314,11 +1450,13 @@ test("at 360 px the Repository line puts its own refusal and the server's under 
           })
         : route.fallback()
     );
-    await control.fill("acme/gadgets");
-    await control.press("Enter");
+    await search.fill("acme/gadgets");
+    await search.press("Enter");
+    // Taken, the name closes the list, as a pick does.
+    await expect(repositories).toHaveCount(0);
     const server = line.getByText(refusal);
     await expect(server).toBeVisible();
-    expect(await refusalBelowBox(control, server)).toEqual({ below: true, insideCell: true });
+    expect(await refusalBelowTrigger(trigger, server)).toEqual({ below: true, insideCell: true });
   } finally {
     await context.close();
   }

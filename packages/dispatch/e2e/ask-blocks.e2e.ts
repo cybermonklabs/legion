@@ -18,6 +18,7 @@ import {
   indexedBlockAsk,
   openWithCaret,
   paste,
+  pickVersion,
   selectEditorText,
 } from "./editor";
 import { navigateInApp } from "./sends";
@@ -566,7 +567,7 @@ test("decision blocks read as urgency-accented cards in the document and its ver
     // answer, no card.
     await page.emulateMedia({ colorScheme: "light" });
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.getByRole("combobox", { name: "Version" }).selectOption("2");
+    await pickVersion(page, 2);
     const versionView = page.getByTestId("version-view");
     const historical = versionView.locator('[data-dispatch-ask-block="storage"]');
     await expect(historical.locator("[data-dispatch-ask-pill]")).toHaveText("Blocking");

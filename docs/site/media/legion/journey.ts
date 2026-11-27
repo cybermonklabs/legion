@@ -3,6 +3,8 @@
 // section's screenshots (`shots.config.ts` beside this file) and its narrated walkthrough
 // (`../walkthroughs/legion-issue-journey.ts`) show what a real journey leaves in Dispatch. Every
 // name, key, commit and URL is example data.
+import type { Page } from "@playwright/test";
+
 import { dispatchApi, expect, fakeEnvoy } from "../harness";
 
 export const PROJECT = "SHOP";
@@ -34,9 +36,12 @@ export function agent(key: string, role: AgentRole) {
 export interface Example {
   readonly title: string;
   readonly spec: string;
-  /** The design the architect adds to the spec, with one ask block. */
+  /** The requirements the human who filed the issue marks in its spec, above the acceptance
+   *  criteria that check them (`markRequirements`). */
+  readonly requirements: string;
+  /** The design the architect adds to the spec, with one decision block. */
   readonly design: string;
-  /** The ask block's id and the option the human picks. */
+  /** The decision block's id and the option the human picks. */
   readonly decision: { readonly id: string; readonly pick: string };
   readonly approvalSummary: string;
   readonly pullRequest: { readonly number: number; readonly url: string };
@@ -58,6 +63,20 @@ A signed-in shopper can save the cart they are building and pick it up again lat
 - A shopper with items in their cart can save it from the cart page.
 - A saved cart opens from their account on another device, with the same items and quantities.
 - A saved cart untouched for 30 days is removed, and the shopper is emailed a week before.
+`,
+  requirements: `## Requirements
+
+:::requirement{#r1}
+A signed-in shopper saves the cart they are building, and the saved cart holds every line of it and its quantity.
+:::
+
+:::requirement{#r2}
+A saved cart belongs to the shopper's account rather than to the device that saved it, so any device they sign in on opens it.
+:::
+
+:::requirement{#r3}
+A saved cart nobody has touched for 30 days is removed, and the shopper is told a week before it goes.
+:::
 `,
   design: `## Design
 
@@ -93,6 +112,16 @@ A shopper sees when their order will arrive before they pay.
 
 - Each shipping option at checkout shows the date the order would arrive.
 - Choosing another shipping option shows that option's date.
+`,
+  requirements: `## Requirements
+
+:::requirement{#r1}
+Checkout shows a delivery date beside every shipping option, before the shopper pays.
+:::
+
+:::requirement{#r2}
+Each date is the one that shipping option would deliver on, so a shopper who picks another option sees that option's date.
+:::
 `,
   design: `## Design
 
@@ -155,6 +184,25 @@ export async function file(example: Example): Promise<Tracked> {
   return { key: issue.key, spec: issue.primary_artifact_id };
 }
 
+/** The human who filed the issue marks its requirements, above the acceptance criteria that
+ *  check them, and waits for the Spec tab's list to hold every one: it is read out of the block
+ *  index that the accepted write fills. The Spec tab lists a spec's requirements under the
+ *  document (`web/src/features/issue/SpecRequirements.tsx`), and a spec that marks none shows an
+ *  empty panel there, which a screenshot and a walkthrough both refuse. Each requirement is
+ *  flagged `has no check`: the example issues carry no Verification document, and the issue
+ *  page's documentation describes that flag. */
+export async function markRequirements(issue: Tracked, example: Example): Promise<void> {
+  const api = await dispatchApi();
+  await api.editArtifact(issue.spec, {
+    ops: [{ before: "heading:Acceptance criteria", markdown: example.requirements, op: "insert" }],
+    summary: "Mark the requirements",
+  });
+  const marked = example.requirements.match(/^:::requirement\{/gm)?.length ?? 0;
+  await expect
+    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
+    .toBe(marked);
+}
+
 /** The handover: a human labels the issue `legion` and sets it to todo. */
 export async function handOver(issue: Tracked): Promise<void> {
   const api = await dispatchApi();
@@ -168,7 +216,7 @@ export async function admit(issue: Tracked): Promise<void> {
   await api.claimIssue(issue.key, agent(issue.key, "architect"));
 }
 
-/** The architect writes its design, with one ask block, into the spec; the block becomes an
+/** The architect writes its design, with one decision block, into the spec; the block becomes an
  *  ask once the document service settles the edit. */
 export async function writeDesign(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
@@ -180,32 +228,32 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
   await expect.poll(async () => (await api.getIssue(issue.key)).open_asks?.length ?? 0).toBe(1);
 }
 
-/** Waits until the ask of the example's block reads answered with the example's pick, which is
- *  what the block's card reads to show the answer. A person's answer is held on the ask. When the
- *  answer is the whole change of the one version it writes (Dispatch's changesAskAttributesAlone),
- *  that version changes only the block's `state`, answerer and time, so an approval asked for next
- *  is asked of the text the architect wrote. */
-export async function decisionAnswered(issue: Tracked, example: Example): Promise<void> {
+/** The number of versions the spec has, to wait for the one an answer writes. */
+export async function specVersions(issue: Tracked): Promise<number> {
   const api = await dispatchApi();
-  await expect
-    .poll(async () => {
-      const ask = (await api.listIssueAsks(issue.key)).find(
-        (candidate) => candidate.block_id === example.decision.id
-      );
-      return { selected: ask?.answer?.selected ?? null, state: ask?.state ?? null };
-    })
-    .toEqual({ selected: [example.decision.pick], state: "answered" });
+  return (await api.getArtifact(issue.spec)).versions?.length ?? 0;
 }
 
-/** The human answers the ask block. */
+/** Waits until the spec has more versions than `before`: an answer is written into its decision
+ *  block as a new version, and an approval asked for before that version lands would move to it
+ *  and wait on the architect to hand it back. */
+export async function specVersionAfter(issue: Tracked, before: number): Promise<void> {
+  const api = await dispatchApi();
+  await expect
+    .poll(async () => (await api.getArtifact(issue.spec)).versions?.length ?? 0)
+    .toBeGreaterThan(before);
+}
+
+/** The human answers the decision block. */
 export async function answerDecision(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   const [decision] = (await api.getIssue(issue.key)).open_asks ?? [];
   if (decision === undefined) {
     throw new Error(`journey: ${issue.key} has no open ask to answer`);
   }
+  const versions = await specVersions(issue);
   await api.answerAsk(decision.id, { expected_edited_at: null, selected: [example.decision.pick] });
-  await decisionAnswered(issue, example);
+  await specVersionAfter(issue, versions);
 }
 
 /** The architect asks the human to approve the spec, with its summary; answers the ask's id. */
@@ -222,17 +270,10 @@ export async function requestSpecApproval(issue: Tracked, example: Example): Pro
   return requested.ask.id;
 }
 
-/** The human approves the spec, confirming the request as it now reads: the version the person's
- *  answer settled into moves the request in place, quietly, which rewords its question and sets
- *  its `edited_at`, and the answer route refuses an answer to a version the person was not shown
- *  (`ASK_EDITED`). */
+/** The human approves the spec. */
 export async function approve(approval: string): Promise<void> {
   const api = await dispatchApi();
-  const read = await api.getAsk(approval);
-  await api.answerAsk(approval, {
-    expected_edited_at: read.ask.edited_at ?? null,
-    selected: ["Approve"],
-  });
+  await api.answerAsk(approval, { expected_edited_at: null, selected: ["Approve"] });
 }
 
 /** The implementer links the pull request it opened. */
@@ -254,6 +295,10 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
   const api = await dispatchApi();
   await api.patchIssue(issue.key, { status }, DAEMON);
 }
+
+/** The issue header's Status: the shared list's single pick, whose trigger carries the status it
+ *  shows (`data-issue-status`), as the native select it replaced carried its value. */
+export const statusOf = (page: Page) => page.locator("[data-issue-status]");
 
 /** The reviewer approved, so on the default steps the issue is in accepting: the architect posts
  *  its acceptance of the reviewed head and signs off, and, the acceptance being the task's last

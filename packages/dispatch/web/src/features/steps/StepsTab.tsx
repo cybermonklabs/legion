@@ -5,19 +5,22 @@ import { issueStepsQuery } from "../../api/queries";
 import { ownQuery } from "../../api/query-refresh";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
-import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import {
   badgeMed,
-  borderDefault,
   card,
   dangerText,
   successText,
-  surfaceMutedBg,
   textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { type StepRow, stepTasks, stepVariant } from "./steps-model";
 
@@ -37,10 +40,6 @@ const COLUMNS = [
  *  answered yet has no model, a run that started before the release that records steps has no
  *  start. */
 const NONE = "—";
-
-function Cell({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <td className={`px-1.5 py-1.5 align-top ${className}`}>{children}</td>;
-}
 
 /** A run's start and end are read against each other, down the table, so each is the instant
  *  itself (`Nov 16 8:00 AM`) rather than a distance from now, which would make a forty-minute run
@@ -151,7 +150,6 @@ function Result({ row }: { row: StepRow }): ReactNode {
 
 /** One task's runs, one row each, in the order the server read them. */
 function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
-  const tableFade = useScrollFadeTrailing();
   return (
     <section className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
@@ -162,54 +160,46 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
           and not the card's border; `overflow-hidden` keeps the scrolled rows inside the card's
           rounded corners. */}
       <div className={`overflow-hidden rounded-xl border ${card}`}>
-        <div className={`overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
-          <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
-            <thead
-              className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
-            >
-              <tr>
-                {COLUMNS.map((column) => (
-                  <th
-                    className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
-                    key={column}
-                    scope="col"
-                  >
-                    {column}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
-                  <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
-                    {row.label}
-                  </Cell>
-                  <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
-                  <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
-                    {row.type === "" ? NONE : row.type}
-                  </Cell>
-                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                    <Identifier value={row.agent} />
-                  </Cell>
-                  <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
-                    <Identifier value={row.model} />
-                  </Cell>
-                  <Cell className={`tabular-nums ${textSecondaryOnSurface}`}>{row.attempt}</Cell>
-                  <Cell className={textMutedOnSurface}>
-                    <Time at={row.started} />
-                  </Cell>
-                  <Cell className={textMutedOnSurface}>
-                    <Time at={row.ended} />
-                  </Cell>
-                  <Cell className={textPrimaryOnSurface}>
-                    <Result row={row} />
-                  </Cell>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <TableShell fadeTrailing label={`Steps of task ${task}`} size="dense">
+          <TableHead>
+            {COLUMNS.map((column) => (
+              <TableHeadCell key={column}>{column}</TableHeadCell>
+            ))}
+          </TableHead>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.id}>
+                <TableCell tone="primary" top weight="medium" wrap="nowrap">
+                  {row.label}
+                </TableCell>
+                <TableCell tone="primary" top wrap="nowrap">
+                  {row.role}
+                </TableCell>
+                <TableCell tone="secondary" top wrap="nowrap">
+                  {row.type === "" ? NONE : row.type}
+                </TableCell>
+                <TableCell mono tone="secondary" top wrap="words">
+                  <Identifier value={row.agent} />
+                </TableCell>
+                <TableCell mono tone="secondary" top wrap="words">
+                  <Identifier value={row.model} />
+                </TableCell>
+                <TableCell tabular tone="secondary" top>
+                  {row.attempt}
+                </TableCell>
+                <TableCell tone="muted" top>
+                  <Time at={row.started} />
+                </TableCell>
+                <TableCell tone="muted" top>
+                  <Time at={row.ended} />
+                </TableCell>
+                <TableCell tone="primary" top>
+                  <Result row={row} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </TableShell>
       </div>
     </section>
   );

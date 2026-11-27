@@ -1,10 +1,13 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { CONTROL } from "../web/src/components/control-names";
+import { control, controlRow, openFilterPanel } from "./filters";
 import { expandedState } from "./settled";
 
 /**
- * The Inbox's `?assignee=` control (`features/inbox/AssigneeFilter.tsx`), one of the five fields
- * the bar's **Filter** button opens (INFRA-450; before it, the control stood in the bar itself).
+ * The Inbox's `?assignee=` control (the Assignee field `features/inbox/Inbox.tsx` draws), one of
+ * the five fields the bar's **Filter** button opens (INFRA-450; before it, the control stood in the
+ * bar itself).
  * Driving it, rather than opening a filtered address, is what a test needs when the Inbox must
  * stay mounted across the change: a pick is a client-side `replace`, so the marks, drafts and
  * held responses the page is carrying survive it, where `page.goto` would lose them.
@@ -21,28 +24,24 @@ export function assigneeOptions(page: Page): Locator {
   return page.getByRole("listbox", { name: "Assignee options" });
 }
 
-/** Opens the five filter fields of the bar `within` holds - the page's or the drawer's - unless
- *  they are open already; the bar's **Filter** button says which. */
-async function showFilterFields(within: Page | Locator): Promise<void> {
-  const filter = within.locator("[data-inbox-filter]");
-  if ((await expandedState("the Inbox's Filter button", filter)) === "shut") await filter.click();
-}
-
-/** Opens the bar's five filter fields unless they are open already, and hands back the panel. */
+/** Opens the row's five filter fields unless they are open already, and hands back the panel
+ *  the row's one **Filter** trigger opens. */
 export async function openFilterFields(page: Page): Promise<Locator> {
-  const fields = page.locator("[data-inbox-filter-fields]");
-  await showFilterFields(page);
-  await expect(fields).toHaveCount(1);
-  return fields;
+  return openFilterPanel(page);
 }
 
 /** How many rows the **Type** filter counts for one of its values, read off that option's own
- *  accessible name. `within` is the bar the panel belongs to - the page's or the drawer's - and
- *  the popover is shut again before this answers, so the next read of the list is not made
- *  through it. */
-export async function typeFilterCount(page: Page, within: Locator, name: string): Promise<number> {
-  await showFilterFields(within);
-  const trigger = within.getByRole("button", { name: "Filter by type" });
+ *  accessible name. `within` is the surface whose row opens the panel - the page itself, or the
+ *  drawer - and the popover is shut again before this answers, so the next read of the list is
+ *  not made through it. The fields themselves are portalled to the body, so they are read off
+ *  the page rather than through `within`. */
+export async function typeFilterCount(
+  page: Page,
+  name: string,
+  within: Locator | Page = page
+): Promise<number> {
+  await openFilterPanel(page, within);
+  const trigger = page.getByRole("button", { name: "Filter by type" });
   if ((await expandedState("the Type filter", trigger)) === "shut") await trigger.click();
   const options = page.getByRole("listbox", { name: "Type options" });
   const label =
@@ -88,10 +87,16 @@ export async function searchInbox(page: Page, text: string): Promise<void> {
   await inboxSearchBox(page).fill(text);
 }
 
-/** Closes the popover the way a reader does, and waits until it is gone, so whatever it covered
- *  is reachable again. Escape is handled by the search box, which holds focus while the popover
- *  is open (a row's press never takes it). */
+/** Closes the popover the way a reader does, and the panel it is drawn in with it, waiting
+ *  until both are gone so whatever they covered is reachable again. Escape is handled by the
+ *  innermost layer the press comes from: the popover first, then the panel. */
 export async function closeAssigneeFilter(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(assigneeOptions(page)).toHaveCount(0);
+  const panel = page.getByRole("dialog", { name: "Filter" });
+  const panelTrigger = control(controlRow(page), CONTROL.panelTrigger);
+  if ((await expandedState("the row's filter trigger", panelTrigger)) === "open") {
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+  }
 }

@@ -536,9 +536,10 @@ function AskThreadBody({
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
       {/* Keyed by the ask: the column draws this body for one ask's thread after another, and
-          the card holds the writes it made - an answer, a question back, a reply, a decline, a
-          hand-on, an upload, an unfollow, an unsubscribe - each with its refusal and its Retry,
-          so the next ask is drawn with a card of its own, never under this one's refusal. */}
+          the card holds the writes it made - an upload, an unfollow, an unsubscribe - each with
+          its refusal and its Retry, so the next ask is drawn with a card of its own, never under
+          this one's refusal. Its answer, question back, reply, decline and hand-on are the
+          Inbox's, by ask, so the card drawn for an ask shows that ask's own. */}
       <AskCard
         ask={read.data.ask}
         initialThread={read.data}

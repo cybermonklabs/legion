@@ -20,26 +20,15 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { claimIsTakeable } from "./ClaimChip";
+import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
-import type { IssuePriorityWrite } from "./useIssuePriority";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** These rows are about the claim chip, not the priority: the header's write never runs, and it
- *  draws no priority, as `base` has none. */
-const idlePriorityWrite: IssuePriorityWrite = {
-  failed: false,
-  pending: false,
-  retry: () => undefined,
-  shown: null,
-  stopped: undefined,
-  submit: () => undefined,
-};
 
 function header(
   issue: Issue,
@@ -62,9 +51,7 @@ function header(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The components line reads the project's architecture sources at once, and a project with
-  // none offers no picker, so the read does not reach the network.
-  const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
+  const restoreReads = mockHeaderReads();
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -87,7 +74,7 @@ function header(
     client,
     unmount: () => {
       view.unmount();
-      architectureSources.mockRestore();
+      restoreReads();
     },
     user,
   };

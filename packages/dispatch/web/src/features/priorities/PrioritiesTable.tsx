@@ -3,11 +3,15 @@ import type { PriorityRow } from "../../api/types";
 import {
   DataTable,
   DataTableGroupRow,
+  type DataTableNames,
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
+import type { PagerOptions } from "../../components/Pager";
+import { useTableLayout } from "../../components/table-layout";
+import { useTableAddress } from "../../lib/page-address";
 import { textMutedOnSurfaceMuted } from "../../theme/classes";
-import { useTableLayout } from "../project/issues-table-layout";
+import { ALL_ROWS, PAGE_SIZES } from "../project/issues-table-model";
 import { NOTHING_KEPT, usedOn } from "./field-arrival";
 import { ChangedMeanwhile } from "./InPlaceField";
 import { NewPriority } from "./NewPriority";
@@ -17,8 +21,11 @@ import {
   matchesPrioritySearch,
   PRIORITY_COLUMNS,
   PRIORITY_COLUMNS_BY_ID,
+  PRIORITY_GROUP_ATTRIBUTE,
   PRIORITY_LAYOUT,
+  PRIORITY_LINK_ATTRIBUTE,
   PRIORITY_PHONE_HIDDEN,
+  PRIORITY_ROW_ATTRIBUTE,
   PRIORITY_SORTING,
   type PriorityItem,
   rankMove,
@@ -26,16 +33,46 @@ import {
 import { TableToolbar } from "./priority-table-controls";
 import { compareHeadings, facetCounts, headingOf } from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
-import { useTableView } from "./priority-table-view";
+import { priorityTableGrammar } from "./priority-table-view";
 import { type EditedText, textWriteLabel, usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
-/** What a row of this table is, which its pager and its group headings count in. */
-const NOUN: RowNoun = { many: "priorities", one: "priority" };
-/** The layout key of the priorities table: one table, one deployment, one stored layout. */
-const LAYOUT_KEY = "priorities";
-/** The address prefix of this table's own view, so the two fault lists keep their own. */
+/** What a row of this table is, which its filters, its pager and its group headings count in. */
+const NOUN: RowNoun = {
+  group: { one: "group", many: "groups" },
+  line: { one: "row", many: "rows" },
+  many: "priorities",
+  one: "priority",
+};
+/** The priorities table's own words, which the table core reads and never invents: its rows'
+ *  attributes, and the keys that walk them under ids of their own, beside the issue tables'
+ *  `list-*` keys of the page's other tabs. It is its tab's one table, so `j` and `k` walk it
+ *  from anywhere the focus is in no other table. It selects nothing, so it names no select key. */
+const NAMES: DataTableNames = {
+  groupAttribute: PRIORITY_GROUP_ATTRIBUTE,
+  keymap: {
+    next: { id: "priorities-next", keys: "j", label: "Next priority" },
+    open: { id: "priorities-open", keys: "o", label: "Open priority" },
+    openOnEnter: { id: "priorities-open-enter", keys: "Enter", label: "Open the focused priority" },
+    previous: { id: "priorities-previous", keys: "k", label: "Previous priority" },
+    scope: "project",
+  },
+  linkAttribute: PRIORITY_LINK_ATTRIBUTE,
+  rowAttribute: PRIORITY_ROW_ATTRIBUTE,
+};
+/** The line under the table: the page sizes the issue tables offer, and its own test id. */
+const PAGER: PagerOptions = {
+  allRows: ALL_ROWS,
+  pageSizes: PAGE_SIZES,
+  testId: "priorities-table-pager",
+};
+/** The whole key the priorities table keeps its layout under: one table, one deployment, one
+ *  stored layout, under the key the page has always written it to. */
+const LAYOUT_KEY = "dispatch.project-table.priorities";
+/** The address prefix of this table's own view, so the fault lists keep their own. A
+ *  module-level constant, since `useTableAddress` memoizes the view it reads on its identity. */
 const VIEW_PREFIX = "p";
+const VIEW_ADDRESS = priorityTableGrammar(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
 /** The priorities a table draws while it draws none. */
 const NONE_DRAWN: readonly string[] = [];
 /** The one text of a priority a row writes: its description. A title is written on the
@@ -54,7 +91,7 @@ const ROW_TEXTS: readonly EditedText[] = ["description"];
  */
 export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
+    useTableAddress(VIEW_ADDRESS);
   // On a desktop the title fills the box: it takes the width the other shown columns leave, so
   // the table fits the window and nothing scrolls sideways (`PRIORITY_LAYOUT`'s `fills`). A
   // phone's box draws the place and the title alone, whatever the reader shows, and the title's
@@ -93,6 +130,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     columns: PRIORITY_COLUMN_DEFS,
     getRowId: (item) => item.priority.id,
     layout,
+    names: NAMES,
     state: {
       sorting: view.sorting,
       grouping: view.grouping,
@@ -269,6 +307,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           label="Priorities table"
           model={model}
           noun={NOUN}
+          pager={PAGER}
           onOpenFilterChange={setOpenFilter}
           openFilter={openFilter}
           renderGroup={({ entry: { continued, row, shown }, index, measure }) => {
@@ -314,6 +353,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
             />
           )}
           scrollTestId="priorities-table-scroll"
+          size="compact"
           // A phone draws `#` beside the one cell that holds the rest of the row, too narrow for
           // a filter's touch target beside its sort's.
           sortOnlyOnPhone="order"

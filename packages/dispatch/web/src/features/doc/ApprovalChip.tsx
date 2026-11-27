@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { approvalPillClassName } from "../../components/Pill";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -259,18 +260,17 @@ function RequestChangesDialog({
           >
             Request changes
           </h2>
-          {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
-              submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
-              the body in a browser, and Tab would then leave the dialog. Outside both are
-              `disabled` while the write is out, as on `main`. */}
+          {/* While the write is out the text box is held (`heldField`): read-only, never
+              `disabled`, which drops the focus to the body in a browser, and Tab would then
+              leave the dialog. */}
           <MentionField
             className="text-sm"
             body={reason}
-            disabled={page === null && saving}
             fieldClassName={page === null ? undefined : ON_PAGE.reasonBox}
             fieldRef={(handle) => {
               textareaRef.current = handle?.textarea() ?? null;
             }}
+            held={saving}
             hintClassName={page === null ? undefined : `text-xs ${ON_PAGE.hint}`}
             issueKey={issueKey}
             label="Reason"
@@ -288,7 +288,6 @@ function RequestChangesDialog({
               })
             }
             project={project}
-            readOnly={page !== null && saving}
             writing={dispatchWritingBox("approval-reason", "approval-reason")}
           />
           {error === null ? null : (
@@ -310,24 +309,20 @@ function RequestChangesDialog({
               // Inside `NoTooltips`, while the write is out, this button reads Close and closes the
               // dialog as Escape and the backdrop do: `onClose` leaves the write going, and the
               // dialog gives the focus back to the button that opened it. Once the write has ended
-              // it is Cancel again. Outside it is `disabled` while the write is out, as on `main`.
+              // it is Cancel again. Outside it is held while the write is out (`heldPress`), a
+              // press of it doing nothing, as Escape and the backdrop still close the dialog.
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
-              disabled={page === null && saving}
-              onClick={onClose}
+              {...heldPress(page === null && saving, onClose)}
               type="button"
             >
               {page !== null && saving ? page.CONTROL_LABELS.close : "Cancel"}
             </button>
             <button
-              aria-disabled={(page !== null && saving) || undefined}
+              // Held while the write is out (`heldPress`), so the focus the reader's press left
+              // on it stays there; `disabled` only while there is no reason to send.
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
-              disabled={trimmed === "" || (page === null && saving)}
-              onClick={() => {
-                if (saving) {
-                  return;
-                }
-                onSubmit(trimmed);
-              }}
+              disabled={trimmed === ""}
+              {...heldPress(saving, () => onSubmit(trimmed))}
               type="button"
             >
               {saving ? "Submitting…" : "Request changes"}
@@ -467,7 +462,7 @@ export function ApprovalChip({
   // Inside `NoTooltips` the review sent, by a press of Approve or by the Request changes dialog's
   // submit, is remembered until its write stops pending, which is once the new approval is read
   // (`onSuccess` returns its reads, and closes a change request's dialog before the write stops
-  // pending). Approve and Request changes are never `disabled` there, so while they are drawn they
+  // pending). Approve and Request changes are never `disabled`, so while they are drawn they
   // keep the focus, and the dialog gives it back to Request changes as it closes: once the read is
   // drawn, or at once when the reader closes it with Escape, the backdrop or its Close while the
   // write is out, which goes on (`onClose`). Once the write stops pending with the dialog closed
@@ -540,26 +535,22 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
-              // of it does nothing, so it keeps the focus: a `disabled` button drops it to the
-              // body in a browser. Outside it is `disabled` while the write is out, as on `main`.
-              aria-disabled={(page !== null && review.isPending) || undefined}
+              // While the write is out Approve is held (`heldPress`): `aria-disabled`, a press of
+              // it doing nothing, so it keeps the focus, where a `disabled` button drops it to the
+              // body in a browser. Inside `NoTooltips` that is until the read after the write is
+              // drawn as well.
               aria-label={actionNames?.approve}
               className={
                 size === "compact"
                   ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
-              disabled={page === null && review.isPending}
-              onClick={() => {
-                if (review.isPending) {
-                  return;
-                }
+              {...heldPress(review.isPending, () =>
                 submitGuard.guard(() => {
                   if (page !== null) setSentReview("approved");
                   review.mutate({ artifact, input: { state: "approved" } });
-                });
-              }}
+                })
+              )}
               ref={approveButton}
               type="button"
             >
@@ -567,25 +558,17 @@ export function ApprovalChip({
             </button>
           )}
           <button
-            // Inside `NoTooltips`, while the write is out, this button is `aria-disabled` and a
-            // press of it does nothing: the dialog it opens gives the focus back to it once a
-            // change request lands and its new approval is read, and a `disabled` button takes no
-            // focus, which then falls to the body. Outside it is `disabled` while the write is
-            // out, as on `main`.
-            aria-disabled={(page !== null && review.isPending) || undefined}
+            // Held while the write is out (`heldPress`), a press of it doing nothing: the dialog
+            // it opens gives the focus back to it once a change request lands and its new
+            // approval is read, and a `disabled` button takes no focus, which then falls to the
+            // body.
             aria-label={actionNames?.requestChanges}
             className={
               size === "compact"
                 ? pageHeaderControl
                 : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`
             }
-            disabled={page === null && review.isPending}
-            onClick={() => {
-              if (review.isPending) {
-                return;
-              }
-              setRequestChangesOpen(true);
-            }}
+            {...heldPress(review.isPending, () => setRequestChangesOpen(true))}
             ref={requestChangesButton}
             type="button"
           >
@@ -607,7 +590,7 @@ export function ApprovalChip({
           onClose={() => {
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
             // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel
-            // is `disabled` then (`RequestChangesDialog`). Outside `NoTooltips` closing lets go of
+            // is held then (`RequestChangesDialog`). Outside `NoTooltips` closing lets go of
             // the write (`reset`), as on `main`. Inside, a write that is out goes on, and Approve
             // and Request changes stay refused until it lands and its read is drawn, or until it
             // ends without landing: `reset` would let them be pressed again before it lands. A

@@ -10,6 +10,7 @@ import {
   patchIssue,
 } from "./api";
 import { mouseDrag } from "./board-drag";
+import { listTrigger, pickFromList } from "./filters";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -198,7 +199,9 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     await page.goto(`/issues/${p1}`);
     await expect(page.getByRole("heading", { level: 1, name: first.parent.title })).toBeVisible();
     const closeButton = page.getByRole("button", { name: "Close issue", exact: true });
-    const statusSelect = page.getByRole("combobox", { name: "Status", exact: true });
+    // The issue page's Status is the shared single pick (INFRA-3135's R3), whose trigger carries
+    // the status it shows in `data-issue-status`; its options are named as `statusText` names them.
+    const statusPick = page.locator("[data-issue-status]");
     const openChildren = [
       { key: first.working.key, relation: "child" },
       { key: first.waiting.key, relation: "child" },
@@ -248,7 +251,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
 
     // To the backlog, the child in work stops P1; Move them with it takes every open issue under
     // P1 to the backlog.
-    await statusSelect.selectOption("backlog");
+    await pickFromList(statusPick, statusText("backlog"));
     const shelving = question(page, p1, "backlog");
     await expectQuestion(
       shelving,
@@ -269,7 +272,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
       });
 
     // Then to done, Unlink them leaves P1's open children roots and P1 done.
-    await expect(statusSelect).toHaveValue("backlog");
+    await expect(statusPick).toHaveAttribute("data-issue-status", "backlog");
     await closeButton.click();
     await expectQuestion(closing, p1, "done", openChildren, [
       "include_children",
@@ -347,7 +350,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     // `shelved` moves into work too, and lists `shelved`.
     await page.goto(`/issues/${child.key}`);
     await expect(page.getByRole("heading", { level: 1, name: child.title })).toBeVisible();
-    await statusSelect.selectOption("in_progress");
+    await pickFromList(statusPick, statusText("in_progress"));
     const starting = question(page, child.key, "in_progress");
     const upward = await expectQuestion(
       starting,
@@ -384,10 +387,12 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     // The board above left Board as alice's view of the project; the issues table is its List.
     await page.getByRole("button", { name: "List", exact: true }).click();
     const looseSelect = page.getByRole("checkbox", { name: `Select ${loose.key}`, exact: true });
-    const epicPick = page.getByRole("combobox", { name: "Move to epic", exact: true });
+    // The selection bar's Move to epic is the shared single pick, which names each epic by its
+    // title (INFRA-3135's R3).
+    const epicPick = listTrigger(page, "Move to epic");
     const moveButton = page.getByRole("button", { name: "Move", exact: true });
     await looseSelect.check();
-    await epicPick.selectOption(epic.key);
+    await pickFromList(epicPick, epic.title);
     await moveButton.click();
     const intoWork = page.getByRole("dialog", { name: `Move ${epic.key} into work too?` });
     const intoWorkChanges = intoWork.getByRole("list", { name: "Changes" }).getByRole("listitem");
@@ -416,7 +421,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
 
     // Again, and confirmed: `epic` is in progress with `loose` under it.
     await expect(looseSelect).toBeChecked();
-    await epicPick.selectOption(epic.key);
+    await pickFromList(epicPick, epic.title);
     await moveButton.click();
     await expect(intoWorkChanges).toHaveText(changeLines);
     await intoWork.getByRole("button", { name: "Move into work too", exact: true }).click();

@@ -15,6 +15,9 @@ export async function copyText(text: string): Promise<boolean> {
   textarea.style.position = "fixed";
   textarea.style.top = "0";
   document.body.append(textarea);
+  // Chromium's `select()` moves the focus into the box, and the box's removal leaves it on the
+  // body, so the focus is given back to the element that had it before the copy.
+  const focused = document.activeElement;
   textarea.select();
 
   try {
@@ -23,5 +26,8 @@ export async function copyText(text: string): Promise<boolean> {
     return false;
   } finally {
     textarea.remove();
+    if (focused instanceof HTMLElement && focused !== document.body && focused.isConnected) {
+      focused.focus({ preventScroll: true });
+    }
   }
 }

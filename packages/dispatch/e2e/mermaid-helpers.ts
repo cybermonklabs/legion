@@ -1,7 +1,7 @@
 // The init-script and worker helpers `e2e/mermaid.e2e.ts`'s rows share: the wrappers that record,
-// hold, refuse or fail the page's `Worker`, the two scroll helpers (one turns the browser's scroll
-// anchoring off, one reads the offset once it settles), and the route that makes the real worker
-// chunk hold a diagram's source.
+// hold, refuse or fail the page's `Worker`, the helper that turns the browser's scroll anchoring
+// off (the offset is read once it settles by `settledScrollTop` in `e2e/frames.ts`), and the
+// route that makes the real worker chunk hold a diagram's source.
 import { expect, type Page } from "@playwright/test";
 
 // What this file's init scripts keep on the page's window.
@@ -105,26 +105,6 @@ export async function holdMermaidWorkers(page: Page): Promise<void> {
  *  that re-run brings the target back into view. */
 export async function withoutScrollAnchoring(page: Page): Promise<void> {
   await page.addStyleTag({ content: "* { overflow-anchor: none !important; }" });
-}
-
-/** The document's scroll offset once it has stopped moving: unchanged over 10 frames in a row, so
- *  a smooth scroll a link or a wheel started has ended before the offset is read. */
-export function settledScrollTop(page: Page): Promise<number> {
-  return page.evaluate(
-    () =>
-      new Promise<number>((resolve) => {
-        let last = -1;
-        let still = 0;
-        const sample = () => {
-          const top = document.scrollingElement?.scrollTop ?? 0;
-          still = top === last ? still + 1 : 0;
-          last = top;
-          if (still >= 10) resolve(top);
-          else requestAnimationFrame(sample);
-        };
-        sample();
-      })
-  );
 }
 
 /** Makes the page's `new Worker(...)` throw, as a browser with no worker to give does. */

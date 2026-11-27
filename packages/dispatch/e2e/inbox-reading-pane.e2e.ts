@@ -10,6 +10,7 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
+import { listTrigger, pickFromList } from "./filters";
 import { handTo } from "./hand-on";
 import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -412,11 +413,11 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     const reads = logReads(page, inboxRead);
     await page.goto(INBOX);
     await selectRow(page, ask.id);
-    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
-    await expect(picker).toHaveValue("3");
+    const picker = listTrigger(page, `Priority of ${issue.key}`);
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
 
-    await picker.selectOption("1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A rename of the issue, straight to the server: its live event has the Inbox read the
@@ -431,10 +432,10 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     expectReadWhileHeld(reads, held, renamedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expect(picker).toHaveValue("1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
   } finally {
     await alice.close();
   }
@@ -674,7 +675,12 @@ test("on a phone the reading view answers a decision block, steps and approves a
 
     // A question's card in the view hands it on, as the card in its row did.
     await selectRow(page, seed.plainAskId);
-    await handTo(pane.locator(`select[data-ask-hand-on="${seed.plainAskId}"]`), "bob");
+    await handTo(
+      pane
+        .locator(`[data-ask-hand-on="${seed.plainAskId}"]`)
+        .getByRole("button", { name: "Hand this question to" }),
+      "bob"
+    );
     await expect
       .poll(async () => (await getAsk(seed.plainAskId, { login: "alice" })).ask.waiting_on_person)
       .toBe("bob");
