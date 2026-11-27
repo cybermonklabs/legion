@@ -170,9 +170,9 @@ func CloseWaitDocument(issue Issue) (string, error) {
 		doc.WriteString("\n## Withdrawn defects\n\n")
 		for _, withdrawn := range wait.Withdrawn {
 			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s, because:\n", withdrawn.ID, waitTime(withdrawn.At))
-			writeQuoted(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Reason)))
-			doc.WriteString("\n  The defect was:\n")
-			writeQuoted(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Text)))
+			writeAgentText(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Reason)))
+			doc.WriteString("  The defect was:\n")
+			writeAgentText(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Text)))
 		}
 	}
 	if wait.Closed != nil {
@@ -268,7 +268,7 @@ func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 	fmt.Fprintf(doc, ", since %s", waitTime(reason.Since))
 	if text := strings.TrimSpace(dispatchbody.LineFeeds(reason.Text)); text != "" {
 		doc.WriteString(":\n")
-		writeQuoted(doc, "  ", text)
+		writeAgentText(doc, "  ", text)
 		return
 	}
 	doc.WriteString("\n")
@@ -279,19 +279,23 @@ func waitTime(at time.Time) string {
 	return at.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
-// writeQuoted writes text under indent as a block quote, each of its lines behind `> `, so no line
-// of an agent's text stands at the start of a line of the document, where it would open a heading,
-// a list, a table or a block of its own. The caller normalises the line feeds first
-// (dispatchbody.LineFeeds): Dispatch turns each lone CR of an upload into a line feed, so a text
-// split on "\n" alone would write a CR inside a line that the document then breaks there.
-func writeQuoted(doc *strings.Builder, indent, text string) {
+// writeAgentText writes text under indent as an indented code block: a blank line, then each line
+// of it four spaces past the content column of the item it stands in, which CommonMark reads as
+// code whatever the line holds. A block quote would not do: `> ## Closed` is an h2 inside the
+// quote, since a quote moves a heading rather than stopping one. The caller normalises the line
+// feeds first (dispatchbody.LineFeeds): Dispatch turns each lone CR of an upload into a line feed,
+// so a text split on "\n" alone would write a CR inside a line that the document then breaks
+// there, outside the block.
+func writeAgentText(doc *strings.Builder, indent, text string) {
+	doc.WriteString("\n")
 	for line := range strings.SplitSeq(text, "\n") {
-		if line == "" {
-			fmt.Fprintf(doc, "%s>\n", indent)
+		if strings.TrimSpace(line) == "" {
+			doc.WriteString("\n")
 			continue
 		}
-		fmt.Fprintf(doc, "%s> %s\n", indent, line)
+		fmt.Fprintf(doc, "%s    %s\n", indent, line)
 	}
+	doc.WriteString("\n")
 }
 
 // codeSpan is word as a markdown code span whose fence is one backtick longer than the longest run

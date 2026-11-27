@@ -599,15 +599,17 @@ func TestAWithdrawalStaysInTheWaitUntilAVersionShowsIt(t *testing.T) {
 				}
 			}
 			// Dispatch reads the document as it stands after that normalisation
-			// (dispatchbody.LineFeeds): every line of a role's text is inside a block quote, so
-			// none of them stands as a heading, a list or a block of the document's own.
+			// (dispatchbody.LineFeeds): every line of a role's text sits four spaces past its
+			// item's content column, which CommonMark reads as code whatever the line holds, so
+			// none of them is a heading. A block quote would not do: `> ## Closed` is a heading
+			// inside the quote.
 			for _, line := range strings.Split(dispatchbody.LineFeeds(document), "\n") {
-				if strings.TrimSpace(line) == "## Closed" {
-					t.Errorf("close-wait.md holds a line of a reason as a heading of its own:\n%s", document)
+				if strings.TrimSpace(line) == "## Closed" && !strings.HasPrefix(line, "      ") {
+					t.Errorf("close-wait.md holds a line of a reason where CommonMark reads a heading:\n%s", document)
 				}
 			}
-			if !strings.Contains(dispatchbody.LineFeeds(document), "> ## Closed") {
-				t.Errorf("close-wait.md = %q, want the reason's second line quoted", document)
+			if !strings.Contains(dispatchbody.LineFeeds(document), "\n      ## Closed\n") {
+				t.Errorf("close-wait.md = %q, want the reason's second line inside the item's code block", document)
 			}
 		})
 	}
@@ -653,4 +655,32 @@ func TestTheDefectCallsAnswerTheirGoldens(t *testing.T) {
 	var withdrawn DefectWithdrawResponse
 	decodeInto(t, withdrawal, &withdrawn)
 	golden(t, "defect-withdraw.json", withdrawn)
+}
+
+// Both calls refuse a key that is no issue key before they read anything (INVALID_ISSUE), and an
+// issue the record does not hold under the fact lock (ISSUE_NOT_FOUND). Neither records or
+// withdraws anything.
+func TestTheDefectCallsRefuseAKeyThatIsNoIssueAndAnIssueTheRecordLacks(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		issue  string
+		status int
+		code   string
+	}{
+		{"not-an-issue-key", http.StatusBadRequest, "INVALID_ISSUE"},
+		{"LEGION-404", http.StatusNotFound, "ISSUE_NOT_FOUND"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			t.Parallel()
+			h, _, _ := statusHarness(t)
+			acceptPhase(t, h, statusRoot, phase.Retro)
+			implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
+			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+			refused(t, reportDefectAs(h, implementer.grant(t), tc.issue, defectText, defectHead, ""), tc.status, tc.code)
+			refused(t, withdrawDefectAs(h, architect.grant(t), tc.issue, "1", "fixed"), tc.status, tc.code)
+			if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
+				t.Fatalf("defects of %s = %+v, want none", statusRoot, rows)
+			}
+		})
+	}
 }

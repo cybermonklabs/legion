@@ -2992,7 +2992,8 @@ export const LegionTaskStopRequest = z.strictObject({
  * text, one too long or one that holds a decision block (`DEFECT_TEXT_REQUIRED`,
  * `DEFECT_TEXT_TOO_LONG`, `DEFECT_TEXT_DECISION_BLOCK`), with no head (`DEFECT_HEAD_REQUIRED`),
  * with a check that is no block id (`DEFECT_CHECK_INVALID`), and on an issue that closed or a tree
- * that lingers (`DEFECT_ISSUE_CLOSED`, `TREE_LINGERING`). */
+ * that lingers (`DEFECT_ISSUE_CLOSED`, `TREE_LINGERING`), and for a key that is no issue key or an
+ * issue it has not recorded (`INVALID_ISSUE`, `ISSUE_NOT_FOUND`). */
 export const LegionDefectReportRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -3018,7 +3019,8 @@ export const LegionDefectReportResponse = z.object({
  * not hold (`DEFECT_NOT_FOUND`), for a check's own defect (`DEFECT_IS_A_CHECK`), for one a merged
  * change carries (`DEFECT_IN_MERGED_CHANGE`), with no reason (`DEFECT_REASON_REQUIRED`), and with a
  * reason too long or one that holds a decision block (`DEFECT_REASON_TOO_LONG`,
- * `DEFECT_REASON_DECISION_BLOCK`). */
+ * `DEFECT_REASON_DECISION_BLOCK`), and for a key that is no issue key or an issue it has not
+ * recorded (`INVALID_ISSUE`, `ISSUE_NOT_FOUND`). */
 export const LegionDefectWithdrawRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
