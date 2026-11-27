@@ -144,7 +144,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 	appeared := whenLockAppears(filepath.Join(repository, ".git", "index.lock"), done)
-	run := NewRunner(budget, map[string]string{"git": git})
+	run := NewRunner(budget, map[string]string{"git": heldTool(t, root, "held-git", git)}) // CONTROL (never merged)
 
 	var ended atomic.Pointer[os.ProcessState]
 	hook := func(command Command, state *os.ProcessState) {
@@ -154,6 +154,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	}
 	exitedHook.Store(&hook)
 	t.Cleanup(func() { exitedHook.Store(nil) })
+	holdOutside(t) // CONTROL (never merged)
 	started := time.Now()
 	result, err := run.Run(context.Background(), Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: budget})
 	elapsed := time.Since(started)
