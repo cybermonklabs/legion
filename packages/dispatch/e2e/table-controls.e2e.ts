@@ -1,7 +1,9 @@
 /** The shared search, sort and filter controls where proving them needs a server: seeded counts,
  *  writes, reloads, the keyboard, and the page a recording cannot answer - the Agents page, whose
  *  groups are a session's last-seen time against the clock. The rows are those of the pages that
- *  draw the shared controls: the Agents page, an issue's Artifacts tab and the search bar.
+ *  draw the shared controls: the Agents page, an issue's Artifacts tab and the search bar; and of
+ *  the tables with no controls, which draw the shared table markup: Settings', the Pipeline
+ *  page's and the Delivery page's measures table.
  */
 
 import type { Locator, Route } from "@playwright/test";
@@ -30,18 +32,33 @@ import {
   editArtifact,
   getArtifact,
   listIssueArtifacts,
+  mintAgentToken,
   patchIssue,
   putAgentState,
+  putArchitectureSource,
+  putProjectDefaultRepository,
   replyToMessageDelivery,
 } from "./api";
+import {
+  FIXTURE_WINDOW,
+  PIPELINE_AT,
+  seedMeasuresFixture,
+  seedPipelineFixture,
+} from "./delivery-seed";
 import { documentEditor, placeCaret } from "./editor";
+import { setCredentialGrants, setSignIns } from "./fake-broker-helpers";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
+import { seedLegionDaemon } from "./legion-seed";
 import { expandedState } from "./settled";
 import { closeControlPanel, isPhoneProject } from "./table-controls";
 import { expect, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
+
+/** The window the delivery fixture's two pull requests were merged in, with the list drawn. */
+const DELIVERY_WINDOW = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 /** The Agents page's keep row's sessions, by id: UUIDs, which Dispatch's agent routes require. */
 const KEPT_AGENT = {
@@ -775,6 +792,105 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   ).toContain(`/issues/${seed.rollout}`);
 });
 
+// SLOW(>=2s): nine tables across three pages, each seeded and read.
+test("every table with no controls draws its rows in the shared markup and offers no search, filter or sort", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  await createProject({ key: "CORE", name: "Core" });
+  await putProjectDefaultRepository("CORE", "owner/repo");
+  await mintAgentToken("table-controls", "alice");
+  await seedFakeGithub({
+    "legion/arch": {
+      contents: "read",
+      files: { "platform.md": "---\ntitle: Platform\n---\nEverything that runs.\n" },
+      installation_id: 101,
+    },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
+  await setSignIns([
+    {
+      created_at: "2026-10-28T09:00:00Z",
+      last_used_at: "2026-11-01T18:30:00Z",
+      machine: "workstations@example-project.iam.gserviceaccount.com",
+      person: "alice",
+      signin_id: "11111111-1111-4111-8111-111111111111",
+      thumbprint: "aaaabbbbccccddddeeeeffffgggghhhhiiiijjjjkkk",
+    },
+  ]);
+  await setCredentialGrants([
+    {
+      approver: "alice",
+      created_at: "2026-10-03T12:07:00Z",
+      decided_by: "alice",
+      enrollment: { kind: "pod", operator: "", runtime_id: "pod-7", slot: null },
+      expires_at: "2026-10-03T12:22:00Z",
+      grant_id: "22222222-2222-4222-8222-222222222222",
+      granted: "approval",
+      listedFor: "alice",
+      names: ["BILLING_KEY"],
+      record_id: "bb22cc33dd44ee55ff6677889900aa11bb22cc33dd44ee55ff6677889900aa11",
+    },
+  ]);
+  // A daemon named for a project of its own, so the Legion daemons table draws a row of it
+  // rather than its empty line.
+  await seedLegionDaemon("http://legion.acme.internal:9731");
+
+  /** Reads one plain table: it is inside the shared markup, it has rows, and it offers no
+   *  search box, no panel trigger and no sort control of its own. */
+  const readPlainTable = async (name: string): Promise<void> => {
+    const shell = page.locator(`[data-control="${CONTROL.tableShell}"]`).filter({
+      has: page.getByRole("table", { name }),
+    });
+    await expect(shell, `${name} is not drawn in the shared table markup`).toHaveCount(1);
+    await expect(
+      shell.getByRole("row"),
+      `${name} draws no rows at all, not even a head`
+    ).not.toHaveCount(0);
+    for (const forbidden of [CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.columnFilter]) {
+      await expect(
+        shell.locator(`[data-control="${forbidden}"]`),
+        `${name} draws a ${forbidden}`
+      ).toHaveCount(0);
+    }
+    // What a sort control is: the header button `DataTable`'s `TableHeaderCell` draws for a
+    // sortable column. `th[aria-sort]` would say nothing here, since that attribute is written
+    // only while a column IS sorted, so a freshly drawn sortable table carries none either.
+    await expect(shell.locator("thead button"), `${name} draws a sort control`).toHaveCount(0);
+    await expect(
+      control(shell, CONTROL.dataTable),
+      `${name} is drawn by the shared TanStack table rather than the plain shell`
+    ).toHaveCount(0);
+  };
+
+  await page.goto("/settings");
+  for (const name of [
+    "Projects",
+    "Agent tokens",
+    "Architecture sources",
+    "Sign-ins",
+    "Live grants",
+    "Legion daemons",
+  ]) {
+    await readPlainTable(name);
+  }
+
+  await seedPipelineFixture();
+  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Pipeline" })).toBeVisible();
+  for (const name of ["PR CI: slowest jobs", "PR CI: jobs that failed in the last 24 hours"]) {
+    await readPlainTable(name);
+  }
+
+  // No second delivery fixture: `seedPipelineFixture` already wrote the one delivery settings
+  // row, and a second insert is refused by its primary key. The measures table is behind the
+  // panel's own fold, which the page opens shut.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
+  await page.getByRole("button", { name: /Definitions & alternatives/ }).click();
+  await readPlainTable("Per day (UTC), newest first");
+});
+
 // SLOW(>=2s): the search bar and its Filter panel opened twice, for a typed date and a set one.
 // The Filter panel draws its Updated since box only while no date is set (`SearchPalette.tsx`),
 // and the box takes a typed date once its year has four digits, so the reader's own date takes
@@ -836,6 +952,51 @@ test("a date the reader gives the search bar's Updated since is their press, so 
     else if (holder.takesText)
       wrong.push(`a ${how} date: the focus is in ${holder.name}, which takes text`);
   }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+/** The height of a row of the Delivery page's measures table at 1440x900 as main drew it before
+ *  this change, at 143b57a7, where `MeasuresPanel.tsx` wrote its own table with `py-0.5` cells
+ *  of a 16 px line: `getBoundingClientRect().height` of each `tbody tr` in Chromium, read in
+ *  builds Job infra-3135-s-b-h4hh4 over the measures fixture. Rows 1 to 28 of its 29 read 21 px
+ *  and the last 20.5 px, which the table's collapsed borders give it: both within the 0.5 px the
+ *  row allows. */
+const MEASURES_ROW_HEIGHT = 21;
+
+// INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z;
+// measured in builds Jobs infra-3135-s-h-z2mdn at 3fce6150 and infra-3135-s-b-h4hh4 at
+// 143b57a7): the measures table of `features/delivery/MeasuresPanel.tsx`, in the Delivery page's
+// Definitions & alternatives fold, is drawn through `components/TableShell.tsx`'s compact recipe,
+// whose cells are `py-1` where main's own were `py-0.5`. Over the measures fixture at 1440x900
+// in Chromium, rows 1 to 28 of 29 are 25 px tall and the last 24.5 px at 3fce6150, against 21
+// and 20.5 px at 143b57a7, with 4 px above and below each cell's 16 px line against 2 px, and
+// the table is 749 px tall against 633 px inside its box held at 192 px. Spec v8, R8: "The rows,
+// the cards, the reading pane and the panes' widths do not change", and of the measures table,
+// "each draws the shared table markup with its behaviour unchanged".
+test("the Delivery page's measures table keeps the height of its rows from before the shared table markup, at 1440", async ({
+  page,
+}) => {
+  await seedMeasuresFixture();
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto(
+    `/delivery?mode=list&from=${encodeURIComponent(FIXTURE_WINDOW.from)}&to=${encodeURIComponent(FIXTURE_WINDOW.to)}`
+  );
+  await expect(page.getByLabel("KPI targets")).toBeVisible();
+  await page.getByRole("button", { name: "Definitions & alternatives" }).click();
+  const table = page.getByRole("table").filter({ hasText: "Reached production" });
+  await expect(table.locator("tbody tr").first()).toHaveText(/^2026-09-27 \(partial\)/);
+  // One read is the answer: the fold has drawn every row, and nothing redraws it.
+  const heights = await table
+    .locator("tbody tr")
+    .evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+  expect(heights.length, "the measures table drew no rows").toBeGreaterThan(0);
+  const wrong = heights.flatMap((height, index) =>
+    Math.abs(height - MEASURES_ROW_HEIGHT) > 0.5
+      ? [
+          `row ${index + 1} of ${heights.length} is ${height} px tall, not ${MEASURES_ROW_HEIGHT} px`,
+        ]
+      : []
+  );
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
