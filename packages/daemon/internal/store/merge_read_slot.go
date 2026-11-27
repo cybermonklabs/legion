@@ -49,11 +49,12 @@ func (p *Pool) TakeMergeReadSlot(ctx context.Context) (*MergeReadSlot, bool, err
 	return &MergeReadSlot{conn: conn, release: release}, true, nil
 }
 
-// Transact runs write in one transaction on the slot's connection, which commits before the
-// request it reserves is sent: the reservation of the request's attempt (CheckpointMergeRead), so
-// a crash after the send cannot give a spent attempt back.
+// Transact runs write in one transaction on the slot's connection, through the boundary's own
+// begin (TransactWith), so write's hooks and bounds are those of every other transaction. It
+// commits before the request it reserves is sent: the reservation of the request's attempt
+// (CheckpointMergeRead), so a crash after the send cannot give a spent attempt back.
 func (s *MergeReadSlot) Transact(ctx context.Context, write func(ctx context.Context, tx pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, s.conn, func(tx pgx.Tx) error { return write(ctx, tx) })
+	return TransactWith(ctx, s.conn, pgx.TxOptions{}, write)
 }
 
 // Release gives the slot back once the request it held has ended. A holder whose ctx ended — a
