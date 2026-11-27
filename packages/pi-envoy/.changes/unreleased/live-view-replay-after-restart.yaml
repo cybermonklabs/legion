@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  Dispatch's live view of a session that Oh My Pi starts again on the same conversation (a pod's
+  restart with `omp --continue`, a `--resume`, a `/resume`) shows the turns the session had before.
+  The session answered the view's replay only from the messages its new process had seen, so a
+  person who opened it after a restart saw none of the turns its terminal showed. The session now
+  reads back up to its newest 200 messages from its transcript when it takes the session up: the
+  turns its last summary kept and those after it, or only those after its last `/clear` where that
+  came later. A person's Send is still tagged with its Dispatch message. A session that summarised
+  inside its last 200 messages can show fewer turns than it did before the restart, and a tool
+  result Oh My Pi pruned before the restart shows its placeholder in place of its output. One of
+  the plugin's own notices also shows once in the live view, where it showed twice.
+time: 2026-11-26T19:29:38Z
+custom:
+    Issue: pr5752

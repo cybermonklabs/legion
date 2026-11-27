@@ -6,7 +6,8 @@
     "listener": true,
     "measure": false,
     "operator": false,
-    "probe": false
+    "probe": false,
+    "webhook-listener": true
   },
   "session": false
 }

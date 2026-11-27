@@ -42,7 +42,8 @@ const (
 	// serveConnect and servePlain: a minted capability's grant asked for a tunnel or a plain
 	// forward to anything but the one host its grant binds (mintedHostOnly).
 	codeMintedHostOnly = "MINTED_GRANT_HOST_ONLY"
-	// servePlain: plain HTTP to a host a name of the grant is bound to.
+	// servePlain: plain HTTP to a host a name of the password's grant, or of another live grant
+	// of its enrollment, is bound to (sessionBinds).
 	codePlainHTTP = "PLAIN_HTTP_TO_BOUND_HOST"
 	// serveConnect's 500: a connection the outer server cannot hand over.
 	codeNotHijackable = "CONNECTION_NOT_HIJACKABLE"
@@ -50,7 +51,8 @@ const (
 	codeUpstream = "UPSTREAM_UNREACHABLE"
 	// serveBound's 500: a decrypted connection whose CONNECT target was lost.
 	codeTargetLost = "CONNECT_TARGET_LOST"
-	// serveBound: a bound connection on which no name of the grant binds the host any more.
+	// serveBound: a bound connection on which no name of any live grant of its enrollment binds
+	// the host any more.
 	codeNoBoundName = "NO_NAME_BOUND"
 	// serveBound: a CONNECT, or an upgrade to h2c, on a connection the proxy decrypted - a request
 	// for a protocol whose bytes after the answer are no request the proxy reads.
@@ -60,6 +62,10 @@ const (
 	// serveBound: an azure access slot whose token this pod neither holds nor could exchange for
 	// (azureAccess).
 	codeAccessToken = "ACCESS_TOKEN_UNAVAILABLE"
+	// serveBound: a request that still carries a whole placeholder after the swap - one no live
+	// grant of the session swaps here, or one outside the headers its kind names
+	// (leftoverPlaceholder). It scans the default prefix and every kind's placeholder_prefix.
+	codePlaceholderLeft = "PLACEHOLDER_NOT_SWAPPED"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"
 	// serveBound: a request to a host a dpop block binds that does not carry the grant's

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // The operator entry the routes admit, and the one token the verifier takes for it: the token a
@@ -70,7 +71,7 @@ func Start(t testing.TB) *Broker {
 	if err != nil {
 		t.Fatalf("holdrecordtest: parse the test schema's DSN: %v", err)
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	pool, err := testpool.NewPool(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("holdrecordtest: open the test schema: %v", err)
 	}

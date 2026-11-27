@@ -163,17 +163,22 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects. An edge
-// listener's projects were read by config.ParseNATSServices, by the rule natsgrant.Edge holds them
-// to, so Edge refuses none of them; a list it did refuse answers its zero Permissions, no grant,
-// which the guard refuses as every empty grant is (guard, natsgrant.OpenDirection). The operator's
-// is the hold row's phase's, which decideOperator reads, and is none of this function's.
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects. A listener's
+// grant denies GitHub's lane, and only the webhook listener's publishes it. An edge listener's
+// grant denies both lanes, as a listener's does. An edge listener's machine id and projects were
+// read by config.ParseNATSServices, by the rules natsgrant.Edge holds them to
+// (natsgrant.MachineIDToken, bus.CheckListenerMachineID, oauthwire.ValidProjects), so Edge
+// refuses none of them; a list it did refuse answers its zero Permissions, no grant, which the
+// guard refuses as every empty grant is (guard, natsgrant.OpenDirection). The operator's is the
+// hold row's phase's, which decideOperator reads, and is none of this function's.
 func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
 	case config.NATSDispatch:
 		return natsgrant.Dispatch(entry.MachineID)
 	case config.NATSListener:
 		return natsgrant.Listener(entry.MachineID)
+	case config.NATSWebhookListener:
+		return natsgrant.WebhookListener(entry.MachineID)
 	case config.NATSEdgeListener:
 		grant, _ := natsgrant.Edge(entry.MachineID, entry.Projects)
 		return grant

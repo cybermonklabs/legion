@@ -77,9 +77,12 @@ func (m *Machine) approvesSecrets(ctx context.Context, login string) (bool, erro
 // approverStanding is what a route that may act as an approver read of its person's member kind
 // before its transaction (revokeApproves, dismissApproves): whether they may stand as an approver
 // of what the row is, and whether that is false because Dispatch calls them a restricted member,
-// whose refusal says so in its own words.
+// whose refusal says so in its own words. unchecked is true only for the revoke of the person a
+// grant names as its approver that goes ahead while Dispatch does not answer (revokeApproves):
+// they stand as its approver with their member kind unread, and the grant.revoked audit row says
+// so (revokeJudged).
 type approverStanding struct {
-	approves, restricted bool
+	approves, restricted, unchecked bool
 }
 
 // approvesAsReadBy is the approverStanding of approvesSecrets' answer.

@@ -12,7 +12,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
 
 - A bounded wait is the module's `internal/testwait`.
-  `Eventually` is the wait a test usually wants, at the package's own pace (`Poll`), failing with what it waited for: `packages/daemon`'s gives up 30 s before the binary's deadline and at no other moment, as `Until` and `Context` do (below), and `packages/envoy`'s after a minute or the binary's own deadline less a second; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` clamps a span of the caller's own to what is left of the binary's deadline less a spare of the caller's, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Eventually` is the wait a test usually wants, at the package's own pace (`Poll`), failing with what it waited for: `packages/daemon`'s gives up 30 s before the binary's deadline and at no other moment, as `Until` and `Context` do (below), and `packages/envoy`'s after a minute or the binary's own deadline less a second; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` clamps a span of the caller's own to what is left of the binary's deadline less a spare of the caller's, for a wait that keeps a loop or a margin of its own, as `cmd/legion`'s launcher and `legion gh` rows do.
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
@@ -298,7 +298,11 @@ itself, whose tests import its sources by relative path.
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
-  cache that exists to be shared by both languages and either fills for the other. The Go build and
+  cache that exists to be shared by both languages and either fills for the other. Where the test's
+  `TMPDIR` is on another filesystem than that cache, as on a dev box whose `TMPDIR` is on a data
+  disk, `link(2)` fails with `EXDEV` and both sides' `linkTree` puts a symlink to the cached file in
+  the HOME instead: the pin loads its native through it and writes nothing there, so the result of a
+  test does not depend on where the machine puts the two. The Go build and
   module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
@@ -353,15 +357,41 @@ itself, whose tests import its sources by relative path.
   third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
   the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
   that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
-  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
-  measured download or one measured process run with no shared wait in it: such a hook or row
-  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
-  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
-  guards are written, gives that number with the readings and their runs. A file whose rows need a
-  much larger guard than the rest runs in a second `bun test` command of the same script, with its
-  own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
-  guard as it is carried to the shared wait.
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`; a row that needs more than the command's
+  guard by design, such as one that starts a cold role pane (5-6 s, more than Bun's 5000 ms default),
+  which calls `@legion/test-fixtures/deadline`'s `useRowGuard(ms)` for the shared wait's deadline and
+  passes the same value as `test`'s third argument, which Bun honours as the row's kill under
+  `bun test`, `--parallel` and `bun run test` alike, so the two agree in every mode (the guard is
+  forgotten at the next mark, so it belongs to that one row); and if that row's own cleanup runs past
+  the command's guard in raw awaits (no shared wait), its `afterEach` passes the same value as its
+  own hook timeout, which Bun arms a clock of its own for; and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it. Such a row takes a guard
+  of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev
+  box's), and the `"//"` note of its package's `package.json`, where the command's guards are
+  written, gives that number with the readings and their runs. A file whose rows need a much larger
+  guard than the rest runs in a second `bun test` command of the same script, with its own
+  `--timeout` and the same preload. Tests written before this rule still set guards of their own
+  (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's guard as
+  it is carried to the shared wait.
+
+- The guard belongs on the command line, because Bun 1.4.4 gives no other way to raise it across a
+  whole non-parallel run. It reads no `[test] timeout` from `bunfig.toml`, and a `setDefaultTimeout`
+  from a preload holds only for the first file of a non-parallel (shared-process) `bun test`: a
+  two-file run with `setDefaultTimeout(20000)` in a preload passed the first file's 8 s row and
+  timed the second file's out at 5000 ms, and a `setDefaultTimeout` inside a `beforeEach` changes
+  nothing, because a row's guard is fixed when the row is registered. Under `--parallel` each file is
+  its own process and reloads the preload, so a preload's `setDefaultTimeout` does hold there. So
+  `packages/test-fixtures` and `packages/pi-envoy`, which run non-parallel, keep `--timeout` in their
+  `test` scripts, and a plain `bun test` in them (no `--timeout`) gives each row Bun's 5000 ms
+  default, not the script's guard. `packages/pi-legion` runs `--parallel=4`, so its `test` script
+  sets the guard through a preload instead (`test-timeout-preload.ts`): inside a `--test-worker` it
+  calls `setDefaultTimeout` beside `@legion/test-fixtures/deadline`'s `declareGuard`, so Bun's kill
+  and the shared wait's deadline are one length for every worker. It sets neither outside a worker,
+  because a non-parallel `bun test` would raise the deadline for the first file alone, so `bun test`
+  (and a `--parallel` run of a single file, which takes no worker) keeps Bun's 5000 ms, as on main;
+  only the `--parallel=4` `bun run test` gets the 300000 ms guard. The declared guard wins over the
+  command line, so the worker `--timeout=5000` that `--parallel` injects does not lower it; a package
+  that declares none takes the command line's `--timeout`, unchanged.
 
 ## A test that looks for a process it started
 
@@ -738,6 +768,11 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 `storetest.DefaultParallel` says why it is 4. Each test has a database of its own
 (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
 
+`internal/dispatch/refs` follows the same rule and runs 4 at once through the same
+`storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
+re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
+resolver tests that replace the default logger.
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
@@ -847,7 +882,7 @@ A run that reports nothing is no proof on its own: the check runs at a garbage c
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
-Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+Both are slow suites: the merge queue runs them on the tree the change lands as, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
 The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -937,13 +972,26 @@ A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DS
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
 of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
 than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
-URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
-`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
+URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` (`testpool.PoolConns`) where it
+sets no size; `testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
 `internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
 another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
 hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
 key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
 `pool_max_conns`.
+
+A pool a test builds itself takes its size from Envoy's public `testpool` package, which holds the
+same rule: a `pool_max_conns` the DSN names wins, and `testpool.PoolConns` is the size where it
+names none. Envoy's `storetest.URL` and a test's own temporary database name none. `testdb.Outage`
+keeps the query of the DSN it is given, so its DSN names a size where the caller's does: an Outage
+of `testDSN(t)` (`store/bound_outage_test.go`) or of `testdb.Database` carries the bounded size,
+which its pool keeps, and `testdb.Outage`'s on an unsized URL names none.
+`testpool.ParseConfig` and `testpool.NewPool` apply the rule to a DSN, and `testpool.Size` to a
+configuration another factory parsed: `owedwrite_test.go`'s pool, on an Outage of a literal
+unsized URL, takes the daemon store's `PoolConfig` for its dial hook, then `testpool.Size`. A test
+that needs another size names it in the DSN or sets MaxConns itself. `testpool` is a public
+package of the Envoy module, which the daemon imports through its replace, and imports only pgx
+and the standard library: Envoy's `internal/testpg` imports testcontainers.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
@@ -1188,6 +1236,11 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
+- A machine's `PATH` can lead with wrappers of git or jj that are not Legion's: a mise shim, which finds its version under the caller's `HOME` and none under a test's, and a person's own shim, which checks every commit against a list it decrypts with that `HOME`'s keys.
+  A fixture runs git and jj under a home of the test's, and so does the code under test, which looks each up by name on the process's `PATH`, so on such a machine every bundle test of `packages/daemon/internal/launcher` failed at its setup.
+  So Guard also puts first on `PATH` a directory of links to the git and jj that the `PATH`'s own git and jj run, each read from the running program (`/proc/<pid>/exe` of the parent of a shell it starts) under the process's own `HOME`, so neither a fixture nor the code under test meets the wrapper.
+  The directory sits in the user's cache (`legion-fixtureenv/<hash of the two programs>`), shared by every test binary that reads the same two programs; a git or jj on `PATH` that cannot be read that way fails the `TestMain`, naming it, and off Linux, which alone has that `/proc`, Guard leaves `PATH`'s git and jj as they are.
+
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
   The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
@@ -1207,6 +1260,24 @@ that other work shares.
   `HostConfigModifier` for a `GenericContainer` (`packages/envoy/internal/testpg/testpg.go` is one).
   `WithHostConfigModifier` replaces any modifier an earlier option set, so a test that needs a host
   configuration of its own sets the limits in that same modifier.
+- A test binary that starts itself again as a helper process links no testcontainers-go. That
+  library's package init reads every process on the machine, which cost 7.6 to 11.5 s and 600 to
+  910 MB of allocation at each start of `internal/daemon`'s test binary on a box that ran 13,000 to
+  20,000 processes, and the binary pays it at each of its starts. Such a test drives its container
+  through the docker CLI, with `--cpus` and `--memory` on `docker create`, as
+  `packages/daemon/internal/testnats/container.go` does, whose reaper removes the containers of a
+  test binary that is killed before it removes them. It publishes and dials on the machine of the
+  daemon the docker CLI itself resolves (`docker context inspect`), so the order in which
+  `DOCKER_HOST`, `DOCKER_CONTEXT` and the current context win is the CLI's, not a copy of it.
+  `TestThisTestBinaryLinksNoTestcontainers` in the daemon's `cmd/legion`, `internal/daemon` and
+  `internal/testnats` calls `internal/testbinary`'s `LinksNoTestcontainers`, which fails when the
+  library is linked again; `.github/scripts/testcontainers_links.py` holds every command and every
+  self-starting test binary of both modules to the same rule in CI and names the import chain.
+  A developer container on the host's Docker socket reads that socket as its own machine, whose
+  127.0.0.1 is the container's: set `TESTCONTAINERS_HOST_OVERRIDE` to the host as the container
+  reaches it (the bridge gateway, `host.docker.internal`). The fixture dials its ports there and
+  publishes them on every interface of the host, as testcontainers-go does for the envoy module's
+  tests under the same variable.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
   lists each proof's containers and their limits.

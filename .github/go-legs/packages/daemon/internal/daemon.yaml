@@ -480,6 +480,7 @@
   - TestTheVolumeTrimReachesTheSandboxRuntime  # 0.1 s
   - TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim  # 0.4 s
   - TestTheWorkspaceLostMessageSaysWhyItNamesItsRoles  # 0.3 s
+  - TestThisTestBinaryLinksNoTestcontainers
   - TestTwoBasesOfOneInstallationShareItsHold  # 1.2 s
   - TestTwoEventsThatFailInOneWindowStopTheCursorBelowTheFirst  # 0.2 s
   - TestTwoLaunchesThatFindOneWorkspaceMissingProvisionItOnce  # 0.1 s
@@ -1359,7 +1360,6 @@
   - TestOutboxRunSurvivesAFailedClaimAndAFailedFinish  # 0.1 s
   - TestOutboxStartRelaunchesAFailedClaim  # 0.2 s
   - TestPauseHoldsEveryStart  # 5.8 s
-  - TestPinnedJJKeepsWhatEverySideOfAMergeHolds
   - TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot  # 2.9 s
   - TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld  # 0.5 s
   - TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked  # 0.3 s

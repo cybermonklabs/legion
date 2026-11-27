@@ -608,10 +608,10 @@ func TestAHostProvisionFetchesOnlyTheBranchesItNeeds(t *testing.T) {
 	}
 }
 
-// CheckedOut reads a workspace's sparse patterns, and a shared clone made from a pod's feed
-// permanently holds none (feedClone's `jj sparse set --clear`), so a caller that asked it about a
-// clone would read the clone as an unfinished checkout and check the whole tree out into it. It
-// refuses the clone itself and every directory under the clone root the clone sits in, before it
+// CheckedOut reads a workspace's sparse patterns, and an issue pod's directly filled clone
+// permanently holds none (issuePodClone's `jj sparse set --clear`), so a caller that asked it
+// about a clone would read the clone as an unfinished checkout and check the whole tree out into it.
+// It refuses the clone itself and every directory under the clone root the clone sits in, before it
 // runs any jj, and still answers for the issue's own workspace.
 func TestCheckedOutCloneRootDirectoriesAreRefused(t *testing.T) {
 	run := newLocalRunner(t)

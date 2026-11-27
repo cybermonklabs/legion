@@ -20,6 +20,7 @@ import (
 // verification.md is refused ARTIFACT_KIND_MISMATCH. So C's tester's file upload is refused with
 // 403 DOCUMENT_WRITER_NOT_ARCHITECT like its markdown upload, and writes nothing.
 func TestSpecWriteRefusesAWorkersFirstVerificationUploadedAsAFile(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{noVerification: true})
 	for _, contentType := range []string{"text/plain", "application/octet-stream"} {

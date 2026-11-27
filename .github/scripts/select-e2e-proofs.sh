@@ -77,6 +77,7 @@ MATRIX = (
     Key("go_version_file", "a string", a_string, as_given),
     Key("apt", "a list of strings", a_list_of_strings, " ".join),
     Key("bun", "a boolean", a_boolean, as_given),
+    Key("omp", "a boolean", a_boolean, as_given),
     Key("jj", "a boolean", a_boolean, as_given),
     Key("evidence_variable", "a string", a_string, as_given),
     Key("timeout_minutes", "a whole number", a_whole_number, as_given),
@@ -202,8 +203,8 @@ if event == "workflow_dispatch":
     asked = os.environ.get("REQUESTED", "").strip()
     name = asked if asked.endswith(".sh") else f"{asked}.sh"
     if name in elsewhere:
-        refuse(f"{PROOF_DIR}/{name} needs {elsewhere[name]['needs']}. A GitHub-hosted runner "
-               f"gives none of that, so this workflow runs it nowhere.", about=None)
+        refuse(f"{PROOF_DIR}/{name} is on the elsewhere list of {LIST_FILE}, so this workflow runs "
+               f"it nowhere. It needs {elsewhere[name]['needs']}.", about=None)
     if name not in hosted:
         refuse(f"{PROOF_DIR}/{name} is no proof a GitHub-hosted runner can run. Name one of: "
                f"{', '.join(sorted(hosted))}.", about=None)

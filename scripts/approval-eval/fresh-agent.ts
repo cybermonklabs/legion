@@ -430,7 +430,7 @@ const NO_RECORD_NOTE = [
  * skill is what names the retrieval recipe, and whether the arm given the skill uses it is the
  * thing being measured.
  */
-const FILE_NOTE = [
+export const FILE_NOTE = [
   "One file sits in the directory you are started in, `past-decisions.md`,",
   "holding approval decisions this person answered before this case that a search of the record",
   "found for it. Whether you read it is yours to decide.",
