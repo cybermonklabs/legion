@@ -20,7 +20,8 @@ const modelRequestsRelease = "the release that keeps each model request its proj
 // and no end, and a claim out of a turn, one working after its turn ended included, has none, as
 // the claim's own write would keep it (keepClaimTurn), since the turns that ended before the table
 // carry no row a read of the provider's record could tell from a turn that never ran. Each table
-// refuses an empty key and a count below 0.
+// refuses an empty key and a count below 0, a minute's count of requests with no token count
+// (untold) included, and a minute that names no such count.
 // Its way back drops the four tables and the provider's row of signal_inputs, leaves every other
 // input's row and deletes this version row, so a roll-forward runs the file again.
 func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgain(t *testing.T) {
@@ -66,7 +67,7 @@ func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgai
 			values ('LEGION', 'legion-legion-legion-601-implementer', 3, 'req-1', 'ses', 'claude-opus-5-5', '2026-11-26T10:00:01Z', 1200, true)`,
 		`insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted)
 			values ('LEGION', 'legion-legion-legion-601-implementer', 3, 'req-2', 'ses', 'claude-opus-5-5', '2026-11-26T10:00:02Z', null, true)`,
-		`insert into model_request_minutes (project, minute, uncached) values ('LEGION', '2026-11-26T10:00:00Z', 1200)`,
+		`insert into model_request_minutes (project, minute, uncached, untold) values ('LEGION', '2026-11-26T10:00:00Z', 1200, 1)`,
 		`insert into signal_token_limits (project, since, token_limit) values ('LEGION', '2026-11-26T10:00:00Z', 6000)`,
 		`insert into signal_token_limits (project, since, token_limit) values ('LEGION', '2026-11-26T11:00:00Z', null)`,
 	} {
@@ -81,9 +82,12 @@ func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgai
 			values ('LEGION', 'legion-legion-legion-601-implementer', 3, '', 'ses', 'claude-opus-5-5', '2026-11-26T10:00:03Z', 1, true)`,
 		"a request of fewer than no tokens": `insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted)
 			values ('LEGION', 'legion-legion-legion-601-implementer', 3, 'req-3', 'ses', 'claude-opus-5-5', '2026-11-26T10:00:03Z', -1, true)`,
-		"a minute of fewer than no tokens": `insert into model_request_minutes (project, minute, uncached) values ('LEGION', '2026-11-26T10:01:00Z', -1)`,
-		"a limit of no tokens":             `insert into signal_token_limits (project, since, token_limit) values ('LEGION', '2026-11-26T12:00:00Z', 0)`,
-		"a turn of no claim":               `insert into claim_turns (project, claim, generation, plugin_contract, started_at) values ('legion', '', 1, 275, '2026-11-26T10:00:00Z')`,
+		"a minute of fewer than no tokens": `insert into model_request_minutes (project, minute, uncached, untold) values ('LEGION', '2026-11-26T10:01:00Z', -1, 0)`,
+		"a minute of fewer than no requests with no token count": `insert into model_request_minutes (project, minute, uncached, untold)
+			values ('LEGION', '2026-11-26T10:02:00Z', 0, -1)`,
+		"a minute with no count of requests with no token count": `insert into model_request_minutes (project, minute, uncached) values ('LEGION', '2026-11-26T10:03:00Z', 0)`,
+		"a limit of no tokens": `insert into signal_token_limits (project, since, token_limit) values ('LEGION', '2026-11-26T12:00:00Z', 0)`,
+		"a turn of no claim":   `insert into claim_turns (project, claim, generation, plugin_contract, started_at) values ('legion', '', 1, 275, '2026-11-26T10:00:00Z')`,
 	} {
 		if err := exec(statement); err == nil {
 			t.Errorf("%s was accepted, want it refused", name)

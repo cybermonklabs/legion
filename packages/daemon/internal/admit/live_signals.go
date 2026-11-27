@@ -3,6 +3,7 @@ package admit
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,10 +155,10 @@ func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signal
 // input (record.Store.SignalInputStatus) plus that span, and the end of that gap is an edge of its
 // coverage, which its next crossing names: the kills from an hour after, and the merge queue from 6
 // hours after, where no boot's read of GitHub's merge queue failed since. The provider's minutes
-// are whole minutes, held only where every request of them was reported
-// (record.Store.ProviderMinutes): the headroom reads the minute before at. The minute under way at
-// at counts its tokens so far for the headroom's next crossing alone, at the boundary where it
-// becomes the minute before, and never as the minute before.
+// are whole minutes, held only where every request of them was reported, each counted one with
+// its token count (record.Store.ProviderMinutes): the headroom reads the minute before at. The
+// minute under way at at counts its tokens so far for the headroom's next crossing alone, at the
+// boundary where it becomes the minute before, and never as the minute before.
 func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (LiveReading, error) {
 	reading, _, _, err := l.read(ctx, tx, at, signals.MinuteBefore(at))
 	return reading, err
@@ -320,12 +321,13 @@ func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at, from time.Tim
 
 	headroom := SeriesReading{Name: signals.Provider, Value: signals.ProviderAt(minutes.Read, at)}
 	if !headroom.Value.Recorded {
-		minute, held := minutes.Read(signals.MinuteBefore(at))
+		before := signals.MinuteBefore(at)
+		minute, held := minutes.Read(before)
 		switch {
 		case !kept:
 			headroom.Absent = "the daemon has not begun keeping the project's model requests"
 		case !held:
-			headroom.Absent = "a request of the minute before was not reported: a host of the project reports none, or the daemon began keeping them after the minute began"
+			headroom.Absent = providerUnheld(minutes, before)
 		case minute.Limit <= 0:
 			headroom.Absent = "the daemon's configuration gives the project no token limit a minute (signal_token_limit_per_minute)"
 		}
@@ -334,6 +336,24 @@ func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at, from time.Tim
 		headroom.Next, headroom.Due = signals.ProviderNext(predicted, at, current.Add(2*time.Minute), *headroomLimit)
 	}
 	return headroom, minutes, nil
+}
+
+// providerUnheld is why the provider's record does not hold the minute that starts at before
+// (record.ProviderMinutes.Read): a request of it that was not reported, a counted request of it
+// that its host reported with no token count, or both.
+func providerUnheld(minutes record.ProviderMinutes, before time.Time) string {
+	var why []string
+	if !minutes.Reported(before) {
+		why = append(why, "a request of the minute before was not reported: a host of the project reports none, or the daemon began keeping them after the minute began")
+	}
+	switch untold := minutes.Untold(before); untold {
+	case 0:
+	case 1:
+		why = append(why, "a request of the minute before was reported with no token count (uncachedInputTokens), so the minute's tokens are not known")
+	default:
+		why = append(why, fmt.Sprintf("%d requests of the minute before were reported with no token count (uncachedInputTokens), so the minute's tokens are not known", untold))
+	}
+	return strings.Join(why, "; ")
 }
 
 // idleHolders is how many of the project's issues hold a slot, and the moment each holder whose

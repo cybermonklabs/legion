@@ -21,11 +21,19 @@ type ModelRequestsReport struct {
 
 // KeepModelRequests keeps the requests of report as rows of model_requests: each once by the
 // claim, the generation and the request's own id, so a request two reports carry, or one report
-// delivered twice, is one row and the first one kept stays as it was kept. Each row keeps the
-// session, the model, when the request ended, its uncached input tokens or none, and whether
-// counts takes its model (the project's signal_token_model_pattern as the daemon was configured
-// when it kept it), so a changed selector reads no kept request again. It takes the wire's own
-// request, as KeepMemoryKill takes the wire's frame.
+// delivered twice, is one row and the first one kept stays as it was kept, but for its end. Each
+// row keeps the session, the model, when the request ended, its uncached input tokens or none,
+// and whether counts takes its model (the project's signal_token_model_pattern as the daemon was
+// configured when it kept it), so a changed selector reads no kept request again. It takes the
+// wire's own request, as KeepMemoryKill takes the wire's frame.
+//
+// A request reported again with a later end moves to that end: the Claude Code bridge reports a
+// request when its newest block is a while old, and a block Claude Code writes after that report
+// is a later end of the same request, which it reports again under the same id
+// (claudebridge's modelRequests). The request's tokens, or its count among the requests of no
+// token count (untold), leave the minute of its earlier end and join that of its later one, so
+// each request counts in the minute of its last block, never of a block before it. An earlier or
+// equal end moves nothing, so a retry of an older report never takes a request back.
 //
 // A request that ended before the first minute a read at now or later reaches
 // (modelRequestsReach) is kept as no row, since no read counts it: a host that could not report it
@@ -44,17 +52,30 @@ func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project str
 		if request.EndedAt.Before(reach) {
 			continue
 		}
-		// The request is added to its minute's sum (model_request_minutes) only where this
-		// statement kept it, so a request kept already adds nothing.
-		batch.Queue(`with kept as (
+		// The request adds to its minute's sum (model_request_minutes) only where this statement
+		// kept it anew or moved it to another minute, and a move takes it out of its earlier
+		// minute's sum, so a request kept already adds nothing and a moved one counts once. Every
+		// part reads the table as it stood before the statement: prior is the row kept before, and
+		// kept the row the statement wrote, with the tokens and the selector of the first report.
+		batch.Queue(`with prior as (
+				select date_trunc('minute', ended_at at time zone 'UTC') at time zone 'UTC' as minute,
+					case when counted then coalesce(uncached, 0) else 0 end as uncached, (counted and uncached is null)::int as untold
+				from model_requests where project = $1 and claim = $2 and generation = $3 and id = $4
+			), kept as (
 				insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted)
-				values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (project, claim, generation, id) do nothing
-				returning uncached, counted
+				values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				on conflict (project, claim, generation, id) do update set ended_at = excluded.ended_at
+				where model_requests.ended_at < excluded.ended_at
+				returning case when counted then coalesce(uncached, 0) else 0 end as uncached, (counted and uncached is null)::int as untold
+			), left_minute as (
+				update model_request_minutes m set uncached = m.uncached - prior.uncached, untold = m.untold - prior.untold
+				from prior, kept where m.project = $1 and m.minute = prior.minute and prior.minute <> $10
 			)
-			insert into model_request_minutes (project, minute, uncached)
-			select $1, $10, case when counted then coalesce(uncached, 0) else 0 end
-			from kept
-			on conflict (project, minute) do update set uncached = model_request_minutes.uncached + excluded.uncached`,
+			insert into model_request_minutes (project, minute, uncached, untold)
+			select $1, $10, kept.uncached, kept.untold
+			from kept where not exists (select from prior where prior.minute = $10)
+			on conflict (project, minute) do update set uncached = model_request_minutes.uncached + excluded.uncached,
+				untold = model_request_minutes.untold + excluded.untold`,
 			project, string(report.Token), int64(report.Generation), request.ID, request.Session, request.Model, request.EndedAt,
 			request.UncachedInputTokens, counts(request.Model), request.EndedAt.UTC().Truncate(time.Minute))
 	}
@@ -113,10 +134,12 @@ func (s *Postgres) KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string
 
 // ProviderMinutes is the provider's record of a project over a range of whole minutes, as
 // Postgres.ProviderMinutes reads it: whether the daemon keeps the project's model requests at all,
-// and each minute the record holds, by its start.
+// each minute every request of which is known to have been reported, by its start, and how many
+// counted requests of each minute their host reported with no token count.
 type ProviderMinutes struct {
 	kept    bool
 	minutes map[int64]signals.Minute
+	untold  map[int64]int64
 }
 
 // Kept says whether the daemon began keeping the project's model requests (the provider's row of
@@ -124,13 +147,32 @@ type ProviderMinutes struct {
 func (m ProviderMinutes) Kept() bool { return m.kept }
 
 // Read is the minute that starts at start and whether the record holds it, the reading a
-// signals.Series is: a minute the record does not hold is not recorded, never zero.
+// signals.Series is: a minute the record does not hold is not recorded, never zero. The record
+// holds a minute every request of which was reported (Reported) with its token count (Untold).
 func (m ProviderMinutes) Read(start time.Time) (signals.Minute, bool) {
 	if !start.Equal(start.Truncate(time.Minute)) {
 		return signals.Minute{}, false
 	}
-	minute, held := m.minutes[start.Unix()]
-	return minute, held
+	minute, reported := m.minutes[start.Unix()]
+	return minute, reported && m.untold[start.Unix()] == 0
+}
+
+// Reported says whether every request of the minute that starts at start is known to have been
+// reported, whatever the token counts of those reports: the daemon kept the requests from before
+// the minute began, and no turn of a host that reports none overlaps it.
+func (m ProviderMinutes) Reported(start time.Time) bool {
+	_, reported := m.minutes[start.Unix()]
+	return reported && start.Equal(start.Truncate(time.Minute))
+}
+
+// Untold is how many requests of the minute that starts at start, of a model the project counts,
+// their host reported with no token count (no uncachedInputTokens): the minute's tokens are not
+// known, so the record does not hold it (Read).
+func (m ProviderMinutes) Untold(start time.Time) int64 {
+	if !start.Equal(start.Truncate(time.Minute)) {
+		return 0
+	}
+	return m.untold[start.Unix()]
 }
 
 // ProviderMinutes is project's provider record of each whole UTC minute that begins in [from, to):
@@ -139,16 +181,18 @@ func (m ProviderMinutes) Read(start time.Time) (signals.Minute, bool) {
 // minute it ended in, as KeepModelRequests sums it into that minute's row (model_request_minutes),
 // so the read is of at most one row a minute; to is a minute's start, as every reader passes it.
 //
-// A minute is held only where every request of it is known to have been reported: from the first
-// whole minute at or after the moment the daemon began keeping the requests (the provider's row
-// of signal_inputs, which one boot of this release writes), and where no turn of a claim whose
-// host reports no requests overlaps it. Such a host is one that registered with a plugin contract
-// below reporting, the first contract whose host reports its model requests
+// A minute is held only where every request of it is known to have been reported (Reported): from
+// the first whole minute at or after the moment the daemon began keeping the requests (the
+// provider's row of signal_inputs, which one boot of this release writes), and where no turn of a
+// claim whose host reports no requests overlaps it. Such a host is one that registered with a
+// plugin contract below reporting, the first contract whose host reports its model requests
 // (api.ModelRequestsContract): its turn's tokens reach no report, so each minute from its start to
-// its end, or on while it runs, is absent, never zero. A held minute in which no request ran is
-// zero.
+// its end, or on while it runs, is absent, never zero. A minute is held only where its host told
+// the tokens of each counted request of it, too (Untold): a request reported with no token count
+// leaves its minute's tokens unknown, so that minute is absent, never the sum of its other
+// requests. A held minute in which no request ran is zero.
 func (s *Postgres) ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error) {
-	read := ProviderMinutes{minutes: map[int64]signals.Minute{}}
+	read := ProviderMinutes{minutes: map[int64]signals.Minute{}, untold: map[int64]int64{}}
 	since, kept, _, err := s.SignalInputStatus(ctx, tx, project, signals.Provider)
 	if err != nil || !kept {
 		return read, err
@@ -174,16 +218,19 @@ func (s *Postgres) ProviderMinutes(ctx context.Context, tx pgx.Tx, project strin
 	for minute := first; minute.Before(to); minute = minute.Add(time.Minute) {
 		read.minutes[minute.Unix()] = signals.Minute{Limit: limits.at(minute)}
 	}
-	rows, err := tx.Query(ctx, `select extract(epoch from minute)::bigint, uncached
+	rows, err := tx.Query(ctx, `select extract(epoch from minute)::bigint, uncached, untold
 		from model_request_minutes where project = $1 and minute >= $2 and minute < $3`, project, first, to)
 	if err != nil {
 		return read, fmt.Errorf("read the model requests of %s from %s to %s: %w", project, first, to, err)
 	}
-	var start, uncached int64
-	if _, err := pgx.ForEachRow(rows, []any{&start, &uncached}, func() error {
+	var start, uncached, untold int64
+	if _, err := pgx.ForEachRow(rows, []any{&start, &uncached, &untold}, func() error {
 		minute := read.minutes[start]
 		minute.Uncached = uncached
 		read.minutes[start] = minute
+		if untold > 0 {
+			read.untold[start] = untold
+		}
 		return nil
 	}); err != nil {
 		return read, fmt.Errorf("read the model requests of %s from %s to %s: %w", project, first, to, err)

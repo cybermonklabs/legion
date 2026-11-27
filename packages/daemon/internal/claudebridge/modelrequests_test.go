@@ -18,14 +18,28 @@ import (
 )
 
 // windowClock is a Config.Clock on which only the model requests' batch window passes, and only
-// when the row fires it: fire fires every window asked for so far. Every other timer of the
-// bridge's never fires on it, so a row reads what the bridge sent before the window, at it, and at
-// the turn's end apart.
+// when the row moves it: advance moves it on and fires each window due by then, and fire moves it
+// on by requestWindow. A window is requestWindow long, or what is left of it since the newest line
+// of an open request was read (modelRequests' armLocked). The turn outcome's bound is as long as
+// a window (reportTimeout) and passes with it; every other timer of the bridge's (otherTimers)
+// never fires on it, so a row reads what the bridge sent before the window, at it, and at the
+// turn's end apart.
 type windowClock struct {
 	mu      sync.Mutex
-	waiting []chan time.Time
+	waiting []windowTimer
 	at      time.Time
 }
+
+// windowTimer is one window the bridge asked for, which fires at due.
+type windowTimer struct {
+	due   time.Time
+	fires chan time.Time
+}
+
+// otherTimers is the length of each timer of the bridge's but a window and the turn outcome's
+// bound: the stop's Grace, drainTimeout and flushTimeout, the inbox's flush and a report of model
+// requests' bound. No window a row arms is as long as one of them.
+var otherTimers = []time.Duration{Grace, drainTimeout, flushTimeout, inboxFlushTimeout, requestReportTimeout}
 
 func (c *windowClock) Now() time.Time {
 	c.mu.Lock()
@@ -35,26 +49,34 @@ func (c *windowClock) Now() time.Time {
 
 func (c *windowClock) After(d time.Duration) <-chan time.Time {
 	fires := make(chan time.Time, 1)
-	if d == requestWindow {
+	if d <= requestWindow && !slices.Contains(otherTimers, d) {
 		c.mu.Lock()
-		c.waiting = append(c.waiting, fires)
+		c.waiting = append(c.waiting, windowTimer{due: c.at.Add(d), fires: fires})
 		c.mu.Unlock()
 	}
 	return fires
 }
 
-// fire fires each window the bridge has asked for, and answers how many.
-func (c *windowClock) fire() int {
+// advance moves the clock on by d, fires each window due by then, and answers how many.
+func (c *windowClock) advance(d time.Duration) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.at = c.at.Add(requestWindow)
-	for _, fires := range c.waiting {
-		fires <- c.at
-	}
-	fired := len(c.waiting)
-	c.waiting = nil
+	c.at = c.at.Add(d)
+	fired := 0
+	c.waiting = slices.DeleteFunc(c.waiting, func(timer windowTimer) bool {
+		if timer.due.After(c.at) {
+			return false
+		}
+		timer.fires <- c.at
+		fired++
+		return true
+	})
 	return fired
 }
+
+// fire moves the clock on by requestWindow, which fires each window the bridge has asked for
+// since the clock last moved, and answers how many it fired.
+func (c *windowClock) fire() int { return c.advance(requestWindow) }
 
 // requestsRig is a rig whose pane names a daemon that takes both of the bridge's reports: each
 // report of model requests on requests, held whole, and each turn outcome on outcomes.

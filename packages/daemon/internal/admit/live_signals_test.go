@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -151,6 +152,14 @@ func (lt *liveTest) request(t *testing.T, pool *pgxpool.Pool, id string, ended t
 		Requests: []claim.ModelRequest{{ID: id, Session: "ses_9", Model: "acme-model", EndedAt: ended, UncachedInputTokens: &tokens}}})
 }
 
+// untold applies one report of a host's model request id of model, ended at ended, with no token
+// count, as a host that did not learn the request's usage reports it.
+func (lt *liveTest) untold(t *testing.T, pool *pgxpool.Pool, id, model string, ended time.Time) {
+	t.Helper()
+	applyThrough(t, pool, lt.admission, "api", "requests-"+id, intake.ModelRequests{Claim: acmeToken(t, "ACME-9", claim.RoleImplementer), Generation: 1,
+		Requests: []claim.ModelRequest{{ID: id, Session: "ses_9", Model: model, EndedAt: ended}}})
+}
+
 // heldLines is each line the passes logged of a start a signal held, as "<issue> <signal>/<part>
 // <value> at <limit>", in the order logged.
 func (lt *liveTest) heldLines(t *testing.T) []string {
@@ -230,8 +239,9 @@ type absentCase struct {
 }
 
 // providerCoverage is each cause, by the provider's part, for which the gate's table holds that
-// part not recorded: the headroom with no token limit configured.
-var providerCoverage = []string{"provider/headroom: no token limit"}
+// part not recorded: the headroom with no token limit configured, and with a request of the minute
+// before reported with no token count.
+var providerCoverage = []string{"provider/headroom: no token limit", "provider/headroom: a request with no token count"}
 
 // seriesRows is one row for each of the five series (store.LiveSeries()), the provider's by its
 // headroom.
@@ -268,6 +278,11 @@ func seriesRows() []seriesRow {
 			lt.admission.UseModelRequests(0, nil)
 			booted(t, pool, lt)
 			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000)
+		}}, {cause: "a request with no token count", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
+			t.Helper()
+			booted(t, pool, lt)
+			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000)
+			lt.untold(t, pool, "r2", "acme-model", fixedNow.Add(-20*time.Second))
 		}}}},
 		{name: signals.Kills, value: 2, under: 3, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
@@ -549,4 +564,65 @@ func TestLiveSignalGate(t *testing.T) {
 			t.Errorf("the tick with admission by signals on: %s\nwant %s", got, want)
 		}
 	})
+}
+
+// A request of a model the project counts that its host reported with no token count leaves the
+// tokens of its minute unknown, so the headroom of the minute after reads as not recorded, with a
+// reason that names such requests and their count, never as the tokens of the minute's other
+// requests (S2). A request of a model the project does not count leaves it as it is.
+func TestProviderHeadroomNamesTheRequestsOfNoTokenCount(t *testing.T) {
+	headroom := func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) SeriesReading {
+		t.Helper()
+		var reading LiveReading
+		inTx(t, pool, func(tx pgx.Tx) {
+			var err error
+			if reading, err = lt.live.Reading(context.Background(), tx, fixedNow); err != nil {
+				t.Fatalf("read the live signals: %v", err)
+			}
+		})
+		for _, series := range reading.Series {
+			if series.Name == signals.Provider {
+				return series
+			}
+		}
+		t.Fatalf("the live signals read no %s series: %+v", signals.Provider, reading.Series)
+		return SeriesReading{}
+	}
+	for _, tc := range []struct {
+		name   string
+		untold []string
+		model  string
+		value  string
+		absent string
+	}{
+		{name: "every request told", value: "0.5"},
+		{name: "one request untold", untold: []string{"r2"}, model: "acme-model",
+			absent: "a request of the minute before was reported with no token count (uncachedInputTokens), so the minute's tokens are not known"},
+		{name: "two requests untold", untold: []string{"r2", "r3"}, model: "acme-model",
+			absent: "2 requests of the minute before were reported with no token count (uncachedInputTokens), so the minute's tokens are not known"},
+		{name: "an untold request of a model the project does not count", untold: []string{"r2"}, model: "acme-other", value: "0.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			lt := newLiveTest(t, 2, nil, on(nil))
+			lt.admission.UseModelRequests(6000, regexp.MustCompile(`^acme-model$`))
+			lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "acme-owner@example.invalid")
+			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000)
+			for i, id := range tc.untold {
+				lt.untold(t, pool, id, tc.model, fixedNow.Add(time.Duration(i-20)*time.Second))
+			}
+			got := headroom(t, pool, lt)
+			value := "not recorded"
+			if got.Value.Recorded {
+				value = fmt.Sprint(got.Value.Value)
+			}
+			want := tc.value
+			if want == "" {
+				want = "not recorded"
+			}
+			if value != want || got.Absent != tc.absent {
+				t.Errorf("the headroom reads %s (absent %q), want %s (absent %q)", value, got.Absent, want, tc.absent)
+			}
+		})
+	}
 }

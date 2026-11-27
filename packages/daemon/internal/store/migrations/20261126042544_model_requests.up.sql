@@ -14,13 +14,18 @@
 --     the session it ran in, the model, when it ended (which places it in its own UTC minute), its
 --     uncached input tokens (null where the host did not learn them), and whether its model is one
 --     whose tokens count against the limit (signal_token_model_pattern, as the daemon was
---     configured when it kept the row, so a changed selector reads no row again). No prompt,
---     answer or text of an error is kept.
+--     configured when it kept the row, so a changed selector reads no row again). A later report
+--     of the request with a later end (the Claude Code bridge's, where a block of the request came
+--     after its report) moves the row to that end, and its tokens to that end's minute; an earlier
+--     or equal end moves nothing. No prompt, answer or text of an error is kept.
 --   - model_request_minutes is one row per project and UTC minute that holds a kept request: the
---     uncached input tokens of that minute's counted requests, as ProviderMinutes reads them. Each
---     request a write keeps adds to its minute's row in the same statement, and a request kept
---     already adds nothing, so a read of an hour reads 60 rows rather than every request of the
---     hour; the same prune deletes both.
+--     uncached input tokens of that minute's counted requests, as ProviderMinutes reads them, and
+--     how many of those requests the host reported with no token count (untold). A minute with an
+--     untold request is not held, so its headroom reads as not recorded, never as the tokens of
+--     its other requests. Each request a write keeps adds to its minute's row in the same
+--     statement, a request moved to a later minute leaves its earlier minute's row in that
+--     statement too, and a request kept already adds nothing, so a read of an hour reads 60 rows
+--     rather than every request of the hour; the same prune deletes both.
 --   - signal_token_limits is one row per project and moment the daemon's configured token limit
 --     (signal_token_limit_per_minute) took a value: each boot writes one where the limit differs
 --     from the latest row's, null for none. A minute is read against the row in force at its start,
@@ -76,6 +81,7 @@ create table model_request_minutes (
     project    text        not null check (project <> ''),
     minute     timestamptz not null,
     uncached   bigint      not null check (uncached >= 0),
+    untold     bigint      not null check (untold >= 0),
     primary key (project, minute)
 );
 create table signal_token_limits (

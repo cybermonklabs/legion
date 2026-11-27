@@ -380,12 +380,14 @@ func TestSignalRequestReports(t *testing.T) {
 		status, answer := r.report(role,
 			request("clean", role.session, opus, at(1), 1500),
 			request("small", role.session, opus, at(2), 300),
-			request("untold", role.session, opus, at(5), -1),
+			request("untold", role.session, opus, at(65), -1),
 			request("other-model", role.session, "gpt-9", at(6), 7000))
 		r.kept(status, answer, "clean", "small", "untold", "other-model")
-		// The tokens are the uncached input of the requests of the models the project counts, a
-		// request whose host learnt none counting none.
-		r.wantMinutes(5, 6, map[int]signals.Minute{5: {Uncached: 1800, Limit: requestsLimit}})
+		// The tokens are the uncached input of the requests of the models the project counts. A
+		// request of such a model whose host learnt none leaves its minute's tokens unknown, so that
+		// minute is not held and its headroom reads as not recorded, never as the tokens of the
+		// minute's other requests (S2).
+		r.wantMinutes(5, 7, map[int]signals.Minute{5: {Uncached: 1800, Limit: requestsLimit}})
 		// A request of another model is kept, counted nowhere.
 		want := []string{
 			"clean session=ses-implementer model=claude-opus-5-5 tokens=1500 counted=true",

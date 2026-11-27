@@ -1,6 +1,7 @@
 package claudebridge
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -35,11 +36,13 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 // and on 2.1.310 (testdata/api-error-429.jsonl, testdata/background-turn.jsonl):
 //
 //   - an answered request is one or more `assistant` lines with the same `message.id`, one for
-//     each content block. Each carries the request's `usage` and the time the block was written.
-//     The bridge counts it once by its id, closing it on the next unrelated line or at the window;
+//     each content block. Each carries the request's `usage` and the time the block was written,
+//     and none says it is the request's last (`stop_reason` is null on each). The bridge counts it
+//     once by its id, ended at its last block;
 //   - a subagent's lines are the same, with `parent_tool_use_id` naming the Task call and
 //     `agent_id` the subagent, which is the session reported for them; the role's own lines carry
-//     `parent_tool_use_id` null and the session's id;
+//     `parent_tool_use_id` null and the session's id. The lines of a subagent and of the role, or
+//     of two subagents, interleave;
 //   - an attempt Claude Code retries is a `system` `api_retry` line, and the last attempt of a
 //     request refused for good is Claude Code's synthetic answer (model `<synthetic>`). Neither is
 //     an answered request, so neither is reported: a retry the next attempt answered is reported
@@ -47,16 +50,32 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 //
 // Uncached input is `input_tokens + cache_creation_input_tokens`, never the cache reads.
 //
-// The first request arms a window of requestWindow. A result sends any pending requests now.
-// Overflow drains on an answer that keeps at least one request. Otherwise a failed or incomplete
-// report can retry at the next window or result; only IDs the daemon did not keep go again.
-// Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a line.
-// Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
+// Each session (sessionOfLine) has at most one open request, the one its lines are of: a session
+// runs one request at a time, so a later line of the session, or the turn's `result`, closes it,
+// and a line of another session closes nothing. A request whose newest line is requestWindow old
+// on the bridge's clock is closed too, so a request is reported within requestWindow of its last
+// block however long the tool it called runs. Neither close can know that no block of the request
+// follows: Claude Code writes a tool's result while the request's next tool call is still being
+// written (testdata/background-during-prompt.jsonl:7,10,11), and a block can take longer than
+// requestWindow to write. So a block of a closed request opens it again, with that block's end: a
+// request not yet sent is taken back from what is pending, and one already sent goes again under
+// the same id with the later end, which the daemon moves the request to
+// (record.Store.KeepModelRequests). No block is left out of its request's end.
+//
+// The first request arms a window, which fires when the oldest newest line of an open request is
+// requestWindow old, or requestWindow after it was armed where none is open. It closes each open
+// request that is due, sends what is pending, and arms the next window while a request is open. A
+// result sends any pending requests now. Overflow drains on an answer that keeps at least one
+// request. Otherwise a failed or incomplete report can retry at the next window or result; only
+// IDs the daemon did not keep go again. Requests past the keep window and reports the daemon
+// refuses (a 4xx) are dropped with a line. Every report names the launch's boot token. Nothing in
+// the bridge's loop waits on a report.
 type modelRequests struct {
 	*daemonPoster
 
-	mu      sync.Mutex
-	open    *claim.ModelRequest
+	mu sync.Mutex
+	// open is each session's open request, by its session; counted every id closed once.
+	open    map[string]*openRequest
 	counted map[string]bool
 	// pending holds requests until they are kept or dropped. due records a window or result
 	// that called for another send while one was underway.
@@ -67,8 +86,15 @@ type modelRequests struct {
 	window, windows uint64
 }
 
+// openRequest is a session's open request, and when the bridge read its newest line, on the
+// bridge's clock.
+type openRequest struct {
+	claim.ModelRequest
+	seen time.Time
+}
+
 func startModelRequests(poster *daemonPoster) *modelRequests {
-	return &modelRequests{daemonPoster: poster, counted: map[string]bool{}}
+	return &modelRequests{daemonPoster: poster, open: map[string]*openRequest{}, counted: map[string]bool{}}
 }
 
 // streamLine is what read takes of one stream-json line of Claude Code's.
@@ -82,23 +108,25 @@ type streamLine struct {
 	timestamp string
 }
 
-// read acts on one line of the stream, on the bridge's loop: it closes the request whose lines
-// were being read at the first line that is not one of its own, opens the next, and at a `result`
-// sends what is pending.
+// read acts on one line of the stream, on the bridge's loop: it closes the open request of the
+// line's session, opens the next, and at a `result` closes every open request and sends what is
+// pending.
 func (r *modelRequests) read(line streamLine) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if line.kind == "assistant" {
+	switch line.kind {
+	case "assistant":
 		r.assistant(line)
-		return
-	}
-	r.closeLocked()
-	if line.kind == "result" {
+	case "result":
+		// The turn is over, and each request a host reports is reported by its turn's end.
+		r.closeOpenLocked(func(*openRequest) bool { return true })
 		r.window = 0
 		r.sendLocked()
+	default:
+		r.closeLocked(sessionOfLine(line))
 	}
 }
 
@@ -114,35 +142,64 @@ func (r *modelRequests) assistant(line streamLine) {
 		} `json:"usage"`
 	}
 	_ = json.Unmarshal(line.message, &m)
+	session := sessionOfLine(line)
 	if m.Model == shimwire.SyntheticModel {
-		r.closeLocked()
+		r.closeLocked(session)
 		return
 	}
-	if r.open != nil && r.open.ID == m.ID {
-		r.open.EndedAt = endOf(line)
+	end := endOf(line)
+	if open := r.open[session]; open != nil && open.ID == m.ID {
+		open.EndedAt, open.seen = later(open.EndedAt, end), r.clock.Now()
 		return
 	}
-	r.closeLocked()
-	if m.ID == "" || m.Model == "" || r.counted[m.ID] {
+	r.closeLocked(session)
+	if m.ID == "" || m.Model == "" {
 		return
 	}
-	request := &claim.ModelRequest{ID: m.ID, Session: sessionOfLine(line), Model: m.Model, EndedAt: endOf(line)}
+	request := claim.ModelRequest{ID: m.ID, Session: session, Model: m.Model, EndedAt: end}
 	if m.Usage != nil {
 		request.UncachedInputTokens = new(m.Usage.Input + m.Usage.CacheWrite)
 	}
-	r.open = request
+	// A block of a request closed already (modelRequests' doc): the request opens again with this
+	// block's end, taken back from what is pending where it was not sent yet, and sent again
+	// under its id where it was.
+	if r.counted[m.ID] {
+		if i := slices.IndexFunc(r.pending, func(p claim.ModelRequest) bool { return p.ID == m.ID }); i >= 0 {
+			request.EndedAt = later(r.pending[i].EndedAt, end)
+			r.pending = slices.Delete(r.pending, i, i+1)
+		}
+	}
+	r.open[session] = &openRequest{ModelRequest: request, seen: r.clock.Now()}
 	r.armLocked()
 }
 
-// closeLocked queues the open request, which already armed a window when it opened.
-func (r *modelRequests) closeLocked() {
-	if r.open == nil {
+// closeLocked queues the open request of session, if it has one, which already armed a window
+// when it opened. The caller holds r.mu.
+func (r *modelRequests) closeLocked(session string) {
+	open := r.open[session]
+	if open == nil {
 		return
 	}
-	request := *r.open
-	r.open = nil
-	r.counted[request.ID] = true
-	r.pending = append(r.pending, request)
+	delete(r.open, session)
+	r.counted[open.ID] = true
+	r.pending = append(r.pending, open.ModelRequest)
+}
+
+// closeOpenLocked queues each open request that is due, in the order they ended, so a report lists
+// the requests of its sessions as they happened. The caller holds r.mu.
+func (r *modelRequests) closeOpenLocked(due func(*openRequest) bool) {
+	var sessions []string
+	for session, open := range r.open {
+		if due(open) {
+			sessions = append(sessions, session)
+		}
+	}
+	slices.SortFunc(sessions, func(a, b string) int {
+		return cmp.Or(r.open[a].EndedAt.Compare(r.open[b].EndedAt), cmp.Compare(r.open[a].ID, r.open[b].ID))
+	})
+	for _, session := range sessions {
+		r.closeLocked(session)
+	}
 }
 
 // sessionOfLine is the session a line's request ran in: the subagent's where the line serves a
@@ -163,22 +220,42 @@ func endOf(line streamLine) time.Time {
 	return time.Now().UTC()
 }
 
-// armLocked arms a window for what is pending, if none is armed. The caller holds r.mu.
+// later is the later of a and b.
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// armLocked arms a window for what is open or pending, if none is armed: it fires when the oldest
+// newest line of an open request is requestWindow old, or requestWindow from now where no request
+// is open. The caller holds r.mu.
 func (r *modelRequests) armLocked() {
-	if r.window != 0 || (len(r.pending) == 0 && r.open == nil) {
+	if r.window != 0 || (len(r.pending) == 0 && len(r.open) == 0) {
 		return
+	}
+	now := r.clock.Now()
+	wait := requestWindow
+	for _, open := range r.open {
+		wait = min(wait, open.seen.Add(requestWindow).Sub(now))
 	}
 	r.windows++
 	r.window = r.windows
-	window, fires := r.window, r.clock.After(requestWindow)
+	window, fires := r.window, r.clock.After(max(wait, 0))
 	go func() {
 		<-fires
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if r.window == window {
-			r.window = 0
-			r.closeLocked()
-			r.sendLocked()
+		if r.window != window {
+			return
+		}
+		r.window = 0
+		now := r.clock.Now()
+		r.closeOpenLocked(func(open *openRequest) bool { return !now.Before(open.seen.Add(requestWindow)) })
+		r.sendLocked()
+		if len(r.open) != 0 {
+			r.armLocked()
 		}
 	}()
 }
@@ -212,7 +289,8 @@ func (r *modelRequests) sendLocked() {
 }
 
 // post makes one report and puts back every request of it the daemon did not say it holds, under
-// the same id.
+// the same id, but for one a block of which opened it again while the report was on its way
+// (assistant): that request is open or pending already, with the later end.
 func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 	kept, retry := r.call(batch)
 	r.mu.Lock()
@@ -224,7 +302,7 @@ func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 		for _, request := range batch {
 			if _, ok := kept[request.ID]; ok {
 				progress = true
-			} else {
+			} else if !r.queuedLocked(request) {
 				unheld = append(unheld, request)
 			}
 		}
@@ -238,6 +316,20 @@ func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 		r.sendLocked()
 	}
 	r.armLocked()
+}
+
+// queuedLocked says whether request's id is open or pending, and moves that entry's end to
+// request's where request's is later. The caller holds r.mu.
+func (r *modelRequests) queuedLocked(request claim.ModelRequest) bool {
+	if open := r.open[request.Session]; open != nil && open.ID == request.ID {
+		open.EndedAt = later(open.EndedAt, request.EndedAt)
+		return true
+	}
+	if i := slices.IndexFunc(r.pending, func(p claim.ModelRequest) bool { return p.ID == request.ID }); i >= 0 {
+		r.pending[i].EndedAt = later(r.pending[i].EndedAt, request.EndedAt)
+		return true
+	}
+	return false
 }
 
 // call posts batch and answers the ids the daemon holds, and whether the rest go again: not for a

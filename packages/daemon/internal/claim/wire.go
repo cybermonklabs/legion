@@ -200,14 +200,16 @@ type TurnOutcomeRequest struct {
 }
 
 // Caller is the identity the body named, and false when it named both or neither: each says who
-// is calling, and a caller that cannot say is not answered.
+// is calling, and a caller that cannot say is not answered. api's turnOutcome reads it and hands
+// it to the shared check of a report's caller (api's reportCaller).
 func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
-	return CallerOf(r.AgentCaller, r.BootCaller)
+	return callerOf(r.AgentCaller, r.BootCaller)
 }
 
-// CallerOf is the one of agent and boot a body named, and false where it named both or neither:
-// the caller of each body that embeds the two (TurnOutcomeRequest, ModelRequestsRequest).
-func CallerOf(agent AgentCaller, boot BootCaller) (TurnOutcomeCaller, bool) {
+// callerOf is the one of agent and boot a body named, and false where it named both or neither:
+// the caller of each body that embeds the two (TurnOutcomeRequest.Caller,
+// ModelRequestsRequest.Caller).
+func callerOf(agent AgentCaller, boot BootCaller) (TurnOutcomeCaller, bool) {
 	if agent.named() == boot.named() {
 		return nil, false
 	}
@@ -257,18 +259,25 @@ type ModelRequestsRequest struct {
 	Requests   []ModelRequest `json:"requests"`
 }
 
-// Caller is the identity the body named, and false when it named both or neither.
+// Caller is the identity the body named, and false when it named both or neither. api's
+// modelRequests reads it and hands it to the shared check of a report's caller (api's
+// reportCaller).
 func (r ModelRequestsRequest) Caller() (TurnOutcomeCaller, bool) {
-	return CallerOf(r.AgentCaller, r.BootCaller)
+	return callerOf(r.AgentCaller, r.BootCaller)
 }
 
 // ModelRequest is one model request a host made for a session of the project, and nothing else of
 // it: no prompt, no answer and no text of an error. ID is the host's own, unique within the
 // claim's launch generation and kept across the host's retries, so a request reported twice is
 // kept once. Session is the session the request ran in, Model the model the host called, and
-// EndedAt when the request ended, RFC 3339 with a zone, which places it in its UTC minute.
-// UncachedInputTokens is its fresh input plus its cache writes, never its cache reads, and nil
-// where the host did not learn it.
+// EndedAt when the request ended, RFC 3339 with a zone, which places it in its UTC minute. A host
+// that learns a later end of a request it reported (the Claude Code bridge, which reads a request
+// as one stream line per content block and may report it before its last block) reports it again
+// under the same ID with that end, and the daemon moves the request to the later end's minute; an
+// earlier or equal end moves nothing. UncachedInputTokens is its fresh input plus its cache
+// writes, never its cache reads, and nil where the host did not learn it: a request of a model the
+// project counts with none leaves its minute's tokens unknown, so the headroom of that minute is
+// not recorded, never the sum of the other requests.
 type ModelRequest struct {
 	ID                  string    `json:"id"`
 	Session             string    `json:"session"`
