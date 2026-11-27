@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The coverage read (`GET /api/v1/issues/{key}/coverage`), the results read
+  (`GET /api/v1/issues/{key}/results`) and the reference-targets read
+  (`GET /api/v1/reference-targets`) now read a block's `text_tree` with the footnotes its document
+  defines outside the block. Before, each read parsed the block's stored text alone, so a call such
+  as `[^1]` whose definition stands elsewhere in the document was read as text. Now such a call is a
+  `footnote_reference`, as the editor holds it, and a call that the document does not define, or
+  that is escaped, stays text. The reference-targets read finds a typed block by its id; for any
+  other block it takes each label that the document defines and that the block's text calls. The
+  reference-targets read's ETag hashes each tree, so a definition added or removed elsewhere in the
+  document changes the tag.
+time: 2026-11-27T12:17:20Z
+custom:
+    Issue: pr4234
