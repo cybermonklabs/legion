@@ -73,12 +73,14 @@
 # download is checked against no hash, so it runs in a stage of its own and only its one-line
 # marker reaches the runtime stage, whose bind mount of it is what makes BuildKit build that
 # stage. The last
-# runs `legion version` and `legion probe-image`, which runs the three launch probes (the daemon's two
-# plus the session-storage probe), holds the Legion plugin to the daemon API contract and proves it
-# loads with the Envoy plugin, holds the claude-envoy root the same way — its built channel server,
-# its generated Legion plugin and the daemon API contract its manifest declares — and holds Claude
-# Code's pin to one a pod can install and verify, checks every image-site capability against this
-# image, and prints the results before the OK line the daemon's probe Sandbox reads.
+# runs `legion version` and `legion probe-image`, which makes five launch probes: the pi.agents
+# probe, the contract probe and the plugin load probe (the two the daemon's boot run also makes),
+# the session-storage probe and the Claude lane. With them it holds the Legion plugin to the daemon
+# API contract and proves it loads with the Envoy plugin, holds the claude-envoy root the same way
+# — its built channel server, its generated Legion plugin and the daemon API contract its manifest
+# declares — and holds Claude Code's pin to one a pod can install and verify. It then checks every
+# image-site capability against this image and prints the results before the OK line the daemon's
+# probe Sandbox reads.
 # A broken image never publishes.
 #
 # The `legion` profile carries no model route, and neither does Legion: an operator's pod supplies it

@@ -649,7 +649,8 @@ The daemon's Agent Sandbox runtime runs the same command in a probe Sandbox, `le
 each agent's model resolves, with a working key, as the task tool resolves a subagent's (`packages/daemon/internal/runtime/sandbox/probe.go`).
 The probe Sandbox's container carries `LEGION_IMAGE_PROBE_RUN=boot`, last in its env, which tells the image's `legion probe-image` that it is the daemon's boot run (`bootprobe.ImageProbeRunVariable`).
 Of the launch probes, the boot run makes only the contract probe and the plugin load probe, with the task agents and skills Legion's prompts name and the agents' models.
-It does not make the `pi.agents` probe, the session-storage probe or the Claude lane: their results depend only on what the image carries, and the image build made all three.
+It does not make the `pi.agents` probe, the session-storage probe or the Claude lane: their results depend only on what the image carries, and the build of the image that the daemon runs made all three.
+For a derived image ([Per-deployment toolchains layer on top](#per-deployment-toolchains-layer-on-top)), that build is the derived image's own build, not the published image's.
 Every check after the launch probes runs as in the image build: the capability table with its `claude-code` row, the read of `retry.modelFallback`, the reads of `omp --version` and `omp --help`, and the roles' overlays.
 Its OK line says `session-storage=skipped`:
 `probe-image: OK (/opt/omp/bin/omp) session-storage=skipped extensions=discovered agent-models=resolved capabilities=checked model-fallback=<state> omp-version=<version> omp-session-id=<state> daemon-api-version=<N>`.
@@ -947,6 +948,9 @@ FROM ghcr.io/cybermonklabs/legion-worker@sha256:…
 ```
 
 and pins `runtime.kubernetes.image` to *that* image's digest.
+The derived image's build runs `legion probe-image` as its last step, as the published image's build does, with the same flags (`--plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --skip-agent-models`, and `--claude-root` and `--claude-code-pin` at their defaults, the image's own paths) and with no `LEGION_IMAGE_PROBE_RUN`.
+That run makes the `pi.agents` probe, the session-storage probe and the Claude lane on the derived image's final filesystem, and it fails the build when one of them fails.
+The daemon's boot run does not make those three probes ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), so nothing at boot makes them on what the derived layer changed, for example a layer that replaces `/opt/omp` or `/opt/legion`.
 The runtime sets every container's `PATH` itself (the image's `PATH` with its own directories in front), so an `ENV PATH` in the derived image never reaches a pod:
 put the added commands in `/usr/local/bin` or `/usr/bin`, and outside `HOME`, where a pod's volumes would shadow them.
 Oh My Pi's Python tool also starts its kernel with an allowlisted environment (`PATH`, `HOME`, `USER`, `TMPDIR`, the `LC_`, `XDG_` and `PI_` prefixes and a few more), so any other `ENV` of the derived image (a toolchain home such as `ELAN_HOME`, a cache directory) is missing there and in everything it spawns, while the bash tool keeps it:
