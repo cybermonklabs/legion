@@ -530,7 +530,7 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	sweepOnce(ctx, cfg)
 
 	left := map[string]bool{keys[1]: true, keys[2]: true}
-	for deadline := time.After(30 * time.Second); len(left) > 0; {
+	for deadline := time.After(listenerWaitBound(t)); len(left) > 0; {
 		select {
 		case key := <-forwards:
 			if key == keys[0] {
@@ -671,7 +671,8 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 // (keepForNextHolder), and the handover ends on its first read. Retrying that one instead spent
 // the whole of roleKeepHandoverWindow - about twenty-five reads, each writing its own Debug line
 // - on a lane no claim was coming for, while every further keep for that role queued one more
-// goroutine on its guard.
+// goroutine on its guard. It ends with one WARN that it left the lane to the role's next claim,
+// naming the read that failed; the claimed row, whose lane is not left, writes none.
 func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -679,9 +680,10 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 		wantErr        bool
 		wantRetried    bool
 		wantErrorLines int
+		wantLeftLines  int
 	}{
 		{name: "claimed", claimed: true, wantErr: true, wantRetried: true, wantErrorLines: 1},
-		{name: "unclaimed"},
+		{name: "unclaimed", wantLeftLines: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newListenerDeliveryHarness(t)
@@ -725,6 +727,11 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 				t.Fatalf("the handover of role %s is reported at Error %d times, want %d:\n%s",
 					role, said, test.wantErrorLines, harness.logs.String())
 			}
+			requireLeftLines(t, harness.logs.String(), role, test.wantLeftLines, map[string]any{
+				"read":              "listener kept role message could not read the role's kept lane",
+				"bound":             float64(roleKeepDrainWindow),
+				"claim_read_failed": false,
+			}, "read role "+role+"'s kept-lane cursor stored at")
 			// Nothing was walked: a walk writes the role's cursor before it forwards a copy or
 			// passes one over, so a cursor still stored where this test wrote it is a lane whole
 			// for the role's next claim or the sweep.
@@ -839,27 +846,6 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 		t.Fatalf("the handover forwarded %v, want %v: a resolution that did not answer is retried, not read as a role nobody holds:\n%s",
 			handed, keys, harness.logs.String())
 	}
-}
-
-// bucketThatFails is a bucket no read of which answers, a direct get (Get) or a read from the
-// stream's leader (NewestFromLeader, bus.LeaderReads): err is what each read answers with, and
-// before runs first, which is where a test ends the context of the handover making that read, or
-// counts the read (failRoleClaimReads).
-type bucketThatFails struct {
-	natsgo.KeyValue
-	before func()
-	err    error
-}
-
-func (kv bucketThatFails) Get(string) (natsgo.KeyValueEntry, error) {
-	if kv.before != nil {
-		kv.before()
-	}
-	return nil, kv.err
-}
-
-func (kv bucketThatFails) NewestFromLeader(context.Context, string) (natsgo.KeyValueEntry, error) {
-	return kv.Get("")
 }
 
 // sessionBucketThatStalls is a session bucket whose first read fails at once and whose reads
@@ -988,8 +974,8 @@ func TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds(t *testing.T) {
 		if ok {
 			t.Fatalf("the cancelled hold of role %s reported that it took the guard, which the first hold still holds", role)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the hold of role %s's guard did not return within 10 s of its context ending", role)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the hold of role %s's guard did not return in time of its context ending", role)
 	}
 
 	// The guard is the first holder's throughout: a release the cancelled wait never made would

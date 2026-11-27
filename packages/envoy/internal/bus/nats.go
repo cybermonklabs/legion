@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,7 +57,11 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
-	keeperStepGuard             time.Duration
+	// logger is where the client and its connections write their lines (WithLogger):
+	// followsDefault, which writes where slog.Default() points at each line, when no option names
+	// one.
+	logger          *slog.Logger
+	keeperStepGuard time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
 	// reports, and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
@@ -94,6 +99,7 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 	for _, o := range options {
 		o.apply(&opts)
 	}
+	opts.logger = cmp.Or(opts.logger, followsDefault)
 	return opts
 }
 
@@ -216,6 +222,21 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 // nats recovery attempt` and the rest). Dial takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
+}
+
+// WithLogger names the logger the client writes its lines to: its connections' lifecycle
+// (`envoy nats connected`, `envoy nats disconnected`, the throttled reconnect failure), its
+// recovery and reconnect hooks, its keeper's passes, its stream's ensure, the bucket calls made on
+// its connection (EnsureKeyValue, SetKeyValueMaxAge, OpenKeyValue and WrapKeyValue find it through
+// the connection, loggerOwning) and ConnectRoleLane's fall back to the machine's queue group.
+// Without it the client writes where slog.Default() points as each line is written
+// (followsDefault), as it did before it took a logger. No program passes one today, so every
+// program logs as it did; a test passes a logger over a handler of its own, so it reads the lines
+// of its own client alone and can run beside other tests. Dial honours it too, for its connection's
+// lifecycle lines: a connection Dial returns is no client's, so a bucket call made on it writes where
+// slog.Default() points.
+func WithLogger(logger *slog.Logger) DialOption {
+	return func(o *connectOpts) { o.logger = logger }
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without
@@ -417,14 +438,19 @@ type recoverableSubscription struct {
 // the subject (and queue group) the transport already holds replaces its subscription, and any
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
+//
+// A Client writes its lines through log, which a zero-value Client answers with followsDefault.
 type Client struct {
 	Conn *nats.Conn
 	// severable is Conn with its dialer, set with Conn (noteSeverable), so Sever reaches them
 	// without mu, which a caller can hold while it waits for nats.go's lock (Connected).
-	severable                   atomic.Pointer[severableConnection]
-	js                          nats.JetStreamContext
-	urls                        []string
-	name                        string
+	severable atomic.Pointer[severableConnection]
+	js        nats.JetStreamContext
+	urls      []string
+	name      string
+	// logger is where the client writes its lines: the WithLogger option, or followsDefault, which
+	// writes where slog.Default() points at each line.
+	logger                      *slog.Logger
 	connectionSettings          nats.Option
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
@@ -575,6 +601,10 @@ type Client struct {
 	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
 	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
 	keeperStepGuard time.Duration
+	// finishedTakeovers holds each finished takeover record this client read, with the count of
+	// messages its subject held then, so TakeoverRecords reads none of them again while that count
+	// stands (takeover.go).
+	finishedTakeovers finishedTakeovers
 
 	// recovery state
 	recovering int32
@@ -623,10 +653,10 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	}
 	settings := opts.connectionSettings(credential)
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connect(name, urls, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
+		return connect(opts.logger, name, urls, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
 	}
 	if opts.background {
-		return connectFirstInBackground(name, urls, opts.reconnectErrClock, dial, nil, nil)
+		return connectFirstInBackground(opts.logger, name, urls, opts.reconnectErrClock, dial, nil, nil)
 	}
 	return dial(nil)
 }
@@ -798,13 +828,14 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		closedHook:                  opts.closedHook,
 		closeSettleBound:            opts.closeSettleBound,
 		stopCh:                      make(chan struct{}),
+		logger:                      opts.logger,
 	}
 	stream := opts.streamConfig()
 	if ownsStream {
 		c.streamConfig = &stream
 	}
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connectTrying(context.Background(), tries, wait, c.name, urls, allOf(c.connectionSettings, first), dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
+		return connectTrying(context.Background(), tries, wait, c.log(), c.name, urls, allOf(c.connectionSettings, first), dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
 	}
 	if opts.background {
 		c.awaitingConnection = true
@@ -830,7 +861,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 			}
 			return nil
 		}
-		if _, err := connectFirstInBackground(c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
+		if _, err := connectFirstInBackground(c.log(), c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
 			return nil, stepInstall, err
 		}
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
@@ -933,7 +964,7 @@ const streamSubjectsRead = 10 * time.Second
 // no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
 // the server, which the start's hang guard bounds too (ensureStreamWithConfig).
 func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
-	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
+	subjects, err := ensureStreamWithConfig(ctx, c.log(), js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}
@@ -1015,12 +1046,12 @@ func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, time
 		}
 	}
 	if errors.Is(err, ErrPublishDenied) || publishDenial(conn.LastError(), streamInfoSubject) != nil {
-		slog.Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
+		c.log().Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
 			slog.String("name", c.name), slog.String("subject", streamInfoSubject))
 		c.subjectsRefused.Store(true)
 		return false
 	}
-	slog.Debug("envoy nats could not read the stream's subjects", slog.String("name", c.name), slog.String("error", err.Error()))
+	c.log().Debug("envoy nats could not read the stream's subjects", slog.String("name", c.name), slog.String("error", err.Error()))
 	return true
 }
 
@@ -1111,6 +1142,12 @@ func (c *Client) Connected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Conn != nil && c.Conn.Status() == nats.CONNECTED
+}
+
+// log is the logger the client writes its lines to: WithLogger's, or followsDefault, which also
+// answers a zero-value Client (nil logger) rather than leaving a line to panic.
+func (c *Client) log() *slog.Logger {
+	return cmp.Or(c.logger, followsDefault)
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
@@ -1692,7 +1729,7 @@ func (c *Client) ResendRefusedCore() error {
 	c.subscriptionsMu.Unlock()
 	c.mu.Unlock()
 	if queue != registration.queue {
-		slog.Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
+		c.log().Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
 			slog.String("name", c.name),
 			slog.String("subject", registration.subject),
 			slog.String("queue", queue),
@@ -2182,7 +2219,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 
-		nc, err := connectWithContext(ctx, c.name, c.urls, c.connectionSettings, c.dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
+		nc, err := connectWithContext(ctx, c.log(), c.name, c.urls, c.connectionSettings, c.dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
 		if err != nil {
 			return err
 		}
@@ -2211,7 +2248,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			nc.SetClosedHandler(nil)
 			nc.SetDisconnectErrHandler(nil)
 			nc.Close()
-			slog.Info("envoy nats discarded a second replacement connection", slog.String("name", c.name))
+			c.log().Info("envoy nats discarded a second replacement connection", slog.String("name", c.name))
 			continue
 		}
 		c.Conn = nc
@@ -2847,9 +2884,10 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // the send already carries, or none when extra is nil, and returns the server's acknowledgement.
 // It is the body of every raw write of the stored path: the subject check, the acknowledgement
 // bound, the connect and the send (sendStored). Its callers name their own failures, since what
-// a refusal means is theirs: PublishCursorAt, which writes under a precondition and reads a
-// refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a record
-// whose one writer keeps no sequence to write against, so the newest write stands.
+// a refusal means is theirs: PublishCursorAt and Client.WriteTakeoverRecordAt, which write under a
+// precondition and read a lost one by preconditionLost; SessionConsumers.recordResumeFloorAt,
+// which writes a record whose one writer keeps no sequence to write against, so the newest write
+// stands; and Client.WriteTakeoverRecord, which writes a subject no other writer has.
 //
 // extra is one option rather than a variadic list because each caller has exactly one or none:
 // a list would have the caller build a slice and this method append to it, where the two sends
@@ -2869,19 +2907,26 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	return c.sendStored(ctx, subject, data, nats.Context(ctx), extra)
 }
 
-// cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
-// not match as the ErrCursorMoved it is, and returns any other error as it is. The refusal is
-// either code JetStream answers a lost conditional write with (IsCASConflict): on a stream of more
-// than one copy a write that meets another listener's cursor write still being replicated is
-// answered 10164, not 10071, and has lost the cursor all the same. A refusal that wraps
-// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went
-// unanswered (sendStored), and that first send may have stored this write, so it is no proof the
-// write stored nothing.
+// cursorMoved names a cursor write's lost precondition (preconditionLost) as the ErrCursorMoved it
+// is, and returns any other error as it is.
 func cursorMoved(err error) error {
-	if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
+	if preconditionLost(err) {
 		return fmt.Errorf("%w: %w", ErrCursorMoved, err)
 	}
 	return err
+}
+
+// preconditionLost reports whether err is the server's refusal of a write whose expected last
+// sequence per subject (nats.ExpectLastSequencePerSubject) did not match, and so proof that the
+// write stored nothing because another writer moved the subject. The refusal is either code
+// JetStream answers a lost conditional write with (IsCASConflict): on a stream of more than one
+// copy a write that meets another writer's write still being replicated is answered 10164, not
+// 10071, and has lost all the same. A refusal that wraps ErrUnacknowledged is no such proof: it
+// refused a resend after a send that went unanswered (sendStored), and that first send may have
+// stored this write and moved the subject itself. It is the one test both conditional writes read
+// a refusal by: PublishCursorAt (cursorMoved) and Client.WriteTakeoverRecordAt.
+func preconditionLost(err error) bool {
+	return IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged)
 }
 
 // PublishCoreContext publishes item directly to subject under ctx, confirming the server accepted

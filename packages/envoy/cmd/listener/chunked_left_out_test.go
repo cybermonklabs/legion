@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -73,7 +72,10 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 				t.Fatalf("UNKNOWN: the stored row takes %d bytes against the max payload of %d: the case wants past it %v", rowBytes, maxPayload, tc.pastMax)
 			}
 			var record []string
-			waitFor(t, 10*time.Second, "the known-session store to hold "+tc.sessionID+"'s record", func() bool {
+			// The known-session store follows its bucket through a watch, so the record arrives
+			// when the watch delivers it, in milliseconds on an idle machine: the package's bound
+			// leaves that far more than ten times its need.
+			waitFor(t, "the known-session store to hold "+tc.sessionID+"'s record", func() bool {
 				known, ok := rig.known.Get(tc.sessionID)
 				record = known.Topics
 				return ok && slices.Contains(known.Topics, wide[1])

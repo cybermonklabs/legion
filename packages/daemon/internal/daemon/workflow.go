@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -109,6 +110,7 @@ type workflowRuntime struct {
 	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
 	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
+	catchUps   *catchUpPacing
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -120,6 +122,9 @@ type workflowRuntime struct {
 	// to the workflow engine (applyTerminal), which holds neither the claim nor the configuration
 	// and so has no other way to read them.
 	limits supervise.Limits
+	// dropConsumedEvent is overrides.dropConsumedEvent, taken at attach: the facts of the intake
+	// consumers the workflow's handlers skip (consumerHandlers). nil, in production, skips none.
+	dropConsumedEvent func(intake.Fact) bool
 	// bootID disambiguates this boot's synthetic Dispatch consumer position facts from another
 	// boot's, or another project's daemon: processed_events is keyed only on (source, event_id),
 	// shared by every project's daemon in the database, and a stream recreated by a later boot
@@ -676,11 +681,12 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // the record carried its repository (backfillRepositories, which leaves a record it cannot fill
 // for the refresher), then the deployment's design-gate steps queued for the project's Dispatch
 // row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
-// for its own (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an
-// owner. It reads GitHub for a repository only to fill a record that lacks its repository columns,
-// one read per such record bounded by the read attempt bound (repositoryReadBounds.attempt,
-// backfillRead), which mints the token that
-// read needs, a read that fails leaving the record for the refresher; the preparation of the
+// for its own, with a seed for each step that waits on an ancestor's request
+// (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an owner. It
+// reads GitHub for a repository only to fill a record that lacks its repository columns, one read
+// per such record bounded by the read attempt bound (repositoryReadBounds.attempt, backfillRead),
+// which mints the token that read needs, a read that fails leaving the record for the refresher;
+// the preparation of the
 // repositories the records name is the refresher's first job, once the API serves
 // (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
 // slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
@@ -693,11 +699,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
 //
-// reserve is the daemon's one wake limiter as the engine reaches it (run builds it, before this
-// and before supervision, which reserves its launches from the same one): the moment the one
-// wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
-// claimReady), and nil while the operator paces nothing, which is the engine's reading of the
-// pacing off — the catch-up is then due at once, as it always was.
+// pacer is the daemon's one wake pacer as the engine's catch-ups reach it (run builds it, before
+// this and before supervision, whose launches wait in the same two queues): the catch-up a start
+// writes in place of a launch joins its second queue (workflow's claimReady, catchUpPacing), and
+// nil while the operator paces nothing, which is the engine's reading of the pacing off — the
+// catch-up is then due at once, as it always was.
 //
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
@@ -709,7 +715,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, pacer *wakepace.Pacer, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -744,7 +750,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: daemonDispatchClient(cfg, dispatchTransport), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -772,7 +778,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
 	// through the runtime, since the outbox itself is built later (attach), and each write that can
 	// change the live records asks the refresher to read them again at its commit (wakeLive).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log}
+	w.catchUps = &catchUpPacing{ctx: ctx, pool: st.Pool(), pacer: pacer, now: clock, wake: w.wakeOutbox, log: log}
+	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
 	w.pool = st.Pool()
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
@@ -786,10 +793,14 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
-	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
-	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
-	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
-	engineCfg.Reserve = reserve
+	// (workflow's claimReady), and it is paced with the launches it stands among, in the one
+	// pacer run built for both lanes. A deployment that paces nothing gives the engine no hold at
+	// all, which is the pacing off: the engine then writes that catch-up due at once, as it
+	// always did.
+	if pacer != nil {
+		engineCfg.HoldCatchUp = w.catchUps.hold
+	}
+	engineCfg.MessageMarked = w.messageMarked
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
@@ -809,6 +820,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -883,8 +897,24 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // so a boot on a `gates.design` the operator has changed since corrects what Dispatch holds, and
 // a row still pending from an older daemon, whose set says nothing of it, takes this boot's set
 // in its place (the enqueue writes a payload that differs).
+//
+// The same pass over the gates it holds queues one pending-basis seed (record.PendingBasisSeed)
+// for each step of the project that waits, closed, on an ancestor's approval request
+// (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
+// reads no root in a phase of its tree (catchesUp) and the ancestor's events may have come while
+// the daemon was down or been dropped: each seed reads Dispatch's state of the ancestor's document
+// and issue (readBasis), which the workflow judges by its one verdict (workflow's judgeBasisRead),
+// so the person's approval of the version opens the step and a changes request, a newer version,
+// the request's close or the ancestor's leave ends its wait (dispatch://INFRA-3320, R1). The seeds
+// carry their roots' generations, read in one query (IssuesOf) where any step waits so and in none
+// otherwise, and run on each root's lifecycle lane once the outbox attaches. An issue Dispatch
+// shows done is left out by the read (record.GatedIssues), as its gates are left out of the
+// publication. A restart loop that queues a second seed beside one still waiting costs one more
+// read of Dispatch: the seed's fact is the step, the request, the registration it reads for and
+// what the read found, so it applies once.
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
+	queued := 0
 	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		live, err := w.records.GatedIssues(ctx, tx, w.dispatchProject)
 		if err != nil {
@@ -894,15 +924,53 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		var pending []record.DesignGate
 		for _, issue := range live {
 			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(w.gatedSteps, gates[issue])}
 			if err := w.records.EnqueueDesignGates(ctx, tx, publish, now); err != nil {
 				return err
 			}
+			for _, gate := range gates[issue] {
+				if gate.PendingOnBasis() {
+					pending = append(pending, gate)
+				}
+			}
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		keys := make([]string, 0, len(pending))
+		for _, gate := range pending {
+			keys = append(keys, gate.Issue)
+		}
+		roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
+		if err != nil {
+			return err
+		}
+		generations := make(map[string]uint64, len(roots))
+		for _, root := range roots {
+			generations[root.Key] = root.Generation
+		}
+		for _, gate := range pending {
+			generation, recorded := generations[gate.Issue]
+			if !recorded {
+				continue
+			}
+			row, err := record.NewOutboxRow(gate.Issue, record.PendingBasisSeedOf(gate, generation), now)
+			if err != nil {
+				return err
+			}
+			if err := w.records.Enqueue(ctx, tx, row); err != nil {
+				return err
+			}
+			queued++
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("queue the recorded design-gates publications of %s: %w", w.dispatchProject, err)
+		return fmt.Errorf("queue the recorded design-gates publications and pending-basis seeds of %s: %w", w.dispatchProject, err)
+	}
+	if queued > 0 {
+		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
 	}
 	return nil
 }
@@ -1293,8 +1361,12 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // stay, in the order the task named them, and the text is written again from them
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// this answer drops one only where the record says another tree is owed it. The start task names
+// the roots that rest on the root's approval apart from its decisions
+// (workflow.ArchitectStart.Resting, dispatch://INFRA-3320 R8), so a task written again names them
+// again, as the record shows them now (workflow.ArchitectStartOf, workflow.NarrowRootTask), and a
+// task left naming no decision still names them. A task left naming nothing at all is retired
+// rather than sent, and its delivery's write releases whatever it still held.
 //
 // A task that also carries news of the approved design (supervise.Delivery.News: since #3711 a
 // root architect's entry start carries the kept decisions and the news it is owed) is narrowed in
@@ -1317,11 +1389,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	// The record the rewrite reads where the task is of an entry and so carries the first-task
-	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the
-	// narrowing, and what its first task is derived from, read by the reader every start of a
-	// root architect reads it through (workflow.ArchitectStartOf). The reads are made only where
-	// a decision was dropped, since nothing else rewrites the task.
+	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the tree's root
+	// as the record holds it at the narrowing, and what its first task is derived from, read by the
+	// reader every start of a root architect reads it through (workflow.ArchitectStartOf). Every
+	// such rewrite names the roots that rest on the root's approval from it (its Resting), and one
+	// whose task is of an entry, and so carries the first-task instruction, takes the first task's
+	// shape from it too. The reads are made only where a decision was dropped, since nothing else
+	// rewrites the task.
 	var root *record.Issue
 	var start workflow.ArchitectStart
 	var left []record.DecisionMark
@@ -1387,8 +1461,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// would hand a fresh architect the empty task that instruction exists to replace. Which task
 	// carries it is the entry the delivery is of, never the task's text (workflow.NarrowRootTask
 	// says why). A root the record now shows past admitted under its own power is served no first
-	// task, so its rewrite is the decisions' own; with no root recorded there is nothing to write
-	// one from either, so the rewrite is the decisions' own there too, as it always was.
+	// task, so its rewrite is the decisions' own and the resting roots; with no root recorded there
+	// is nothing to write one from either, so the rewrite is the decisions' own alone there, as it
+	// always was.
 	var task string
 	if root != nil {
 		task = workflow.NarrowRootTask(start, d.Entry, stays)
@@ -1692,6 +1767,21 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 	return lease.Identity, nil
 }
 
+// knownIdentity is the bot identity role's App commits as where the token source already holds
+// it (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and
+// no call to GitHub; false before that App's first lease, and for a token source that answers no
+// such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
+// needs no repository. A launch's table of every role's identity reads it for the roles of the
+// other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
+// daemon knows its identity.
+func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
+	known, ok := w.tokens.(appauth.KnownIdentities)
+	if !ok {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(appauth.AppRoleFor(role))
+}
+
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 // missing or not checked out (outbox.ensureWorkspace), through the outbox, which orders every
 // provision of the shared clones (provisionLocks). The outbox exists from attach on, and attach
@@ -1803,14 +1893,16 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
-// the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// the outbox reads through that supervisor where it writes the line (wakeRan); the pacer both
+// lanes wait in — the workflow's catch-up through its catchUpPacing, the machines at their gate —
+// was built before either of them (run). The outbox's two reads of one pull
 // request, the merge-queue read and the second read of a conflicting head, read GitHub through
 // this runtime's own read of a pull request, apply its answer as every read of this runtime does,
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
+// (privateNameRules). All are set before the records' wake can reach the outbox
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
@@ -1821,10 +1913,14 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
+	w.outbox.hold = supervision.plan.holdOutbox
+	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
+	w.outbox.catchUps = w.catchUps
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1837,6 +1933,17 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	}
 	w.attachIdleRelease(supervision)
 	w.workspaceHeld = workspaceHeldBy(supervision.supervisor.deps.Runtime, w.stateDir)
+}
+
+// messageMarked is workflow.Config.MessageMarked: the claim token's machine is told the mark a
+// listener's report left on it in the store, so that a wake of the claim waiting in the pacing's
+// second queue moves to the message queue (supervise.MessageMarked). It reaches the supervisor
+// attach stored, and nothing before attach: a report applied before then is one the boot's own
+// read of the claim finds marked.
+func (w *workflowRuntime) messageMarked(token claim.Token, mark time.Time) {
+	if r := w.outboxWake.Load(); r != nil {
+		r.supervisor.post(token, supervise.MessageMarked{Claim: token, At: mark})
+	}
 }
 
 // workspaceHeldBy is whether an issue holds its workspace under rt: its Sandbox, where rt keeps
@@ -2138,14 +2245,8 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		// Everything the claim persists about its end: the sentence the supervisor wrote when it
-		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
-		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
-		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
-		// a daemon restart still names the cause the role never chose — an eviction above all.
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
-			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
-			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
+		// Everything the claim persists about its end (intake.ClaimFailedOf).
+		fact = intake.ClaimFailedOf(c, w.limits)
 	default:
 		return fmt.Errorf("claim %s has non-terminal workflow state %s", c.Token, state)
 	}
@@ -2165,6 +2266,55 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 	return fmt.Sprintf("supervise:%s:%d:%s", c.Token, c.Generation, state)
 }
 
+// consumerHandlers are the handlers the intake consumers apply each fact they deliver with: the
+// workflow's own, or, under a test's dropConsumedEvent, one handler that asks it once of each fact
+// and runs the workflow's own unless it drops the fact. A dropped fact is still applied as a fact —
+// acknowledged, and its processed_events row written in its transaction — with no handler acting
+// on it, which is how a test reads what the daemon does with an event it missed.
+func (w *workflowRuntime) consumerHandlers() []intake.Handler {
+	if w.dropConsumedEvent == nil {
+		return w.handlers
+	}
+	return []intake.Handler{droppingHandlers{handlers: w.handlers, drop: w.dropConsumedEvent}}
+}
+
+// droppingHandlers runs handlers on each fact drop does not drop, in order, and combines their
+// results as intake.ApplyFact combines those of the handlers it is given (intake.ApplyHandlers).
+type droppingHandlers struct {
+	handlers []intake.Handler
+	drop     func(intake.Fact) bool
+}
+
+func (h droppingHandlers) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	if h.drop(fact) {
+		return intake.Result{}, nil
+	}
+	return intake.ApplyHandlers(ctx, tx, fact, h.handlers)
+}
+
+// OpenFact and SettleFact are intake.Settler's: they open and settle each settler among handlers, as
+// intake.OpenSettlers does for the handlers ApplyFact is given, so the wrap hides none of them from a
+// fact, dropped or not.
+func (h droppingHandlers) OpenFact(ctx context.Context) context.Context {
+	for _, handler := range h.handlers {
+		if settler, ok := handler.(intake.Settler); ok {
+			ctx = settler.OpenFact(ctx)
+		}
+	}
+	return ctx
+}
+
+func (h droppingHandlers) SettleFact(ctx context.Context, tx pgx.Tx) error {
+	for _, handler := range h.handlers {
+		if settler, ok := handler.(intake.Settler); ok {
+			if err := settler.SettleFact(ctx, tx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // run drains intake and the outbox until ctx ends. Intake ending, or a terminal fact that could not
 // be applied, returns its error so serve stops the daemon: a daemon that answers its API while it
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
@@ -2177,7 +2327,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	// one (store.ErrNestedAcquire). The intake marks each message it hands a loop of its own
 	// (intake's consumeMessage), and the outbox each of its lanes (outbox.runLane).
 	group.Go(func() error {
-		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.handlers...); err != nil {
+		if err := w.consumers.Run(store.ForConcurrentWorker(running), w.consumerHandlers()...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).
 			return fmt.Errorf("workflow intake stopped: %w", natsauth.WithLastError(err, w.conn.Load()))
 		}
@@ -2493,8 +2643,8 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 // entrySweepInterval is how often the daemon converges the phase entries with no fact of its
 // project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
 // its record already names, so a minute is short enough that no worker waits long for it, and
-// each run is one admission read of the project's issues, slots and line facts, which the same
-// pass already makes on every fact.
+// each run is one admission read of the project's issues, slots and line facts, which every pass
+// already makes (the pass rule on admit's Admission.Apply).
 const entrySweepInterval = time.Minute
 
 // entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
@@ -2511,10 +2661,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
 // or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
 // row names is sent that entry's work, and the controller is woken for a stalled root architect,
-// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
-// project raises none. Each run's event id is its own — the word, the project, this boot and the
-// run's time — since processed_events is shared by every project's daemon. A failed apply is
-// logged, and the next run tries again, as applyControllerTick does.
+// even where nothing else happens in the project: an admission pass runs on the facts the pass
+// rule names (admit's Admission.Apply), and a quiet project raises none. Each run's event id is
+// its own — the word, the project, this boot and the run's time — since processed_events is
+// shared by every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
 //
 // The same tick queues the reconcile of each tree's news of its approved design that
 // record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for
@@ -2629,16 +2780,16 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 }
 
 // sessionLost applies the fact that a claim forgot its recorded session, for cause (supervise's
-// Deps.SessionLost): the workflow tells the issue, its architect and the controller. The machine
-// tells it at the forget, before it spawns the fresh agent that takes the session's place, with
-// the claim as the forget left it, so c.Abandoned.Session is the session forgotten, which the fact
-// carries. The event id names that session, so one forget of a session is one fact, however many
-// launches forget it: the forget is in memory alone until the fresh agent's launch writes the
-// claim, and a daemon stop between the two — a fresh spawn waiting on its pod, say — leaves the
-// claim recording the session, which the next boot's launch forgets again at a generation of its
-// own. That second fact is marked applied already (intake.ApplyFact), so nobody is told twice.
-// Telling only after the claim is written would not do: the fact commits on a goroutine of its
-// own (applySessionFact), so a stop between the write and the tell would tell nobody at all.
+// Deps.SessionLost): the workflow tells the issue and its architect. The machine tells it at the
+// forget, before it spawns the fresh agent that takes the session's place, with the claim as the
+// forget left it, so c.Abandoned.Session is the session forgotten, which the fact carries. The
+// event id names that session, so one forget of a session is one fact, however many launches
+// forget it: the forget is in memory alone until the fresh agent's launch writes the claim, and a
+// daemon stop between the two — a fresh spawn waiting on its pod, say — leaves the claim recording
+// the session, which the next boot's launch forgets again at a generation of its own. That second
+// fact is marked applied already (intake.ApplyFact), so nobody is told twice. Telling only after
+// the claim is written would not do: the fact commits on a goroutine of its own
+// (applySessionFact), so a stop between the write and the tell would tell nobody at all.
 func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%s", c.Token, c.Abandoned.Session),
 		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: cause, Session: c.Abandoned.Session},
@@ -2674,29 +2825,60 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 	}()
 }
 
-// providerErrorRunReached tells the project's controller that a role's turns keep ending in a
-// provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run and
-// decides when to tell, and this names the notice kind, since supervise records nothing of
-// internal/record. Admission's own check stops a second notice while one still waits in the
-// outbox (TellController). The machine calls it inside its own decision, so the notice is
-// queued on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and is
-// not the daemon's end, since the run goes on and the task is sent again either way.
+// providerErrorRunReached tells who must know that a role's turns keep ending in a provider error
+// (supervise's Deps.ProviderErrorRunReached), and it is one of the two places that say who that is,
+// with the provider-errors paragraph of docs/site/src/content/docs/legion/troubleshooting.md, which
+// changes with it:
+//
+//   - a run of a phase worker's claim tells the architect that owns the issue and the project's
+//     controller;
+//   - a run of the tree root's architect's own claim tells the controller alone (tellsArchitect);
+//   - a run of a child's own architect's claim tells the architect above that child
+//     (record.NoticeStartsAtParent) and the controller.
+//
+// The machine counts the run and decides when to tell, and this names the notice kind, since
+// supervise records nothing of internal/record. An architect is told in a notice row, which the
+// notice executor delivers, waking it where its pod was released (deliverNotice,
+// wakeForDelivery): narrowing the work the provider keeps refusing is the architect's. The
+// controller is told in a row of its own, since compacting the agent's session or starting that
+// agent in a fresh session is the controller's; admission's own check stops a second controller
+// notice while one still waits in the outbox (TellController). The two rows are one transaction.
+// The machine calls it inside its own decision, so the notices are queued on a goroutine of their
+// own, bounded by readyReleaseTimeout; a failure is logged and is not the daemon's end, since the
+// run goes on and the task is sent again either way.
 func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	notice := record.Notice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	// The tree root's architect's own run tells no architect. The architect copy would reach the
+	// failing claim itself, since no architect stands above the root (OwningIssue's walk from the
+	// root ends at the root). Waking a session whose provider keeps refusing it adds one more
+	// failing turn, and compacting or refreshing that session is the controller's work, which the
+	// controller's notice already carries. A child's own architect's run does tell an architect:
+	// the notice's walk starts at the child's parent (record.NoticeStartsAtParent), so the
+	// architect above the child hears it, which is who can narrow that child's work.
+	tellsArchitect := !claim.IsTreeArchitect(c.Role, c.Issue, c.Tree)
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
-		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so
-		// it owns the commit hook its write registers (projectRecords, store.OnCommit), as
-		// ApplyFact does for a fact's rows: the controller's lane is woken once the notice commits.
+		// hold mark of its own (store.ForConcurrentWorker). The notices are their own transaction,
+		// so it owns the commit hook their writes register (projectRecords, store.OnCommit), as
+		// ApplyFact does for a fact's rows: each row's lane is woken once the two commit.
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
-			return w.admission.TellController(ctx, tx, notice, c.Issue)
+			if tellsArchitect {
+				row, err := record.NewOutboxRow(c.Issue, notice, time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				if err := w.records.Enqueue(ctx, tx, row); err != nil {
+					return err
+				}
+			}
+			return w.admission.TellController(ctx, tx, record.ControllerNotice(notice), c.Issue)
 		}); err != nil {
-			w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
+			w.log.Warn("queue the provider-errors notices of a run of provider errors", "claim", c.Token, "tellsArchitect", tellsArchitect, "error", err)
 		}
 	}()
 }

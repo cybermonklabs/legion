@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -154,6 +156,13 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
+	// LegionStatusScope turns on the refusal of three writes of a Legion issue (cmd/dispatch:
+	// DISPATCH_LEGION_STATUS_SCOPE): a write of its status, the removal of its legion label, and
+	// a move that leaves it under no labelled issue. With it on, Dispatch refuses each of them to
+	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus, but for the
+	// status write of the architect of an issue above (legion_status_scope.go). False refuses none
+	// of them, which is every deployment that has not turned it on.
+	LegionStatusScope bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -195,6 +204,14 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
+	// heartbeats after the page's last pong, the wait for the page's close frame once the socket
+	// sent its own (liveSocketCloseWait), and the drain's wait for the rest of a frame past the read
+	// limit, liveSocketCloseWait too, which takes the pong deadline's place (endReads). Nil is
+	// clock.Real(), as a deployment leaves it; only a test sets another, a clocktest fake on which
+	// no page's reads end until the test moves it there. It is not Clock, so a test that moves the
+	// server's clock through its heartbeats ends no read with it.
+	LiveSocketClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -227,6 +244,21 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Clock is the clock these timers of this package run on: the heartbeat on which a socket
+	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
+	// comment's route and mentions (resolveMentionTarget's mentionLookupTimeout), the listener
+	// client's window, the take-over's tries (takeoverRetry), the related-item check's allowance
+	// (relatedBounds), an agent view's wait for its replay (agentStreamReplayTimeout) and the time
+	// each access-log line records (accesslog.HandlerOn), which a test hands AnswersLatency's
+	// clock too. Three listener lookups bound themselves on the wall clock instead
+	// (context.WithTimeout), and only the listener client's window of each runs on this clock:
+	// roleHolderMayBe, the question whether a session may hold a role (mentionLookupTimeout);
+	// listRouteRoster, the read of the listener's session list (routeRosterTimeout); and a
+	// broadcast's resolution of its recipients (resolveBroadcastSessions,
+	// broadcastResolveAllowance). Nil, which every deployment leaves it, is clock.Real(), for a
+	// server Register builds and for one built directly alike (server.clock); a test passes a
+	// clocktest.Fake and moves it.
+	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
 	// a parent's status out of line with its children's (R24) is refused 409
 	// PARENT_STATUS_CONFLICT. The zero value is off.
@@ -301,6 +333,8 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -336,6 +370,9 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Clock is the clock the API's timers and the listener client's window run on; see
+	// Deps.Clock. Nil is clock.Real().
+	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
 	ParentStatusRule ParentStatusRule
 }
@@ -375,6 +412,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
+		}
+		if input.Clock != nil {
+			options = append(options, envoy.WithClock(input.Clock))
 		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
@@ -418,6 +458,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
+		LegionStatusScope:      input.LegionStatusScope,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -432,6 +473,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Clock:                  input.Clock,
 		ParentStatusRule:       input.ParentStatusRule,
 	}
 	return deps, nil
@@ -500,6 +542,14 @@ type server struct {
 	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
 	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// inboxStatementBound overrides the statement_timeout of the mark-all's and the dismissal's
+	// transactions (boundInboxStatements); zero, which every server the deployment builds leaves
+	// it, means inboxReadStatementTimeout. Only a test sets it (testServerOptions'
+	// inboxStatementBound): a case that holds a dismissal behind a lock of its own while it takes
+	// its steps gives the dismissal a bound past any run, so the bound Postgres keeps from the
+	// moment the dismissal queues never ends a correct run however long a loaded machine takes over
+	// those steps (INFRA-3904).
+	inboxStatementBound time.Duration
 	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
 	// until the bound ends it, so the bound and nothing else decides that case.
@@ -830,7 +880,7 @@ func (b *backgroundWork) wait() {
 
 // register is Register, answering the server it mounted, whose delivery hub and event stream
 // relay a test waits out before its database closes. It is also called with an empty Deps, as
-// TestTheDeploymentsSuggestionAllowanceIsTheDocumentedBound does, so it must stay cheap and must
+// TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound does, so it must stay cheap and must
 // not dial or read the nil Store: whatever reaches the database or the network starts later, from
 // a handler, the relay's first subscriber or the hub's, or on a goroutine of its own, as the event
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
@@ -876,6 +926,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// decided (readClasses).
 		panic("api.Register: the route table's read class does not class every GET row exactly once: " + strings.Join(refused, "; "))
 	}
+	if refused := routesNotMounted(slices.Values(approveScopeRoutes)); len(refused) > 0 {
+		// An approve list naming a route nothing serves opens nothing while it reads as though it
+		// did - a row renamed or deleted and its entry left behind - so the table is refused
+		// rather than mounted (approveScopeRoutes).
+		panic("api.Register: the route table's approve list names a route the table does not mount: " + strings.Join(refused, "; "))
+	}
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -907,8 +963,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -934,14 +990,15 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a machine whose credential names a service and no person
-		// is told it may make no write at all rather than which session the write it tried
-		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). An account entry's token naming no person
-		// passes it, recorded under its account, and meets the two checks behind it as any
-		// credential naming no project does. A read-only token, which may name a service and no
-		// person too, never reaches here: the read-only gate further out has answered it on every
-		// write (refuseReadOnlyToken).
+		// Outermost of the three, so a machine's credential that names a service and no person,
+		// and that no job entry and no personless account entry minted, is told it may make no
+		// write at all rather than which session the write it tried belongs to. The project check
+		// has nothing to tell it: such a token is held to no one project (broker_token.go). A
+		// job's token names a service and no person too, under the project scope named or public,
+		// and an account entry's token naming no person does under named; each passes this check
+		// to the two inside it, recorded under its service. A read-only token, which may name a
+		// service and no person as well, never reaches here: the read-only gate further out has
+		// answered it on every write (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
 	}
@@ -970,6 +1027,10 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// inside the drain, as the scope gate is, so a client that asked to be told to continue is
 	// handled as for every other early answer.
 	handler = s.refuseReadOnlyToken(route.Method+" "+route.Pattern, route.Read, handler)
+	// Beside it, for the same reasons and at the same depth, an approve-only token on a row the
+	// approve list does not name: refused before the row's scopes, which it would otherwise pass
+	// with its person's scopes person and approve, and before anything the row does.
+	handler = refuseApproveOnlyToken(route.ApproveOnly, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
@@ -1012,10 +1073,12 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	served := compressAnswers(handler)
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
-		// pauses on is the time the line records for it, every layer of the chain included.
+		// pauses on is the time the line records for it, every layer of the chain included. The
+		// line is timed on the server's clock, which a test hands the Latency too, so the two read
+		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFunc(route.Pattern, served)
+	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock())
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1028,14 +1091,15 @@ const liveSocketPattern = "/ws/live"
 // The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
 // the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
 // its views carry, so the gate takes the zero entry, which classes nothing, and a read-only token
-// of every kind is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The socket
-// is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued token or
-// a sign-in cookie - so its heartbeat resolves that same credential again
-// (callerStillResolves).
+// of every kind is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
+// approve-only gate sits beside it, and no approve list names the socket, so an approve-only token
+// is answered 403 APPROVE_ONLY_TOKEN there too. The socket is admitted by whichever credential
+// optionalActor resolves - a bearer, a broker-issued token or a sign-in cookie - so its heartbeat
+// resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+			refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1073,13 +1137,16 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			// The heartbeat runs on the server's clock, so a test that drives a fake decides
+			// when the caller is resolved again rather than shortening the interval.
+			heartbeat := s.clock().NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
+				case <-heartbeat.C():
+					heartbeat.Reset(s.deps.StreamHeartbeat)
 					// The check resolves the admission's credential from a detached copy of
 					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
@@ -1348,11 +1415,11 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
-// rather than of one request — a browser's cookie holds both scopes, and the shared token and a
-// service-account token hold none — and the cookie's is on the dashboard's hottest path, so
-// allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actingPerson copies the slice header onto the act it records, and
-// tokenScopes builds a set of its own.
+// rather than of one request — a browser's cookie holds every scope (model.Scopes: person,
+// approve and p0), and the shared token and a service-account token hold none — and the cookie's
+// is on the dashboard's hottest path, so allocating either per request would be waste. Nothing
+// writes a Credential or appends to its Scopes: Holds reads, actScopes copies the slice header
+// onto the act it records, and tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
 	personCredential    = &model.Credential{Scopes: model.Scopes}
@@ -1426,6 +1493,21 @@ func actorNamesWriter(supplied *model.Actor) bool {
 	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 }
 
+// actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
+// reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// An act records the credential's whole set, so the act of a personal token that holds p0 records
+// p0, though no reader of a recorded act asks for it: they ask for approve alone.
+// legion-status, which a Legion daemon's own broker token holds and holds alone, is the
+// credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
+// carries, so such a credential's act records no scope. No credential holds it beside another
+// scope (model.Credential), so every other credential's scopes are recorded whole, with no copy.
+func actScopes(credential *model.Credential) []string {
+	if credential.Holds(model.ScopeLegionStatus) {
+		return nil
+	}
+	return credential.Scopes
+}
+
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
 // session in the request body, and what the token itself proved — a personal token's owner, a
 // service token's verified subject — stays attached for attribution. Neither is ever taken from
@@ -1474,7 +1556,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 			actor.Act = &model.ActorAct{
 				Session:       authenticated.ID,
 				SessionProven: true,
-				Scopes:        authenticated.Credential.Scopes,
+				Scopes:        actScopes(authenticated.Credential),
 			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
@@ -1655,6 +1737,45 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 	}
 }
 
+// refuseApproveOnlyToken is the one place an approve-only token is held to the approve list:
+// register wraps every row of the table in it, listed being the row's apiRoute.ApproveOnly, and
+// GET /ws/live with listed false. On a route the list does not name (approveScopeRoutes), a caller
+// decideBrokerToken resolved to an approve-only credential (model.Credential.ApproveOnly) is
+// answered 403 APPROVE_ONLY_TOKEN and next does not run; every other request runs next as it always
+// did. A row the list names is handed back as it is. It reads the decision decideBrokerToken
+// carried and resolves nothing of its own, for the reason refuseReadOnlyToken gives, and carries no
+// WWW-Authenticate challenge, since no scope makes such a route the token's to call.
+func refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
+	if listed {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if approveOnlyRequest(r) {
+			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// approveOnlyRequest reports whether decideBrokerToken resolved r's caller to an approve-only
+// credential (model.Credential.ApproveOnly), read as readOnlyCredential reads a read-only one
+// (resolvedCredential). The person actor a handler acts as (actingPerson) carries no credential,
+// so a handler that holds such a token to less than its route reads it here: answerAsk, which
+// answers an approval request alone for it.
+func approveOnlyRequest(r *http.Request) bool {
+	credential := resolvedCredential(r.Context())
+	return credential != nil && credential.ApproveOnly
+}
+
+// approveOnlyRefusal is the message of every 403 APPROVE_ONLY_TOKEN refuseApproveOnlyToken answers:
+// the approve list (approveScopeRoutes) in words. It is built from the list itself, so it names
+// every route the list names on the day the list changes, and each of them is a route a running
+// Dispatch serves, since register refuses to mount a table whose list names any other
+// (routesNotMounted).
+var approveOnlyRefusal = "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
+	strings.Join(approveScopeRoutes, ", ") + "): nothing ran"
+
 // readOnlyRefusal is the message of every 403 READ_ONLY_TOKEN refuseReadOnlyToken answers: one
 // text that names no route, since the read class is the table's own and a refusal that listed it
 // would be stale the day a row joins it.
@@ -1755,7 +1876,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			SessionProven: session != "" && session == credential.Session,
 			TokenID:       credential.TokenID,
 			TokenName:     credential.TokenName,
-			Scopes:        credential.Scopes,
+			Scopes:        actScopes(credential),
 		}
 	}
 	// Proven: every credential that holds the person scope proves its person - the cookie its
@@ -1980,8 +2101,25 @@ func refuseUndeclaredMembers(value any, body []byte) error {
 
 // readJSONBody decodes r's body, at most limit bytes of it, into value and returns the bytes it
 // read, for the caller to judge the members value does not declare by. A body past limit is
-// tooLarge, the 413 the route answers one with.
+// tooLarge, the 413 the route answers one with. A string the body holds anywhere that carries
+// U+0000 is refused (unstorableJSON).
 func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
+	body, err := readJSONBodyAllowingNUL(r, value, limit, tooLarge)
+	if err != nil {
+		return nil, err
+	}
+	if refusal := unstorableJSON("", body); refusal != nil {
+		return nil, refusal
+	}
+	return body, nil
+}
+
+// readJSONBodyAllowingNUL is readJSONBody without its refusal of U+0000, for the two routes that
+// check what their body carries as another route checks it, under that route's name for it: the
+// markdown round trips (decodeRoundTrip), the inline one refusing its text's U+0000 as the upload
+// refuses its content's (postMarkdownRoundTrip) and the file one its bytes' as the upload refuses
+// its file part's (documentTextRefusal).
+func readJSONBodyAllowingNUL(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
 		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
@@ -1998,9 +2136,6 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 	}
 	if decoder.More() {
 		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
-	}
-	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		return nil, refusal
 	}
 	return read.Bytes(), nil
 }
@@ -2063,6 +2198,15 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 		s.deps.Events.Publish(event)
 	}
 	s.storeEventDisplayTrees(ctx, events)
+}
+
+// clock is the clock the server's timers run on: Deps.Clock, clock.Real() where that is nil, for
+// a server Register builds and for one built directly alike, so no server literal sets a clock.
+func (s *server) clock() clock.Clock {
+	if s.deps.Clock != nil {
+		return s.deps.Clock
+	}
+	return clock.Real()
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

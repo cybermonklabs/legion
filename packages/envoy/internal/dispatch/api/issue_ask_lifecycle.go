@@ -277,8 +277,9 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		// The restore took each ask's answer off, which removes its answer part: the index is
 		// queued after the row write that took it off (prepareRestoration), and the ask.opened
 		// names what that moved and stamps the part rows the index leaves with its own id, so a
-		// ?since= read lists them.
-		changes, err := s.queueAskParts(ctx, ledger, ask, nil, restoredAt, model.ReferenceChanges{})
+		// ?since= read lists them. The restore holds the parts alone, so their step reconciles
+		// the question's references too (questionReconciled false).
+		changes, err := s.queueAskParts(ctx, ledger, ask, nil, restoredAt, false, model.ReferenceChanges{})
 		if err != nil {
 			return nil, err
 		}

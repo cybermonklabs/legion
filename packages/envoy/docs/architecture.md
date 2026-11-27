@@ -511,16 +511,18 @@ holder stops at a copy inside its hour, or three walks running make no progress 
 that failed is waited out on a widening cadence while the holder is live. The role's cursor,
 `notifications.envoy.kept.cursor.<role>`, carries the lane's progress and one walk's claim of it,
 so two listeners walking one lane do not forward a copy twice. A handover this process lost - a
-restart, a rolling deploy - is picked up by a sweep every five minutes and at the listener's own
-start, which hands over every lane that holds copies after its cursor, whether the role has a
-live holder, a holder that is not live or no claim at all. A walk that finds no live holder ends
-each copy whose hour ended and stops at the first copy inside its hour, which waits for the
-role's next live holder. The walk and the handover, the sweep's included, read who holds the role
-from its claim record in the role bucket, never from the listener's copy of the claims: a walk
-reads the record before each copy and goes on only while it names the holder the walk forwards
-to, and a read that did not answer ends the walk as a failed one. Each forwarded copy carries
-`kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the message's
-age.
+restart, a rolling deploy - is picked up by a sweep every five minutes, which hands over every lane
+that holds copies after its cursor, whether the role has a live holder, a holder that is not live
+or no claim at all. Each listener sweeps at a phase of its own in each five minutes of the clock,
+read from a hash of its host name (in Kubernetes, the pod's name), so its first sweep comes within
+five minutes of its start and two listeners started together do not sweep together. A walk that
+finds no live holder ends each copy whose hour ended and stops at the first copy inside its hour,
+which waits for the role's next live holder. The walk and the handover, the sweep's included, read
+who holds the role from its claim record in the role bucket, never from the listener's copy of the
+claims: a walk reads the record before each copy and goes on only while it names the holder the walk
+forwards to, and a read that did not answer ends the walk as a failed one. Each forwarded copy
+carries `kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the
+message's age.
 
 Each copy is kept for one hour from the time the stream stored it. No walk forwards a copy whose
 hour ended: the first walk that reads it drops it, whether or not any session holds the role, and
@@ -632,9 +634,27 @@ that already showed the message drops the copy by its event id. A pass reads at 
 two hundred messages and writes the record again with the sequence it reached. The claim route's
 handover runs passes before it walks the lane, and the sweep runs passes of every record that is
 not finished every five minutes, so a listener that stopped at any step delays a message and loses
-none. A record is finished by the first pass that starts more than 71 hours after the claim and
-reads to the end of the subject, and then ages out with the stream. A release of the role, the
-reaper's delete of its claim and a claim no read answers leave the records where they are.
+none. A record is finished by the first pass that starts more than one hour after the claim, the
+keep window, and reads to the end of the subject; no pass runs it again or writes over it, each
+listener reads it again only when the age limit takes one of its subject's older messages, and it
+ages out with the stream. Every forward that resolved the previous holder before the
+claim starts inside the fence below, so it is stored before that pass reads. A listener whose NATS
+user holds none of the session consumers' calls, Dispatch's and a host's, runs no pass and reads no
+record: it asks the server once per ten minutes whether its user may read a session consumer, and
+the listeners whose users may run every pass. A release of the role, the reaper's delete of its
+claim and a claim no read answers leave the records where they are.
+
+An edge listener's frame rule (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`) tells a role
+message by the same read, inside a rule of its own. Before it reads the role, it withholds a frame
+that names `topic` or `role` under more than one key or under a key that differs from the name
+only in case (`ambiguous_key`), so a later `"TOPIC"` or `"ROLE"` key withholds the frame there
+rather than leaving its role as it is, a frame with a top-level `__proto__` key, and a Dispatch
+frame whose payload is no event of a project the token lists, unless it is a person's message to
+the session in its own conversation on its own agent subject (`dispatchDirectMessage`). It then
+judges a role message by its role only when its topic is a role lane or an agent subject in the old
+form or in the new form under one of the token's projects (`roleFrameVerdict`,
+`roleMarkOnAgentSubject`); a role-marked frame with any other topic, or none, it judges by its
+topic, as a frame with no role mark.
 
 The session relay delivers a role message to a session only while the role's claim names that
 session. It reads the claim from the role bucket for each frame that is a role message; when the

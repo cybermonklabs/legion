@@ -21,6 +21,7 @@ const issueMemoryGroupVersion = 20261104073148
 // now. This asserts that emptiness on such a row, and that each column then takes and keeps a
 // value.
 func TestTheMemoryColumnsArriveEmptyWith20261104073148(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, issueMemoryGroupVersion-1)

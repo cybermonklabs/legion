@@ -22,21 +22,18 @@ GATE = gate("test", "test", runs=[
     ("scripts/third-party-notices.ts", "`scripts/third-party-notices.test.ts#thirdPartyNotices` and `scripts/third-party-notices.test.ts#the command lists every package any of its metafiles names, one bundle's alone included` imports it and runs it"),
     ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
     ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.test.ts#Bun.spawnSync` spawns it as `scripts/semantic-line-breaks.test.ts#SCRIPT`"),
-    ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
-    ("scripts/priorities-seed.ts", "`scripts/priorities-seed.test.ts#seedPriorities` imports it"),
     ("scripts/e2e/**", f"{at('test', E2E_LIB_TESTS)} (`scripts/e2e/lib/script-functions.test.ts#readers` scans scripts/e2e/*.sh and lib/*); "
                        f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
     (CONTRACTS_SRC, "`scripts/e2e/lib/envoy-bridge.ts#EnvelopeSchema` and `scripts/e2e/lib/envoy-bridge.ts#githubSubject`, "
                     "`scripts/e2e/lib/session-settings-services.ts#agentStreamControlSubject`; `scripts/dispatch/ask-census.ts#ArtifactReviewEventPayload`, "
-                    f"which {at('test', 'Test the Dispatch census script')} loads; `scripts/priorities-seed.ts#ArtifactVersionText`"),
+                    f"which {at('test', 'Test the Dispatch census script')} loads"),
     (TEST_FIXTURES_SRC, f"{at('test', E2E_LIB_TESTS)} and the other bun test steps import @legion/test-fixtures"),
     # The envoy-client sources, and cipher-client's with them, are the shared read below:
     # `scripts/e2e/lib/nats-stream.ts#natsAuthOptions`, `scripts/e2e/lib/operator-dispatch.ts#sessionDispatchSettings`,
     # `scripts/e2e/lib/envoy-bridge.ts#natsAuthOptions` and `scripts/dispatch/ask-census.ts#DispatchClient` import
     # @legion/envoy-client/*.
     ("packages/envoy-client/test/fake-dispatch.ts", "`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path"),
-    ("scripts/dispatch/**", f"{at('test', 'Test the Dispatch census script')}; "
-                            "`scripts/priorities-seed.test.ts#holdDeadlines` imports __tests__/held-deadlines.ts"),
+    ("scripts/dispatch/**", at("test", "Test the Dispatch census script")),
     ("scripts/approval-eval/**", at("test", "Test the approval-eval statistics")),
     ("scripts/search-measure/**", f"{at('test', 'Test the search-measure psql helper')}: pg_test.py imports pg.py"),
     (f"{ENVOY}/scripts/fixtures/pg-url.json", f"{at('test', 'Test the search-measure psql helper')}: `scripts/search-measure/pg_test.py#CORPUS` reads it"),
@@ -51,6 +48,14 @@ GATE = gate("test", "test", runs=[
     (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", '`scripts/e2e/lib/stage4b-capabilities.test.ts#"web-search-open-planner.json"`'),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "`scripts/e2e/lib/stage4b-pods.test.ts#golden`"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "`scripts/e2e/lib/stage4b-pods.test.ts#operatorRoute`"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_sessions_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#newsMarks` reads its news marks, and `scripts/e2e/lib/approved-version-news-runs.test.ts#sessionsFile` names it among the files the test copies into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#partOneDriverFiles` names it among the files the test copies into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_part_one_steps_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#partOneDriverFiles` names it among the files the test copies into the scratch checkout"),
+    (f"{DAEMON}/internal/daemon/approved_version_news_seed_live_test.go",
+     "`scripts/e2e/lib/approved-version-news-runs.test.ts#partOneDriverFiles` names it among the files the test copies into the scratch checkout"),
     (".github/actions/install-changie/**", f"{at('test', './.github/actions/install-changie')}, which "
                                            "release-push.test.sh's fold-notes cases render with"),
     (".github/ci-tools.yaml", "`.github/actions/install-changie/action.yml#ci_tools_field` and `.github/actions/install-changie/action.yml#ci_tools_fetch` installs the tarball of the changie row, "
@@ -58,6 +63,5 @@ GATE = gate("test", "test", runs=[
     (".github/scripts/ci-tools.sh", "`.github/actions/install-changie/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads that row's two sources"),
 ) + envoy_client_dep("`scripts/e2e/lib/nats-stream.ts#natsAuthOptions`, `scripts/e2e/lib/operator-dispatch.ts#sessionDispatchSettings`, "
-                     "`scripts/e2e/lib/envoy-bridge.ts#natsAuthOptions`; `scripts/dispatch/ask-census.ts#DispatchClient`; "
-                     "`scripts/priorities-seed.ts#activeDispatchSettings` and `scripts/priorities-seed.test.ts#bearerCredential`")
+                     "`scripts/e2e/lib/envoy-bridge.ts#natsAuthOptions`; `scripts/dispatch/ask-census.ts#DispatchClient`")
   + setup_go("test", f"{DAEMON}/go.mod") + bun_job("test"))

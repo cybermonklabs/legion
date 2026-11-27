@@ -10,6 +10,7 @@ import (
 // daemon left there, and a hold taken from there, stand in `merging` after 20261029120700, where the new
 // daemon reads them; the phase and held_from constraints then refuse the old value.
 func TestAwaitingMergeMigratesToMergingAndTheConstraintsSwap(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120600)

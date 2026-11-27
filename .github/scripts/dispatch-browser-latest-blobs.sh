@@ -22,9 +22,11 @@
 # It takes the directory `actions/download-artifact` filled, the directory to write, and the id
 # of the job that calls the workflow, the merge job's `${{ inputs.job }}`:
 #   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>
-# Every artifact name of the workflow starts with that id, so the blob artifacts of ci.yaml's two
-# callers, which a pull request labelled full-ci runs in one run, are told apart by it
-# (`dispatch-browser-blob-shard-1-1` and `dispatch-browser-pr-blob-shard-1-1`); the download
+# Every artifact name of the workflow starts with that id, so the blob artifacts of ci.yaml's
+# callers that share a run are told apart by it: a pull request labelled full-ci runs
+# dispatch-browser beside dispatch-browser-pr, and one that changes what the reference rows test
+# runs dispatch-references beside dispatch-browser-pr (`dispatch-browser-blob-shard-1-1`,
+# `dispatch-browser-pr-blob-shard-1-1` and `dispatch-references-blob-shard-1-1`); the download
 # step's pattern already takes only this caller's.
 #
 # That directory comes in one of two layouts, and which one is the run's, not this job's: it is
@@ -47,6 +49,8 @@
 # either of those at the top is this layout, and any other entry beside them is a failure. One
 # artifact is one leg at one attempt, so there is nothing to choose and it is taken whole; its
 # name, which holds the attempt, is not on disk, so the line this prints names the files it took.
+# This layout reads no prefix: the merge job's download pattern is its own caller's
+# (`<job>-blob-*`), so the one artifact it matched is that caller's.
 #
 # It writes <out-dir>/blob-report and <out-dir>/rows, holding each leg's selected attempt's files
 # and no other's. Where several artifacts matched it prints one line per leg saying which attempt

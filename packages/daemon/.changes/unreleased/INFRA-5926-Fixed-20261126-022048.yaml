@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    The worker image's jj is v0.46.0-sami.20261120-120102 again, in place of
+    v0.46.0-sami.20261125-112159. That build, like v0.46.0-sami.20261125-125342, never finishes a
+    `jj git import` that makes conflicted commits visible: one core spins until the process is
+    killed, where v0.46.0-sami.20261120-120102 imports the same 2,760 refs in 22 s (INFRA-5926).
+    A role workspace that imports such refs therefore no longer hangs. The fix of sjawhar/jj#4 leaves
+    with that build: in a merge of two commits with several merge bases, jj can again drop what one
+    side holds (jj-vcs/jj#6369), as it did before the v0.46.0-sami.20261125-112159 pin, until a jj
+    build carries that fix without the hang.
+time: 2026-11-26T02:20:48Z
+custom:
+    Issue: INFRA-5926

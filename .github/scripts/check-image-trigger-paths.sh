@@ -49,8 +49,8 @@
 #     term this check has not read decides reaches the job narrower than its filter, and
 #     crediting the job with the filter's whole coverage would assert a build the gate does not
 #     start. Two shapes are read (output_filter): the PLAIN one, where the reference is a `||`
-#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and the shape of ci.yaml's outputs, `${{ github.event_name
-#     == 'workflow_dispatch' && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
+#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and the shape of ci.yaml's outputs, `${{
+#     steps.scope.outputs.every_job && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
 #     only hand the job the string 'true' — and the NARROWED one, where the reference is the last
 #     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`,
 #     `.github/workflows/ci.yaml#full-ci` outputs. A narrowed output runs the job on fewer changes than its
@@ -538,6 +538,17 @@ COMPUTED_BUILD_INPUTS: list[tuple[str, str, str, str]] = [
         "image carrying a hash this file no longer computes, which rule 10 of "
         ".github/scripts/check-ci-images.sh refuses, so the build this trigger starts is the "
         "only way the row can move onto an image that gate admits.",
+    ),
+    (
+        ".github/workflows/worker-image.yaml",
+        "build",
+        "scripts/daemon-contract-order.sh",
+        "that job's contract_order step runs this file over the built commit's history and "
+        "hands what it prints to the build as LEGION_CONTRACT_ORDER, which the Dockerfile's go "
+        "stage links into `legion` as api.contractOrder, the order the daemon numbers its "
+        "contract entries in. So this file's bytes decide the binary the image ships as surely "
+        "as a COPY of it would, while the Docker build itself never reads it: .dockerignore "
+        "leaves out the .git it reads.",
     ),
 ]
 computed_matches: dict[tuple[str, str, str, str], bool] = {}
@@ -1156,17 +1167,20 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     `needs.<needed>.outputs.<output>` hands the job, or None when the whole expression is in
     neither shape this check reads.
 
-    The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` inside a term
-    this check has not read can reach the job narrower than its filter. GitHub's `&&` binds
-    tighter than `||`, so an expression is a `||` of disjuncts, each a `&&` of conjuncts, and
-    exactly one disjunct may hold the reference. Two shapes are read:
+    The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` of one of the
+    job's paths-filter steps inside a term this check has not read can reach the job narrower than
+    its filter. GitHub's `&&` binds tighter than `||`, so an expression is a `||` of disjuncts,
+    each a `&&` of conjuncts, and exactly one disjunct may hold a paths-filter reference. Two
+    shapes are read:
 
       * PLAIN, the reference being the whole disjunct: `${{ steps.filter.outputs.x }}`, and
         `${{ <term> && 'true' || steps.filter.outputs.x }}`, the shape ci.yaml's
-        workflow_dispatch term writes. An earlier disjunct may only widen, which `widening`
+        every-job term writes. An earlier disjunct may only widen, which `widening`
         holds it to: `||` yields the first truthy operand, so one whose own last conjunct is
         the literal `'true'` either falls through to the reference or hands the job 'true',
-        and the filter's match reaches the job's `if:` unnarrowed either way. The term is "".
+        and the filter's match reaches the job's `if:` unnarrowed either way, whatever the
+        <term> reads (ci.yaml's reads another step's output, `steps.scope.outputs.every_job`).
+        The term is "".
       * NARROWED, the reference being the LAST conjunct of its disjunct:
         `${{ <term> && steps.filter.outputs.x || 'false' }}`, the shape of the
         `.github/workflows/ci.yaml#full-ci` term, whose
@@ -1183,8 +1197,13 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     expression = str((upstream.get("outputs") or {}).get(output, "")).strip()
     if not (expression.startswith("${{") and expression.endswith("}}")):
         return None
+    filter_ids = {str(s.get("id")) for s in paths_filter_steps(upstream)}
+
+    def filter_reference(part: str) -> bool:
+        return any(m.group(1) in filter_ids for m in STEP_OUTPUT.finditer(part))
+
     disjuncts = [unwrap(part) for part in split_top(unwrap(expression), "||")]
-    holders = [index for index, part in enumerate(disjuncts) if STEP_OUTPUT.search(part)]
+    holders = [index for index, part in enumerate(disjuncts) if filter_reference(part)]
     if len(holders) != 1:
         return None
     index = holders[0]
@@ -1194,7 +1213,7 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         return None
     conjuncts = split_top(disjuncts[index], "&&")
     reference = STEP_OUTPUT.fullmatch(unwrap(conjuncts[-1]))
-    if not reference or any(STEP_OUTPUT.search(part) for part in conjuncts[:-1]):
+    if not reference or reference.group(1) not in filter_ids or any(filter_reference(part) for part in conjuncts[:-1]):
         return None
     return reference.group(1), reference.group(2), " && ".join(conjuncts[:-1])
 
@@ -1202,7 +1221,7 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
 def widening(disjunct: str) -> bool:
     """True when a `||` disjunct before the reference can only widen the output: its value,
     when truthy, is the string 'true', which the job's `if:` tests for. `<term> && 'true'`
-    (ci.yaml's workflow_dispatch term) and a bare `'true'` are the two."""
+    (ci.yaml's every-job term) and a bare `'true'` are the two."""
     return unwrap(split_top(disjunct, "&&")[-1]) == "'true'"
 
 
@@ -1884,6 +1903,30 @@ BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
         ),
         "publishes what the push produced — the digest the build step output, as this job's "
         "outputs and as the run's summary: it reads earlier steps' outputs and no file at all",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "contract_order",
+        (
+            "if grep -Eq '^const DaemonAPIVersion = [0-9]+$' packages/daemon/internal/api/version.go; then",
+            'echo "stamp=" >> "$GITHUB_OUTPUT"',
+            'exit 0',
+            'fi',
+            'git fetch --filter=blob:none --unshallow origin "$BUILT_SHA" refs/heads/main:refs/remotes/origin/main',
+            'stamp=$(bash scripts/daemon-contract-order.sh --stamp "$BUILT_SHA")',
+            'if [ -z "$stamp" ]; then',
+            'echo "::error::scripts/daemon-contract-order.sh printed no stamp for $BUILT_SHA, whose Dockerfile requires one"',
+            'exit 1',
+            'fi',
+            'echo "stamp=$stamp" >> "$GITHUB_OUTPUT"',
+        ),
+        "writes an empty stamp for a head from before the cutover to entry files, whose version.go "
+        "still declares `const DaemonAPIVersion = <n>` and whose Dockerfile takes no stamp; for any "
+        "other head it fetches the built commit's history and main's, with no blob, reads from "
+        "them the stamp of the built commit's contract entries, refuses an empty one, and writes "
+        "it to $GITHUB_OUTPUT for the build's LEGION_CONTRACT_ORDER argument. Beside "
+        "packages/daemon/internal/api/version.go, which the build's context holds, "
+        "scripts/daemon-contract-order.sh is the one file of the tree it reads, which "
+        "COMPUTED_BUILD_INPUTS holds the trigger to",
     ),
 ]
 

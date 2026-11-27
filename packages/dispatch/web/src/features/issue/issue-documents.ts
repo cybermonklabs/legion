@@ -1,4 +1,4 @@
-import { primarySpec, roleDocument } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import type { Artifact, IssueDetails } from "../../api/types";
 import {
   DECISIONS_DOCUMENT_SLUG,
@@ -44,9 +44,11 @@ export function issueDocuments(
     | undefined
 ): IssueDocuments {
   const primaryArtifact = primarySpec(issue);
+  // A page opened at a document's current name, which a reference may write where its slug kept
+  // an earlier name, shows that document as the link to it drew it (`artifactAtAddress`).
   const selectedArtifact =
     route.kind === "artifact"
-      ? issue?.artifacts?.find(({ slug }) => slug === route.slug)
+      ? artifactAtAddress(issue?.artifacts, route.slug)
       : primaryArtifact;
   const isPrimaryArtifactRoute = isPrimaryDocumentArtifactRoute(route, selectedArtifact);
   return {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A message from a registered session names the machine and directory of the registration this
@@ -50,36 +52,14 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the interest registry: %v", err)
-	}
-	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
-	// gate is taken here, before the freeze.
-	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
-	waitForSessions(t, sessions)
-	interestBucket, err := client.JS().KeyValue(bus.InterestBucket)
-	if err != nil {
-		t.Fatalf("open the interest bucket: %v", err)
-	}
+	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup gate
+	// is taken before the freeze (openStampRig).
+	rig := openStampRig(t, client)
+	registry, sessions := rig.registry, rig.sessions
 
 	first := session.SessionEntry{SelfSubscribed: true, MachineID: "listener-a", Dir: "/work/a", Title: title}
 	current := session.SessionEntry{SelfSubscribed: true, MachineID: "listener-b", Dir: "/work/b", Title: title}
-	// register writes sessionID's entry and requires this listener's session cache to hold it, so
-	// no stamp below reads the bus for its title or its fallback.
-	register := func(t *testing.T, sessionID string, entry session.SessionEntry) {
-		t.Helper()
-		if err := sessions.Put(sessionID, entry); err != nil {
-			t.Fatalf("write %s's session entry: %v", sessionID, err)
-		}
-		if _, err := sessions.Get(sessionID); err != nil {
-			t.Fatalf("the listener's session cache does not hold %s (%v): its stamp would read the bus for the entry", sessionID, err)
-		}
-	}
+	register := rig.register
 	// recordThrough writes sessionID's interest record through each registration in turn and
 	// waits until the interest cache holds the last, so the stamp reads it from the cache.
 	recordThrough := func(t *testing.T, sessionID string, registrations ...session.SessionEntry) {
@@ -90,7 +70,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 			}
 		}
 		last := registrations[len(registrations)-1]
-		waitFor(t, 10*time.Second, "the interest cache to hold "+sessionID+"'s record through "+last.MachineID, func() bool {
+		waitFor(t, "the interest cache to hold "+sessionID+"'s record through "+last.MachineID, func() bool {
 			row, held := registry.Cached(sessionID)
 			return held && row.MachineID == last.MachineID && row.Dir == last.Dir
 		})
@@ -131,12 +111,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 
 	t.Run("case: the interest read answers a record this build cannot decode", func(t *testing.T) {
 		register(t, malformed, current)
-		if _, err := interestBucket.Put(malformed, []byte("not a json interest record")); err != nil {
-			t.Fatalf("write %s's unreadable interest record: %v", malformed, err)
-		}
-		if _, err := registry.Get(context.Background(), malformed); !errors.Is(err, store.ErrMalformedInterest) {
-			t.Fatalf("the interest read of %s answers %v, want %v: this row is a record this build cannot decode", malformed, err, store.ErrMalformedInterest)
-		}
+		rig.undecodable(t, malformed)
 		requireStamp(t, malformed, senderStamp(context.Background(), registry, sessions, malformed), current, "the session entry's, the current registration")
 	})
 
@@ -209,5 +184,205 @@ func TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry(t *testing.T)
 	}
 	if stamp.SessionID != sender || stamp.Machine != machine || stamp.Cwd != dir {
 		t.Errorf("stamp names session %q machine %q cwd %q, want %s on %s in %s: the interest record, read before the stalled entry read", stamp.SessionID, stamp.Machine, stamp.Cwd, sender, machine, dir)
+	}
+}
+
+// A stamp whose read-through did not answer within its bound still goes out with what it knows
+// (senderStamp), and says nothing of why its machine, directory or title is missing: the
+// registry's logger says so at WARN, naming the session, the bound and the read's error. A read
+// that answered writes no line: a cache hit makes no read, a sender neither bucket holds a row of
+// is answered nats.ErrKeyNotFound, and a record this build cannot decode is an answer about the
+// record, which the registry logs on its own line (interestReadAnswered). The rows whose read must
+// not answer end the window before the stamp starts, which bus.Bounded answers as a read the
+// window ended without starting it; the last row's session bucket fails the read instead, the bus
+// failing it rather than the window ending. The first row ends the window too, with both caches
+// holding the sender, so an ended window alone is shown to write no line.
+func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
+	t.Parallel()
+	const (
+		stampLine          = "listener sender stamp left out what a read-through did not answer within its bound"
+		cached             = "ses_stamp_warn_both_cached"
+		unknown            = "ses_stamp_warn_no_row"
+		malformed          = "ses_stamp_warn_undecodable_record"
+		interestUnanswered = "ses_stamp_warn_interest_unanswered"
+		titleUnanswered    = "ses_stamp_warn_title_unanswered"
+		titleFailed        = "ses_stamp_warn_title_read_failed"
+		title              = "the sender's title"
+	)
+	logs := &lockedBuffer{}
+	rig := openStampRig(t, setupPublishTestClient(t), store.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
+	registry, sessions := rig.registry, rig.sessions
+
+	entry := session.SessionEntry{SelfSubscribed: true, MachineID: "entry-machine", Dir: "/work/entry", Title: title}
+	register := func(t *testing.T, sessionID string) {
+		t.Helper()
+		rig.register(t, sessionID, entry)
+	}
+	// record writes sessionID's interest record and waits until the interest cache holds it, so
+	// the stamp reads no bucket for its machine and directory.
+	record := func(t *testing.T, sessionID string) {
+		t.Helper()
+		if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "interest-machine", Dir: "/work/interest"},
+			[]string{contracts.LegacyAgentSubject(sessionID)}); err != nil {
+			t.Fatalf("write %s's interest record: %v", sessionID, err)
+		}
+		testwait.Eventually(t, "the interest cache to hold "+sessionID+"'s record", func() bool {
+			_, held := registry.Cached(sessionID)
+			return held
+		})
+	}
+	uncachedInterest := func(t *testing.T, sessionID string) {
+		t.Helper()
+		if _, held := registry.Cached(sessionID); held {
+			t.Fatalf("the interest cache holds %s: its stamp would read no bucket for the record", sessionID)
+		}
+	}
+	uncachedEntry := func(t *testing.T, sessionID string) {
+		t.Helper()
+		if _, err := sessions.Get(sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
+			t.Fatalf("the session cache answers %s with %v, want %v: its stamp would read no bucket for the title", sessionID, err, nats.ErrKeyNotFound)
+		}
+	}
+	// ended is a stamp's context whose window has already ended.
+	ended, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancel()
+	stampLines := func(sessionID string) []map[string]any {
+		return linesIn(logs.String(), stampLine, map[string]any{"session_id": sessionID})
+	}
+	requireNoLine := func(t *testing.T, sessionID, why string) {
+		t.Helper()
+		if lines := stampLines(sessionID); len(lines) != 0 {
+			t.Fatalf("the stamp of %s logged %v, want no line: %s", sessionID, lines, why)
+		}
+	}
+	requireLine := func(t *testing.T, sessionID string, carries ...string) {
+		t.Helper()
+		lines := stampLines(sessionID)
+		if len(lines) != 1 {
+			t.Fatalf("the stamp of %s logged %d lines %q, want 1:\n%s", sessionID, len(lines), stampLine, logs.String())
+		}
+		assertRecordFields(t, lines[0], map[string]any{"level": "WARN", "bound": float64(senderStampReadTimeout)})
+		for _, want := range carries {
+			assertRecordErrorCarries(t, lines[0], want)
+		}
+	}
+
+	t.Run("control: both caches hold the sender, and the window has ended", func(t *testing.T) {
+		register(t, cached)
+		record(t, cached)
+		stamp := senderStamp(ended, registry, sessions, cached)
+		if stamp == nil || stamp.Machine != "interest-machine" || stamp.Title != title {
+			t.Fatalf("stamp of %s is %+v, want the cached record's machine and the cached entry's title", cached, stamp)
+		}
+		requireNoLine(t, cached, "a cache hit makes no read, so no read went unanswered")
+	})
+
+	t.Run("control: neither bucket holds a row of the sender", func(t *testing.T) {
+		uncachedInterest(t, unknown)
+		uncachedEntry(t, unknown)
+		stamp := senderStamp(context.Background(), registry, sessions, unknown)
+		if stamp == nil || stamp.SessionID != unknown || stamp.Machine != "" || stamp.Title != "" {
+			t.Fatalf("stamp of %s is %+v, want the session alone", unknown, stamp)
+		}
+		requireNoLine(t, unknown, "both buckets answered that they hold no row")
+	})
+
+	t.Run("control: the interest record does not decode", func(t *testing.T) {
+		register(t, malformed)
+		rig.undecodable(t, malformed)
+		stamp := senderStamp(context.Background(), registry, sessions, malformed)
+		if stamp == nil || stamp.Machine != entry.MachineID {
+			t.Fatalf("stamp of %s is %+v, want the entry's machine %s", malformed, stamp, entry.MachineID)
+		}
+		requireNoLine(t, malformed, "the bucket answered the record, which this build cannot decode")
+	})
+
+	t.Run("case: the interest read does not answer within the window", func(t *testing.T) {
+		register(t, interestUnanswered)
+		uncachedInterest(t, interestUnanswered)
+		stamp := senderStamp(ended, registry, sessions, interestUnanswered)
+		if stamp == nil || stamp.Machine != entry.MachineID || stamp.Title != title {
+			t.Fatalf("stamp of %s is %+v, want the cached entry's machine and title", interestUnanswered, stamp)
+		}
+		requireLine(t, interestUnanswered, "interest record", context.DeadlineExceeded.Error())
+	})
+
+	t.Run("case: the title read does not answer within the window", func(t *testing.T) {
+		record(t, titleUnanswered)
+		uncachedEntry(t, titleUnanswered)
+		stamp := senderStamp(ended, registry, sessions, titleUnanswered)
+		if stamp == nil || stamp.Machine != "interest-machine" || stamp.Title != "" {
+			t.Fatalf("stamp of %s is %+v, want the cached record's machine and no title", titleUnanswered, stamp)
+		}
+		requireLine(t, titleUnanswered, "read session "+titleUnanswered+" from the bucket", context.DeadlineExceeded.Error())
+	})
+
+	t.Run("case: the session bucket fails the title read", func(t *testing.T) {
+		record(t, titleFailed)
+		uncachedEntry(t, titleFailed)
+		failure := errors.New("the session bucket's read failed")
+		sessions.StopWatch()
+		swapSessionBucket(t, sessions, func(kv nats.KeyValue) nats.KeyValue {
+			return bucketThatFails{KeyValue: kv, err: failure}
+		})
+		stamp := senderStamp(context.Background(), registry, sessions, titleFailed)
+		if stamp == nil || stamp.Machine != "interest-machine" || stamp.Title != "" {
+			t.Fatalf("stamp of %s is %+v, want the cached record's machine and no title", titleFailed, stamp)
+		}
+		requireLine(t, titleFailed, failure.Error())
+	})
+}
+
+// stampRig is a listener's interest and session registries over one connection, for a test of the
+// stamp a send carries (senderStamp), with the interest bucket a row writes past the registry.
+type stampRig struct {
+	registry  *store.Registry
+	sessions  *session.SessionRegistry
+	interests nats.KeyValue
+}
+
+// openStampRig opens both registries over client, the interest registry with options, and waits
+// for each as the listener's own start does (waitForRegistry, waitForSessions): a stamp reads the
+// role claim view, which refuses until it is complete.
+func openStampRig(t *testing.T, client *bus.Client, options ...store.OpenOption) stampRig {
+	t.Helper()
+	registry, err := store.Open(t.Context(), client.Conn, append([]store.OpenOption{store.WithReplicas(1)}, options...)...)
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
+	}
+	waitForRegistry(t, registry)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	waitForSessions(t, sessions)
+	interests, err := client.JS().KeyValue(bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("open the interest bucket: %v", err)
+	}
+	return stampRig{registry: registry, sessions: sessions, interests: interests}
+}
+
+// register writes sessionID's entry and requires this listener's session cache to hold it, so a
+// stamp of it reads no bucket for its title or its fallback.
+func (r stampRig) register(t *testing.T, sessionID string, entry session.SessionEntry) {
+	t.Helper()
+	if err := r.sessions.Put(sessionID, entry); err != nil {
+		t.Fatalf("write %s's session entry: %v", sessionID, err)
+	}
+	if _, err := r.sessions.Get(sessionID); err != nil {
+		t.Fatalf("the listener's session cache does not hold %s (%v): its stamp would read the bus for the entry", sessionID, err)
+	}
+}
+
+// undecodable writes sessionID an interest record this build cannot decode, and requires the
+// interest read of it to answer store.ErrMalformedInterest.
+func (r stampRig) undecodable(t *testing.T, sessionID string) {
+	t.Helper()
+	if _, err := r.interests.Put(sessionID, []byte("not a json interest record")); err != nil {
+		t.Fatalf("write %s's unreadable interest record: %v", sessionID, err)
+	}
+	if _, err := r.registry.Get(context.Background(), sessionID); !errors.Is(err, store.ErrMalformedInterest) {
+		t.Fatalf("the interest read of %s answers %v, want %v: this row is a record this build cannot decode", sessionID, err, store.ErrMalformedInterest)
 	}
 }

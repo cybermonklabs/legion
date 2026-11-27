@@ -11,7 +11,7 @@
 // 128,000 (`config/custom-models.ts:137`). A provider an extension registers is checked in
 // "runtime-register" mode, which skips that check, and its explicit window outlasts the model's
 // finalization (`custom-models.ts:158`), so the session's `getContextUsage()` answers a window of
-// zero (`session/session-stats.ts:287-288`).
+// zero (`session/session-stats.ts:303-304`).
 
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 

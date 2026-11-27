@@ -35,6 +35,8 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 		{"dispatch://CORE-1/artifacts", issue},
 		{"dispatch://CORE-1/collaborators", issue},
 		{"dispatch://CORE-1/log", issue},
+		// Its other form, which the shared text table names too (main's `issueTabs`).
+		{"dispatch://CORE-1/conversation", issue},
 		{server + "/issues/CORE-1/artifact/notes-md", notes},
 		{server + "/issues/CORE-1/artifact/notes-md?v=2", notes},
 		{server + "/issues/CORE-1/artifacts/notes-md", notes},
@@ -48,7 +50,6 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 		server + "/issues/CORE-1/documents/notes-md",
 		server + "/issues/CORE-1/artifactz/notes-md",
 		"dispatch://CORE-1/settings",
-		"dispatch://CORE-1/conversation",
 	} {
 		if got, ok := ParseRef(value, server); ok {
 			t.Errorf("ParseRef(%q) = %#v, want no reference", value, got)

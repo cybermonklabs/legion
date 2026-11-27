@@ -125,7 +125,7 @@ type Ledger struct {
 	// PendingMarkdown, queueFor), and Discard drops it: each entry holds its version's whole
 	// markdown.
 	numbers map[string]int
-	latest  map[string]pendingVersion
+	latest  map[string]latestVersionRow
 	now     *time.Time
 	// anchors holds, per document, the anchored ask and comment rows this transaction writes, as
 	// they will stand (RegisterPendingAnchor), in the order they were first registered.
@@ -412,14 +412,6 @@ func (l *Ledger) NextVersion(ctx context.Context, artifactID string) (int, time.
 	return number, *l.now, nil
 }
 
-// pendingVersion is a version this transaction has queued and not yet written, as latestVersion
-// reads a stored one.
-type pendingVersion struct {
-	version          model.Version
-	markdown         string
-	docUpdateVersion int64
-}
-
 // PendingVersionMarkdown is the markdown of version number of artifactID when it is the version
 // this transaction last numbered and queued (writeVersionTx) and has not written yet: a route that
 // reads the version it just made - the diff a named version's event carries - takes it from here,
@@ -430,7 +422,7 @@ func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, 
 		return "", false
 	}
 	pending, queued := l.latest[artifactID]
-	if !queued || pending.version.Number != number {
+	if !queued || pending.Number != number {
 		return "", false
 	}
 	return pending.markdown, true
@@ -462,14 +454,14 @@ func (l *Ledger) PendingVersionNumber(artifactID string) (int, bool) {
 		return 0, false
 	}
 	pending, queued := l.latest[artifactID]
-	return pending.version.Number, queued
+	return pending.Number, queued
 }
 
 // queuedVersion records pending as the latest version of artifactID, which this transaction has
 // queued and not yet written (latestVersion, PendingVersionMarkdown).
-func (l *Ledger) queuedVersion(artifactID string, pending pendingVersion) {
+func (l *Ledger) queuedVersion(artifactID string, pending latestVersionRow) {
 	if l.latest == nil {
-		l.latest = make(map[string]pendingVersion)
+		l.latest = make(map[string]latestVersionRow)
 	}
 	l.latest[artifactID] = pending
 }
@@ -745,12 +737,18 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
 // part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
 // one to both readers, so the two of them read it once.
+//
+// questionReconciled says the route queued the reconciliation of the ask's question before this
+// call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
+// parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
+// reconciles the question's references after them and settles it there (planAskPartsCounted).
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
 	document *refs.PendingDocument,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
 	if l.writer == nil {
@@ -768,7 +766,7 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
+	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -1096,9 +1094,16 @@ func (l *Ledger) commit(ctx context.Context) error {
 		captures = append(captures, flushCapture(flush))
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
-	// lock, after the flushes' classes are marked stored.
+	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
+	// fork, so here is the last point the fork is the write's own, where its rendering is checked
+	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
+	// stores the browser updates that lock held back and measures each on the shadow
+	// (roomShadow.measure), before the publish or after it.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
+		if l.service.checkRendering != nil {
+			l.service.checkRendering("commit", write)
+		}
 		if shadow := write.newShadow(); shadow != nil {
 			captures = append(captures, roomCapture{room: artifactID, capture: authorCapture{state: write.state}, shadow: shadow})
 		}

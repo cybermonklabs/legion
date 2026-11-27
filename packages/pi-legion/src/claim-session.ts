@@ -1,3 +1,4 @@
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
@@ -14,6 +15,10 @@ import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
+
+/** The daemon API contract this build speaks, which its registration states as `pluginContract`
+ * (`daemonContract`, read once as the module loads). */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 export interface ClaimSession {
   /** Boots the claim behind a root architect's or a phase worker's pane (`legion.ts` calls it for
@@ -111,7 +116,7 @@ export function createClaimSession(deps: {
         sessionId: sessionID,
         ompSessionFile: sessionFile,
         agentId,
-        pluginContract: pkg.legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       },
       afterRegister: async () => {
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);

@@ -124,7 +124,7 @@ func childGiveUpAt(t *testing.T) time.Time {
 // a wait that never gives up does.
 func childTimeout(t *testing.T) time.Duration {
 	t.Helper()
-	return Remaining(t, margin)
+	return Remaining(t, Margin)
 }
 
 // A wait whose fact is already there returns from its first question: Until asks once and never
@@ -194,8 +194,8 @@ func TestContextEndsWhereReceiveGivesUpAndWithTheTest(t *testing.T) {
 		taken = Context(t)
 		binary, bounded := t.Deadline()
 		deadline, has := taken.Deadline()
-		if has != bounded || has && !deadline.Equal(binary.Add(-margin)) {
-			t.Fatalf("Context's deadline is %v (%t), want %s before the binary's %v (%t)", deadline, has, margin, binary, bounded)
+		if has != bounded || has && !deadline.Equal(binary.Add(-Margin)) {
+			t.Fatalf("Context's deadline is %v (%t), want %s before the binary's %v (%t)", deadline, has, Margin, binary, bounded)
 		}
 		if err := taken.Err(); err != nil {
 			t.Fatalf("Context ended before its test did: %v", err)
@@ -210,15 +210,15 @@ func TestContextEndsWhereReceiveGivesUpAndWithTheTest(t *testing.T) {
 func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
 	end, ok := giveUpAt(t)
-	if ok != bounded || ok && !end.Equal(deadline.Add(-margin)) {
-		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
+	if ok != bounded || ok && !end.Equal(deadline.Add(-Margin)) {
+		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, Margin)
 	}
 }
 
 // lateBound is how long after a wall timer was armed the row below reads it as late. It is a
 // third of the margin every wait here leaves, so a timer late by more than it is later than any
 // scheduling a test of this package stands: the timer the row arms is due in 50 ms.
-const lateBound = margin / 3
+const lateBound = Margin / 3
 
 // The wall clock's timer fires at the moment it was armed for: not before it, and not lateBound
 // after it. The moment it sends is the moment it fired, not when this test reads it (time's
@@ -320,7 +320,7 @@ func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 	child.WaitDelay = childDrain
 	output, err := child.CombinedOutput()
 	if ctx.Err() != nil {
-		t.Fatalf("the child under -timeout 0 was still running %s before this test's deadline, so it was killed: a wait in it never returned (%v)\n%s", margin, err, output)
+		t.Fatalf("the child under -timeout 0 was still running %s before this test's deadline, so it was killed: a wait in it never returned (%v)\n%s", Margin, err, output)
 	}
 	if err != nil || !strings.Contains(string(output), "--- PASS: TestNoDeadlineChild (") {
 		t.Fatalf("under -timeout 0 the child did not pass: %v\n%s", err, output)

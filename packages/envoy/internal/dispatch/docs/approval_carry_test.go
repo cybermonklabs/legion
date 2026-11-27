@@ -670,22 +670,29 @@ func formKept(context.Context, pgx.Tx, *model.AskApproval, model.AskApprovalDocu
 // a single ask under the block id region.
 const regionSpec = "Context\n\n:::ask{#region urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
 
-// seededRegionDocument creates regionSpec as a document, starts a service that settles a live
-// write after settle and carries by the carry's rules alone (formKept), seeds the document's live
-// text with the same markdown, and returns the store, the service and the document's id once
-// settlement has indexed the block as an ask of the document - the row the carry reads.
-func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Service, string) {
+// regionSettle is the settle window of the service seededRegionDocument starts: a day, longer than
+// any `go test -timeout` a CI job gives this package (60 minutes in envoy-go-race-docs), so no
+// settlement a live write arms runs before the test's cleanup, however slow the machine.
+const regionSettle = 24 * time.Hour
+
+// seededRegionDocument creates regionSpec as a document, starts a service that settles only when
+// the test asks (regionSettle) and carries by the carry's rules alone (formKept), seeds the
+// document's live text with the same markdown, and returns the store, the service and the
+// document's id once settlement has indexed the block as an ask of the document - the row the
+// carry reads. That settlement runs at once (SettleNow), and it is the last one before the test's
+// cleanup: the test decides when settlement runs, and no clock does.
+func seededRegionDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
-	return seededRegionDocumentGated(t, settle, formKept)
+	return seededRegionDocumentGated(t, formKept)
 }
 
 // seededRegionDocumentGated is seededRegionDocument with gate as the service's form gate, and no
 // gate at all when gate is nil.
-func seededRegionDocumentGated(t *testing.T, settle time.Duration, gate FormGate) (*store.Store, *Service, string) {
+func seededRegionDocumentGated(t *testing.T, gate FormGate) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: regionSettle})
 	if gate != nil {
 		service.SetFormGate(gate)
 	}
@@ -693,7 +700,7 @@ func seededRegionDocumentGated(t *testing.T, settle time.Duration, gate FormGate
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads. The wait
 	// lasts up to a minute, as seededActDocument's does (testwait.Eventually).
-	service.ScheduleSettlement(artifactID)
+	service.SettleNow(artifactID)
 	testwait.Eventually(t, "settlement to index the block", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
@@ -721,11 +728,14 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // A version named from the live tree while it holds two ask nodes under one decided block id - a
 // second node a document-socket peer wrote with the id of the block the human answered - carries
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
-// read. The same version without the repeat carries, so the repeat alone is what refuses.
+// read. The same version without the repeat carries, so the repeat alone is what refuses. No
+// settlement runs between the answer and the named version (seededRegionDocument), so the named
+// version is the first version after the answer: a settlement there would version the answer on
+// its own, and the named version would carry the approval a second time, from that version.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
-		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+		database, service, artifactID := seededRegionDocument(t)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
@@ -834,7 +844,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 func TestAServiceBuiltWithNoFormGateCarriesNoApproval(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, gate FormGate) (reviews, approvals int) {
-		database, service, artifactID := seededRegionDocumentGated(t, 20*time.Millisecond, gate)
+		database, service, artifactID := seededRegionDocumentGated(t, gate)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
 		joined(t, service, func(ctx context.Context, tx pgx.Tx) error {

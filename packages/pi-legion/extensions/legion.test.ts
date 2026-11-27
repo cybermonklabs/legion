@@ -22,6 +22,7 @@ import {
   LISTENER_CALL_ATTEMPTS,
   roleToken,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
@@ -105,6 +106,9 @@ import type {
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
+
+// The contract this build speaks, as `legion.ts` reads it (`daemonContract`): this checkout's.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
@@ -759,7 +763,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:500-520 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:541-561 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
@@ -1498,7 +1502,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sessionId: "ses_worker",
           ompSessionFile: "/tmp/ses_worker.jsonl",
           agentId: "ses_worker",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {
@@ -1543,8 +1547,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
   // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
   // describes, and reads that contract from a request header. This pane states the contract of
-  // the module it loaded, its own manifest's `legion.daemonApiVersion`, on every request it
-  // makes, a GET included.
+  // the module it loaded (`daemonContract` of its own manifest) on every request it makes, a GET
+  // included.
   test("every daemon request of a pane states this build's own daemon API contract", async () => {
     const stated: { readonly path: string; readonly contract: string | null }[] = [];
     const pane = await bootPane({
@@ -1564,7 +1568,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.exits).toEqual([]);
     expect(stated.length).toBeGreaterThan(0);
     expect(stated.map((request) => request.contract)).toEqual(
-      stated.map(() => String(pkg.legion.daemonApiVersion))
+      stated.map(() => String(PLUGIN_CONTRACT))
     );
   });
   test("does nothing for a session with no Legion environment markers", async () => {
@@ -2235,7 +2239,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // check reads: it does at once for a refusal whose status cannot clear, of the task's prompt or
     // of a reminder's own turn, which no prompt ran and which the daemon judges from its
     // turn-outcome report (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the
-    // reminders keep their pace, and the controller is told once at six such turns in a row.
+    // reminders keep their pace. At six such turns in a row the daemon sends the `provider-errors`
+    // notice once (`providerErrorRunReached` in the daemon's `workflow.go` says to whom).
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -4480,7 +4485,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           sessionId: "ses_controller",
           ompSessionFile: "/tmp/ses_controller.jsonl",
           agentId: "ses_controller",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
     ]);
@@ -5562,7 +5567,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           sessionId: "ses_controller_pod",
           ompSessionFile: "/tmp/ses_controller_pod.jsonl",
           agentId: "ses_controller_pod",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {

@@ -32,6 +32,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // gitFailure is a failed transfer from GitHub as git reports it, with how Fetch reads it:
@@ -1023,11 +1025,16 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 	}
 }
 
-// A feed repository Fetch did not write is not taken as its own. Before this release an issue's
-// agents could write the issue volume's feed directory, so an upgraded volume may hold a repository
-// there carrying a hook, configuration or link that the token-holding fetch would run or follow.
-// Fetch takes an existing feed only in the shape it writes, and otherwise removes it, says so, and
-// fills the feed afresh: no planted hook runs, and nothing planted survives.
+// A feed repository Fetch did not write is not taken as its own, and it is not replaced either.
+// Before this release an issue's agents could write the issue volume's feed directory, so a volume
+// may hold a repository there carrying a hook, configuration or link that the token-holding fetch
+// would run or follow; and a pod's clone reads the feed's objects through its alternates, so a feed
+// replaced under it would take the clone's history with it. Fetch takes an existing feed only in
+// the shape it writes, and otherwise fails, naming why, runs no git, and leaves the feed where it
+// stands: no planted hook runs, and nothing is removed or cloned in its place — not even the stale
+// lock and the partial pack a killed fetch leaves, which Fetch's sweep removes only from a feed it
+// takes as its own (RemoveStaleFeedLocks). Before, that sweep ran first and removed both from a
+// feed Fetch then refused.
 func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 	for name, plant := range map[string]func(t *testing.T, feed, marker string){
 		"a hook": func(t *testing.T, feed, marker string) {
@@ -1109,28 +1116,50 @@ func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 			}
 			marker := filepath.Join(t.TempDir(), "the hook ran")
 			plant(t, first.Feed, marker)
+			var stale []string
+			if info, err := os.Lstat(first.Feed); err == nil && info.IsDir() {
+				for _, name := range []string{"packed-refs.lock", filepath.Join("objects", "pack", "tmp_pack_Stale1")} {
+					path := filepath.Join(first.Feed, name)
+					if err := os.WriteFile(path, []byte("interrupted\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					stale = append(stale, path)
+				}
+			}
 			advanceRemote(t, run.remote)
 			before := len(run.Calls())
-
-			again, err := Fetch(context.Background(), run, req)
+			owner, err := os.Lstat(filepath.Dir(first.Feed))
 			if err != nil {
-				t.Fatalf("the Fetch after the plant: %v", err)
+				t.Fatal(err)
+			}
+			planted, err := os.Lstat(first.Feed)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Fetch(context.Background(), run, req)
+			if err == nil || !strings.Contains(err.Error(), "is not one this fetch wrote") {
+				t.Fatalf("the Fetch after the plant = %v, want it to fail saying the feed is not one it wrote", err)
 			}
 			if _, err := os.Stat(marker); err == nil {
 				t.Fatal("a planted hook ran in the fetch")
 			}
-			if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "is not one this fetch wrote") }) {
-				t.Errorf("Fetch did not say it refused the feed: %q", logged)
+			if calls := run.Calls()[before:]; len(calls) != 0 {
+				t.Errorf("the Fetch after the plant ran %v, want no git at all", calls)
 			}
-			findCall(t, run.Calls()[before:], "git", "clone", "--bare")
-			if info, err := os.Lstat(filepath.Dir(again.Feed)); err != nil || !info.IsDir() {
-				t.Errorf("the feed's owner directory is %v (%v), want a directory", info, err)
+			if slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "removed") }) {
+				t.Errorf("Fetch logged %q, want nothing removed", logged)
 			}
-			if why, err := foreignFeed(again.Feed); err != nil || why != "" {
-				t.Errorf("the refilled feed reads as foreign: %q (%v)", why, err)
+			if info, err := os.Lstat(filepath.Dir(first.Feed)); err != nil || info.Mode().Type() != owner.Mode().Type() {
+				t.Errorf("the feed's owner directory is %v (%v) after the fetch, want it as it stood, %v", info, err, owner.Mode().Type())
 			}
-			if got, want := strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+again.Feed, "rev-parse", "refs/heads/main")), strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+run.remote, "rev-parse", "main")); got != want {
-				t.Errorf("the refilled feed's main is %s, want the remote's %s", got, want)
+			if info, err := os.Lstat(first.Feed); err != nil || info.Mode().Type() != planted.Mode().Type() {
+				t.Errorf("the feed is %v (%v) after the fetch, want it as it stood, %v", info, err, planted.Mode().Type())
+			}
+			for _, path := range stale {
+				if _, err := os.Lstat(path); err != nil {
+					t.Errorf("the foreign feed's %s after the fetch: %v, want it left as it stood", path, err)
+				}
 			}
 		})
 	}
@@ -1175,21 +1204,18 @@ func TestFetchKeepsAFeedHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 
 // A feed can be garbage-collected between pod starts. A completed gc and one killed while its
 // repack is running leave only files Git owns, so the next fetch keeps the feed instead of replacing
-// it. A gc killed earlier, while it packs refs, also leaves packed-refs.lock: Fetch removes that
-// stale lock before it judges the feed, so it keeps that feed too, and only Fetch judges it.
+// it. A gc killed earlier, while it packs refs, also leaves packed-refs.lock: a lock makes no feed
+// foreign, and Fetch removes it once it takes the feed, so it keeps that feed too.
 func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		gc   func(t *testing.T, feed string)
-		// leftLock is set when the gc leaves a lock only Fetch's stale-lock sweep removes, so the
-		// feed is judged through Fetch alone and never by foreignFeed first.
-		leftLock bool
 	}{
 		{name: "completed", gc: func(t *testing.T, feed string) {
 			runSetup(t, feed, "git", "--git-dir="+feed, "gc", "--prune=now")
 		}},
 		{name: "killed during repack", gc: killGitGC},
-		{name: "killed during pack-refs", leftLock: true, gc: func(t *testing.T, feed string) {
+		{name: "killed during pack-refs", gc: func(t *testing.T, feed string) {
 			// git gc writes gc.pid, then packs refs under packed-refs.lock before it repacks; a pod
 			// that ends there leaves both behind.
 			if err := os.WriteFile(filepath.Join(feed, "gc.pid"), []byte("4242 killed-pod"), 0o644); err != nil {
@@ -1210,10 +1236,8 @@ func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 				t.Fatalf("first Fetch: %v", err)
 			}
 			tc.gc(t, first.Feed)
-			if !tc.leftLock {
-				if why, err := foreignFeed(first.Feed); err != nil || why != "" {
-					t.Fatalf("foreignFeed after git gc = %q, %v; want the feed trusted", why, err)
-				}
+			if why, err := foreignFeed(first.Feed); err != nil || why != "" {
+				t.Fatalf("foreignFeed after git gc = %q, %v; want the feed trusted", why, err)
 			}
 			before := len(run.Calls())
 
@@ -1904,9 +1928,8 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 	}{
 		{"a cache answering not ready", func(t *testing.T) string { return (&fakeCache{notReady: 1 << 30}).serve(t) }, "503 Service Unavailable"},
 		{"a cache that does not answer", func(t *testing.T) string {
-			server := httptest.NewServer(http.NotFoundHandler())
-			server.Close()
-			return server.URL
+			// A port the test holds and nothing listens on: every dial to it is refused.
+			return "http://" + testport.Refused(t)
 		}, "connection refused"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1934,28 +1957,47 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 // takes 25 minutes to check, gives the delta its whole bound, and the fresh feed is filled. So
 // does a cache ready on the wait's last ask, 129 min 50 s in, whose history takes that whole
 // bound: before the delta had a bound of its own, the fetch died there and its replacement
-// streamed the cache again (sjawhar/legion#2235). The fetch still ends inside FetchBudget.
+// streamed the cache again (sjawhar/legion#2235). The fetch still ends inside FetchBudget. The
+// cache's bucket has a bound of its own too: a cache ready on that last ask whose bucket's history
+// takes past the bucket attempt's whole BucketFetchTimeout to check, which ends it there, leaves
+// /tar's verification its whole FetchTimeout, which it takes, and the delta its whole own bound;
+// the feed comes from /tar, saying the bucket's check failed. (Each other row's cache serves no
+// /packs, and costs no clock time.)
 func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) {
 	polls := func(d time.Duration) int { return int(d / CachePoll) }
 	for _, tc := range []struct {
 		name     string
 		notReady int
+		// bucket has the cache serve its packs from a bucket (packsCache), whose attempt's history
+		// check is the step "bucket fsck" (bucketFirst).
+		bucket   bool
 		took     map[string]time.Duration
 		timeouts map[string][]time.Duration
 		fails    string
 		elapsed  time.Duration
+		// reason is how the report's TarReason of a fetch that succeeds begins.
+		reason string
 	}{
 		{
 			name: "a cache ready 35 minutes in", notReady: polls(35 * time.Minute),
 			took:     map[string]time.Duration{"fsck": 25 * time.Minute},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}},
 			elapsed:  35*time.Minute + 25*time.Minute,
+			reason:   reasonNotServed,
 		},
 		{
 			name: "a history that takes the whole first bound to check", notReady: polls(CacheWaitTimeout) - 1,
 			took:     map[string]time.Duration{"fsck": FetchTimeout},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}},
 			elapsed:  CacheWaitTimeout - CachePoll + FetchTimeout,
+			reason:   reasonNotServed,
+		},
+		{
+			name: "a bucket attempt that runs its whole bound, then a tar history that takes its whole own", notReady: polls(CacheWaitTimeout) - 1, bucket: true,
+			took:     map[string]time.Duration{"bucket fsck": BucketFetchTimeout + time.Second, "fsck": FetchTimeout},
+			timeouts: map[string][]time.Duration{"bucket fsck": {BucketFetchTimeout}, "fsck": {FetchTimeout}, "fetch": {FetchTimeout}},
+			elapsed:  CacheWaitTimeout - CachePoll + BucketFetchTimeout + FetchTimeout,
+			reason:   reasonGit,
 		},
 		{
 			name: "a pack whose indexing takes the whole first bound", notReady: 0,
@@ -1976,16 +2018,22 @@ func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) 
 			run := newLocalRunner(t)
 			clock := newTestClock()
 			start := clock.Now()
-			slow := &slowSteps{recordingRunner: run, clock: clock, step: cacheFetchStep, took: tc.took, timeouts: map[string][]time.Duration{}}
 			cache := cacheOf(t, run.remote)
 			if _, indexes := tc.took["index-pack"]; indexes {
 				if err := os.Remove(strings.TrimSuffix(packOf(t, cache), ".pack") + ".idx"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			served := &fakeCache{body: cacheTar(t, cache), notReady: tc.notReady}
 			req := fetchRequest(t)
-			req.CacheURL, req.CacheToken, req.Clock, req.Log = served.serve(t), testCacheToken, clock, func(string) {}
+			req.Clock, req.Log = clock, func(string) {}
+			step := cacheFetchStep
+			if tc.bucket {
+				newPacksCache(t, cache, tc.notReady).serve(t, &req)
+				step = bucketFirst(cacheFetchStep)
+			} else {
+				req.CacheURL, req.CacheToken = (&fakeCache{body: cacheTar(t, cache), notReady: tc.notReady}).serve(t), testCacheToken
+			}
+			slow := &slowSteps{recordingRunner: run, clock: clock, step: step, took: tc.took, timeouts: map[string][]time.Duration{}}
 
 			report, err := Fetch(context.Background(), slow, req)
 			if tc.fails == "" && err != nil {
@@ -1993,6 +2041,9 @@ func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) 
 			}
 			if tc.fails != "" && (err == nil || !strings.Contains(err.Error(), tc.fails)) {
 				t.Fatalf("Fetch = %+v, %v; want it failed: %q", report, err, tc.fails)
+			}
+			if tc.fails == "" && (report.Source != SourceTar || !strings.HasPrefix(report.TarReason, tc.reason)) {
+				t.Errorf("Fetch filled the feed from %q because %q, want /tar because %q", report.Source, report.TarReason, tc.reason)
 			}
 			if !maps.EqualFunc(slow.timeouts, tc.timeouts, slices.Equal[[]time.Duration]) {
 				t.Errorf("the fetch's commands were given %v, want %v: each stage's own bound, from when it began", slow.timeouts, tc.timeouts)
@@ -2004,6 +2055,21 @@ func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) 
 				assertNothingFilledTheFeed(t, run, req)
 			}
 		})
+	}
+}
+
+// bucketFirst is step with the first `git fsck` it names called "bucket fsck": a fetch from a cache
+// whose packs are in a bucket checks the bucket's history first, and /tar's only after that
+// attempt failed.
+func bucketFirst(step func(argv []string) string) func(argv []string) string {
+	checked := false
+	return func(argv []string) string {
+		named := step(argv)
+		if named == "fsck" && !checked {
+			checked = true
+			return "bucket fsck"
+		}
+		return named
 	}
 }
 
