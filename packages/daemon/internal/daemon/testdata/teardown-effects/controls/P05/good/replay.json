@@ -1,0 +1,93 @@
+{
+  "id": "268eec6f-fdec-4277-8f3e-363353284ccb",
+  "verdict": "ok",
+  "seed": [],
+  "calls": [
+    {
+      "call": "P05 good trace, action 5",
+      "op": "handoff_complete",
+      "at": "2030-01-07T15:04:30Z",
+      "before": [
+        {
+          "kind": "push",
+          "source": "P05 good trace, action 1",
+          "what": "legion/ACME-12 7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+          "at": "2030-01-07T15:02:10Z",
+          "outcomeSeq": 1
+        },
+        {
+          "kind": "github",
+          "source": "P05 good trace, action 2",
+          "what": "gh pr create",
+          "at": "2030-01-07T15:02:40Z",
+          "outcomeSeq": 2
+        },
+        {
+          "kind": "dispatch",
+          "source": "P05 good trace, action 3",
+          "what": "result",
+          "at": "2030-01-07T15:03:30Z",
+          "outcomeSeq": 3
+        },
+        {
+          "kind": "dispatch",
+          "source": "P05 good trace, action 4",
+          "what": "handoff-write",
+          "at": "2030-01-07T15:04:05Z",
+          "outcomeSeq": 4
+        }
+      ],
+      "state": {
+        "phase": "implementing",
+        "tree": "ACME-10",
+        "treeRuns": true,
+        "parent": "ACME-10",
+        "standing": "16a88904a0ad0498ddbc8dbfeacbad2edb3a6a11",
+        "branch": "16a88904a0ad0498ddbc8dbfeacbad2edb3a6a11",
+        "pulls": [
+          {
+            "number": 1,
+            "state": "open",
+            "head": "16a88904a0ad0498ddbc8dbfeacbad2edb3a6a11"
+          }
+        ]
+      },
+      "standin": [
+        {
+          "outcomeSeq": 5,
+          "route": "POST /legion/v1/handoff/complete",
+          "status": 200,
+          "code": null
+        }
+      ],
+      "daemon": [
+        {
+          "seq": 0,
+          "route": "GET /legion/v1/issues/ACME-12/record",
+          "status": 200,
+          "code": null
+        },
+        {
+          "seq": 1,
+          "route": "POST /legion/v1/handoff/complete",
+          "status": 200,
+          "code": null
+        }
+      ],
+      "client": {
+        "run": {
+          "isError": false,
+          "text": ""
+        },
+        "replay": {
+          "isError": false,
+          "text": "{}"
+        }
+      },
+      "phaseAfter": "testing"
+    }
+  ],
+  "end": [],
+  "after": [],
+  "notReplayed": []
+}

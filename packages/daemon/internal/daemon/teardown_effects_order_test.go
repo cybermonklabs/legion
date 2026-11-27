@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -183,57 +184,54 @@ type teardownEffectsPush struct {
 }
 
 // teardownEffectsGitHubRow is one row of calls.jsonl (gh-standin.ts): when the call began (`at`)
-// and ended (`done`), the request gh makes for it as gh-standin read its arguments (`request`), and
-// the change it made to a pull request or a review (`pull`), which gh-standin writes for every call
-// it took that made one and for no other. What a call did is read from `pull` alone.
+// and ended (`done`), its arguments and its exit status, and the change it made to a pull request or
+// a review (`pull`), which gh-standin writes for every call it took that made one and for no other.
+// What a call did is read from `pull` alone, and never from its arguments: a row with no `pull` is a
+// read, or a write the stand-in refused, and changes nothing.
 type teardownEffectsGitHubRow struct {
-	At      time.Time                    `json:"at"`
-	Done    *time.Time                   `json:"done"`
-	As      string                       `json:"as"`
-	Argv    []string                     `json:"argv"`
-	Files   map[string]string            `json:"files"`
-	Stdin   *string                      `json:"stdin"`
-	Body    *string                      `json:"body"`
-	Exit    int                          `json:"exit"`
-	Request *teardownEffectsGitHubAsk    `json:"request"`
-	Pull    *teardownEffectsPullMutation `json:"pull"`
+	At   time.Time                    `json:"at"`
+	Done *time.Time                   `json:"done"`
+	As   string                       `json:"as"`
+	Argv []string                     `json:"argv"`
+	Exit int                          `json:"exit"`
+	Pull *teardownEffectsPullMutation `json:"pull"`
 }
 
-// teardownEffectsGitHubAsk is the request a gh call makes, as gh-standin read its arguments: a gh
-// subcommand (`gh pr merge`), or a `gh api` call's method and path, and its fields.
-type teardownEffectsGitHubAsk struct {
-	Command string         `json:"command"`
-	Method  string         `json:"method"`
-	Path    string         `json:"path"`
-	Fields  map[string]any `json:"fields"`
-}
-
-// teardownEffectsPullMutation is the change gh-standin kept to a pull request or a review, each
-// naming the pull request it changed: `open` (the number, branch, base and head commit it gave the
-// new one), `edit` (the pull request in `numbers`, the body it has after the edit, and the title the
-// edit set), `review` (the review it added), `review-comment`, `comment`, `merge` (its method, and
-// `auto` for one that waits for the requirements), `disable-auto`, `close`, `reopen`, `ready`,
-// `draft`, `enqueue` and `dequeue` (the pull request's node `id`), and, by their own names, any
-// other `gh pr` command, GraphQL `mutation` (its `name`) or REST `request` (its method and path).
+// teardownEffectsPullMutation is one change to a pull request or a review, as gh-standin.ts keeps it
+// (`pull`) and names it (`action`), each naming the pull request it changed (`number`): `open` (the
+// number, branch, base, head commit, title, body and draft it gave the new one); `edit` (the pull
+// requests in `numbers`, the body each has after the edit, and the title and base the edit set, nil
+// where it set none); `review` (the review it added: its state, commit, body and time);
+// `review-comment` (a comment on the diff, or a reply under one) and `comment` (a comment on the pull
+// request), each with its `body`; `merge` (its `method`, and `auto` for one that waits for the
+// requirements) and `disable-auto`; `close` and `reopen` (with the `comment` the command added);
+// `ready` and `draft`; `enqueue` and `dequeue` (the merge queue's GraphQL mutations, by the pull
+// request's node `id`); and, by their own names, any other `gh pr` command, any other GraphQL
+// `mutation` (its `name`) and any other REST write under a pull request (`request`, its `method`
+// and `path`).
 type teardownEffectsPullMutation struct {
-	Action      string `json:"action"`
-	Number      int    `json:"number"`
-	Numbers     []int  `json:"numbers"`
-	Head        string `json:"head"`
-	Base        string `json:"base"`
-	SHA         string `json:"sha"`
-	Title       string `json:"title"`
-	Body        string `json:"body"`
-	Draft       bool   `json:"draft"`
-	State       string `json:"state"`
-	Commit      string `json:"commit"`
-	SubmittedAt string `json:"submittedAt"`
-	Method      string `json:"method"`
-	Auto        bool   `json:"auto"`
-	Comment     string `json:"comment"`
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Path        string `json:"path"`
+	Action      string  `json:"action"`
+	Number      int     `json:"number"`
+	Numbers     []int   `json:"numbers"`
+	Head        string  `json:"head"`
+	Base        *string `json:"base"`
+	SHA         string  `json:"sha"`
+	Title       *string `json:"title"`
+	Body        string  `json:"body"`
+	Draft       bool    `json:"draft"`
+	State       string  `json:"state"`
+	Commit      string  `json:"commit"`
+	SubmittedAt string  `json:"submittedAt"`
+	Method      string  `json:"method"`
+	Auto        bool    `json:"auto"`
+	Comment     string  `json:"comment"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Path        string  `json:"path"`
+
+	// A trace's alone (teardownEffectsTraceChange), for teardownEffectsScratch.resolve: a gh pr
+	// command that names no pull request, and an edit that names no body.
+	onBranch, keepBody bool
 }
 
 // teardownEffectsChange is one recorded change to Git, GitHub, Dispatch or the role's workspace:
@@ -249,7 +247,7 @@ type teardownEffectsChange struct {
 	from, to   time.Time
 	fault      string
 	push       *teardownEffectsPush
-	github     *teardownEffectsGitHubRow
+	pull       *teardownEffectsPullMutation
 	event      *teardownEffectsEvent
 	// unsupported says fault is the kind of write itself, which the replay never makes
 	// (teardownEffectsDispatchFault), and not a record the readback lacks or a foreign author.
@@ -297,11 +295,17 @@ type teardownEffectsPlan struct {
 	After    []teardownEffectsChange
 }
 
+// teardownEffectsOutcomeAction is the part of an outcome.json action the order reads: its place,
+// kind and case time, a daemon action's op, and a GitHub action's `change`, the pull request change
+// gh-standin kept of the call (absent from a record written before outcome.ts kept it), by its name.
 type teardownEffectsOutcomeAction struct {
-	Seq  int       `json:"seq"`
-	Kind string    `json:"kind"`
-	At   time.Time `json:"at"`
-	Op   string    `json:"op"`
+	Seq    int       `json:"seq"`
+	Kind   string    `json:"kind"`
+	At     time.Time `json:"at"`
+	Op     string    `json:"op"`
+	Change *struct {
+		Action string `json:"action"`
+	} `json:"change"`
 }
 
 // teardownEffectsOrder places a run's recorded changes and stand-in answers against its legion
@@ -361,18 +365,18 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 	for _, write := range outcome.OtherWrites {
 		others[write.At.UnixNano()]++
 	}
-	take := func(kind string, at time.Time) (int, bool) {
+	take := func(kind string, at time.Time) (teardownEffectsOutcomeAction, bool) {
 		k := key{kind, caseAt(at).UnixNano()}
 		actions := pending[k]
 		if len(actions) == 0 {
 			if kind == "dispatch" && others[k.at] > 0 {
 				others[k.at]--
-				return 0, true
+				return teardownEffectsOutcomeAction{}, true
 			}
-			return 0, false
+			return teardownEffectsOutcomeAction{}, false
 		}
 		pending[k] = actions[1:]
-		return actions[0].Seq, true
+		return actions[0], true
 	}
 
 	var changes []teardownEffectsChange
@@ -390,7 +394,7 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		if action == "" {
 			continue
 		}
-		c := teardownEffectsChange{Kind: "github", Source: fmt.Sprintf("calls.jsonl:%d", n+1), What: action + ": gh " + strings.Join(row.Argv, " "), from: row.At, to: *row.Done, github: &row}
+		c := teardownEffectsChange{Kind: "github", Source: fmt.Sprintf("calls.jsonl:%d", n+1), What: action + ": gh " + strings.Join(row.Argv, " "), from: row.At, to: *row.Done, pull: row.Pull}
 		if row.Exit != 0 {
 			if row.Pull == nil {
 				continue
@@ -434,11 +438,14 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 	for i := range changes {
 		c := &changes[i]
 		c.At = caseAt(c.from)
-		seq, ok := take(c.Kind, c.from)
+		action, ok := take(c.Kind, c.from)
 		if !ok {
 			return plan, fmt.Errorf("%s (%s at %s) has no action in outcome.json: the records disagree, so its place is not established", c.Source, c.What, c.At.Format(time.RFC3339Nano))
 		}
-		c.OutcomeSeq = seq
+		if c.pull != nil && action.Change != nil && action.Change.Action != c.pull.Action {
+			return plan, fmt.Errorf("%s (%s) is outcome.json action %d, which records the change %s: the records disagree on what the call did", c.Source, c.What, action.Seq, action.Change.Action)
+		}
+		c.OutcomeSeq = action.Seq
 	}
 	moves, err := teardownEffectsWorkspaceMoves(dir, launched)
 	if err != nil {
@@ -515,11 +522,11 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 			if len(in) != 1 {
 				return plan, fmt.Errorf("daemon.log:%d (%s at %s) falls inside %d legion calls: an unpaired request", n+1, line.route(), line.At.Format(time.RFC3339Nano), len(in))
 			}
-			seq, ok := take("daemon", line.At)
+			action, ok := take("daemon", line.At)
 			if !ok && scored {
 				return plan, fmt.Errorf("daemon.log:%d (%s) has no action in outcome.json: missing provenance", n+1, line.route())
 			}
-			plan.Steps[in[0]].Standin = append(plan.Steps[in[0]].Standin, teardownEffectsStandin{line, seq})
+			plan.Steps[in[0]].Standin = append(plan.Steps[in[0]].Standin, teardownEffectsStandin{line, action.Seq})
 			continue
 		}
 		if len(in) != 1 || !teardownEffectsReadOp(calls[in[0]].Op) {
@@ -529,15 +536,20 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		if slices.ContainsFunc(step.Standin, func(s teardownEffectsStandin) bool { return s.Method == "GET" && s.Path == line.Path }) {
 			continue
 		}
-		seq, _ := take("daemon", line.At)
-		step.Standin = append(step.Standin, teardownEffectsStandin{line, seq})
+		action, _ := take("daemon", line.At)
+		step.Standin = append(step.Standin, teardownEffectsStandin{line, action.Seq})
 	}
 	// Every push, every Dispatch write and every daemon write outcome.json scores has a record
-	// placed above: an action no record matches is a fact the replay would miss.
+	// placed above: an action no record matches is a fact the replay would miss. So has every GitHub
+	// action whose `change` says gh-standin kept a change of it: calls.jsonl's `pull` is the one record
+	// the replay makes a GitHub change from.
 	for k, actions := range pending {
 		for _, action := range actions {
 			if k.kind == "push" || k.kind == "dispatch" || k.kind == "daemon" && !teardownEffectsReadOp(action.Op) {
 				return plan, fmt.Errorf("outcome.json action %d (%s %s at %s) has no record the replay can place: a missing ordering fact", action.Seq, action.Kind, action.Op, action.At.Format(time.RFC3339Nano))
+			}
+			if k.kind == "github" && action.Change != nil {
+				return plan, fmt.Errorf("outcome.json action %d (github %s at %s) records a change gh-standin kept, and calls.jsonl holds no `pull` of that call: a missing mutation record", action.Seq, action.Change.Action, action.At.Format(time.RFC3339Nano))
 			}
 		}
 	}
@@ -713,17 +725,11 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 	return "", false
 }
 
-var (
-	teardownEffectsPullsPath   = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls$`)
-	teardownEffectsPullPath    = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/\d+$`)
-	teardownEffectsReviewsPath = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/\d+/reviews$`)
-	teardownEffectsMergePath   = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/\d+/merge$`)
-)
-
 // teardownEffectsGitHubAction is the change a gh call made to the GitHub lane R kept, as gh-standin
 // recorded it (`pull`: `open`, `edit`, `review`, `merge`, `close` and the rest it names), and ""
-// for a call that changed nothing. Nothing reads the call's arguments again. A row that records no
-// end is from a gh-standin that recorded neither its end nor its change, so what it did is unknown.
+// for a call that changed nothing: a read, or a write the stand-in refused. Nothing reads the call's
+// arguments again. A row that records no end is from a gh-standin that recorded neither its end nor
+// its change, so what it did is unknown.
 func teardownEffectsGitHubAction(row teardownEffectsGitHubRow) (string, error) {
 	if row.Done == nil {
 		return "", fmt.Errorf("gh %s records when the call began and not when it ended: gh-standin records both and the change each call made (`done`, `pull`), so this row is from before it did, and what the call did is unknown", strings.Join(row.Argv, " "))
@@ -734,128 +740,427 @@ func teardownEffectsGitHubAction(row teardownEffectsGitHubRow) (string, error) {
 	return row.Pull.Action, nil
 }
 
-// teardownEffectsGitHubRequest reads a gh call's arguments as the request it makes: a `gh pr`
-// command with its number and fields, or a `gh api` method, path and fields, each body or field a
-// file names read from what the call was handed (`files`, `stdin`). A `gh api` call that sends
-// fields and names no method is a POST, as gh makes it.
-func teardownEffectsGitHubRequest(row teardownEffectsGitHubRow) (command, method, path string, fields map[string]any, err error) {
-	fields = map[string]any{}
-	args := row.Argv
-	read := func(name string) string {
-		if name == "-" && row.Stdin != nil {
-			return *row.Stdin
-		}
-		return row.Files[name]
-	}
-	if len(args) < 2 {
-		return "", "", "", fields, nil
-	}
-	api := args[0] == "api"
-	switch {
-	case args[0] == "pr":
-		command = "gh pr " + args[1]
-		args = args[2:]
-	case api:
-		args = args[1:]
-	default:
-		return "", "", "", fields, nil
-	}
-	// The flags that take no value, of gh api and of each gh pr command that changes a pull request.
-	booleans := map[string][]string{
-		"api":          {"--paginate", "--slurp", "--silent", "--include", "-i", "--verbose"},
-		"gh pr create": {"--draft", "-d", "--fill", "-f", "--fill-first", "--fill-verbose", "--web", "-w", "--dry-run", "--no-maintainer-edit"},
-		"gh pr review": {"--approve", "-a", "--request-changes", "-r", "--comment", "-c"},
-		"gh pr merge":  {"--auto", "--disable-auto", "--merge", "-m", "--squash", "-s", "--rebase", "-r", "--admin", "--delete-branch", "-d"},
-		"gh pr close":  {"--delete-branch", "-d"},
-		"gh pr ready":  {"--undo"},
-	}
-	mode := command
-	if api {
-		mode = "api"
-	}
-	data := false
-	for len(args) > 0 {
-		flag := args[0]
-		args = args[1:]
-		if key, value, ok := strings.Cut(flag, "="); ok && strings.HasPrefix(key, "--") {
-			flag = key
-			args = append([]string{value}, args...)
-		} else if api && len(flag) > 2 && strings.HasPrefix(flag, "-X") {
-			flag, args = "-X", append([]string{flag[2:]}, args...)
-		}
-		if !strings.HasPrefix(flag, "-") {
-			if api && path == "" {
-				path = strings.TrimPrefix(flag, "/")
-			} else if n, ok := teardownEffectsPullNumber(flag); ok && !api && fields["number"] == nil {
-				fields["number"] = float64(n)
-			}
-			continue
-		}
-		if slices.Contains(booleans[mode], flag) {
-			switch {
-			case mode == "gh pr review" && (flag == "--approve" || flag == "-a"):
-				fields["event"] = "APPROVE"
-			case mode == "gh pr review" && (flag == "--request-changes" || flag == "-r"):
-				fields["event"] = "REQUEST_CHANGES"
-			case mode == "gh pr review" && (flag == "--comment" || flag == "-c"):
-				fields["event"] = "COMMENT"
-			case mode == "gh pr create" && (flag == "--draft" || flag == "-d"):
-				fields["draft"] = true
-			}
-			continue
-		}
-		if len(args) == 0 {
-			continue
-		}
-		value := args[0]
-		args = args[1:]
-		switch {
-		case api && (flag == "-X" || flag == "--method"):
-			method = strings.ToUpper(value)
-		case api && flag == "--input":
-			data = true
-			if err := json.Unmarshal([]byte(read(value)), &fields); err != nil {
-				return "", "", "", fields, fmt.Errorf("read the request input of gh %s: %w", strings.Join(row.Argv, " "), err)
-			}
-		case api && (flag == "-f" || flag == "-F" || flag == "--raw-field" || flag == "--field"):
-			if key, text, ok := strings.Cut(value, "="); ok {
-				data = true
-				if name, ok := strings.CutPrefix(text, "@"); ok && (flag == "-F" || flag == "--field") {
-					text = read(name)
-				}
-				fields[key] = text
-			}
-		case !api && (flag == "--head" || flag == "-H"):
-			fields["head"] = value
-		case !api && (flag == "--base" || flag == "-B"):
-			fields["base"] = value
-		case !api && (flag == "--title" || flag == "-t"):
-			fields["title"] = value
-		case !api && (flag == "--body" || flag == "-b"):
-			fields["body"] = value
-		case !api && (flag == "--body-file" || flag == "-F"):
-			fields["body"] = read(value)
-		}
-	}
-	if api && method == "" {
-		method = "GET"
-		if data {
-			method = "POST"
-		}
-	}
-	if row.Body != nil {
-		fields["body"] = *row.Body
-	}
-	return command, method, path, fields, nil
+// teardownEffectsReviewer is the author gh-standin.ts gives each review it adds.
+const teardownEffectsReviewer = "legion-review[bot]"
+
+// teardownEffectsScratch is the replay's scratch GitHub as a pull request change reads and makes it:
+// its pull requests by number, the issue's branch (`legion/<issue>`), the repository's default
+// branch, and the head a branch has on the replay's remote ("" where it has none).
+type teardownEffectsScratch struct {
+	pulls        map[int]teardownEffectsPull
+	branch, base string
+	remote       func(branch string) string
 }
 
-// teardownEffectsPullNumber is the pull request a `gh pr` selector names by number, or by its URL.
-func teardownEffectsPullNumber(selector string) (int, bool) {
-	if _, tail, ok := strings.Cut(selector, "/pull/"); ok {
-		selector = tail
+// change makes p, one pull request change in gh-standin.ts's names, on the scratch GitHub, by the
+// one rule each name has, whether lane R's gh-standin kept the change (a run's `pull`) or a trace
+// records it (teardownEffectsTraceChange):
+//   - open: a new open pull request, at the commit its branch has on the remote, which must be the
+//     commit p names;
+//   - edit: each pull request's body, and the title and base the edit set;
+//   - review: the review, by gh-standin's reviewer;
+//   - merge: merged, its merge commit the head of its base on the remote; with `auto`, auto-merge
+//     armed and the pull request still open, as daemon-standin.ts holds it, since the replay runs no
+//     requirement that would merge it; disable-auto disarms it;
+//   - close and reopen: closed, and open;
+//   - ready and draft: out of draft, and into it;
+//   - enqueue and dequeue: into the merge queue and out of it, the pull request still open, since
+//     the replay's queue merges nothing;
+//   - comment and review-comment: quiet, since the scratch GitHub keeps no comment and the daemon
+//     reads none: the pull request stays as it was.
+//
+// It changes nothing, and names the change, where the scratch GitHub cannot hold it: a change of
+// a pull request it does not hold, an open at another commit than its branch's or of a branch that
+// has an open pull request into that base, a merged or closed pull request merged or enqueued, a
+// merged one closed or reopened, and every change it has no rule for: a GraphQL `mutation`, a REST
+// `request`, and any other `gh pr` command.
+func (s teardownEffectsScratch) change(p teardownEffectsPullMutation) error {
+	switch p.Action {
+	case "open":
+		return s.open(p)
+	case "edit":
+		return s.edit(p)
+	case "review", "merge", "disable-auto", "close", "reopen", "ready", "draft", "enqueue", "dequeue", "comment", "review-comment":
+	case "mutation":
+		return fmt.Errorf("the GraphQL mutation %s is a change the replay's GitHub has no rule for, so the replay does not make it", p.Name)
+	case "request":
+		return fmt.Errorf("the REST write %s %s is a change the replay's GitHub has no rule for, so the replay does not make it", p.Method, p.Path)
+	default:
+		return fmt.Errorf("gh pr %s is a change the replay's GitHub has no rule for, so the replay does not make it", p.Action)
 	}
-	n, err := strconv.Atoi(selector)
-	return n, err == nil && n > 0
+	pull, err := s.held(p.Action, p.Number)
+	if err != nil {
+		return err
+	}
+	switch p.Action {
+	case "review":
+		at, err := time.Parse(time.RFC3339Nano, p.SubmittedAt)
+		if err != nil {
+			return fmt.Errorf("review of pull request #%d: %w", p.Number, err)
+		}
+		pull.Reviews = append(pull.Reviews, teardownEffectsReview{Author: teardownEffectsReviewer, State: p.State, Commit: p.Commit, Body: p.Body, At: at})
+	case "merge":
+		if pull.State != "open" {
+			return fmt.Errorf("merge of pull request #%d, which is %s: GitHub merges an open pull request alone", p.Number, pull.State)
+		}
+		if p.Auto {
+			pull.AutoMerge = true
+			break
+		}
+		commit := s.remote(pull.Base)
+		if commit == "" {
+			return fmt.Errorf("merge of pull request #%d into %s, which the replay's remote does not hold, so the merge has no merge commit", p.Number, pull.Base)
+		}
+		pull.State, pull.MergeCommit, pull.AutoMerge, pull.Queued = "merged", commit, false, false
+	case "disable-auto":
+		pull.AutoMerge = false
+	case "close", "reopen":
+		if pull.State == "merged" {
+			return fmt.Errorf("%s of pull request #%d, which is merged: GitHub neither closes nor reopens a merged pull request", p.Action, p.Number)
+		}
+		pull.State = "open"
+		if p.Action == "close" {
+			pull.State = "closed"
+		}
+	case "ready", "draft":
+		pull.Draft = p.Action == "draft"
+	case "enqueue":
+		if pull.State != "open" {
+			return fmt.Errorf("enqueue of pull request #%d, which is %s: the merge queue takes an open pull request alone", p.Number, pull.State)
+		}
+		pull.Queued = true
+	case "dequeue":
+		pull.Queued = false
+	}
+	s.pulls[p.Number] = pull
+	return nil
+}
+
+// held is the pull request number, which the change action names, where the scratch GitHub holds
+// it, and otherwise an error that names the change and the number.
+func (s teardownEffectsScratch) held(action string, number int) (teardownEffectsPull, error) {
+	if pull, ok := s.pulls[number]; ok {
+		return pull, nil
+	}
+	if number == 0 {
+		return teardownEffectsPull{}, fmt.Errorf("%s names no pull request the replay's GitHub holds", action)
+	}
+	return teardownEffectsPull{}, fmt.Errorf("%s of pull request #%d, which the replay's GitHub does not hold", action, number)
+}
+
+// open opens the pull request p names (change).
+func (s teardownEffectsScratch) open(p teardownEffectsPullMutation) error {
+	base := ""
+	if p.Base != nil {
+		base = *p.Base
+	}
+	if p.Number < 1 || p.Head == "" || base == "" {
+		return fmt.Errorf("open of pull request #%d names no number, no head or no base", p.Number)
+	}
+	if _, taken := s.pulls[p.Number]; taken {
+		return fmt.Errorf("open of pull request #%d, which the replay's GitHub already holds", p.Number)
+	}
+	if got := s.remote(p.Head); got != p.SHA {
+		return fmt.Errorf("open of pull request #%d on %s at %s, and the replay's remote holds %q there: the replay's state is not the run's", p.Number, p.Head, p.SHA, got)
+	}
+	for _, pull := range s.pulls {
+		if pull.State == "open" && pull.Head.Ref == p.Head && pull.Base == base {
+			return fmt.Errorf("open of pull request #%d on %s into %s, which pull request #%d is open on: GitHub opens no second", p.Number, p.Head, base, pull.Number)
+		}
+	}
+	pull := teardownEffectsPull{Number: p.Number, State: "open", Base: base, Body: p.Body, Draft: p.Draft}
+	if p.Title != nil {
+		pull.Title = *p.Title
+	}
+	pull.Head.Ref, pull.Head.SHA = p.Head, p.SHA
+	s.pulls[p.Number] = pull
+	return nil
+}
+
+// edit sets the body of each pull request p names, and the title and base p sets, where the
+// scratch GitHub holds every one of them (change).
+func (s teardownEffectsScratch) edit(p teardownEffectsPullMutation) error {
+	if len(p.Numbers) == 0 {
+		return fmt.Errorf("edit names no pull request")
+	}
+	edited := map[int]teardownEffectsPull{}
+	for _, n := range p.Numbers {
+		pull, err := s.held("edit", n)
+		if err != nil {
+			return err
+		}
+		pull.Body = p.Body
+		if p.Title != nil {
+			pull.Title = *p.Title
+		}
+		if p.Base != nil {
+			pull.Base = *p.Base
+		}
+		edited[n] = pull
+	}
+	maps.Copy(s.pulls, edited)
+	return nil
+}
+
+// resolve fills what a trace's change p leaves to the state it is made in, at its case time at, as
+// gh-standin.ts fills it from its own GitHub: the pull request of a gh pr command that names none
+// (the one open pull request of the issue's branch, which gh takes: none, or more than one, is
+// refused, as gh refuses it); an open's head (the issue's branch), base (the default branch), number
+// (one above every number held) and head commit (its branch's head on the remote: a branch the
+// remote does not hold is refused, as GitHub refuses it); an edit's body where it names none (the
+// body held); and a review's commit (the head held) and time.
+func (s teardownEffectsScratch) resolve(p teardownEffectsPullMutation, at time.Time) (teardownEffectsPullMutation, error) {
+	if p.onBranch {
+		var open []int
+		for n, pull := range s.pulls {
+			if pull.Head.Ref == s.branch && pull.State == "open" {
+				open = append(open, n)
+			}
+		}
+		if len(open) != 1 {
+			return p, fmt.Errorf("%s names no pull request, and %s has %d open pull requests, where gh takes its one: no pull requests found for branch %q", p.Action, s.branch, len(open), s.branch)
+		}
+		p.Number = open[0]
+		if p.Action == "edit" {
+			p.Numbers = []int{p.Number}
+		}
+	}
+	switch p.Action {
+	case "open":
+		if p.Head == "" {
+			p.Head = s.branch
+		}
+		if p.Base == nil {
+			base := s.base
+			p.Base = &base
+		}
+		if p.Number == 0 {
+			for n := range s.pulls {
+				p.Number = max(p.Number, n)
+			}
+			p.Number++
+		}
+		if p.SHA == "" {
+			if p.SHA = s.remote(p.Head); p.SHA == "" {
+				return p, fmt.Errorf("open on %s, which the replay's remote does not hold: GitHub refuses it (Head sha can't be blank)", p.Head)
+			}
+		}
+	case "edit":
+		if p.keepBody && len(p.Numbers) > 0 {
+			p.Body = s.pulls[p.Numbers[0]].Body
+		}
+	case "review":
+		if p.Commit == "" {
+			p.Commit = s.pulls[p.Number].Head.SHA
+		}
+		if p.SubmittedAt == "" {
+			p.SubmittedAt = at.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	p.onBranch, p.keepBody = false, false
+	return p, nil
+}
+
+var (
+	// teardownEffectsRESTPath is a gh api path under a repository's pull requests or issues, as
+	// gh-standin.ts reads one: the kind, the number, and what follows.
+	teardownEffectsRESTPath = regexp.MustCompile(`^repos/[^/]+/[^/]+/(pulls|issues)(?:/(\d+))?(/[^?]*)?(?:\?.*)?$`)
+	// teardownEffectsDiffComments is what follows a pull request's path in a comment on its diff,
+	// or in a reply under one.
+	teardownEffectsDiffComments = regexp.MustCompile(`^/comments(?:/\d+/replies)?$`)
+	// teardownEffectsMutation, teardownEffectsMutationName and teardownEffectsNodeID read a GraphQL
+	// query as gh-standin.ts reads it: whether it is a mutation, the mutation's name, and the pull
+	// request's node id it names, a literal or a variable.
+	teardownEffectsMutation     = regexp.MustCompile(`^\s*mutation\b`)
+	teardownEffectsMutationName = regexp.MustCompile(`\{\s*(\w+)\s*\(`)
+	teardownEffectsNodeID       = regexp.MustCompile(`\b(?:pullRequestId|id)\s*:\s*(?:\$(\w+)|"([^"]*)")`)
+)
+
+// teardownEffectsPRReads are the gh pr commands that read and change nothing on GitHub
+// (gh-standin.ts PR_READS).
+var teardownEffectsPRReads = []string{"view", "list", "checks", "diff", "status", "checkout"}
+
+// teardownEffectsReads are the verbs of any other gh command that read and change nothing on GitHub.
+var teardownEffectsReads = append(slices.Clone(teardownEffectsPRReads), "download", "watch", "search")
+
+// teardownEffectsTraceChange is the change of a trace's GitHub action a, in gh-standin.ts's names:
+// the action's own `change`, which outcome.ts records for a call gh-standin took, and otherwise, for
+// a frozen trace that records none, the change gh-standin keeps of the same request. The action
+// records that request as heldout-case.ts does, a gh command or a gh api method and path, with the
+// request's fields as gh-standin's ghRequest reads them, and it is read here as gh-standin reads it.
+// It is nil for a call that changes nothing: a gh pr read, a gh command of another group that reads
+// (teardownEffectsReads), a REST GET and a GraphQL query. A write that the replay's GitHub has no
+// rule for is a change, never a no-op: a REST write that no pull request rule covers is a `request`,
+// which teardownEffectsScratch.change refuses by name, and so is a gh command of another group that
+// does not read, an error here. A gh pr review that gh refuses for its flags is an error. What the
+// call leaves to the state it is made in is left to teardownEffectsScratch.resolve: a number the
+// call does not name (0, and onBranch for a gh pr command), an opened pull request's number, base
+// and head commit, an edit's body (keepBody), and a review's commit and time. A comment on an issue
+// is taken as one on a pull request, which change refuses where the issue is none.
+func teardownEffectsTraceChange(a teardownEffectsTraceAction) (*teardownEffectsPullMutation, error) {
+	if a.Change != nil {
+		recorded := *a.Change
+		return &recorded, nil
+	}
+	fields := a.Fields
+	text := func(key string) string { s, _ := fields[key].(string); return s }
+	named := func(key string) *string {
+		if s, ok := fields[key].(string); ok {
+			return &s
+		}
+		return nil
+	}
+	set := func(key string) bool { return fields[key] == true }
+	opening := func() *teardownEffectsPullMutation {
+		head, title := text("head"), text("title")
+		if _, branch, owned := strings.Cut(head, ":"); owned {
+			head = branch
+		}
+		return &teardownEffectsPullMutation{Action: "open", Head: head, Base: named("base"), Title: &title, Body: text("body"), Draft: set("draft") || fields["draft"] == "true"}
+	}
+	editing := func(n int) *teardownEffectsPullMutation {
+		p := &teardownEffectsPullMutation{Action: "edit", Number: n, Title: named("title"), Base: named("base"), Body: text("body"), keepBody: named("body") == nil}
+		if n > 0 {
+			p.Numbers = []int{n}
+		}
+		return p
+	}
+	reviewing := func(n int, event string) *teardownEffectsPullMutation {
+		state := map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}[event]
+		if state == "" {
+			state = "PENDING"
+		}
+		return &teardownEffectsPullMutation{Action: "review", Number: n, State: state, Commit: text("commit_id"), Body: text("body")}
+	}
+	if verb, ok := strings.CutPrefix(a.Command, "gh pr "); ok {
+		if slices.Contains(teardownEffectsPRReads, verb) {
+			return nil, nil
+		}
+		n := 0
+		if number, ok := fields["number"].(float64); ok {
+			n = int(number)
+		}
+		var p *teardownEffectsPullMutation
+		switch verb {
+		case "create":
+			return opening(), nil
+		case "edit":
+			p = editing(n)
+		case "review":
+			var events []string
+			for _, flag := range [][2]string{{"approve", "APPROVE"}, {"request-changes", "REQUEST_CHANGES"}, {"comment", "COMMENT"}} {
+				if set(flag[0]) {
+					events = append(events, flag[1])
+				}
+			}
+			if len(events) != 1 {
+				return nil, fmt.Errorf("gh pr review sets %d of --approve, --request-changes and --comment, and gh refuses all but one", len(events))
+			}
+			if events[0] != "APPROVE" && text("body") == "" {
+				return nil, fmt.Errorf("gh pr review's %s has no body, and gh refuses it", events[0])
+			}
+			p = reviewing(n, events[0])
+		case "merge":
+			p = &teardownEffectsPullMutation{Action: "merge", Number: n, Auto: set("auto")}
+			if set("disable-auto") {
+				p = &teardownEffectsPullMutation{Action: "disable-auto", Number: n}
+			}
+			for _, method := range []string{"merge", "squash", "rebase"} {
+				if p.Action == "merge" && p.Method == "" && set(method) {
+					p.Method = method
+				}
+			}
+		case "ready":
+			p = &teardownEffectsPullMutation{Action: "ready", Number: n}
+			if set("undo") {
+				p.Action = "draft"
+			}
+		case "comment":
+			p = &teardownEffectsPullMutation{Action: "comment", Number: n, Body: text("body")}
+		default:
+			p = &teardownEffectsPullMutation{Action: verb, Number: n, Comment: text("comment")}
+		}
+		p.onBranch = n == 0
+		return p, nil
+	}
+	if a.Method == "" || a.Path == "" {
+		if a.Command == "" {
+			return nil, fmt.Errorf("the trace's GitHub action %d names neither a gh command nor a gh api method and path", a.Seq)
+		}
+		// The command is `gh <group> <verb>`, or `gh <command>` of one word, which has no verb to read.
+		if words := strings.Fields(a.Command); len(words) >= 3 && !slices.Contains(teardownEffectsReads, words[2]) {
+			return nil, fmt.Errorf("%s is a change the replay's GitHub has no rule for, so the replay does not make it", a.Command)
+		}
+		return nil, nil
+	}
+	method, path := strings.ToUpper(a.Method), strings.TrimPrefix(a.Path, "/")
+	if path == "graphql" {
+		query := text("query")
+		if !teardownEffectsMutation.MatchString(query) {
+			return nil, nil
+		}
+		p := &teardownEffectsPullMutation{Action: "mutation"}
+		if name := teardownEffectsMutationName.FindStringSubmatch(query); name != nil {
+			p.Name = name[1]
+		}
+		switch p.Name {
+		case "enqueuePullRequest":
+			p.Action, p.Name = "enqueue", ""
+		case "dequeuePullRequest":
+			p.Action, p.Name = "dequeue", ""
+		}
+		if bound := teardownEffectsNodeID.FindStringSubmatch(query); bound != nil {
+			p.ID = bound[2]
+			if bound[1] != "" {
+				p.ID = text(bound[1])
+			}
+		}
+		// Each pull request the scratch GitHub holds has the node id PR_<number>, as case-world.ts
+		// and gh-standin.ts give it.
+		if number, ok := strings.CutPrefix(p.ID, "PR_"); ok {
+			p.Number, _ = strconv.Atoi(number)
+		}
+		return p, nil
+	}
+	rest := teardownEffectsRESTPath.FindStringSubmatch(path)
+	if method == "GET" {
+		return nil, nil
+	}
+	if rest == nil {
+		return &teardownEffectsPullMutation{Action: "request", Method: method, Path: path}, nil
+	}
+	kind, numbered, tail := rest[1], rest[2] != "", rest[3]
+	n, _ := strconv.Atoi(rest[2])
+	pulls := kind == "pulls"
+	state := fields["state"]
+	switch {
+	case pulls && !numbered && tail == "" && method == "POST":
+		return opening(), nil
+	case pulls && numbered && tail == "" && method == "PATCH" && state != nil && state != "" && state != false:
+		p := &teardownEffectsPullMutation{Action: "reopen", Number: n}
+		if state == "closed" {
+			p.Action = "close"
+		}
+		return p, nil
+	case pulls && numbered && tail == "" && method == "PATCH":
+		return editing(n), nil
+	case pulls && numbered && tail == "/reviews" && method == "POST":
+		return reviewing(n, text("event")), nil
+	case pulls && numbered && tail == "/merge" && method == "PUT":
+		return &teardownEffectsPullMutation{Action: "merge", Number: n, Method: text("merge_method")}, nil
+	case pulls && numbered && teardownEffectsDiffComments.MatchString(tail):
+		return &teardownEffectsPullMutation{Action: "review-comment", Number: n, Body: text("body")}, nil
+	case !pulls && numbered && tail == "/comments":
+		return &teardownEffectsPullMutation{Action: "comment", Number: n, Body: text("body")}, nil
+	}
+	return &teardownEffectsPullMutation{Action: "request", Number: n, Method: method, Path: path}, nil
+}
+
+// teardownEffectsTraceRead reports whether a trace's GitHub action changes no pull request
+// (teardownEffectsTraceChange): the replay makes no such call, as it makes no staging action.
+func teardownEffectsTraceRead(a teardownEffectsTraceAction) bool {
+	change, err := teardownEffectsTraceChange(a)
+	return err == nil && change == nil
 }
 
 // teardownEffectsAnswered is what the legion tool answered the role: its result's text and
@@ -1115,12 +1420,46 @@ func TestTeardownEffectsOrderLocalOnlyHead(t *testing.T) {
 	if got := teardownEffectsPlacedOf(second.Before); !reflect.DeepEqual(got, want) {
 		t.Fatalf("before the second call %+v, want %+v", got, want)
 	}
-	if pull := second.Before[1].github.Pull; pull == nil || pull.Number != 1 || pull.SHA != head || pull.Head != "legion/ACME-12" {
+	if pull := second.Before[1].pull; pull == nil || pull.Number != 1 || pull.SHA != head || pull.Head != "legion/ACME-12" {
 		t.Fatalf("pull request change %+v, want #1 opened on legion/ACME-12 at %s", pull, head)
 	}
 	if len(second.Standin) != 1 || second.Standin[0].route() != "POST /legion/v1/handoff/complete" || second.Standin[0].Status != 200 || second.Standin[0].OutcomeSeq != 5 || second.Call.ID != "toolu_05published_accepted" {
 		t.Fatalf("second call %s answered %+v, want the stand-in's 200 to its completion, outcome action 5", second.Call.ID, second.Standin)
 	}
+}
+
+// teardownEffectsPullRecord is the pull request change calls.jsonl's one row of the control holds:
+// the open gh-standin kept of its gh pr create.
+const teardownEffectsPullRecord = `,"pull":{"action":"open","number":1,"head":"legion/ACME-12","base":"main","sha":"d9585820bbbfe46ceb0a69284276fa120eefd9c5","title":"feat(daemon): step records carry experiment and variant (ACME-12)","body":"Dispatch: ACME-12","draft":false}`
+
+// teardownEffectsEditedRun is a copy of the control in a directory of the test's own, each edit
+// (a file of it, a text the file holds and the text to put there) made once, and the file remove
+// (none where "") removed.
+func teardownEffectsEditedRun(t *testing.T, edits [][3]string, remove string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "run")
+	if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
+		t.Fatal(err)
+	}
+	for _, edit := range edits {
+		path := filepath.Join(dir, edit[0])
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), edit[1]) {
+			t.Fatalf("%s holds no %q", edit[0], edit[1])
+		}
+		if err := os.WriteFile(path, []byte(strings.Replace(string(data), edit[1], edit[2], 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if remove != "" {
+		if err := os.Remove(filepath.Join(dir, remove)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
 }
 
 // A changed or missing ordering fact is a harness failure, named, and never a placement: each row
@@ -1129,6 +1468,10 @@ func TestTeardownEffectsOrderRefusesUnplacedFacts(t *testing.T) {
 	t.Parallel()
 	const push, pushCase = "2026-11-27T00:07:05.361170980Z", "2030-01-07T15:00:27.372005949Z"
 	const commit = `"start":"2026-11-27T00:06:48.698+00:00","end":"2026-11-27T00:06:48.726+00:00"`
+	// outcome.json's GitHub action, as outcome.ts records it once it keeps the change gh-standin kept.
+	changed := func(action string) [3]string {
+		return [3]string{"outcome.json", `"command": "gh pr create",`, `"command": "gh pr create", "change": {"action": "` + action + `", "number": 1},`}
+	}
 	for _, row := range []struct {
 		name   string
 		edits  [][3]string // file, old, new
@@ -1139,6 +1482,8 @@ func TestTeardownEffectsOrderRefusesUnplacedFacts(t *testing.T) {
 		{name: "a push the records lack", edits: [][3]string{{"pushes.log", push + " refs/heads/legion/ACME-12 0000000000000000000000000000000000000000 d9585820bbbfe46ceb0a69284276fa120eefd9c5\n", ""}}, want: "outcome.json action 2 (push  at " + pushCase + ") has no record the replay can place"},
 		{name: "a push moved off the time outcome.json scores", edits: [][3]string{{"pushes.log", push, "2026-11-27T00:07:10.000000000Z"}}, want: "pushes.log:1 (refs/heads/legion/ACME-12"},
 		{name: "a pull request change with no end", edits: [][3]string{{"calls.jsonl", `"done":"2026-11-27T00:07:13.872Z",`, ""}}, want: "records when the call began and not when it ended"},
+		{name: "a pull request change outcome.json records and calls.jsonl lacks", edits: [][3]string{{"calls.jsonl", teardownEffectsPullRecord, ""}, changed("open")}, want: "outcome.json action 3 (github open at 2030-01-07T15:00:35.840834969Z) records a change gh-standin kept, and calls.jsonl holds no `pull` of that call: a missing mutation record"},
+		{name: "a pull request change outcome.json records otherwise", edits: [][3]string{changed("merge")}, want: "is outcome.json action 3, which records the change merge: the records disagree on what the call did"},
 		{name: "a pull request opened while its branch moved", edits: [][3]string{{"calls.jsonl", `"at":"2026-11-27T00:07:13.830Z"`, `"at":"2026-11-27T00:07:05.300Z"`}, {"calls.jsonl", `"done":"2026-11-27T00:07:13.872Z"`, `"done":"2026-11-27T00:07:05.500Z"`}, {"outcome.json", "2030-01-07T15:00:35.840834969Z", "2030-01-07T15:00:27.310834969Z"}}, want: "overlap, so their order is unknown"},
 		{name: "a completion answered outside every call", edits: [][3]string{{"daemon.log", "2026-11-27T00:07:27.350Z", "2026-11-27T00:07:30.000Z"}}, want: "falls inside 0 legion calls: an unpaired request"},
 		{name: "a Dispatch write the replay cannot make", edits: [][3]string{{"dispatch-readback.json", `"type": "result.recorded"`, `"type": "message.created"`}}, want: "precedes legion call 2 (toolu_05published_accepted): the replay writes no message.created"},
@@ -1151,33 +1496,58 @@ func TestTeardownEffectsOrderRefusesUnplacedFacts(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			dir := filepath.Join(t.TempDir(), "run")
-			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
-				t.Fatal(err)
-			}
-			for _, edit := range row.edits {
-				path := filepath.Join(dir, edit[0])
-				data, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(string(data), edit[1]) {
-					t.Fatalf("%s holds no %q", edit[0], edit[1])
-				}
-				if err := os.WriteFile(path, []byte(strings.Replace(string(data), edit[1], edit[2], 1)), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if row.remove != "" {
-				if err := os.Remove(filepath.Join(dir, row.remove)); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err := teardownEffectsOrderOf(t, dir)
+			_, err := teardownEffectsOrderOf(t, teardownEffectsEditedRun(t, row.edits, row.remove))
 			if err == nil || !strings.Contains(err.Error(), row.want) {
 				t.Fatalf("placed the run with error %v, want one naming %q", err, row.want)
 			}
 		})
+	}
+}
+
+// What a GitHub call did is calls.jsonl's `pull` alone: a row with none (a read, or a write the
+// stand-in refused) changes nothing, and the open a row keeps is placed where outcome.json records
+// that change. A Dispatch write of an actor other than the role is placed by outcome.json's
+// `otherWrites`, with no action of its own and its own author, and one that neither the actions nor
+// `otherWrites` hold is refused.
+func TestTeardownEffectsOrderAuditRecords(t *testing.T) {
+	t.Parallel()
+	second := func(t *testing.T, edits ...[3]string) []teardownEffectsChange {
+		t.Helper()
+		plan, err := teardownEffectsOrderOf(t, teardownEffectsEditedRun(t, edits, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan.Steps[1].Before
+	}
+	const head = "d9585820bbbfe46ceb0a69284276fa120eefd9c5"
+	push := teardownEffectsPlaced{"push", "refs/heads/legion/ACME-12 0000000000000000000000000000000000000000.." + head, 2}
+	result := teardownEffectsPlaced{"dispatch", "result.recorded", 4}
+
+	// The row with no `pull`, beside an outcome.json that records no change of it: no GitHub change.
+	if got, want := teardownEffectsPlacedOf(second(t, [3]string{"calls.jsonl", teardownEffectsPullRecord, ""})), []teardownEffectsPlaced{push, result}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("a row with no pull placed %+v before the second call, want %+v", got, want)
+	}
+	// The open, joined to the outcome.json action that records it as gh-standin named it.
+	recorded := second(t, [3]string{"outcome.json", `"command": "gh pr create",`, `"command": "gh pr create", "change": {"action": "open", "number": 1},`})
+	if len(recorded) != 3 || recorded[1].Kind != "github" || recorded[1].OutcomeSeq != 3 || recorded[1].pull == nil || recorded[1].pull.Action != "open" {
+		t.Fatalf("placed %+v before the second call, want the open at outcome.json action 3", teardownEffectsPlacedOf(recorded))
+	}
+
+	// A reviewer's comment after the seed, between the result and the second call: event 7 of the
+	// readback, which outcome.json keeps among the other actors' writes at its case time.
+	const reviewer = "ses-acme-12-reviewer"
+	comment := [3]string{"dispatch-readback.json", `"id": 9005,`, `"id": 9007, "issue_key": "ACME-12", "seq": 7, "actor": {"kind": "session", "id": "` + reviewer + `"}, "created_at": "2026-11-27T00:07:20.000000Z", "type": "comment.created", "payload": {"body": "The branch reads well."}}, {"id": 9005,`}
+	other := [3]string{"outcome.json", `"actions": [`, `"otherWrites": [{"at": "2030-01-07T15:00:42.010834969Z", "command": "comment.created", "target": "ACME-12", "fields": {"body": "The branch reads well."}, "actor": {"kind": "session", "id": "` + reviewer + `"}}], "actions": [`}
+	placed := second(t, comment, other)
+	if got, want := teardownEffectsPlacedOf(placed), []teardownEffectsPlaced{push, {"github", teardownEffectsPlacedOf(recorded)[1].What, 3}, result, {"dispatch", "comment.created", 0}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("placed %+v before the second call, want %+v", got, want)
+	}
+	if e := placed[3].event; e == nil || e.Actor != (teardownEffectsActor{Kind: "session", ID: reviewer}) || e.Payload["body"] != "The branch reads well." {
+		t.Fatalf("the reviewer's comment is placed as %+v, want it written by %s", e, reviewer)
+	}
+	_, err := teardownEffectsOrderOf(t, teardownEffectsEditedRun(t, [][3]string{comment}, ""))
+	if err == nil || !strings.Contains(err.Error(), "dispatch-readback.json event 7 (comment.created at 2030-01-07T15:00:42.010834969Z) has no action in outcome.json") {
+		t.Fatalf("placed a write no action or other write records, with error %v", err)
 	}
 }
 
@@ -1354,35 +1724,221 @@ func TestTeardownEffectsSameRequest(t *testing.T) {
 	}
 }
 
-// gh's arguments are read as the request gh makes; a newer gh-standin row says itself which change
-// it kept, so a call that opened nothing in lane R opens nothing in the replay.
-func TestTeardownEffectsGitHubRequest(t *testing.T) {
+// A gh-standin row says itself which change it kept, and nothing reads its arguments: a row with no
+// end is from a gh-standin that recorded no change, so what its call did is unknown, and a row with
+// an end and no `pull` (a read, or a write the stand-in refused) changed nothing, whatever its
+// arguments say.
+func TestTeardownEffectsGitHubAction(t *testing.T) {
 	t.Parallel()
 	done := time.Date(2026, 11, 26, 20, 0, 1, 0, time.UTC)
 	for _, row := range []struct {
-		name                  string
-		row                   teardownEffectsGitHubRow
-		command, method, path string
-		fields                map[string]any
-		action                string
+		name   string
+		row    teardownEffectsGitHubRow
+		action string
+		fault  bool
 	}{
-		{"a pull request opened with gh pr create", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "-H", "legion/ACME-12", "-B", "main", "-t", "T", "--fill", "-b", "B"}}, "gh pr create", "", "", map[string]any{"head": "legion/ACME-12", "base": "main", "title": "T", "body": "B"}, "unknown"},
-		{"a pull request opened through gh api fields", teardownEffectsGitHubRow{Argv: []string{"api", "repos/acme/widgets/pulls", "-f", "head=acme:legion/ACME-13", "-f", "base=main", "--jq", ".number"}}, "", "POST", "repos/acme/widgets/pulls", map[string]any{"head": "acme:legion/ACME-13", "base": "main"}, "unknown"},
-		{"a body edited through gh api", teardownEffectsGitHubRow{Argv: []string{"api", "-XPATCH", "/repos/acme/widgets/pulls/3", "-F", "body=@body.md"}, Files: map[string]string{"body.md": "new"}}, "", "PATCH", "repos/acme/widgets/pulls/3", map[string]any{"body": "new"}, "unknown"},
-		{"an approval", teardownEffectsGitHubRow{Argv: []string{"pr", "review", "73", "--approve", "--body", "Fine at B."}}, "gh pr review", "", "", map[string]any{"number": float64(73), "event": "APPROVE", "body": "Fine at B."}, "unknown"},
-		{"a merge by URL gh-standin kept nothing of", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "https://github.com/acme/widgets/pull/9", "--squash", "--delete-branch"}, Done: &done}, "gh pr merge", "", "", map[string]any{"number": float64(9)}, ""},
-		{"a merge gh-standin kept", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "-s"}, Done: &done, Pull: &teardownEffectsPullMutation{Action: "merge", Number: 9, Method: "squash"}}, "gh pr merge", "", "", map[string]any{}, "merge"},
-		{"a read", teardownEffectsGitHubRow{Argv: []string{"pr", "view", "--json", "number"}}, "gh pr view", "", "", map[string]any{}, "unknown"},
-		{"a creation gh-standin kept nothing of", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "--title", "T"}, Done: &done}, "gh pr create", "", "", map[string]any{"title": "T"}, ""},
+		{"a creation from before gh-standin recorded its end", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "-H", "legion/ACME-12"}}, "", true},
+		{"a read", teardownEffectsGitHubRow{Argv: []string{"pr", "view", "--json", "number"}, Done: &done}, "", false},
+		{"a merge the stand-in refused", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "9", "--squash"}, Done: &done, Exit: 1}, "", false},
+		{"a creation gh-standin kept nothing of", teardownEffectsGitHubRow{Argv: []string{"pr", "create", "--title", "T"}, Done: &done}, "", false},
+		{"a merge gh-standin kept", teardownEffectsGitHubRow{Argv: []string{"pr", "merge", "-s"}, Done: &done, Pull: &teardownEffectsPullMutation{Action: "merge", Number: 9, Method: "squash"}}, "merge", false},
 	} {
-		command, method, path, fields, err := teardownEffectsGitHubRequest(row.row)
-		action, actionErr := teardownEffectsGitHubAction(row.row)
-		// A row with no end is refused: what its call did is unknown, and no argument says it.
-		if (actionErr != nil) != (row.action == "unknown") || actionErr == nil && action != row.action {
-			t.Errorf("%s: action %q %v, want %q", row.name, action, actionErr, row.action)
+		action, err := teardownEffectsGitHubAction(row.row)
+		if (err != nil) != row.fault || action != row.action {
+			t.Errorf("%s: action %q, %v; want %q (an error: %t)", row.name, action, err, row.action, row.fault)
 		}
-		if err != nil || command != row.command || method != row.method || path != row.path || !reflect.DeepEqual(fields, row.fields) {
-			t.Errorf("%s: %q %q %q %v %v; want %q %q %q %v", row.name, command, method, path, fields, err, row.command, row.method, row.path, row.fields)
-		}
+	}
+}
+
+// teardownEffectsTestScratch is a scratch GitHub of two pull requests, #7 open on legion/ACME-12 (the
+// issue's branch) into main and #8 merged, and a remote whose legion/ACME-12, legion/ACME-13 and
+// main stand at h7, h13 and m1.
+func teardownEffectsTestScratch() teardownEffectsScratch {
+	open := teardownEffectsPull{Number: 7, State: "open", Base: "main", Title: "T", Body: "B"}
+	open.Head.Ref, open.Head.SHA = "legion/ACME-12", "h7"
+	merged := teardownEffectsPull{Number: 8, State: "merged", Base: "main", MergeCommit: "m0"}
+	merged.Head.Ref, merged.Head.SHA = "legion/ACME-11", "h8"
+	heads := map[string]string{"legion/ACME-12": "h7", "legion/ACME-13": "h13", "main": "m1"}
+	return teardownEffectsScratch{pulls: map[int]teardownEffectsPull{7: open, 8: merged}, branch: "legion/ACME-12", base: "main", remote: func(branch string) string { return heads[branch] }}
+}
+
+// Each change in gh-standin's names is made by its one rule, a run's and a trace's alike, and one
+// the scratch GitHub cannot hold is refused by name and changes nothing: a comment is quiet, a merge
+// that waits for the requirements and the merge queue leave the pull request open, and a GraphQL
+// mutation, a REST write and a gh pr command the replay has no rule for are never taken as made.
+func TestTeardownEffectsPullChange(t *testing.T) {
+	t.Parallel()
+	text := func(s string) *string { return &s }
+	const at = "2030-01-07T15:05:00Z"
+	when, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(pulls map[int]teardownEffectsPull) bool {
+		return reflect.DeepEqual(pulls, teardownEffectsTestScratch().pulls)
+	}
+	type change = teardownEffectsPullMutation
+	type pulls = map[int]teardownEffectsPull
+	for _, row := range []struct {
+		name   string
+		before []change
+		change change
+		fault  string
+		want   func(pulls) bool
+	}{
+		{name: "an open at its branch's head", change: change{Action: "open", Number: 9, Head: "legion/ACME-13", Base: text("main"), SHA: "h13", Title: text("T9"), Body: "B9", Draft: true}, want: func(p pulls) bool {
+			pull := p[9]
+			return pull.State == "open" && pull.Head.Ref == "legion/ACME-13" && pull.Head.SHA == "h13" && pull.Base == "main" && pull.Title == "T9" && pull.Body == "B9" && pull.Draft
+		}},
+		{name: "an open at another commit than its branch's", change: change{Action: "open", Number: 9, Head: "legion/ACME-13", Base: text("main"), SHA: "h0"}, fault: `the replay's remote holds "h13" there`},
+		{name: "an open of a number held", change: change{Action: "open", Number: 8, Head: "legion/ACME-13", Base: text("main"), SHA: "h13"}, fault: "open of pull request #8, which the replay's GitHub already holds"},
+		{name: "a second open of a branch into its base", change: change{Action: "open", Number: 9, Head: "legion/ACME-12", Base: text("main"), SHA: "h7"}, fault: "which pull request #7 is open on: GitHub opens no second"},
+		{name: "an edit of the body alone", change: change{Action: "edit", Numbers: []int{7}, Body: "B2"}, want: func(p pulls) bool { return p[7].Body == "B2" && p[7].Title == "T" && p[7].Base == "main" }},
+		{name: "an edit of the title and the base", change: change{Action: "edit", Numbers: []int{7}, Body: "B", Title: text("T2"), Base: text("release")}, want: func(p pulls) bool { return p[7].Title == "T2" && p[7].Base == "release" }},
+		{name: "an edit of one pull request held and one not", change: change{Action: "edit", Numbers: []int{7, 99}, Body: "B2"}, fault: "edit of pull request #99, which the replay's GitHub does not hold"},
+		{name: "a review", change: change{Action: "review", Number: 7, State: "APPROVED", Commit: "h7", Body: "Fine.", SubmittedAt: at}, want: func(p pulls) bool {
+			return reflect.DeepEqual(p[7].Reviews, []teardownEffectsReview{{Author: teardownEffectsReviewer, State: "APPROVED", Commit: "h7", Body: "Fine.", At: when}})
+		}},
+		{name: "a review at no time", change: change{Action: "review", Number: 7, State: "APPROVED"}, fault: "review of pull request #7"},
+		{name: "a merge", change: change{Action: "merge", Number: 7, Method: "squash"}, want: func(p pulls) bool { return p[7].State == "merged" && p[7].MergeCommit == "m1" }},
+		{name: "a merge that waits for the requirements", change: change{Action: "merge", Number: 7, Method: "squash", Auto: true}, want: func(p pulls) bool { return p[7].State == "open" && p[7].AutoMerge }},
+		{name: "auto-merge disarmed", before: []change{{Action: "merge", Number: 7, Auto: true}}, change: change{Action: "disable-auto", Number: 7}, want: func(p pulls) bool { return p[7].State == "open" && !p[7].AutoMerge }},
+		{name: "a merge of a merged pull request", change: change{Action: "merge", Number: 8}, fault: "merge of pull request #8, which is merged: GitHub merges an open pull request alone"},
+		{name: "a close", change: change{Action: "close", Number: 7, Comment: "Superseded."}, want: func(p pulls) bool { return p[7].State == "closed" }},
+		{name: "a reopen of a closed pull request", before: []change{{Action: "close", Number: 7}}, change: change{Action: "reopen", Number: 7}, want: func(p pulls) bool { return p[7].State == "open" }},
+		{name: "a reopen of a merged pull request", change: change{Action: "reopen", Number: 8}, fault: "GitHub neither closes nor reopens a merged pull request"},
+		{name: "a pull request into draft", change: change{Action: "draft", Number: 7}, want: func(p pulls) bool { return p[7].Draft }},
+		{name: "a draft made ready", before: []change{{Action: "draft", Number: 7}}, change: change{Action: "ready", Number: 7}, want: func(p pulls) bool { return !p[7].Draft }},
+		{name: "an enqueue", change: change{Action: "enqueue", Number: 7, ID: "PR_7"}, want: func(p pulls) bool { return p[7].State == "open" && p[7].Queued }},
+		{name: "a dequeue", before: []change{{Action: "enqueue", Number: 7}}, change: change{Action: "dequeue", Number: 7}, want: func(p pulls) bool { return p[7].State == "open" && !p[7].Queued }},
+		{name: "an enqueue of a merged pull request", change: change{Action: "enqueue", Number: 8}, fault: "the merge queue takes an open pull request alone"},
+		{name: "an enqueue of a node id no pull request has", change: change{Action: "enqueue", ID: "PR_kw"}, fault: "enqueue names no pull request the replay's GitHub holds"},
+		{name: "a comment, which is quiet", change: change{Action: "comment", Number: 7, Body: "Pushed."}, want: unchanged},
+		{name: "a comment on the diff, which is quiet", change: change{Action: "review-comment", Number: 7, Body: "Done."}, want: unchanged},
+		{name: "a comment on what is no pull request held", change: change{Action: "comment", Number: 99, Body: "Pushed."}, fault: "comment of pull request #99, which the replay's GitHub does not hold"},
+		{name: "another GraphQL mutation", change: change{Action: "mutation", Name: "addLabelsToLabelable", Number: 7}, fault: "the GraphQL mutation addLabelsToLabelable is a change the replay's GitHub has no rule for"},
+		{name: "another REST write", change: change{Action: "request", Number: 7, Method: "DELETE", Path: "repos/acme/widgets/pulls/7/requested_reviewers"}, fault: "the REST write DELETE repos/acme/widgets/pulls/7/requested_reviewers is a change the replay's GitHub has no rule for"},
+		{name: "another gh pr command", change: change{Action: "lock", Number: 7}, fault: "gh pr lock is a change the replay's GitHub has no rule for"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := teardownEffectsTestScratch()
+			for _, p := range row.before {
+				if err := s.change(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			kept := maps.Clone(s.pulls)
+			err := s.change(row.change)
+			if row.fault != "" {
+				if err == nil || !strings.Contains(err.Error(), row.fault) {
+					t.Fatalf("made %+v with error %v, want one naming %q", row.change, err, row.fault)
+				}
+				if !reflect.DeepEqual(s.pulls, kept) {
+					t.Fatalf("the refused %+v changed the pull requests from %+v to %+v", row.change, kept, s.pulls)
+				}
+				return
+			}
+			if err != nil || !row.want(s.pulls) {
+				t.Fatalf("made %+v (%v), and the pull requests are %+v", row.change, err, s.pulls)
+			}
+		})
+	}
+}
+
+// A frozen trace's GitHub action, which records the request and no change, is read as gh-standin
+// reads that request, and what the request leaves to the state is filled from the scratch GitHub:
+// the issue branch's one open pull request, an open's number and head commit, an edit's body and a
+// review's commit and time. A read changes nothing. A write that no rule covers is a `request`,
+// which the scratch GitHub refuses by name (TestTeardownEffectsPullChange), and a gh command of
+// another group that writes is an error: neither is a no-op. A trace's own change is taken as it
+// is, and a request gh or GitHub refuses is an error.
+func TestTeardownEffectsTraceChange(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2030, 1, 7, 15, 4, 0, 0, time.UTC)
+	text := func(s string) *string { return &s }
+	type change = teardownEffectsPullMutation
+	type fields = map[string]any
+	gh := func(command string, f fields) teardownEffectsTraceAction {
+		return teardownEffectsTraceAction{Kind: "github", Seq: 2, At: at, Command: command, Fields: f}
+	}
+	api := func(method, path string, f fields) teardownEffectsTraceAction {
+		return teardownEffectsTraceAction{Kind: "github", Seq: 2, At: at, Method: method, Path: path, Fields: f}
+	}
+	own := gh("gh pr merge", fields{})
+	own.Change = &change{Action: "merge", Number: 7, Method: "merge"}
+	const reviewed = "2030-01-07T15:04:00Z"
+	for _, row := range []struct {
+		name   string
+		action teardownEffectsTraceAction
+		want   *change
+		fault  string
+	}{
+		{"gh pr create of a branch named with its owner", gh("gh pr create", fields{"head": "acme:legion/ACME-13", "base": "main", "title": "T9", "body": "B9", "draft": true}), &change{Action: "open", Number: 9, Head: "legion/ACME-13", Base: text("main"), SHA: "h13", Title: text("T9"), Body: "B9", Draft: true}, ""},
+		{"gh pr create that names no head and no base", gh("gh pr create", fields{"title": "T"}), &change{Action: "open", Number: 9, Head: "legion/ACME-12", Base: text("main"), SHA: "h7", Title: text("T")}, ""},
+		{"gh pr create on a branch the remote does not hold", gh("gh pr create", fields{"head": "legion/ACME-14"}), nil, "open on legion/ACME-14, which the replay's remote does not hold"},
+		{"a gh api POST that opens a pull request", api("POST", "/repos/acme/widgets/pulls", fields{"head": "legion/ACME-13", "base": "main", "title": "T9"}), &change{Action: "open", Number: 9, Head: "legion/ACME-13", Base: text("main"), SHA: "h13", Title: text("T9")}, ""},
+		{"gh pr edit of the pull request it names", gh("gh pr edit", fields{"number": float64(7), "body": "B2"}), &change{Action: "edit", Number: 7, Numbers: []int{7}, Body: "B2"}, ""},
+		{"gh pr edit of the issue branch's title alone", gh("gh pr edit", fields{"title": "T2"}), &change{Action: "edit", Number: 7, Numbers: []int{7}, Title: text("T2"), Body: "B"}, ""},
+		{"a gh api PATCH of a body", api("PATCH", "repos/acme/widgets/pulls/7", fields{"body": "B2"}), &change{Action: "edit", Number: 7, Numbers: []int{7}, Body: "B2"}, ""},
+		{"a gh api PATCH of the state", api("PATCH", "repos/acme/widgets/pulls/7", fields{"state": "closed"}), &change{Action: "close", Number: 7}, ""},
+		{"gh pr review approving the issue branch's", gh("gh pr review", fields{"approve": true, "body": "Fine."}), &change{Action: "review", Number: 7, State: "APPROVED", Commit: "h7", Body: "Fine.", SubmittedAt: reviewed}, ""},
+		{"gh pr review with two verdicts", gh("gh pr review", fields{"number": float64(7), "approve": true, "comment": true, "body": "x"}), nil, "gh pr review sets 2 of --approve"},
+		{"gh pr review asking for changes with no body", gh("gh pr review", fields{"number": float64(7), "request-changes": true}), nil, "has no body, and gh refuses it"},
+		{"a gh api POST of a review at a commit", api("POST", "repos/acme/widgets/pulls/7/reviews", fields{"event": "REQUEST_CHANGES", "commit_id": "c1", "body": "No."}), &change{Action: "review", Number: 7, State: "CHANGES_REQUESTED", Commit: "c1", Body: "No.", SubmittedAt: reviewed}, ""},
+		{"gh pr merge that waits for the requirements", gh("gh pr merge", fields{"number": float64(7), "squash": true, "auto": true}), &change{Action: "merge", Number: 7, Method: "squash", Auto: true}, ""},
+		{"gh pr merge --disable-auto", gh("gh pr merge", fields{"disable-auto": true}), &change{Action: "disable-auto", Number: 7}, ""},
+		{"a gh api PUT of a merge", api("PUT", "repos/acme/widgets/pulls/7/merge", fields{"merge_method": "rebase"}), &change{Action: "merge", Number: 7, Method: "rebase"}, ""},
+		{"gh pr ready --undo", gh("gh pr ready", fields{"undo": true}), &change{Action: "draft", Number: 7}, ""},
+		{"gh pr close with a comment", gh("gh pr close", fields{"number": float64(7), "comment": "Superseded."}), &change{Action: "close", Number: 7, Comment: "Superseded."}, ""},
+		{"gh pr comment", gh("gh pr comment", fields{"body": "Pushed."}), &change{Action: "comment", Number: 7, Body: "Pushed."}, ""},
+		{"a reply under a comment on the diff", api("POST", "repos/acme/widgets/pulls/7/comments/5/replies", fields{"body": "Done."}), &change{Action: "review-comment", Number: 7, Body: "Done."}, ""},
+		{"a comment on the pull request's issue", api("POST", "repos/acme/widgets/issues/7/comments", fields{"body": "Pushed."}), &change{Action: "comment", Number: 7, Body: "Pushed."}, ""},
+		{"the merge queue's enqueue, by a variable", api("POST", "graphql", fields{"query": "mutation($pr:ID!){enqueuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{position}}}", "pr": "PR_7"}), &change{Action: "enqueue", Number: 7, ID: "PR_7"}, ""},
+		{"the merge queue's dequeue, by a literal", api("POST", "graphql", fields{"query": `mutation{dequeuePullRequest(input:{id:"PR_7"}){mergeQueueEntry{position}}}`}), &change{Action: "dequeue", Number: 7, ID: "PR_7"}, ""},
+		{"another GraphQL mutation", api("POST", "graphql", fields{"query": `mutation{addLabelsToLabelable(input:{labelableId:"PR_7",labelIds:["L1"]}){clientMutationId}}`}), &change{Action: "mutation", Name: "addLabelsToLabelable"}, ""},
+		{"another REST write under a pull request", api("DELETE", "repos/acme/widgets/pulls/7/requested_reviewers", fields{"reviewers": []any{"bob"}}), &change{Action: "request", Number: 7, Method: "DELETE", Path: "repos/acme/widgets/pulls/7/requested_reviewers"}, ""},
+		{"a trace's own change", own, &change{Action: "merge", Number: 7, Method: "merge"}, ""},
+		{"gh pr view", gh("gh pr view", fields{"number": float64(7)}), nil, ""},
+		{"gh pr checks", gh("gh pr checks", fields{}), nil, ""},
+		{"a gh api GET of a pull request", api("GET", "repos/acme/widgets/pulls/7", fields{}), nil, ""},
+		{"a GraphQL query", api("POST", "graphql", fields{"query": "query{viewer{login}}"}), nil, ""},
+		{"a gh command of another group that reads", gh("gh run view", fields{"log": true}), nil, ""},
+		{"a gh command of another group that writes", gh("gh issue comment", fields{"body": "Pushed."}), nil, "gh issue comment is a change the replay's GitHub has no rule for"},
+		{"a gh api write that is not under a pull request", api("POST", "repos/acme/widgets/statuses/h7", fields{"state": "success"}), &change{Action: "request", Method: "POST", Path: "repos/acme/widgets/statuses/h7"}, ""},
+		{"a gh api write under a pull request's issue that is no comment", api("POST", "repos/acme/widgets/issues/7/labels", fields{"labels": []any{"x"}}), &change{Action: "request", Number: 7, Method: "POST", Path: "repos/acme/widgets/issues/7/labels"}, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := teardownEffectsTraceChange(row.action)
+			if err == nil && got != nil {
+				var resolved change
+				resolved, err = teardownEffectsTestScratch().resolve(*got, at)
+				got = &resolved
+			}
+			if row.fault != "" {
+				if err == nil || !strings.Contains(err.Error(), row.fault) {
+					t.Fatalf("read %+v with error %v, want one naming %q", got, err, row.fault)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(got, row.want) {
+				t.Fatalf("read %+v (%v), want %+v", got, err, row.want)
+			}
+			if read := teardownEffectsTraceRead(row.action); read != (row.want == nil) {
+				t.Fatalf("teardownEffectsTraceRead says %t, and the action changes %+v", read, row.want)
+			}
+		})
+	}
+
+	// A gh pr command that names no pull request, where the issue's branch has no open one.
+	s := teardownEffectsTestScratch()
+	delete(s.pulls, 7)
+	merge, err := teardownEffectsTraceChange(gh("gh pr merge", fields{"squash": true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.resolve(*merge, at); err == nil || !strings.Contains(err.Error(), `no pull requests found for branch "legion/ACME-12"`) {
+		t.Fatalf("resolved a merge of the issue branch's pull request where it has none, with error %v", err)
 	}
 }

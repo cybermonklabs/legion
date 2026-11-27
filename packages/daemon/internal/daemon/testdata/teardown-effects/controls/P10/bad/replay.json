@@ -1,0 +1,17 @@
+{
+  "id": "81bcf10e-272e-4293-b4a0-ac7343295865",
+  "verdict": "ok",
+  "seed": [],
+  "calls": [],
+  "end": [
+    {
+      "kind": "dispatch",
+      "source": "P10 bad trace, action 1",
+      "what": "comment",
+      "at": "2030-01-08T12:02:30Z",
+      "outcomeSeq": 1
+    }
+  ],
+  "after": [],
+  "notReplayed": []
+}

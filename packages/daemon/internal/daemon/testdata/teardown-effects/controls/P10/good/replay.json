@@ -1,0 +1,114 @@
+{
+  "id": "2ab5b411-ec81-4d1c-8ded-d62b02c08bb6",
+  "verdict": "ok",
+  "seed": [],
+  "calls": [
+    {
+      "call": "P10 good trace, action 2",
+      "op": "handoff_complete",
+      "at": "2030-01-08T12:03:10Z",
+      "before": [
+        {
+          "kind": "github",
+          "source": "P10 good trace, action 1",
+          "what": "gh pr edit",
+          "at": "2030-01-08T12:02:30Z",
+          "outcomeSeq": 1
+        }
+      ],
+      "state": {
+        "phase": "done",
+        "tree": "ACME-21",
+        "treeRuns": false,
+        "parent": "",
+        "standing": "800a99567444d204998aa4e195f930871d5eb8ec",
+        "branch": "800a99567444d204998aa4e195f930871d5eb8ec",
+        "pulls": [
+          {
+            "number": 77,
+            "state": "merged",
+            "head": "800a99567444d204998aa4e195f930871d5eb8ec"
+          }
+        ]
+      },
+      "standin": [
+        {
+          "outcomeSeq": 2,
+          "route": "POST /legion/v1/handoff/complete",
+          "status": 400,
+          "code": "CHECK_WAKE_REQUIRED"
+        }
+      ],
+      "daemon": [
+        {
+          "seq": 0,
+          "route": "POST /legion/v1/handoff/complete",
+          "status": 400,
+          "code": "CHECK_WAKE_REQUIRED"
+        }
+      ],
+      "client": {
+        "run": {
+          "isError": true,
+          "text": ""
+        },
+        "replay": {
+          "isError": true,
+          "text": "POST /legion/v1/handoff/complete failed with 400 CHECK_WAKE_REQUIRED: a pending report names wakeAt, when the next look of ACME-21's production check is due; look 1 stays open and nothing was recorded, so send this report again with a time"
+        }
+      },
+      "phaseAfter": "done"
+    },
+    {
+      "call": "P10 good trace, action 3",
+      "op": "handoff_complete",
+      "at": "2030-01-08T12:03:40Z",
+      "before": [],
+      "state": {
+        "phase": "done",
+        "tree": "ACME-21",
+        "treeRuns": false,
+        "parent": "",
+        "standing": "800a99567444d204998aa4e195f930871d5eb8ec",
+        "branch": "800a99567444d204998aa4e195f930871d5eb8ec",
+        "pulls": [
+          {
+            "number": 77,
+            "state": "merged",
+            "head": "800a99567444d204998aa4e195f930871d5eb8ec"
+          }
+        ]
+      },
+      "standin": [
+        {
+          "outcomeSeq": 3,
+          "route": "POST /legion/v1/handoff/complete",
+          "status": 200,
+          "code": null
+        }
+      ],
+      "daemon": [
+        {
+          "seq": 2,
+          "route": "POST /legion/v1/handoff/complete",
+          "status": 200,
+          "code": null
+        }
+      ],
+      "client": {
+        "run": {
+          "isError": false,
+          "text": ""
+        },
+        "replay": {
+          "isError": false,
+          "text": "{}"
+        }
+      },
+      "phaseAfter": "done"
+    }
+  ],
+  "end": [],
+  "after": [],
+  "notReplayed": []
+}

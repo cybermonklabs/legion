@@ -1,0 +1,92 @@
+{
+  "id": "268eec6f-fdec-4277-8f3e-363353284ccb",
+  "answers": [
+    {
+      "seq": 0,
+      "at": "2030-01-07T15:04:30Z",
+      "by": "daemon",
+      "op": "handoff_complete",
+      "status": 200,
+      "code": null,
+      "body": {
+        "key": "ACME-12",
+        "generation": 1,
+        "phase": "implementing",
+        "status": "in_progress",
+        "tree": "ACME-10",
+        "repo": "cybermonklabs/legion",
+        "defaultBranch": "main",
+        "priority": null,
+        "workers": {
+          "implementer": {
+            "claim": {
+              "session": "01a21bb3-9800-755d-b41f-fe1f19e20610",
+              "state": "working",
+              "locator": {
+                "runtime": "tmux",
+                "claim": "legion-acme-acme-12-implementer",
+                "incarnation": "22075:24319",
+                "tmux": {
+                  "window": "acme-12",
+                  "pane": "%22075"
+                }
+              },
+              "servingGeneration": 1,
+              "pluginContract": 285,
+              "updateState": "none",
+              "lastTurnStart": "2030-01-07T15:00:00Z",
+              "lastReady": "2030-01-07T15:00:00Z",
+              "pendingTask": {
+                "phase": "implementing",
+                "queuedAt": "2030-01-07T15:00:00Z"
+              },
+              "step": {
+                "turnStartedAt": "2030-01-07T15:00:00Z"
+              }
+            },
+            "pass": 0,
+            "rounds": 0
+          }
+        },
+        "slot": {
+          "index": 0,
+          "admittedAt": "2026-11-27T06:31:23.618175Z"
+        },
+        "treeMovedAt": "2030-01-07T15:00:00Z",
+        "quietHours": 0.075
+      }
+    },
+    {
+      "seq": 1,
+      "at": "2030-01-07T15:04:30Z",
+      "by": "daemon",
+      "op": "handoff_complete",
+      "status": 200,
+      "code": null,
+      "body": {}
+    },
+    {
+      "seq": 2,
+      "at": "2030-01-07T15:04:30Z",
+      "by": "client",
+      "op": "handoff_complete",
+      "status": 0,
+      "code": null,
+      "body": {
+        "isError": false,
+        "text": "{}"
+      }
+    }
+  ],
+  "phaseBefore": "implementing",
+  "phaseAfter": "testing",
+  "productionCheck": null,
+  "handoffRecords": [
+    {
+      "phase": "implement",
+      "version": 1,
+      "id": "62b9cc94-9d43-4e02-8af2-e0f53a460702"
+    }
+  ],
+  "diverged": []
+}

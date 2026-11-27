@@ -5247,19 +5247,81 @@ Run both modes in a build Job with `go`, `git`, `jj`, `bun` after `bun install`,
 The proof uses a real `omp --mode rpc` pane under `legion worker-shim` with a scripted provider on loopback; it needs neither a model route nor GitHub credentials.
 It starts its own broker and Dispatch server, points the daemon's GitHub client at a local fixture, and records the HTTP replies from the real daemon alongside the tool results.
 
-`--controls` drives the example cases' known-good traces, a local-only implementer head, a pushed head with no open pull request, and a Dispatch comment naming a time.
-The local-only head is refused by the tool before a completion reaches the daemon.
-A non-final `pending` without `wake_at` is refused as `CHECK_WAKE_REQUIRED`.
-Neither that refusal nor the comment writes `production_checks.wake_at` or a `check_wake` row; a valid `pending` writes both.
-A pushed head with an open pull request allows implementing to advance.
-Each control writes an `effects.json`, and `daemon-answers.json` records the completion responses observed on the wire.
+`--controls` replays the known-good trace and the known-bad trace of each case that lane D replays, as `--runs` replays a run: lane D replays every case but an `A` case.
+Each trace starts from its case's starting state, in a daemon of its own.
+Each daemon action of a trace is one `legion` call through the real pane, made at the action's case time.
+Each push, GitHub change and Dispatch write of a trace is made at its case time, before the next call or after the last call, by the writers that `--runs` uses.
+A GitHub action of a trace names its change in `change` where `outcome.ts` recorded one, and the replay makes that change.
+A frozen trace records only the request of its GitHub action (`command`, or `method` and `path`, and `fields`).
+The replay reads that request as `gh-standin.ts` reads it, and makes the change that `gh-standin.ts` keeps of the same request.
+What the request leaves open comes from the replay's own state, as `gh-standin.ts` takes it from its routes: the one open pull request of the issue's branch for a `gh pr` command that names no pull request, the next number and the branch's head on the remote for a new pull request, the body that the pull request holds for an edit that names no body, and the head of the pull request for a review.
+A staging action, and a GitHub call that reads (a `gh pr` read, a `gh` command of another group that reads, a REST GET or a GraphQL query), change nothing that the replay holds, and the replay does not make them.
+A GitHub write that no rule below covers is a change that the replay's GitHub cannot hold, never a no-op: a trace's REST write outside the pull request rules is a `request`, and a `gh` command of another group that does not read is refused.
+The real daemon must give each call the answer that the trace records: the same acceptance, or the same refusal code.
+A trace records no status, so the receipt gives the trace's answer the real daemon's status.
+The trace is `HARNESS` where the daemon gives another answer, where the call sends no request or two requests that it is judged on, where the trace holds a write that the replay does not make (a document, a reply, an issue update, or a write on another issue), where gh or GitHub refuses the request of a GitHub action (a `gh pr review` with no verdict or with two, a new pull request on a branch that the remote does not hold), and where the replay's GitHub cannot hold the change (below).
+Each trace writes `<case id>/<good or bad>/replay.json`, and, unless the trace is `HARNESS`, `effects.json` beside it, under the trace's own id and in the format of a run's records.
+The `end` list of a trace's `replay.json` holds the changes that the replay made after the last call.
+`heldout-reader.ts --controls <evidence directory>` gives these records to the control items of a lane D batch.
+The reader gives a control's outcome and a run's through one projection, which leaves out the audit records that `outcome.ts` keeps beside the scored actions (`otherWrites`, a Dispatch write's `actor`, a GitHub action's `change`).
+Those records stay in `outcome.json`, where the replay reads them.
+
+Each check of plan T4 is tied to the trace action that shows it:
+
+- a non-final `pending` without `wake_at` that a known-good trace records as refused is answered `400 CHECK_WAKE_REQUIRED`, and the call changes neither the phase nor `production_checks.wake_at` nor the `check_wake` row;
+
+- a `pending` with `wake_at` that a known-good trace records as taken writes `wake_at` and a `check_wake` row due then, and the phase does not move;
+
+- an implementer completion that a known-good trace records as taken moves the phase, and names one handoff record;
+
+- a Dispatch comment in any trace of a case whose production check is on a look that is not the last changes neither the phase nor the check;
+
+- each case action whose effect is the daemon's holds at the last action of the known-good trace that takes it: the phase that the case names, or a wake inside the case's window with the `check_wake` row due then.
+
+Once, on the first implementer case whose workspace stands on a commit that only the workspace holds, a replay of its own makes the known-good trace's completion before the trace publishes its head.
+After the trace's handoff writes, the tool refuses the completion before it reaches the daemon.
+After the trace's pushes, the daemon refuses it with `409 HANDOFF_NO_PULL_REQUEST`.
+Each of the two writes `<case id>/<check>/effects.json`.
+`--controls` fails before it boots a daemon where the case file cannot show each of these checks.
+It fails, and names each control, where a control that it promised did not execute.
+It writes `daemon-answers.json`, the four answers of fixture row F3 that the checks captured, only where every control executed.
+`internal/daemon/testdata/teardown-effects/controls` holds the trace records of the example's controls, as the proof Job's `--controls` wrote them.
 
 `--runs` starts each run from its case's starting state, never from the state the run left.
 It builds the case's Git with lane R's own builder (`git-world.ts build`) and refuses a run whose `commit-map.json` names other commits, seeds Dispatch with the records the run's `dispatch-readback.json` holds at or below its seed cursor, and gives GitHub the world's pull requests.
 A child stays a child: the world's parent is filed in the scratch Dispatch first (titled `Parent of <issue>`, as lane R's seed titles it) and the issue under it, with the parent moved into work beside it, as lane R's seed does, and labelled for Legion, as the root handed over that the daemon records; in the daemon the issue, its claim and its production check stand in the parent's tree, whose lifecycle is open under the workflow.
 The world holds nothing of the parent's own daemon state, so the parent is recorded with the least that makes its tree run (without it, admission takes the tree for one that finished and releases the child's slot): a root handed over, in its Dispatch status, at `admitted`, with no slot, no claim and no phases row.
 A controller case whose issue is a child, and a parent in another project or after its child, are not set up and end the run `HARNESS`.
-Before each `legion` call of the session JSONL it applies only the changes the run recorded before that call, in their recorded order: each push of `pushes.log`, from the head it moved; each pull request change `gh-standin.ts` kept (`calls.jsonl`'s `pull`, or the call's arguments in an older capture, and a merge or a close always from its arguments); each Dispatch write of the readback's event log after the seed, by its author; and each move of the role's workspace onto another commit (`@-`, which the `legion` tool reads), from the jj operation of `workspace-ops.jsonl` that made it.
+Before each `legion` call of the session JSONL it applies only the changes the run recorded before that call, in their recorded order: each push of `pushes.log`, from the head it moved; each pull request change that `gh-standin.ts` kept, from `calls.jsonl`'s `pull` alone and never from the call's arguments; each Dispatch write of the readback's event log after the seed, by its author; and each move of the role's workspace onto another commit (`@-`, which the `legion` tool reads), from the jj operation of `workspace-ops.jsonl` that made it.
+A `calls.jsonl` row with no `pull` is a read, or a write that the stand-in refused, and changes nothing.
+A row with no `done` is from a `gh-standin.ts` that recorded no change, so what its call did is unknown, and the run is `HARNESS`.
+An `outcome.json` GitHub action records in `change` the change that `gh-standin.ts` kept, where `outcome.ts` recorded one.
+The run is `HARNESS` where no row's `pull` holds that change (a missing mutation record), and where the row's `pull` names another change.
+A Dispatch write of another actor than the role takes its place from `outcome.json`'s `otherWrites`, and the replay writes it as its own author.
+
+`--runs` and `--controls` make each GitHub change by one rule for each name that `gh-standin.ts` records:
+
+- `open`: a new open pull request, whose head is the head of its branch on the replay's remote, which must be the commit that the change names;
+
+- `edit`: the body of each pull request that `numbers` names, and the title and the base that the edit sets;
+
+- `review`: the review, by `legion-review[bot]`;
+
+- `merge`: the pull request is merged, and the head of its base on the remote is its merge commit;
+
+- `merge` with `auto`: arms auto-merge and leaves the pull request open.
+  `disable-auto` disarms auto-merge.
+
+- `close` and `reopen`, `ready` and `draft`: the pull request's state and its draft;
+
+- `enqueue` and `dequeue`: the pull request goes into the merge queue or out of it, and stays open, because the replay's merge queue merges nothing;
+
+- `comment` and `review-comment` are quiet: the replay's GitHub keeps no comment and the daemon reads none, so the pull request stays as it was.
+
+The replay never takes as made a change that its GitHub cannot hold.
+It refuses the change by name, and the replay is `HARNESS`: a GraphQL `mutation` and a REST `request` that `gh-standin.ts` recorded by those names, any other `gh pr` command, a change of a pull request that the replay's GitHub does not hold (a comment on an issue that is no pull request among them), a new pull request at another commit than its branch's head or on a branch that has an open pull request into that base, a merge or an enqueue of a pull request that is not open, and a close or a reopen of a merged pull request.
+Auto-merge and the merge queue are held, and not served: the daemon reads neither.
+
 `outcome.ts` writes `workspace-ops.jsonl` and `workspace.pack` at the end of each lane R run (`git-world.ts record`): each jj operation of the run's workspace with its start, end and the commit `@-` named, and the objects of those commits.
 Those objects go into the replay workspace's object store at the start, on no ref, so a commit the role made and never pushed keeps its id, parents and tree, and is seen only once its recorded move or push is applied; the run's own `remote.git` and `workspace`, where present, serve as further sources of pushed commits.
 A capture made before `outcome.ts` recorded the workspace has no `workspace-ops.jsonl`: run `bun packages/pi-legion/scripts/skill-scenarios/git-world.ts record <workspace> <dir>` on a copy of its original job archive's run directory first.
@@ -5270,7 +5332,7 @@ A request is a difference only when at least one side refused it: the real daemo
 A status of 400 or more is a refusal, and a `5xx` status is a refusal too.
 Two acceptances are the same answer, also when their statuses are different, for example `200` and `201`.
 A difference marks the run `DIVERGED`, and the replay does not replay a later call.
-Each run writes `<outcome id>/replay.json`: its verdict, the seeded records, each call with the changes applied before it and their provenance (the `outcome.json` action, or the workspace record's line and jj operation), the state it ran in (phase, the daemon's tree for the issue and whether it runs, the issue's Dispatch parent, the commit the workspace stands on, the issue branch's head on the remote, the pull requests), the stand-in's and the daemon's answers and the tool's in the run and in the replay, the changes after the last call and the calls not replayed.
+Each run writes `<outcome id>/replay.json`: its verdict, the seeded records, each call with the changes applied before it and their provenance (the `outcome.json` action, or the workspace record's line and jj operation), the state it ran in (phase, the daemon's tree for the issue and whether it runs, the issue's Dispatch parent, the commit the workspace stands on, the issue branch's head on the remote, the pull requests), the stand-in's and the daemon's answers and the tool's in the run and in the replay, the changes made after the last call (`end`, which is empty for a run), the changes after the last call that the replay did not make (`after`), and the calls not replayed.
 Every list in `replay.json` and `effects.json` is an array, and no list is `null`.
 A `HARNESS` record has two more fields: `reason`, the text of the failure, and `fault`, its typed cause.
 A record that is not `HARNESS` has neither field.

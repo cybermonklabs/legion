@@ -6,7 +6,8 @@
  * by another program, after the labels and their record are written.
  *
  *   bun heldout-reader.ts --rubric <rubric file> --cases <case file> --records <dir>
- *       --out <labels file> --seed <n> (--gateway <url> --key-command <file> | --key-file <file>)
+ *       [--controls <dir>] --out <labels file> --seed <n>
+ *       (--gateway <url> --key-command <file> | --key-file <file>)
  *   bun heldout-reader.ts --capture <dir> --cases <case file> --seed <n> (the same route flags)
  *
  * --rubric is the frozen rubric of the set, as a case author's reader writes it
@@ -16,15 +17,18 @@
  *   {"set": "skilluse", "cases": [{"id": "<case id>", "rubric": [<line loaded>, <line finished>],
  *    "controlTraces": {"good": <outcome record>, "bad": <outcome record>}}]}
  * A skilluse case is ruled on exactly the lines loaded and finished, once each, in any order, so
- * the reader grades the skill's loading and the task's completion each by itself. Every other key,
- * at the top or in a case, is left unread: a case's verdicts, its reason and its withheld trace
- * among them.
+ * the reader grades the skill's loading and the task's completion each by itself. A heldout or
+ * devcase rubric holds each line heldout-case.ts requires of its case: a production-check case's
+ * diagnosis and scheduling. A rubric that lacks one is refused, and the refusal names each line it
+ * lacks. Every other key, at the top or in a case, is left unread: a case's verdicts, its reason
+ * and its withheld trace among them.
  * --cases is a heldout, devcase or skilluse file (heldout-case.ts's HeldoutFile or SkillUseFile).
- * Only its case ids and traces are read. A heldout or devcase case's known-good trace and, where it
- * has one, its known-bad trace are the controls of a batch that grades that case. A skilluse file
- * holds no traces: the controls of a batch that grades its case are that case's good and bad
- * control traces in the frozen rubric, which is then a skilluse rubric. A run with the skill
- * withheld is a run of --records like any other, its arm known only to the join after the labels.
+ * Only its case ids, kinds, roles, rubric line names and traces are read. A heldout or devcase
+ * case's known-good trace and, where it has one, its known-bad trace are the controls of a batch
+ * that grades that case. A skilluse file holds no traces: the controls of a batch that grades its
+ * case are that case's good and bad control traces in the frozen rubric, which is then a skilluse
+ * rubric. A run with the skill withheld is a run of --records like any other, its arm known only
+ * to the join after the labels.
  * --records holds one directory per case, named by the case id, and in it one directory per run:
  * <records>/<case id>/<run>/outcome.json (heldout-case.ts's OutcomeRecord). A run of a case lane D
  * replays (a heldout or devcase case that is not an A case) holds lane D's replay receipt beside
@@ -34,17 +38,30 @@
  * another run's, or at odds with itself or with the outcome refuses the batch, and so does an
  * effects.json with no replay.json beside it, an older capture. Nothing else of a run's directory
  * is read, and no directory name reaches the reader.
+ * --controls is the evidence directory of `scripts/e2e/teardown-effects.sh --controls --cases`
+ * run on the same case file, and a heldout or devcase file whose cases lane D replays requires
+ * it. It holds the two records of each trace's replay, in the receipt's own format, under the
+ * trace's own id: <controls>/<case id>/<good or bad>/replay.json and effects.json (controlAt).
+ * Each is read against its trace as a run's receipt is read against its outcome. A control of a
+ * lane D case is given with its effect record, as an ok run is given (gradedOf). A control whose
+ * record is missing, or whose replay is not ok, refuses the batch, and the refusal names each one.
+ * A skilluse set, which lane D does not replay, takes no --controls.
  * --seed is a whole number below 2^32. It draws the controls' fresh ids (UUIDs, as a run's id is)
  * and then the order of the batch (a Fisher-Yates walk of one mulberry32 stream).
  *
  * The batch is each run under its outcome's id and each control under its fresh id, in one
  * shuffled list. Each item is `{id, case, outcome, effects}`: the outcome record and the effect
- * record, each with its own `id` taken out, and `effects` null where the run has none (a control
- * and a lane R run have none). A DIVERGED run is given only through the call of its first
- * difference (heldout-reader-receipt.ts): its outcome with no later action, no last words and no
- * report, its effects with no list of differences, and `observedThrough` last, the seq of the last
- * action it holds; a batch that holds one adds OBSERVED_INSTRUCTION to the instruction, under which
- * the reader grades a line of such a run null where only a later action could decide it. A run
+ * record, each with its own `id` taken out, and `effects` null where the run has none (a lane R
+ * run, and a control of a case lane D does not replay, have none). A run's outcome and a control's
+ * are given through one projection (heldout-reader-receipt.ts modelOutcome): the scored actions and
+ * what the run read, without the audit records outcome.ts keeps beside them (`otherWrites`, a
+ * Dispatch write's `actor`, a GitHub call's `change`), which a frozen trace holds none of and which
+ * stay in outcome.json. A DIVERGED run is given only
+ * through the call of its first difference (heldout-reader-receipt.ts): its outcome with no later
+ * action, no last words and no report, its effects with no list of differences, and
+ * `observedThrough` last, the seq of the last action it holds; a batch that holds one adds
+ * OBSERVED_INSTRUCTION to the instruction, under which the reader grades a line of such a run null
+ * where only a later action could decide it. A run
  * that is HARNESS by the role's own write is given its whole outcome and null effects; one that is
  * HARNESS by the harness's own records is not given, though its case's controls are. No item says
  * why. The call is the reader's instruction as its system prompt and one user message: the
@@ -230,10 +247,13 @@ export interface CaseRubric {
   readonly rubric: readonly { readonly name: string; readonly text: string }[];
 }
 
-/** A case as a batch reads it: its id, and its known traces, which the batch holds as controls. */
+/** A case as a batch reads it: its id, its known traces, which the batch holds as controls, and,
+ * for a case lane D replays, what lane D's --controls wrote of each trace's replay (readControls).
+ * A case with no `records` is one lane D does not replay, and its controls carry no effects. */
 export interface CaseTraces {
   readonly id: string;
   readonly traces: { readonly good?: OutcomeRecord; readonly bad?: OutcomeRecord };
+  readonly records?: { readonly good?: Replay; readonly bad?: Replay };
 }
 
 /** One case of a skilluse set's frozen rubric: its lines loaded and finished, and the good and bad
@@ -303,8 +323,11 @@ function freshId(random: () => number): string {
  * The batch of `runs`, with the controls of each case they name (with no run, of every case of
  * `cases`): each trace of the case, under a fresh id, all of it in the order `seed` draws. Each run
  * is given as gradedOf gives it, and a run it gives nothing of (HARNESS by the harness's own
- * records) is not sent, though its case's controls are. Throws naming a case with no frozen rubric
- * or no traces, and a batch with no control.
+ * records) is not sent, though its case's controls are. A control of a case lane D replays (one
+ * with `records`) is given as gradedOf gives an ok run, with the effect record lane D's --controls
+ * wrote of its trace; a control of a case lane D does not replay is given with no effects. Throws
+ * naming a case with no frozen rubric or no traces, a batch with no control, and each control of
+ * a lane D case whose record is missing or not ok.
  */
 export function buildBatch(
   rubric: readonly CaseRubric[],
@@ -325,6 +348,7 @@ export function buildBatch(
   const taken = new Set(runs.map((run) => run.outcome.id));
   const controls = new Map<string, Trace>();
   const controlItems: Item[] = [];
+  const unrecorded: string[] = [];
   for (const each of chosen) {
     for (const trace of ["good", "bad"] as const) {
       const record = each.traces[trace];
@@ -334,10 +358,26 @@ export function buildBatch(
         throw new Error(`seed ${seed} drew the id ${id} twice; choose another seed`);
       taken.add(id);
       controls.set(id, trace);
-      const { id: _id, ...outcome } = record;
-      controlItems.push({ id, case: each.id, outcome, effects: null });
+      // Through gradedOf, as a run is given: a control of a case lane D does not replay as a lane R
+      // run, and one of a case lane D replays as an ok run, each outcome through modelOutcome.
+      const replay = each.records?.[trace];
+      const graded =
+        each.records === undefined
+          ? gradedOf(record, null)
+          : replay?.verdict === "ok"
+            ? gradedOf(record, replay)
+            : undefined;
+      if (graded === undefined) {
+        unrecorded.push(`${each.id} ${trace} (${controlGap(replay)})`);
+        continue;
+      }
+      controlItems.push({ id, case: each.id, ...graded });
     }
   }
+  if (unrecorded.length > 0)
+    throw new Error(
+      `a control of a case lane D replays has no effect record: ${unrecorded.join("; ")}. Run scripts/e2e/teardown-effects.sh --controls on the case file, and name its evidence directory in --controls`
+    );
   if (controls.size === 0) throw new Error("the batch holds no control: its cases have no trace");
 
   const runItems = runs
@@ -611,11 +651,40 @@ function read<T>(file: string, parse: (text: string) => T): T {
   }
 }
 
-/** The frozen rubric's cases. */
-export function parseRubric(text: string): CaseRubric[] {
+/**
+ * The frozen rubric's cases, for the heldout or devcase file `cases`. Throws where a case or a line
+ * repeats, and where a case of `cases` that the rubric holds lacks a line heldout-case.ts requires
+ * of it, naming each case and line it lacks. A case the rubric does not hold is refused by the
+ * batch that grades it (buildBatch).
+ */
+export function parseRubric(text: string, cases: HeldoutFile): CaseRubric[] {
   const parsed = RubricFile.safeParse(JSON.parse(text));
   if (!parsed.success) throw new Error(z.prettifyError(parsed.error).replaceAll("\n", " "));
-  return parsed.data.cases.map(({ id, rubric }) => ({ id, rubric }));
+  const frozen = parsed.data.cases.map(({ id, rubric }) => ({ id, rubric }));
+  const held = new Map(frozen.map((each) => [each.id, each.rubric.map((line) => line.name)]));
+  const lacking = cases.cases.flatMap((each) => {
+    const names = held.get(each.id);
+    // heldout-case.ts requires lines of a production-check case alone, and its parser holds that
+    // case's own lines to them (CHECK_RUBRIC: diagnosis, scheduling).
+    if (names === undefined || each.role !== "production-check") return [];
+    return each.rubric
+      .filter((line) => !names.includes(line.name))
+      .map((line) => `${each.id} ${line.name}`);
+  });
+  if (lacking.length > 0)
+    throw new Error(
+      `the frozen rubric lacks a line heldout-case.ts requires of its case: ${lacking.join(", ")}`
+    );
+  return frozen;
+}
+
+/** Why lane D's record of a control gives it no effect record: there is none, or its replay is
+ * HARNESS, or DIVERGED, which --controls never writes of a trace: a trace's answer that is not
+ * the real daemon's is a harness failure of the control. */
+function controlGap(replay: Replay | undefined): string {
+  if (replay === undefined) return "lane D wrote no replay.json of it";
+  if (replay.verdict === "HARNESS") return `its replay is HARNESS: ${replay.reason}`;
+  return `its replay is ${replay.verdict}, and a control's replay holds each answer its trace records`;
 }
 
 /**
@@ -703,6 +772,43 @@ function replayAt(
   }
 }
 
+/** Where lane D's --controls writes the two records of a case's trace: <dir>/<case id>/<good or
+ * bad>, as teardown_effects_record_test.go's teardownEffectsControlDir lays them out. */
+export function controlAt(dir: string, caseId: string, trace: Trace): string {
+  return path.join(dir, caseId, trace);
+}
+
+/**
+ * The cases of `cases`, each case lane D replays with lane D's records of its traces from `dir`,
+ * the evidence directory of teardown-effects.sh --controls: replay.json and, unless it is HARNESS,
+ * effects.json at controlAt, each read against its trace as a run's receipt is read against its
+ * outcome (replayAt). A trace with no replay.json there has no record, and buildBatch refuses a
+ * batch that grades its case. Throws where a record cannot be read or is at odds with its trace,
+ * and where a case lane D does not replay holds one.
+ */
+export function readControls(
+  dir: string,
+  cases: HeldoutFile
+): { readonly cases: readonly CaseTraces[] } {
+  const rules = laneRules(cases);
+  return {
+    cases: cases.cases.map((each): CaseTraces => {
+      const lane = rules.get(each.id) ?? null;
+      const records: { good?: Replay; bad?: Replay } = {};
+      for (const trace of ["good", "bad"] as const) {
+        const outcome = each.traces[trace];
+        const at = controlAt(dir, each.id, trace);
+        if (outcome === undefined) continue;
+        if (lane !== null && !existsSync(path.join(at, "replay.json"))) continue;
+        const replay = replayAt(at, each.id, outcome, lane);
+        if (replay !== null) records[trace] = replay;
+      }
+      const { id, traces } = each;
+      return lane === null ? { id, traces } : { id, traces, records };
+    }),
+  };
+}
+
 /**
  * Every run of a --records directory, each named by its case's directory, with what lane D's
  * replay receipt says of it (replayAt). Throws naming a run whose receipt is missing or refused,
@@ -761,12 +867,13 @@ function runLog(file: string): unknown[] {
 }
 
 const USAGE =
-  "usage: heldout-reader.ts --rubric <file> --cases <file> --records <dir> --out <labels file> --seed <n> (--gateway <url> --key-command <file> | --key-file <file>), or --capture <dir> --cases <file> --seed <n> with the same route";
+  "usage: heldout-reader.ts --rubric <file> --cases <file> --records <dir> [--controls <dir>] --out <labels file> --seed <n> (--gateway <url> --key-command <file> | --key-file <file>), or --capture <dir> --cases <file> --seed <n> with the same route";
 
 interface Arguments {
   readonly rubric?: string;
   readonly cases?: string;
   readonly records?: string;
+  readonly controls?: string;
   readonly out?: string;
   readonly seed?: string;
   readonly capture?: string;
@@ -779,6 +886,7 @@ const FLAGS: Record<string, keyof Arguments> = {
   "--rubric": "rubric",
   "--cases": "cases",
   "--records": "records",
+  "--controls": "controls",
   "--out": "out",
   "--seed": "seed",
   "--capture": "capture",
@@ -802,8 +910,11 @@ function parseArguments(argv: readonly string[]): Arguments | string {
   if (values.cases === undefined || values.seed === undefined)
     return `--cases and --seed are required. ${USAGE}`;
   const grading = [values.rubric, values.records, values.out];
-  if (values.capture !== undefined && grading.some((value) => value !== undefined))
-    return `--capture takes no --rubric, --records or --out. ${USAGE}`;
+  if (
+    values.capture !== undefined &&
+    [...grading, values.controls].some((value) => value !== undefined)
+  )
+    return `--capture takes no --rubric, --records, --controls or --out. ${USAGE}`;
   if (values.capture === undefined && grading.some((value) => value === undefined))
     return `--rubric, --records and --out are required. ${USAGE}`;
   return values;
@@ -869,11 +980,22 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       const rubricFile = path.resolve(args.rubric ?? "");
       const records = path.resolve(args.records ?? "");
       if (cases.set === "skilluse") {
+        if (args.controls !== undefined)
+          throw new Error(
+            "--controls names lane D's records of the controls, and lane D does not replay a skilluse set"
+          );
         const frozen = read(rubricFile, parseSkillUseRubric);
         batch = skillUseBatch(frozen, cases, readRuns(records, cases), seed);
       } else {
-        const rubric = read(rubricFile, parseRubric);
-        batch = buildBatch(rubric, cases, readRuns(records, cases), seed);
+        const rubric = read(rubricFile, (text) => parseRubric(text, cases));
+        const replayed = cases.cases.filter((each) => each.kind !== "A").map((each) => each.id);
+        if (args.controls === undefined && replayed.length > 0)
+          throw new Error(
+            `--controls is required: lane D replays the cases ${replayed.join(", ")}, and a control of each is given with the effect record teardown-effects.sh --controls wrote of its trace`
+          );
+        const traced =
+          args.controls === undefined ? cases : readControls(path.resolve(args.controls), cases);
+        batch = buildBatch(rubric, traced, readRuns(records, cases), seed);
       }
       // Read and made before the call, so a log or a directory that is not fit stops the run first.
       log = runLog(`${out}.run.json`);

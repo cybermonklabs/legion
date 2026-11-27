@@ -4,6 +4,7 @@
     "verdict": "ok",
     "seed": [],
     "calls": [],
+    "end": [],
     "after": [],
     "notReplayed": []
   },
@@ -26,6 +27,7 @@
     },
     "seed": [],
     "calls": [],
+    "end": [],
     "after": [],
     "notReplayed": []
   },
@@ -38,6 +40,7 @@
     },
     "seed": [],
     "calls": [],
+    "end": [],
     "after": [],
     "notReplayed": []
   }

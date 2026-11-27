@@ -28,7 +28,9 @@
  *   action and time): its whole outcome, as lane R recorded it, and no effects. A line the reader
  *   fails fails the run; otherwise the daemon state is unverified, never a pass.
  * - `HARNESS` of the harness's own records (harness-record): nothing; the run is unverified.
- * No verdict, cause, reason, difference or disposition reaches the reader.
+ * No verdict, cause, reason, difference or disposition reaches the reader. Each outcome it is given,
+ * a run's whole or observed and a control's, is modelOutcome's projection: no audit record that
+ * outcome.ts keeps beside the scored actions (`otherWrites`, `actor`, `change`) reaches it either.
  */
 import { LEGION_WORKFLOW_PHASES } from "@legion/contracts/legion-api";
 import { z } from "zod";
@@ -153,7 +155,9 @@ const Fault = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("harness-record") }),
 ]);
 
-/** replay.json (teardownEffectsReplayRecord). */
+/** replay.json (teardownEffectsReplayRecord). `end` is each change the replay made after its last
+ * call: a control's trace makes every action it holds, and a run's replay makes none, so a receipt
+ * the driver wrote before it held the list holds none. */
 export const ReplayRecord = z.strictObject({
   id: z.uuid(),
   verdict: z.enum(["ok", "DIVERGED", "HARNESS"]),
@@ -161,6 +165,7 @@ export const ReplayRecord = z.strictObject({
   fault: Fault.optional(),
   seed: z.array(Change),
   calls: z.array(ReplayCall),
+  end: z.array(Change).optional(),
   after: z.array(Change),
   notReplayed: z.array(Text),
 });
@@ -182,8 +187,21 @@ export function parseEffects(text: string): EffectRecord {
   return parsed(EffectRecord, text);
 }
 
-/** An outcome as the reader is given it: no id, and no last words where its record stops short. */
-export type ItemOutcome = Omit<OutcomeRecord, "id" | "lastText"> & { readonly lastText?: string };
+/** One scored action of an outcome record. */
+type Action = OutcomeRecord["actions"][number];
+/** An action's audit fields, which outcome.json keeps and no reader is given: a Dispatch write's
+ * writer (`actor`) and the change gh-standin kept of a GitHub call (`change`). */
+type Audit = "actor" | "change";
+/** Each kind of `T` without its audit fields. */
+type Scored<T> = T extends unknown ? Omit<T, Audit> : never;
+/** A scored action as the reader is given it: every field but its audit fields (modelOutcome). */
+export type ItemAction = Scored<Action>;
+/** An outcome as the reader is given it (modelOutcome): no id, no other actors' writes, no action's
+ * audit fields, and no last words where its record stops short. */
+export type ItemOutcome = Omit<OutcomeRecord, "id" | "lastText" | "otherWrites" | "actions"> & {
+  readonly actions: readonly ItemAction[];
+  readonly lastText?: string;
+};
 /** Effects as the reader is given them: no id, and no differences where the record stops short. */
 export type ItemEffects = Omit<EffectRecord, "id" | "diverged"> & {
   readonly diverged?: EffectRecord["diverged"];
@@ -305,7 +323,13 @@ function harnessOf(
     throw new Error("replay.json is HARNESS and names no reason or no typed fault");
   if (fault.kind === "harness-record") return { verdict: "HARNESS", cause: fault.kind, reason };
   const scored = outcome.actions.find((action) => action.seq === fault.outcomeSeq);
-  const replayed = [receipt.seed, receipt.calls, receipt.after, receipt.notReplayed];
+  const replayed = [
+    receipt.seed,
+    receipt.calls,
+    receipt.end ?? [],
+    receipt.after,
+    receipt.notReplayed,
+  ];
   let problem: string | undefined;
   if (fault.author.id !== fault.session)
     problem = `its author ${fault.author.id} is not the role's session ${fault.session}`;
@@ -492,21 +516,52 @@ export interface Graded {
   readonly observedThrough?: number;
 }
 
-/** What the reader is given of a run, or undefined where it is given nothing of it. */
+/** A scored action without its audit fields, every other field in its place. */
+function scoredAction(action: Action): ItemAction {
+  if (action.kind === "dispatch") {
+    const { actor: _actor, ...scored } = action;
+    return scored;
+  }
+  if (action.kind === "github") {
+    const { change: _change, ...scored } = action;
+    return scored;
+  }
+  return action;
+}
+
+/**
+ * The one projection of an outcome that the reader is given, whole or through its first
+ * difference's call, of a run and of a control alike: its scored actions and what the run read,
+ * without `otherWrites` and without each action's `actor` and `change`. Those audit records stay in
+ * outcome.json, and a frozen trace holds none of them, so they cannot tell a run from a control.
+ * Every other key keeps its place, so an outcome that holds none of them is given byte for byte as
+ * it was before outcome.ts kept them.
+ */
+export function modelOutcome(
+  outcome: Omit<OutcomeRecord, "id" | "lastText"> & { readonly lastText?: string }
+): ItemOutcome {
+  const { otherWrites: _otherWrites, ...kept } = outcome;
+  return { ...kept, actions: outcome.actions.map(scoredAction) };
+}
+
+/** What the reader is given of a run, or undefined where it is given nothing of it: its outcome
+ * through modelOutcome, whole or observed, and its effects. */
 export function gradedOf(outcome: OutcomeRecord, replay: Replay | null): Graded | undefined {
   const { id: _id, ...whole } = outcome;
-  if (replay === null) return { outcome: whole, effects: null };
+  if (replay === null) return { outcome: modelOutcome(whole), effects: null };
   switch (replay.verdict) {
     case "ok": {
       const { id: _effectsId, ...effects } = replay.effects;
-      return { outcome: whole, effects };
+      return { outcome: modelOutcome(whole), effects };
     }
     case "DIVERGED": {
       const { outcome: observed, effects, through } = replay.observed;
-      return { outcome: observed, effects, observedThrough: through };
+      return { outcome: modelOutcome(observed), effects, observedThrough: through };
     }
     case "HARNESS":
-      return replay.cause === "role-write" ? { outcome: whole, effects: null } : undefined;
+      return replay.cause === "role-write"
+        ? { outcome: modelOutcome(whole), effects: null }
+        : undefined;
   }
 }
 

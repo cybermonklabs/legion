@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -28,12 +30,19 @@ import {
   parseRubric,
   parseSkillUseRubric,
   type RunRecord,
+  readControls,
   readRuns,
   requestOf,
   sha256,
   skillUseBatch,
 } from "./heldout-reader";
-import { type Disposition, parseReplay, replayOf } from "./heldout-reader-receipt";
+import {
+  type Disposition,
+  gradedOf,
+  parseEffects,
+  parseReplay,
+  replayOf,
+} from "./heldout-reader-receipt";
 
 const scratch = temporaryDirectory("heldout-reader", { real: true });
 
@@ -45,6 +54,12 @@ function dir(name: string): string {
 
 const EXAMPLE = path.join(import.meta.dir, "testdata/heldout-case-example.json");
 const SKILL_USE_EXAMPLE = path.join(import.meta.dir, "testdata/skilluse-case-example.json");
+/** Lane D's records of the example's controls, as teardown-effects.sh --controls wrote them in the
+ * proof Job (its .command beside it says how): <CONTROLS>/<case id>/<good or bad>/. */
+const CONTROLS = path.join(
+  import.meta.dir,
+  "../../../daemon/internal/daemon/testdata/teardown-effects/controls"
+);
 const cases = parseCases(readFileSync(EXAMPLE, "utf8"));
 const [P05, P10] = cases.cases;
 if (P05 === undefined || P10 === undefined) throw new Error("the example holds P05 and P10");
@@ -69,7 +84,7 @@ const RUBRIC_FILE = JSON.stringify({
     reason: "Written by hand.",
   })),
 });
-const RUBRIC: CaseRubric[] = parseRubric(RUBRIC_FILE);
+const RUBRIC: CaseRubric[] = parseRubric(RUBRIC_FILE, cases);
 
 /** `n` UUIDs that no example trace holds. */
 const RUN_IDS = [1, 2, 3, 4].map((n) => `00000000-0000-4000-8000-00000000000${n}`);
@@ -151,11 +166,12 @@ test("the frozen rubric is read as its minimal shape, and every other key is lef
   expect(Object.keys(RUBRIC[0] ?? {})).toEqual(["id", "rubric"]);
 
   const minimal = parseRubric(
-    JSON.stringify({ cases: [{ id: "X1", rubric: [{ name: "a", text: "A passes." }] }] })
+    JSON.stringify({ cases: [{ id: "X1", rubric: [{ name: "a", text: "A passes." }] }] }),
+    cases
   );
   expect(minimal).toEqual([{ id: "X1", rubric: [{ name: "a", text: "A passes." }] }]);
 
-  const refused = (value: unknown) => () => parseRubric(JSON.stringify(value));
+  const refused = (value: unknown) => () => parseRubric(JSON.stringify(value), cases);
   expect(refused({ cases: [{ id: "X1", rubric: [] }] })).toThrow();
   expect(refused({ cases: [{ id: "X1" }] })).toThrow();
   expect(refused({})).toThrow();
@@ -169,6 +185,31 @@ test("the frozen rubric is read as its minimal shape, and every other key is lef
     })
   ).toThrow(/repeat/);
   expect(refused({ cases: [{ id: "X1", rubric: [line, line] }] })).toThrow(/repeat/);
+});
+
+test("a frozen rubric that lacks a line heldout-case.ts requires of its case is refused, naming each", () => {
+  // A production-check case is graded on diagnosis and scheduling (heldout-case.ts CHECK_RUBRIC),
+  // the line that reads the effect record's next look.
+  const lacking = (drop: (name: string) => boolean) => {
+    const frozen = JSON.parse(RUBRIC_FILE);
+    for (const each of frozen.cases)
+      each.rubric = each.rubric.filter((line: { name: string }) => !drop(line.name));
+    return () => parseRubric(JSON.stringify(frozen), cases);
+  };
+  expect(lacking((name) => name === "scheduling")).toThrow("P10 scheduling");
+  const other = JSON.parse(RUBRIC_FILE);
+  other.cases[1].rubric = [{ name: "order", text: "The look reports before it ends its turn." }];
+  expect(() => parseRubric(JSON.stringify(other), cases)).toThrow("P10 diagnosis, P10 scheduling");
+  // heldout-case.ts requires no line of an implementer case, so the rubric may grade it on others.
+  const renamed = JSON.parse(RUBRIC_FILE);
+  renamed.cases[0].rubric = [{ name: "order", text: "The run publishes before it hands off." }];
+  expect(parseRubric(JSON.stringify(renamed), cases)[0]?.rubric.map((line) => line.name)).toEqual([
+    "order",
+  ]);
+  // A case the rubric does not hold is refused by the batch that grades it, not here.
+  const partial = JSON.parse(RUBRIC_FILE);
+  partial.cases.pop();
+  expect(parseRubric(JSON.stringify(partial), cases).map((each) => each.id)).toEqual(["P05"]);
 });
 
 test("a skilluse file gives no control and is refused; a case file's own traces are read", () => {
@@ -531,13 +572,15 @@ function fakeModel(bodies: string[]) {
 }
 
 /** A --records directory of the example's runs, and the rubric file to read with it; `cases`, the
- * case file, where it is not the example. */
+ * case file, where it is not the example; `controls`, lane D's records of the controls, for a batch
+ * of cases lane D replays. */
 interface World {
   readonly root: string;
   readonly records: string;
   readonly rubric: string;
   readonly out: string;
   readonly cases?: string;
+  readonly controls?: string;
 }
 
 // Lane D's receipts as the Go driver writes them (teardown_effects_record_test.go): replay.json for
@@ -688,7 +731,7 @@ function world(name: string): World {
   });
   const rubric = path.join(root, "rubric.json");
   writeFileSync(rubric, RUBRIC_FILE);
-  return { root, records, rubric, out: path.join(root, "out", "labels.json") };
+  return { root, records, rubric, out: path.join(root, "out", "labels.json"), controls: CONTROLS };
 }
 
 const flags = (w: World, ...more: string[]) => [
@@ -698,6 +741,7 @@ const flags = (w: World, ...more: string[]) => [
   w.cases ?? EXAMPLE,
   "--records",
   w.records,
+  ...(w.controls === undefined ? [] : ["--controls", w.controls]),
   "--out",
   w.out,
   "--seed",
@@ -867,7 +911,7 @@ function laneDWorld(
     writeRun(records, caseId, run, outcome, receipts);
   const rubric = path.join(root, "rubric.json");
   writeFileSync(rubric, RUBRIC_FILE);
-  return { root, records, rubric, out: path.join(root, "out", "labels.json") };
+  return { root, records, rubric, out: path.join(root, "out", "labels.json"), controls: CONTROLS };
 }
 
 /** The fault replay.json types the role's own Dispatch write with, as outcome.json's action `seq`. */
@@ -1135,16 +1179,17 @@ test("a DIVERGED run is graded through its first difference's call with the real
     code: "CHECK_WAKE_REQUIRED",
     body: { code: "CHECK_WAKE_REQUIRED", error: "refused" },
   });
-  // HARNESS by the role's own write: its whole lane R record and null effects, as a control has.
+  // HARNESS by the role's own write: its whole lane R record and null effects.
   const role = items.find((item) => item.id === roleGood.id);
   expect(Object.keys(role ?? {})).toEqual(["id", "case", "outcome", "effects"]);
   expect(role?.effects).toBeNull();
   expect(role?.outcome.lastText).toBe(P05.traces.good.lastText);
-  // No verdict, cause, reason, disposition, call id or run directory reaches the reader.
+  // No verdict, cause, reason, disposition, call id or run directory reaches the reader, and no
+  // difference: an ok record's list of them is empty, and a DIVERGED record's is taken out.
   const hidden = [
     "DIVERGED",
     "HARNESS",
-    "diverged",
+    '"diverged":[{',
     "standin",
     "notReplayed",
     "role-write",
@@ -1251,7 +1296,7 @@ test("replay.json is read in the Go driver's own format, and a role's write is b
   const exampleFile = path.join(TEARDOWN_EFFECTS, "replay-example.json");
   const examples: { reason?: string }[] = JSON.parse(readFileSync(exampleFile, "utf8"));
   const [ok = "", write = "", records = ""] = examples.map((each) => JSON.stringify(each));
-  const lists = '"seed":[],"calls":[],"after":[],"notReplayed":[]';
+  const lists = '"seed":[],"calls":[],"end":[],"after":[],"notReplayed":[]';
   const reasonOf = (index: number): string => {
     const reason = examples[index]?.reason;
     if (reason === undefined) throw new Error(`${exampleFile} record ${index} names no reason`);
@@ -1292,6 +1337,246 @@ test("replay.json is read in the Go driver's own format, and a role's write is b
   );
 });
 
+// Lane D's control records: CONTROLS is what teardown-effects.sh --controls wrote of the example in
+// the proof Job. In a lane D batch a control is given with the effect record of its trace, in the
+// shape of an ok run, and a control whose record is missing or not ok refuses the batch.
+
+/** A copy of CONTROLS under `name`, changed by `change` (given the copy's directory). */
+function controlsCopy(name: string, change: (at: string) => void): string {
+  const copy = dir(name);
+  cpSync(CONTROLS, copy, { recursive: true });
+  change(copy);
+  return copy;
+}
+
+test("a lane D batch gives each control the effect record lane D wrote of its trace, as it gives an ok run", () => {
+  const traced = readControls(CONTROLS, cases);
+  expect(
+    traced.cases.map((each) => [each.id, each.records?.good?.verdict, each.records?.bad?.verdict])
+  ).toEqual([
+    ["P05", "ok", "ok"],
+    ["P10", "ok", "ok"],
+  ]);
+  const w = world("controls-batch");
+  const runs = readRuns(w.records, cases);
+  const batch = buildBatch(RUBRIC, traced, runs, 7);
+  expect(batch.controls.size).toBe(4);
+  const controls = batch.items.filter((item) => batch.controls.has(item.id));
+  const run = batch.items.find((item) => !batch.controls.has(item.id));
+  const keys = (value: unknown) => Object.keys(value ?? {}).toSorted();
+  // Every item holds an effect record, and a control's has the keys an ok run's has.
+  for (const item of batch.items) {
+    expect(Object.keys(item)).toEqual(["id", "case", "outcome", "effects"]);
+    expect(item.effects).not.toBeNull();
+    expect(keys(item.effects)).toEqual(keys(run?.effects));
+  }
+  // The good control of P10 shows the next look its trace set, which the line scheduling reads.
+  const p10Good = controls.find(
+    (item) => item.case === "P10" && batch.controls.get(item.id) === "good"
+  );
+  expect(p10Good?.effects?.productionCheck).toEqual({
+    wakeAt: "2030-01-08T12:30:00Z",
+    checkWakeRow: { dueAt: "2030-01-08T12:30:00Z" },
+  });
+  expect(
+    p10Good?.effects?.answers.map((answer) => [answer.by, answer.status, answer.code])
+  ).toEqual([
+    ["daemon", 400, "CHECK_WAKE_REQUIRED"],
+    ["client", 0, null],
+    ["daemon", 200, null],
+    ["client", 0, null],
+  ]);
+
+  // Nothing in the request tells a control from a run: no trace's own id, no record's directory,
+  // no call of the replay, and no key that names a trace, a control or a verdict.
+  const request = requestOf(batch);
+  const traceIds = cases.cases.flatMap((each) => [each.traces.good.id, each.traces.bad?.id ?? ""]);
+  for (const text of [...traceIds, CONTROLS, "trace, action", "replay.json", '"verdict":"ok"'])
+    expect(request).not.toContain(text);
+  const hidden = ["trace", "control", "good", "bad", "replay", "standin", "calls"];
+  expect(keysOf(itemsOf(request)).filter((key) => hidden.includes(key))).toEqual([]);
+  // The labels grade each control by the same rule as before.
+  const labels = labelsOf(batch, answerWith(reply(batch, byLastText)), REQUEST);
+  expect(labels.batch).toBe("CONCLUSIVE");
+  expect(labels.controls.map((each) => each.graded)).toEqual(Array(4).fill("right"));
+
+  // A receipt written before the driver held `end` holds none, and still reads.
+  const older = readFileSync(path.join(CONTROLS, "P05", "good", "replay.json"), "utf8");
+  expect(parseReplay(older.replace(/"end": \[\],\n\s*/, "")).end).toBeUndefined();
+});
+
+/** Another actor's Dispatch write after the seed, which outcome.ts keeps among `otherWrites`. */
+const OTHER_WRITER = { kind: "session", id: "ses-acme-12-reviewer" };
+
+/**
+ * `outcome` with every audit record outcome.ts keeps beside the scored actions: the writer
+ * Dispatch names of each Dispatch write (the role's session), the change gh-standin kept of each
+ * GitHub call, and a write of another actor.
+ */
+function audited(outcome: OutcomeRecord): OutcomeRecord {
+  const actions = outcome.actions.map((action) => {
+    if (action.kind === "dispatch")
+      return { ...action, actor: { kind: "session", id: ROLE_SESSION } };
+    if (action.kind === "github")
+      return { ...action, change: { action: "open", number: 1, head: "legion/ACME-12" } };
+    return action;
+  });
+  const otherWrites = [
+    {
+      at: "2030-01-07T15:03:00Z",
+      command: "comment.created",
+      target: "ACME-12",
+      fields: { body: "Reviewed by another session." },
+      actor: OTHER_WRITER,
+    },
+  ];
+  return parseOutcome(JSON.stringify({ ...outcome, actions, otherWrites }));
+}
+
+test("a run and a control reach the reader through one projection, which no audit record outcome.ts keeps can tell apart", () => {
+  // Lane D's batch of the example's runs with its controls: as old records, and with every audit
+  // record outcome.ts keeps now on the runs and on the traces. The request is the same, byte for
+  // byte, so a record that holds none of them is sent as it was.
+  const traced = readControls(CONTROLS, cases);
+  const runs = readRuns(world("projection").records, cases);
+  const auditedRuns = runs.map((run) => ({ ...run, outcome: audited(run.outcome) }));
+  const auditedCases = traced.cases.map((each) => ({
+    ...each,
+    traces: {
+      good: each.traces.good && audited(each.traces.good),
+      bad: each.traces.bad && audited(each.traces.bad),
+    },
+  }));
+  const request = requestOf(buildBatch(RUBRIC, traced, runs, 7));
+  expect(requestOf(buildBatch(RUBRIC, traced, auditedRuns, 7))).toBe(request);
+  const batch = buildBatch(RUBRIC, { cases: auditedCases }, auditedRuns, 7);
+  const sent = requestOf(batch);
+  expect(sent).toBe(request);
+  // The same for a batch whose controls carry no effects, as a lane R run carries none.
+  const laneR = RUNS.map((run) => ({ ...run, outcome: audited(run.outcome) }));
+  const laneRCases = auditedCases.map(({ id, traces }) => ({ id, traces }));
+  expect(requestOf(buildBatch(RUBRIC, { cases: laneRCases }, laneR, 7))).toBe(
+    requestOf(buildBatch(RUBRIC, cases, RUNS, 7))
+  );
+  // No audit record reaches the reader: no writer, no other actor's write, no change kept.
+  const audit = ["otherWrites", "actor", "change"];
+  expect(keysOf(itemsOf(sent)).filter((key) => audit.includes(key))).toEqual([]);
+  for (const text of [ROLE_SESSION, OTHER_WRITER.id, "another session"])
+    expect(sent).not.toContain(text);
+
+  // Each run did what a trace did, and is given the content its control is given: the same
+  // outcome, the same keys of each action, and effects of the same keys. The effects themselves
+  // are each replay's own, and the two ids are each item's own.
+  const keys = (value: unknown) => Object.keys(value ?? {});
+  for (const run of batch.items.filter((item) => !batch.controls.has(item.id))) {
+    const control = batch.items.find(
+      (item) =>
+        batch.controls.has(item.id) &&
+        item.case === run.case &&
+        item.outcome.lastText === run.outcome.lastText
+    );
+    expect(control).toBeDefined();
+    expect(keys(control)).toEqual(keys(run));
+    expect(JSON.stringify(control?.outcome)).toBe(JSON.stringify(run.outcome));
+    expect(control?.outcome.actions.map(keys)).toEqual(run.outcome.actions.map(keys));
+    expect(keys(control?.effects)).toEqual(keys(run.effects));
+    expect(control?.id).not.toBe(run.id);
+  }
+
+  // A DIVERGED run, given through its first difference's call, takes the same projection: P10's
+  // first report, which the real daemon refused CHECK_WAKE_REQUIRED, after its pull request edit.
+  const p10 = { ...P10.traces.good, id: laneDId(21), actions: p10Took() };
+  const refused = new Map([[2, { status: 400, code: "CHECK_WAKE_REQUIRED" }]]);
+  const observed = (outcome: OutcomeRecord) => {
+    const receipts = receiptsOf(outcome, refused);
+    const receipt = parseReplay(JSON.stringify(receipts.replay));
+    const effects = parseEffects(JSON.stringify(receipts.effects));
+    return gradedOf(outcome, replayOf(outcome, receipt, effects, P10));
+  };
+  const plain = observed(p10);
+  expect(plain?.observedThrough).toBe(2);
+  expect(plain?.outcome.actions.map((action) => action.kind)).toEqual(["github", "daemon"]);
+  expect(JSON.stringify(observed(audited(p10)))).toBe(JSON.stringify(plain));
+});
+
+test("a lane D batch whose control has no effect record, or one at odds with its trace, is refused, naming each", async () => {
+  const runs = readRuns(world("controls-refused").records, cases);
+  const removed = (name: string, ...files: string[]) =>
+    controlsCopy(name, (at) => {
+      for (const file of files) rmSync(path.join(at, file));
+    });
+  // A control with no replay.json has no record: the batch of its case names each one.
+  const missing = readControls(
+    removed(
+      "controls-missing",
+      "P05/good/replay.json",
+      "P05/good/effects.json",
+      "P10/bad/replay.json"
+    ),
+    cases
+  );
+  expect(() => buildBatch(RUBRIC, missing, runs, 7)).toThrow(
+    "P05 good (lane D wrote no replay.json of it); P10 bad (lane D wrote no replay.json of it)"
+  );
+  // A batch of P10's runs alone needs P10's records alone.
+  const p05Gone = readControls(removed("controls-p05-gone", "P05/bad/replay.json"), cases);
+  const p10Runs = runs.filter((each) => each.case === "P10");
+  expect(buildBatch(RUBRIC, p05Gone, p10Runs, 7).controls.size).toBe(2);
+  // A HARNESS replay of a trace leaves its control no effect record.
+  const harness = controlsCopy("controls-harness", (at) => {
+    rmSync(path.join(at, "P05", "bad", "effects.json"));
+    const receipt = { ...harnessReceipts(P05_BAD, { kind: "harness-record" }).replay, end: [] };
+    writeFileSync(path.join(at, "P05", "bad", "replay.json"), JSON.stringify(receipt));
+  });
+  expect(() => buildBatch(RUBRIC, readControls(harness, cases), runs, 7)).toThrow(
+    `P05 bad (its replay is HARNESS: ${HARNESS_REASON})`
+  );
+  // A record with no effects.json, or another trace's, is refused as a run's receipt is.
+  const noEffects = removed("controls-no-effects", "P10/good/effects.json");
+  expect(() => readControls(noEffects, cases)).toThrow("the run holds no effects.json");
+  const swapped = controlsCopy("controls-swapped", (at) => {
+    for (const file of ["replay.json", "effects.json"])
+      cpSync(path.join(at, "P05", "good", file), path.join(at, "P05", "bad", file));
+  });
+  expect(() => readControls(swapped, cases)).toThrow(
+    `replay.json is the receipt of ${P05.traces.good.id}, not of ${P05_BAD.id}`
+  );
+
+  // Through the command line, each refusal comes before any call, and puts no attempt on record.
+  const sent: string[] = [];
+  const quiet = io(async (url) => {
+    sent.push(url);
+    return new Response("", { status: 500 });
+  });
+  const refuses = async (w: World, message: string) => {
+    expect(await main(flags(w, "--key-file", key()), quiet.io)).toBe(2);
+    expect(quiet.stderr.at(-1)).toContain("refused before any model call; nothing was sent");
+    expect(quiet.stderr.at(-1)).toContain(message);
+    expect(existsSync(`${w.out}.attempts.json`)).toBe(false);
+  };
+  const w = world("controls-command");
+  await refuses(
+    { ...w, controls: undefined },
+    "--controls is required: lane D replays the cases P05, P10"
+  );
+  await refuses(
+    { ...w, controls: removed("controls-command-missing", "P10/bad/replay.json") },
+    "P10 bad (lane D wrote no replay.json of it)"
+  );
+  const frozen = JSON.parse(RUBRIC_FILE);
+  frozen.cases[1].rubric.pop();
+  writeFileSync(w.rubric, JSON.stringify(frozen));
+  await refuses(
+    w,
+    "the frozen rubric lacks a line heldout-case.ts requires of its case: P10 scheduling"
+  );
+  await refuses(
+    { ...skillWorld("controls-skilluse"), controls: CONTROLS },
+    "lane D does not replay a skilluse set"
+  );
+  expect(sent).toEqual([]);
+});
+
 test("a bad argument, a missing rubric case, a skilluse file or a bad seed stops the run before any call", async () => {
   const w = world("refused");
   const sent: string[] = [];
@@ -1310,7 +1595,9 @@ test("a bad argument, a missing rubric case, a skilluse file or a bad seed stops
     "--seed -1 is not a whole number below 2^32"
   );
   await refuses(
-    flags(w, "--key-file", key()).map((arg) => (arg === EXAMPLE ? SKILL_USE_EXAMPLE : arg)),
+    flags({ ...w, controls: undefined }, "--key-file", key()).map((arg) =>
+      arg === EXAMPLE ? SKILL_USE_EXAMPLE : arg
+    ),
     "gives the batch no control"
   );
   await refuses(
@@ -1320,7 +1607,11 @@ test("a bad argument, a missing rubric case, a skilluse file or a bad seed stops
   await refuses(["--seed", "7"], "--cases and --seed are required");
   await refuses(
     flags(w, "--capture", w.root, "--key-file", key()),
-    "--capture takes no --rubric, --records or --out"
+    "--capture takes no --rubric, --records, --controls or --out"
+  );
+  await refuses(
+    ["--capture", w.root, "--cases", EXAMPLE, "--seed", "7", "--controls", CONTROLS],
+    "--capture takes no --rubric, --records, --controls or --out"
   );
 
   const partial = path.join(w.root, "partial-rubric.json");
