@@ -52,6 +52,7 @@ import {
   type Filters,
   ownEntry,
   PLACEHOLDER_LABELS,
+  priorityValues,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import {
@@ -206,7 +207,12 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   // Every facet keeps every value the address names, one that names no value of the facet
   // included: Dispatch selects no row by it, so `?priority=P9` alone lists none and beside a known
   // value lists what the known one does, and the page draws it as a chip the reader can take off.
-  const filters: Filters = useMemo(() => ({ ...arrayParams, search }), [arrayParams, search]);
+  // A priority reads as Dispatch reads it (`priorityValues`): `?priority=p1` and `?priority=1`
+  // select P1's rows there, so here they are P1 too, with P1's chip, row and count.
+  const filters: Filters = useMemo(
+    () => ({ ...arrayParams, priority: priorityValues(arrayParams.priority), search }),
+    [arrayParams, search]
+  );
 
   const setState = useCallback(
     (next: DeliveryUrlState) => {
@@ -917,7 +923,7 @@ export function DeliveryPage(): ReactNode {
               ) : null}
               <span className={`ml-4 ${textMutedOnCanvas}`}>
                 {counted
-                  ? `${shownPRs.length} PRs in current filter/window`
+                  ? `${shownPRs.length} PR${shownPRs.length === 1 ? "" : "s"} in current filter/window`
                   : "Counting PRs in current filter/window…"}
               </span>
             </div>

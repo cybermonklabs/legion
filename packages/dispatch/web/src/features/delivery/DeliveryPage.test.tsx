@@ -515,7 +515,7 @@ test("the facet column offers each value with its count, subscribes a pick and k
   renderPage();
   const socket = await answered(timeline);
 
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   // The four facets that are no column sit behind the row's one trigger.
   expect((await panelFacet(user, "Repository")).textContent).toBe("Any repository");
   await user.click(await panelFacet(user, "Priority"));
@@ -1574,7 +1574,7 @@ for (const [facet, query, chip] of [
     const socket = await openSocket();
     const { sub } = await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query });
     serve(socket, snapshotFrame(sub, everyFacet));
-    expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+    expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
     expect(rowControls()).toEqual(["Filter · 1", chip]);
   });
 }
@@ -1592,7 +1592,7 @@ test("an address value every object inherits draws no inherited count in the Fil
     query: "priority=constructor",
   });
   serve(socket, snapshotFrame(sub, everyFacet));
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   const names = await facetOptionNames(user, "Priority");
   expect(names.filter((name) => name.startsWith("constructor"))).toEqual(["constructor, 0 PRs"]);
 });
@@ -1609,7 +1609,7 @@ test("an unknown facet value beside a known one reaches the subscription with it
       "priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus",
   });
   serve(socket, snapshotFrame(sub, everyFacet));
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(rowControls()).toEqual([
     "Filter · 6",
     "Remove Priority: P9 filter",
@@ -1621,13 +1621,56 @@ test("an unknown facet value beside a known one reaches the subscription with it
   ]);
 });
 
+/** Each row of the open list named `listbox`, by the name it is read out as, a picked row marked
+ *  with a tick before it. */
+function pickedRows(listbox: string): string[] {
+  return within(screen.getByRole("listbox", { name: listbox }))
+    .getAllByRole("option")
+    .map(
+      (option) =>
+        `${option.getAttribute("aria-selected") === "true" ? "\u2713" : ""}${option.getAttribute("aria-label") ?? option.textContent ?? ""}`
+    );
+}
+
+// Dispatch reads a priority the address spells as a person types it - `p1`, or the bare digit
+// `1` the issue routes store - as P1, and selects P1's rows by it. So the page reads it as P1 too:
+// one picked P1 row with P1's count, and a chip that says P1, never a second row of its own
+// spelling counted at 0 beside an unpicked P1.
+for (const spelling of ["p1", "1"] as const) {
+  test(`?priority=${spelling} is P1: one picked P1 row with its count, and the chip Priority: P1`, async () => {
+    const user = userEvent.setup();
+    renderPage(`${DELIVERY_URL}&priority=${spelling}`);
+    await answered({
+      ...everyFacet,
+      facet_counts: { ...everyFacet.facet_counts, priority: { P0: 2, P1: 1 } },
+      prs: [{ ...listedPR, priority: "P1" }],
+    });
+    expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
+    expect(rowControls()).toEqual(["Filter · 1", "Remove Priority: P1 filter"]);
+    await user.click(await panelFacet(user, "Priority"));
+    expect(pickedRows("Priority options")).toEqual(["\u2713P1, 1 PR", "P0, 2 PRs"]);
+  });
+}
+
+// The count names one pull request in the singular and every other number in the plural.
+for (const [prs, line] of [
+  [[listedPR], "1 PR in current filter/window"],
+  [[listedPR, { ...listedPR, id: "acme/widgets#2", number: 2 }], "2 PRs in current filter/window"],
+] as const) {
+  test(`an answer of ${prs.length} pull request${prs.length === 1 ? "" : "s"} is counted as "${line}"`, async () => {
+    renderPage();
+    await answered({ ...everyFacet, prs: [...prs] });
+    expect(await screen.findByText(line)).toBeDefined();
+  });
+}
+
 // F2 item 3: the count is the answer's for the filter and the window the address names, so the
 // previous answer's number is never shown as this filter's.
 test("the count says it is counting while a new filter's read is out, and shows the answer's number again", async () => {
   const user = userEvent.setup();
   renderPage();
   const socket = await answered(everyFacet);
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
 
   await user.click(await screen.findByRole("button", { name: "Filter Author" }));
   await user.click(
@@ -1643,7 +1686,7 @@ test("the count says it is counting while a new filter's read is out, and shows 
   // The previous answer is still on screen (`keepPreviousData`), so its number is not this
   // filter's and no number is drawn.
   await screen.findByText("Counting PRs in current filter/window…");
-  expect(screen.queryByText(/^\d+ PRs in current filter\/window$/)).toBeNull();
+  expect(screen.queryByText(/^\d+ PRs? in current filter\/window$/)).toBeNull();
 
   serve(socket, snapshotFrame(sub, { ...everyFacet, prs: [] }));
   expect(await screen.findByText("0 PRs in current filter/window")).toBeDefined();
@@ -1658,7 +1701,7 @@ test("while a pick's read is out the Filter panel's other facets draw no count b
   const user = userEvent.setup();
   renderPage();
   const socket = await answered(everyFacet);
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await facetOptionNames(user, "Priority")).toEqual(["P0, 1 PR"]);
 
   await user.click(await panelFacet(user, "Repository"));
@@ -1683,7 +1726,7 @@ test("while a pick's read is out the Filter panel's other facets draw no count b
       facet_counts: { ...everyFacet.facet_counts, priority: { P0: 1, P1: 2 } },
     })
   );
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await facetOptionNames(user, "Priority")).toEqual(["P1, 2 PRs", "P0, 1 PR"]);
 });
 
@@ -1702,7 +1745,7 @@ test("while a pick's read is out a List column's filter draws no count beside a 
   const user = userEvent.setup();
   renderPage();
   const socket = await answered(everyFacet);
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await columnOptionNames(user, "Author")).toEqual(["octocat, 1 PR"]);
 
   await user.click(screen.getByRole("button", { name: "Filter Issue" }));
@@ -1728,7 +1771,7 @@ test("while a pick's read is out a List column's filter draws no count beside a 
       facet_counts: { ...everyFacet.facet_counts, author: { hubot: 2, octocat: 1 } },
     })
   );
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await columnOptionNames(user, "Author")).toEqual(["hubot, 2 PRs", "octocat, 1 PR"]);
 });
 
@@ -1752,7 +1795,7 @@ test("while a new filter's read is out the Own colour list draws no count beside
   };
   renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
   const socket = await answered(colouredByAgent);
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
 
   await user.click(screen.getByRole("button", { name: "Filter Author" }));
@@ -1772,7 +1815,7 @@ test("while a new filter's read is out the Own colour list draws no count beside
   expect(await ownColourNames(user)).toEqual(["Release crew", "Reviewer"]);
 
   serve(socket, snapshotFrame(sub, colouredByAgent));
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
 });
 
@@ -1804,7 +1847,7 @@ test("while a new window's read is out the session-groups editor draws no count 
     session_groups: [RELEASE_CREW],
     ...RELEASE_CREW_SESSIONS,
   });
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await editorSessions(user)).toEqual([
     expect.stringMatching(/^Planner one\b.*\b2 PRs · Release crew$/u),
     expect.stringMatching(/^Planner two\b.*\b1 PR · Release crew$/u),
@@ -1837,7 +1880,7 @@ test("while a new window's read is out the session-groups editor draws no count 
       session_titles: { s1: "Planner one", s4: "Builder" },
     })
   );
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await editorSessions(user)).toEqual([
     expect.stringMatching(/^Builder\b.*\b3 PRs$/u),
     expect.stringMatching(/^Planner one\b.*\b1 PR · Release crew$/u),
@@ -1855,7 +1898,7 @@ for (const [what, bad] of [
   test(`a brush window that is ${what} is dropped, and the page shows its whole window`, async () => {
     renderPage(`${DELIVERY_URL}&${bad}`);
     await answered(everyFacet);
-    expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+    expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
     await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
     expect(currentSearch().has("we")).toBe(false);
     // A window that was never brushed draws no control to clear one.

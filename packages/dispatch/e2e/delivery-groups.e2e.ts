@@ -81,7 +81,7 @@ test("the window control changes what the page counts", async ({ browser }) => {
   await page.getByRole("textbox", { name: "To", exact: true }).fill(utcDaysAgo(19));
   await page.getByRole("button", { name: "Apply" }).click();
   await expect(page).toHaveURL(/[?&]from=.*&to=/);
-  await expect(page.getByText("1 PRs in current filter/window")).toBeVisible();
+  await expect(page.getByText("1 PR in current filter/window")).toBeVisible();
 
   // 120 days ago through 19 days ago spans 102 days, past the server's 84.
   await page.getByRole("textbox", { name: "From", exact: true }).fill(utcDaysAgo(120));
@@ -89,7 +89,7 @@ test("the window control changes what the page counts", async ({ browser }) => {
   await expect(page.getByRole("alert")).toHaveText(
     /^The window can span at most 84 days; this range spans \d+\.$/
   );
-  await expect(page.getByText("1 PRs in current filter/window")).toBeVisible();
+  await expect(page.getByText("1 PR in current filter/window")).toBeVisible();
 
   await context.close();
 });
