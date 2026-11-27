@@ -60,6 +60,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -80,6 +81,8 @@ type Config struct {
 // write with the configuration's SigningKey and verifies its answer against VerifyKeys.
 type Client struct {
 	cfg Config
+	// broker is BrokerURL as New parsed it, which each route is joined onto (urljoin.JoinURL).
+	broker *url.URL
 	// seenMu guards seenGen, the highest gen of a hold row this client has verified, read or
 	// written: the row floor it has seen, which bounds the restore_gen RestoreRow follows.
 	seenMu  sync.Mutex
@@ -173,7 +176,8 @@ func New(cfg Config) (*Client, error) {
 	case len(cfg.VerifyKeys) == 0:
 		return nil, errors.New("holdrecord: the configuration holds no key to verify an answer with, so every row would read as unknown")
 	}
-	if u, err := url.Parse(cfg.BrokerURL); err != nil || u.Scheme == "" || u.Host == "" {
+	broker, err := url.Parse(cfg.BrokerURL)
+	if err != nil || broker.Scheme == "" || broker.Host == "" {
 		return nil, fmt.Errorf("holdrecord: the broker URL %s is not an absolute URL", redact.URL(cfg.BrokerURL))
 	}
 	for i, key := range cfg.VerifyKeys {
@@ -181,7 +185,7 @@ func New(cfg Config) (*Client, error) {
 			return nil, fmt.Errorf("holdrecord: verify key %d is %d bytes, not an Ed25519 public key's %d", i+1, len(key), ed25519.PublicKeySize)
 		}
 	}
-	return &Client{cfg: cfg}, nil
+	return &Client{cfg: cfg, broker: broker}, nil
 }
 
 // VerifyKeys answers a copy of the keys the client verifies every answer under
@@ -689,12 +693,19 @@ func jsonFailure(err error) string {
 }
 
 // exchange sends one request with the operator's token and returns the answer's status and body.
-// No error it answers carries the request's URL: a DELETE's query holds the operator's signature,
-// and net/http's *url.Error quotes the URL whole (withoutURL).
+// The route is joined onto the broker URL (urljoin.JoinURL): its path after the URL's path, its
+// query after the URL's own, and the URL's fragment dropped, so a broker URL with a path, a query
+// or a fragment still names the route. No error it answers carries the request's URL: a DELETE's
+// query holds the operator's signature, and net/http's *url.Error quotes the URL whole
+// (withoutURL).
 func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
-	target := strings.TrimSuffix(c.cfg.BrokerURL, "/") + path
+	ref := path
 	if len(query) > 0 {
-		target += "?" + query.Encode()
+		ref += "?" + query.Encode()
+	}
+	asked, err := urljoin.JoinURL(c.broker, ref)
+	if err != nil {
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
 	}
 	var payload io.Reader
 	if body != nil {
@@ -704,7 +715,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 		}
 		payload = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, payload)
+	req, err := http.NewRequestWithContext(ctx, method, asked.String(), payload)
 	if err != nil {
 		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
