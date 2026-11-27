@@ -465,19 +465,7 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 	shipped := waitingPR{waitingRepo, 1, from.Add(-time.Hour)}
 	elsewhere := waitingPR{"acme/other", 2, from.Add(time.Hour)}
 	seedWaitingHistory(t, ctx, pool, runs, []waitingPR{shipped, elsewhere})
-	// The trigger that logs each change takes a lock and writes a row for each of the cap's fifty
-	// thousand rows, which this test's database, its own, does not need logged.
-	if _, err := pool.Exec(ctx, `alter table delivery_pull_requests disable trigger delivery_pull_requests_changed`); err != nil {
-		t.Fatalf("stop logging the pull requests' changes: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at)
-		select 'acme/other', 1000 + n, 'feat: another repository', 'https://github.com/acme/other/pull/' || (1000 + n), 'octocat',
-			merged - interval '1 hour', merged
-		from generate_series(1, $1::int) n, lateral (select $2::timestamptz + n * interval '1 second' as merged) moment
-	`, maxPullRequestsPerWindow+1, from.Add(-40*time.Hour)); err != nil {
-		t.Fatalf("seed the other repository's pull requests: %v", err)
-	}
+	seedPullRequestsASecondApart(t, ctx, pool, "acme/other", 1000, maxPullRequestsPerWindow+1, from.Add(-40*time.Hour))
 
 	control, err := ListPullRequestsInWindow(ctx, pool, time.Time{}, from)
 	if err != nil {
@@ -507,6 +495,96 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 	}
 	if got := merged.PullRequests; len(got) != 1 || got[0].Repo != "acme/other" || got[0].Number != 2 {
 		t.Fatalf("the window's pull requests number %d, want acme/other#2 alone: the window keeps every repository's", len(got))
+	}
+}
+
+// TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow: the read of several days' deploys
+// (ReadDaysDeploys) reads the deploy repository's pull requests merged before each day that the
+// day's deploys can ship (Deploys.Earlier), every day's in one statement, and bounds each day's at
+// maxPullRequestsPerWindow, the bound of one window's read, whatever the other days hold. Each of
+// two days holds a deploy. The first day's is the repository's first to succeed, so its earlier
+// window runs from the beginning of time; the second day's runs from the first deploy's creation
+// and holds one pull request, merged after that deploy. A pull request of another repository
+// merged before the first day is in neither. At the bound, the first day's earlier rows are every
+// one of its pull requests, oldest merge first, and its deploy ships them all, the newest
+// included; the second day's are its one, which its deploy ships. One pull request more before the
+// first day is past the bound, and the read is refused, naming that window and the bound, with no
+// day's rows answered, although the second day's window leaves all but one of its share unused: a
+// limit the windows shared, twice the bound here, answered the first day one pull request more
+// than a window's read holds, and with more still kept the oldest of both days' together, leaving
+// out the newest, which the deploys ship (dispatch://INFRA-2916).
+func TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	days := []time.Time{time.Date(2024, 5, 10, 0, 0, 0, 0, time.UTC), time.Date(2024, 5, 11, 0, 0, 0, 0, time.UTC)}
+	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}
+	var runs []waitingRun
+	for i, day := range days {
+		runs = append(runs, waitingRun{
+			id: int64(i + 1), branch: "main", head: day.Add(30 * time.Minute), created: new(day.Add(time.Hour)),
+			started: day.Add(time.Hour), done: day.Add(2 * time.Hour), result: DeliveryJobConclusionSuccess,
+		})
+	}
+	seedWaitingHistory(t, ctx, pool, runs, []waitingPR{{waitingRepo, 1, days[0].Add(3 * time.Hour)}, {"acme/other", 1, days[0].Add(-time.Hour)}})
+	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000, maxPullRequestsPerWindow, days[0].Add(-40*time.Hour))
+	firstWindow := fmt.Sprintf("[%s, %s)", time.Time{}.Format(time.RFC3339Nano), days[0].Format(time.RFC3339Nano))
+
+	read, err := ReadDaysDeploys(ctx, pool, settings, days, true)
+	if err != nil {
+		t.Fatalf("ReadDaysDeploys with %d pull requests, the bound, in the first day's earlier window %s: %v", maxPullRequestsPerWindow, firstWindow, err)
+	}
+	first, second := read.Deploys[0].Earlier.PullRequests, read.Deploys[1].Earlier.PullRequests
+	if len(first) != maxPullRequestsPerWindow || first[0].Number != 1001 || first[len(first)-1].Number != 1000+maxPullRequestsPerWindow {
+		t.Fatalf("the first day's earlier pull requests number %d, want %s#1001 to #%d, every one of its window's, oldest merge first", len(first), waitingRepo, 1000+maxPullRequestsPerWindow)
+	}
+	if len(second) != 1 || second[0].Repo != waitingRepo || second[0].Number != 1 {
+		t.Fatalf("the second day's earlier pull requests number %d, want %s#1 alone", len(second), waitingRepo)
+	}
+	shipped := func(day int) map[int64][]string {
+		window, err := read.Applies.Since(days[day])
+		if err != nil {
+			t.Fatalf("the apply runs of %s: %v", days[day].Format(time.DateOnly), err)
+		}
+		return shippedIDs(read.Deploys[day].ShippedBy(MergedRows{ApplyRuns: window.Runs, ApplyJobs: window.Jobs}, settings))
+	}
+	newest := fmt.Sprintf("%s#%d", waitingRepo, 1000+maxPullRequestsPerWindow)
+	if got := shipped(0); len(got) != 1 || len(got[1]) != maxPullRequestsPerWindow || got[1][len(got[1])-1] != newest {
+		t.Fatalf("the first day's deploy ships %d of its earlier pull requests, want run 1 to ship all %d, %s the last", len(got[1]), maxPullRequestsPerWindow, newest)
+	}
+	if got, want := shipped(1), map[int64][]string{2: {waitingRepo + "#1"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the second day's deploys ship %v, want %v", got, want)
+	}
+
+	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000+maxPullRequestsPerWindow, 1, days[0].Add(-2*time.Second))
+	read, err = ReadDaysDeploys(ctx, pool, settings, days, true)
+	if err == nil {
+		t.Fatalf("ReadDaysDeploys answered %d earlier pull requests of the first day and %d of the second with no error: the first day's window %s holds %d, past the bound of %d, and the share the second day's window leaves unused is not the first's",
+			len(read.Deploys[0].Earlier.PullRequests), len(read.Deploys[1].Earlier.PullRequests), firstWindow, maxPullRequestsPerWindow+1, maxPullRequestsPerWindow)
+	}
+	if !strings.Contains(err.Error(), firstWindow) || !strings.Contains(err.Error(), strconv.Itoa(maxPullRequestsPerWindow)) {
+		t.Fatalf("ReadDaysDeploys: %v, want a refusal naming the first day's earlier window %s and the bound %d", err, firstWindow, maxPullRequestsPerWindow)
+	}
+	if !reflect.DeepEqual(read, DaysDeploys{}) {
+		t.Fatalf("ReadDaysDeploys answered %d days' deploys beside its refusal, want none", len(read.Deploys))
+	}
+	t.Logf("past the bound: %v", err)
+}
+
+// seedPullRequestsASecondApart writes count merged pull requests of repo in one statement, numbered
+// from first+1 and merged a second apart from a second after after, each opened an hour before
+// its merge. It first stops the trigger that logs each change, which takes a lock and writes a row
+// for each of a row cap's fifty thousand rows: a test's database, its own, needs none logged.
+func seedPullRequestsASecondApart(t *testing.T, ctx context.Context, pool *store.Pool, repo string, first, count int, after time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `alter table delivery_pull_requests disable trigger delivery_pull_requests_changed`); err != nil {
+		t.Fatalf("stop logging the pull requests' changes: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at)
+		select $1::text, $2::int + n, 'feat: a widget', 'https://github.com/' || $1::text || '/pull/' || ($2::int + n), 'octocat',
+			merged - interval '1 hour', merged
+		from generate_series(1, $3::int) n, lateral (select $4::timestamptz + n * interval '1 second' as merged) moment
+	`, repo, first, count, after); err != nil {
+		t.Fatalf("seed %d pull requests of %s: %v", count, repo, err)
 	}
 }
 

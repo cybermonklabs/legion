@@ -513,7 +513,11 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 // ListPullRequestsOnDays what ListPullRequestsInWindow answers, ReadDaysDeploys what ReadDeploys
 // answers and the apply runs each day takes its part of (DaysDeploys.Applies), and ReadCIDays what
 // ReadCIRows answers. A day is the window [day, day+1) of a UTC midnight, and the days are given in
-// order, each once; each answer is index-aligned with them.
+// order, each once; each answer is index-aligned with them. A read of several days answers what
+// the day's own read answers only up to the bound of a window's pull requests
+// (maxPullRequestsPerWindow): where a day's window, or the earlier rows of a day's deploys
+// (Deploys.Earlier), holds more, ListPullRequestsOnDays and ReadDaysDeploys refuse the read, and
+// the day's own read answers its oldest pull requests up to the bound (listPullRequestsInWindows).
 
 // daysSideBySide is how many days' reads of their own the reads of several days run at once, each
 // on a connection of its own: ReadCIDays' read of every job of each day's PR-checks runs, the one
@@ -566,7 +570,8 @@ func readEachDay(ctx context.Context, days int, read func(ctx context.Context, d
 }
 
 // ListPullRequestsOnDays lists, for each of days, what ListPullRequestsInWindow lists of its
-// window, in one statement.
+// window, in one statement, and refuses the read where a day holds more than
+// maxPullRequestsPerWindow pull requests (listPullRequestsInWindows).
 func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([][]DeliveryPullRequest, error) {
 	from, to, err := dayWindows(days)
 	if err != nil {
@@ -576,9 +581,17 @@ func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([
 }
 
 // listPullRequestsInWindows lists, for each window [from[i], to[i]), what ListPullRequestsInWindow
-// lists of it, in one statement, a pull request of two windows in each, up to
-// maxPullRequestsPerWindow pull requests a window; narrowed to repo's pull requests when repo is
-// non-empty, as readMergedRows narrows a window's earlier rows (Deploys.Earlier).
+// lists of it, in its order, in one statement, a pull request of two windows in each; narrowed to
+// repo's pull requests when repo is non-empty, as readMergedRows narrows a window's earlier rows
+// (Deploys.Earlier). Each window is bounded on its own: the statement reads at most
+// maxPullRequestsPerWindow+1 pull requests of each window, whatever the others hold, and a window
+// that holds more than maxPullRequestsPerWindow refuses the whole read, naming the window and the
+// bound, where ListPullRequestsInWindow answers the oldest maxPullRequestsPerWindow. Which of a
+// window's rows that read takes does not matter, since it answers them only where they are every
+// one of the window's. A limit the windows shared (maxPullRequestsPerWindow times their number)
+// let a window take the share another left unused, and past it kept the oldest of every window's
+// together without a word, leaving out a window's newest, which its deploys ship
+// (dispatch://INFRA-2916).
 func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.Time, repo string) ([][]DeliveryPullRequest, error) {
 	listed := make([][]DeliveryPullRequest, len(from))
 	for i := range listed {
@@ -590,11 +603,14 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 	rows, err := q.Query(ctx, `
 		select `+PullRequestColumns+`, d.i
 		from unnest($1::timestamptz[], $2::timestamptz[]) with ordinality as d(from_at, to_at, i)
-		join delivery_pull_requests p on p.merged_at >= d.from_at and p.merged_at < d.to_at
-		where $4 = '' or p.repo = $4
-		order by p.merged_at, (p.repo || '#' || p.number) collate "C"
-		limit $3
-	`, from, to, maxPullRequestsPerWindow*len(from), repo)
+		cross join lateral (
+			select `+PullRequestColumns+`
+			from delivery_pull_requests
+			where merged_at >= d.from_at and merged_at < d.to_at and ($4 = '' or repo = $4)
+			limit $3
+		) p
+		order by d.i, p.merged_at, (p.repo || '#' || p.number) collate "C"
+	`, from, to, maxPullRequestsPerWindow+1, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +621,16 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 		if err != nil {
 			return nil, err
 		}
-		listed[window-1] = append(listed[window-1], pr)
+		w := window - 1
+		if len(listed[w]) == maxPullRequestsPerWindow {
+			what := "pull requests"
+			if repo != "" {
+				what += " of " + repo
+			}
+			return nil, fmt.Errorf("more than %d %s merged in [%s, %s), the bound of a window's read", maxPullRequestsPerWindow, what,
+				from[w].Format(time.RFC3339Nano), to[w].Format(time.RFC3339Nano))
+		}
+		listed[w] = append(listed[w], pr)
 	}
 	return listed, rows.Err()
 }
@@ -733,7 +758,10 @@ type DaysDeploys struct {
 // applies) and their production jobs in one more; the latest ship before each day's first deploy
 // completes in one (latestShipBefore of each); and the earlier rows each day's deploys read
 // (Deploys.Earlier), the deploy repository's pull requests of every day in one statement and the
-// apply runs in one, side by side, and their jobs in one more.
+// apply runs in one, side by side, and their jobs in one more. Where a day's earlier rows hold more
+// than maxPullRequestsPerWindow of those pull requests, the read is refused, naming the day's
+// earlier window and the bound (listPullRequestsInWindows), where ReadDeploys answers the oldest up
+// to the bound.
 func ReadDaysDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, days []time.Time, applies bool) (DaysDeploys, error) {
 	from, to, err := dayWindows(days)
 	if err != nil {

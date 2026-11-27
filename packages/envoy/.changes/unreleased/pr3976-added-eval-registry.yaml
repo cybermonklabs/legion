@@ -25,6 +25,8 @@ body: |-
   stored for each repository that holds one, so a read of one repository answers that
   repository's count. A read that names a repository finds its rows under every spelling the
   stored rows hold that differs from it only in case.
+  A batched delivery read refuses any window with more than 50,000 pull requests instead of
+  silently dropping rows. Earlier pull requests for a deploy count only from its repository.
   The eval writes, the refresher's and the Legion facts' record their changes in an outbox,
   `delivery_changes_pending`, and never take the delivery change log's lock: a drain moves them
   into `delivery_changes` 250 at a time, each batch a short statement of its own, run by each
