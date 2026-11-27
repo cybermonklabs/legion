@@ -858,15 +858,16 @@ func (a *Admission) slotFree(judged *passJudgement) bool {
 // alone: a role that is empty is a term the pending read leaves out.
 //
 // It answers whether it queued a row. Two of its own rules queue nothing and are no error: no
-// controller is registered, so nothing would read the wake, and an older notice of the same
+// controller is registered, and the controller that registers next reads the project's state at
+// its start, so a wake queued now would only repeat it; and an older notice of the same
 // kind, issue and role still waits unsent. A caller that records something of its own about
 // the wake must know which happened, and one does: the stalled-tree rule marks a root only for
 // a notice that went into the outbox, in this same transaction, so a tree that stopped while
 // no controller ran is told at a later pass instead of being marked told and lost
 // (tellStalledTrees). Every other caller has nothing to record and drops the answer.
 func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string, dueAt time.Time) (bool, error) {
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
+	session, err := a.store.ControllerSession(ctx, tx, a.project)
+	if err != nil || session == "" {
 		return false, err
 	}
 	of, from := "", claim.Role("")
@@ -4324,8 +4325,8 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 	if err != nil || len(stalls) == 0 {
 		return false, err
 	}
-	registered, err := a.store.ControllerRegistered(ctx, tx, a.project)
-	if err != nil || !registered {
+	session, err := a.store.ControllerSession(ctx, tx, a.project)
+	if err != nil || session == "" {
 		return false, err
 	}
 	return a.store.ArchitectStallsUntold(ctx, tx, stallMarks(stalls))
