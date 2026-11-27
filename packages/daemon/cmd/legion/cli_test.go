@@ -38,7 +38,7 @@ var legionBuildDir string
 // the product's bounds hold. The two go in one -ldflags, since go build takes only the last.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	ldflags := leakguardtest.NoCurlLinked
+	ldflags := leakguardtest.NoCurlLinked + " -X main.ghRoleStateBase=/nonexistent/legion-test-names-no-role-state"
 	if deadline, ok := os.LookupEnv(testDeadlineEnv); ok {
 		ldflags += " -X github.com/sjawhar/legion/daemon/internal/programbound.linkedDeadline=" + deadline
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +25,19 @@ import (
 )
 
 const rateLimitWaitBound = 2 * time.Minute
+
+// privateVisibilityBound is how long a private or internal visibility answer stays valid in the
+// role's own state volume (keepVisibility). Measured over 2,694 sessions from 2026-11-24T00:00Z
+// to 2026-11-27T16:00Z, a 2-minute keep answers 29.1% of the guarded calls naming a private
+// organization's repository with no read (30 s 18.2%, 1 min 23.9%, 3 min 31.9%, 5 min 35.8%),
+// 81% of what 5 minutes answers with 40% of the exposure; it also covers the capability report's
+// second and third attempts, which start about 30 s and 60 s after the first (INFRA-3562, F8).
+// It is the guard's whole exposure if a repository turns public in that time.
+const privateVisibilityBound = 2 * time.Minute
+
+// roleStateBase is the role state volume's base directory when Options.RoleState is empty:
+// RoleStateBase in the binary, and a temporary directory in this package's tests (main_test.go).
+var roleStateBase = RoleStateBase
 
 // Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
 // rate-limit reset does not sleep for wall-clock time.
@@ -66,8 +80,10 @@ const (
 )
 
 // Visibility is what GitHub reports the repository slug ("owner/name") as. Public answers stay
-// for the role's pod life. Private and internal answers are read each time, so a repository made
-// public cannot skip a rule pass.
+// for the role's pod life under $XDG_STATE_HOME. Private and internal answers stay for
+// privateVisibilityBound in the role's own state volume (RoleStateBase), where only that role can
+// write, and are read again once the bound passes; outside a pod with no writable role volume
+// they are not kept. A failed read is never kept.
 //
 // The REST read comes first (readVisibility). A read GitHub refuses for a rate limit, read with
 // internal/githubrest's model (rateLimitFrom), is read once more after the wait GitHub asks for,
@@ -92,8 +108,8 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 	return g.visibility(ctx, slug, true)
 }
 
-// FreshVisibility is Visibility without the kept answers: it neither trusts a kept public nor
-// keeps one. `legion gh` answers the shared public leak check's own read with it. The check keeps
+// FreshVisibility is Visibility without the kept answers: it neither trusts nor writes either
+// keep. `legion gh` answers the shared public leak check's own read with it. The check keeps
 // answers of its own, for a time it sets, and asks some of them fresh: it reads every other remote
 // of a push fresh, and counts the commits of one it reads public as held, which it does not scan.
 // A kept public, which never expires, would answer that read for a repository made private since,
@@ -102,7 +118,7 @@ func (g *Guard) FreshVisibility(ctx context.Context, slug string) (Visibility, e
 	return g.visibility(ctx, slug, false)
 }
 
-// visibility is Visibility, trusting and keeping public answers where kept says so.
+// visibility is Visibility, trusting and keeping answers where kept says so.
 func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibility, error) {
 	if kept {
 		if visibility, ok := g.keptVisibility(slug); ok {
@@ -247,39 +263,87 @@ type visibilityCacheEntry struct {
 	Visibility Visibility `json:"visibility"`
 }
 
+type privateVisibilityCacheEntry struct {
+	Visibility Visibility `json:"visibility"`
+	ReadAt     string     `json:"read_at"`
+}
+
 func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
-	path := g.visibilityCachePath(slug)
+	if path := g.visibilityCachePath(slug); path != "" {
+		if content, ok := readKeptVisibilityFile(path); ok {
+			var entry visibilityCacheEntry
+			if json.Unmarshal(content, &entry) == nil && entry.Visibility == Public {
+				return Public, true
+			}
+		}
+	}
+	path := g.privateVisibilityCachePath(slug)
 	if path == "" {
 		return "", false
 	}
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	content, ok := readKeptVisibilityFile(path)
+	if !ok {
+		return "", false
+	}
+	var entry privateVisibilityCacheEntry
+	if json.Unmarshal(content, &entry) != nil {
+		return "", false
+	}
+	if entry.Visibility != Private && entry.Visibility != Internal {
+		return "", false
+	}
+	readAt, err := time.Parse(time.RFC3339Nano, entry.ReadAt)
 	if err != nil {
 		return "", false
 	}
-	defer dir.Close()
-	info, err := dir.Stat()
-	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+	age := g.clock().Now().Sub(readAt)
+	if age < 0 || age >= privateVisibilityBound {
 		return "", false
+	}
+	return entry.Visibility, true
+}
+
+func readKeptVisibilityFile(path string) ([]byte, bool) {
+	dirPath := filepath.Dir(path)
+	parentPath := filepath.Dir(dirPath)
+	if pInfo, err := os.Lstat(parentPath); err != nil || !pInfo.IsDir() || !ownedByCurrentUser(pInfo) || pInfo.Mode().Perm()&0o077 != 0 {
+		return nil, false
+	}
+	dir, err := os.OpenFile(dirPath, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer dir.Close()
+	if !openedPrivateAs(dir, dirPath, fs.ModeDir) {
+		return nil, false
 	}
 	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
 	cache := os.NewFile(uintptr(fd), path)
 	defer cache.Close()
-	info, err = cache.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return "", false
+	if !openedPrivateAs(cache, path, 0) {
+		return nil, false
 	}
 	content, err := io.ReadAll(cache)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	var entry visibilityCacheEntry
-	if json.Unmarshal(content, &entry) != nil || entry.Visibility != Public {
-		return "", false
+	return content, true
+}
+
+// openedPrivateAs says whether file, just opened from path, is of type kind (fs.ModeDir for a
+// directory, 0 for a regular file), owned by this user with no permission for group or others,
+// and matches Lstat of path: under gVisor, O_DIRECTORY|O_NOFOLLOW can follow a link to a
+// directory, so checking Lstat and os.SameFile catches a link there too.
+func openedPrivateAs(file *os.File, path string, kind fs.FileMode) bool {
+	opened, err := file.Stat()
+	if err != nil || opened.Mode().Type() != kind || !ownedByCurrentUser(opened) || opened.Mode().Perm()&0o077 != 0 {
+		return false
 	}
-	return Public, true
+	found, err := os.Lstat(path)
+	return err == nil && found.Mode().Type() == kind && os.SameFile(opened, found)
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
@@ -288,26 +352,47 @@ func ownedByCurrentUser(info os.FileInfo) bool {
 }
 
 func (g *Guard) keepVisibility(slug string, visibility Visibility) {
-	if visibility != Public {
+	switch visibility {
+	case Public:
+		state := value(g.base(), "XDG_STATE_HOME")
+		if state == "" {
+			return
+		}
+		if err := os.MkdirAll(state, 0o700); err != nil {
+			return
+		}
+		encoded, err := json.Marshal(visibilityCacheEntry{Visibility: Public})
+		if err != nil {
+			return
+		}
+		writeKeptVisibility(state, slug, encoded)
+	case Private, Internal:
+		base := g.writableRoleState()
+		if base == "" {
+			return
+		}
+		encoded, err := json.Marshal(privateVisibilityCacheEntry{
+			Visibility: visibility,
+			ReadAt:     g.clock().Now().UTC().Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			return
+		}
+		writeKeptVisibility(base, slug, encoded)
+	}
+}
+
+func writeKeptVisibility(base, slug string, encoded []byte) {
+	dir, ok := ensurePrivateDir(base, "legion-gh", "visibility")
+	if !ok {
 		return
 	}
-	path := g.visibilityCachePath(slug)
-	if path == "" {
-		return
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return
-	}
-	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
-	if err != nil {
+	path := filepath.Join(dir, visibilityCacheFile(slug))
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return
 	}
 	tmp, err := os.CreateTemp(dir, ".visibility-")
@@ -329,13 +414,76 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	_ = os.Rename(tmp.Name(), path)
 }
 
+// ensurePrivateDir creates each element under base with mode 0700 where missing and verifies that
+// every existing element is a real directory owned by this user with no permission for group or
+// others. It never follows a link and never changes the mode of a pre-existing directory.
+func ensurePrivateDir(base string, elems ...string) (string, bool) {
+	cur := base
+	for _, elem := range elems {
+		cur = filepath.Join(cur, elem)
+		err := os.Mkdir(cur, 0o700)
+		created := err == nil
+		if err != nil && !errors.Is(err, os.ErrExist) {
+			return "", false
+		}
+		info, err := os.Lstat(cur)
+		if err != nil || !info.IsDir() || !ownedByCurrentUser(info) {
+			return "", false
+		}
+		if created && info.Mode().Perm() != 0o700 {
+			if err := os.Chmod(cur, 0o700); err != nil {
+				return "", false
+			}
+			info, err = os.Lstat(cur)
+			if err != nil || !info.IsDir() || !ownedByCurrentUser(info) {
+				return "", false
+			}
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return "", false
+		}
+	}
+	return cur, true
+}
+
+func visibilityCacheFile(slug string) string {
+	sum := sha256.Sum256([]byte(slug))
+	return fmt.Sprintf("%x.json", sum)
+}
+
 func (g *Guard) visibilityCachePath(slug string) string {
 	state := value(g.base(), "XDG_STATE_HOME")
 	if state == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(slug))
-	return filepath.Join(state, "legion-gh", "visibility", fmt.Sprintf("%x.json", sum))
+	return filepath.Join(state, "legion-gh", "visibility", visibilityCacheFile(slug))
+}
+
+func (g *Guard) roleState() string {
+	if g.opts.RoleState != "" {
+		return g.opts.RoleState
+	}
+	return roleStateBase
+}
+
+func (g *Guard) writableRoleState() string {
+	base := g.roleState()
+	if base == "" {
+		return ""
+	}
+	info, err := os.Stat(base)
+	if err != nil || !info.IsDir() || unix.Access(base, unix.W_OK) != nil {
+		return ""
+	}
+	return base
+}
+
+func (g *Guard) privateVisibilityCachePath(slug string) string {
+	base := g.writableRoleState()
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "legion-gh", "visibility", visibilityCacheFile(slug))
 }
 
 // VisibilityReadVar is the environment variable the shared public leak check's own visibility

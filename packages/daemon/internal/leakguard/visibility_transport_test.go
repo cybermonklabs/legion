@@ -115,6 +115,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 	writeProgram(t, bin, "curl", curlStandIn(rig.curl, rig.curlStdin, curl))
 	writeProgram(t, bin, "git", recordsItsCall(rig.git)+git)
 	rig.guard = New(Options{
+		RoleState:    t.TempDir(),
 		OnVisibility: func(source VisibilitySource) { rig.sources = append(rig.sources, source) },
 		Env:          append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), extra...),
 	})
@@ -129,24 +130,33 @@ func (r *transportRig) runs(t *testing.T) (rest, graphql, curl, git int) {
 	return countLines(t, r.reads), countLines(t, r.graphql), countLines(t, r.curl), len(readCalls(t, r.git))
 }
 
-// kept is whether the guard kept an answer for theRepo.
-func (r *transportRig) kept(t *testing.T) bool {
+func (r *transportRig) keptAt(t *testing.T, path string) bool {
 	t.Helper()
-	_, err := os.Stat(r.guard.visibilityCachePath(theRepo))
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
 	return err == nil
 }
 
+// kept is whether the guard kept any answer (public or private/internal) for theRepo.
+func (r *transportRig) kept(t *testing.T) bool {
+	t.Helper()
+	return r.keptAt(t, r.guard.visibilityCachePath(theRepo)) || r.keptAt(t, r.guard.privateVisibilityCachePath(theRepo))
+}
+
 // When gh's REST read fails with `net/http: TLS handshake timeout`, the guard makes the same REST
 // read through curl, with the token `gh auth git-credential get` answers for the repository, and
 // makes no GraphQL read, which goes through gh too, unless curl meets a spent core limit. curl's
-// public, private and internal are the answer, reported as rest-curl, and its public is kept as
-// gh's is. A rate limit that curl meets goes on to the rate-limit reads, whose first is GraphQL's
-// (here it answers). A curl that fails on its connection too sends the read on to ls-remote, whose
-// refs read public and whose `could not read Username` at exit 128 refuses the call. Any other curl
-// answer refuses the call with no ls-remote: GitHub's 404, which the refusal tells as GitHub's
+// public, private and internal are the answer, reported as rest-curl, and each is kept as gh's is
+// (public in $XDG_STATE_HOME, private and internal in the role volume). A rate limit that curl
+// meets goes on to the rate-limit reads, whose first is GraphQL's (here it answers). A curl that
+// fails on its connection too sends the read on to ls-remote, whose refs read public and whose
+// `could not read Username` at exit 128 refuses the call. Any other curl answer refuses the call
+// with no ls-remote: GitHub's 404, which the refusal tells as GitHub's
 // answer for the repository, and a curl that heard GitHub's status line and then lost its
 // connection among them.
 func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
@@ -253,18 +263,18 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 			if want := []VisibilitySource{tc.source}; !slices.Equal(rig.sources, want) {
 				t.Errorf("the guard reported the sources %q, want %q", rig.sources, want)
 			}
-			if kept := rig.kept(t); kept != (tc.want == Public) {
-				t.Errorf("an answer was kept: %v; want one for public alone", kept)
+			if keptPublic := rig.keptAt(t, rig.guard.visibilityCachePath(theRepo)); keptPublic != (tc.want == Public) {
+				t.Errorf("a public answer was kept in XDG_STATE_HOME: %v; want %v", keptPublic, tc.want == Public)
 			}
-			if tc.want != Public {
-				return
+			if keptPrivate := rig.keptAt(t, rig.guard.privateVisibilityCachePath(theRepo)); keptPrivate != (tc.want != Public) {
+				t.Errorf("a private/internal answer was kept in RoleState: %v; want %v", keptPrivate, tc.want != Public)
 			}
-			// A kept public answers the next call, which then needs no gh.
-			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Public {
-				t.Fatalf("the second call read %q, %v; want public", visibility, err)
+			// A kept answer answers the next call inside its bound, which then needs no gh.
+			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != tc.want {
+				t.Fatalf("the second call read %q, %v; want %s", visibility, err, tc.want)
 			}
-			if rest, _, curl, git := rig.runs(t); rest != 1 || curl != 1 || git != tc.gitRuns {
-				t.Errorf("after the second call gh's REST read ran %d times, curl %d and git %d; want 1, 1 and %d", rest, curl, git, tc.gitRuns)
+			if rest, graphql, curl, git := rig.runs(t); rest != 1 || curl != 1 || graphql != tc.graphqlRuns || git != tc.gitRuns {
+				t.Errorf("after the second call gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 1, %d and %d", rest, curl, graphql, git, tc.graphqlRuns, tc.gitRuns)
 			}
 			if want := []VisibilitySource{tc.source, VisibilityFromCache}; !slices.Equal(rig.sources, want) {
 				t.Errorf("the guard reported the sources %q, want %q", rig.sources, want)
@@ -483,6 +493,7 @@ func TestTransportFailureWithNoCurlIsReadWithLsRemote(t *testing.T) {
 	writeProgram(t, bin, "git", "echo ran >> "+shQuote(git)+"\n"+answersTheRefs)
 	var sources []VisibilitySource
 	guard := New(Options{
+		RoleState:    t.TempDir(),
 		OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 		Env:          append(fixtureenv.Isolated(t.TempDir()), "PATH="+bin, "XDG_STATE_HOME="+t.TempDir()),
 	})

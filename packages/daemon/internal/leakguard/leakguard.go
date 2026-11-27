@@ -103,6 +103,11 @@ type Options struct {
 	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
 	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
+	// RoleState is the role's own state volume base directory where private and internal
+	// repository visibility answers are kept for privateVisibilityBound. Empty takes
+	// roleStateBase (RoleStateBase in the binary, and a temporary directory in this package's
+	// tests).
+	RoleState string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a

@@ -259,6 +259,16 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 // holds it to the layout's names.
 const PrivateCopyBase = "/var/run/legion/private"
 
+// RoleStateBase is where a guard keeps a repository's private or internal visibility answer for
+// privateVisibilityBound (keepVisibility): in an issue pod, the role's own memory-backed state
+// directory, which `legion launcher role-init` binds back at this path inside that role's own
+// mount namespace alone (internal/launcher's FixedRoot and RoleStateDir), so no other role of the
+// pod reaches it, though every role runs as one user; the controller's pod mounts its one role's
+// there. It lasts the pod's life and is not cleared per generation. It is spelled here because
+// internal/launcher imports this package, and internal/launcher's layout test holds it to the
+// layout's names.
+const RoleStateBase = "/var/run/legion/state"
+
 // privateCopyFallback is where the copy is made where PrivateCopyBase does not exist: /tmp itself,
 // which role-init also gives each role of an issue pod as a directory of its own. Neither TMPDIR
 // nor XDG_STATE_HOME is read for it: a pod tells its roles a TMPDIR and a state home on the issue's

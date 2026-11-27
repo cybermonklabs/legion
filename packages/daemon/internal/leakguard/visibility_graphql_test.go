@@ -186,6 +186,7 @@ func TestVisibilityReadsGraphQLThroughGh(t *testing.T) {
 			var sources []VisibilitySource
 			visibility, err := New(Options{
 				Clock:        &visibilityTestClock{now: now},
+				RoleState:    t.TempDir(),
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 				Visibility: func(context.Context, string) (Visibility, error) {
@@ -251,8 +252,9 @@ func TestVisibilityKeepsGhsOutputPlain(t *testing.T) {
 		`printf 'nocolor=%s\tclicolor=%s\n' "${NO_COLOR-unset}" "${CLICOLOR_FORCE-unset}" >> `+shQuote(rest)+"\n"+spentRateLimit(now.Add(30*time.Minute), reads),
 		graphQLAnswers(graphql, "PUBLIC")))
 	visibility, err := New(Options{
-		Clock: &visibilityTestClock{now: now},
-		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir(), "CLICOLOR_FORCE=1"),
+		Clock:     &visibilityTestClock{now: now},
+		RoleState: t.TempDir(),
+		Env:       append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir(), "CLICOLOR_FORCE=1"),
 	}).Visibility(bound(t), theRepo)
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
@@ -365,8 +367,9 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 				ctx = boundPastAWait(t)
 			}
 			visibility, err := New(Options{
-				Clock: clock,
-				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Clock:     clock,
+				RoleState: t.TempDir(),
+				Env:       append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 			}).Visibility(ctx, theRepo)
 			if tc.want != "" && (err != nil || visibility != tc.want) {
 				t.Errorf("read %q, %v; want %s", visibility, err, tc.want)
@@ -405,8 +408,9 @@ func TestVisibilityWaitsForNoResetPastTheCallersBound(t *testing.T) {
 	t.Cleanup(cancel)
 	var reads int
 	visibility, err := New(Options{
-		Clock: clock,
-		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+		Clock:     clock,
+		RoleState: t.TempDir(),
+		Env:       append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			reads++
 			return "", &rateLimitError{reset: reset}
@@ -593,6 +597,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 			guard := New(Options{
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
 				Clock:        clock,
+				RoleState:    t.TempDir(),
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          withRules(t, append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir())),
 			})
@@ -656,8 +661,9 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 		close(ctx.done)
 	})
 	guard := New(Options{
-		Clock: clock,
-		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+		Clock:     clock,
+		RoleState: t.TempDir(),
+		Env:       append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
@@ -684,9 +690,10 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 }
 
 // An answer read without REST is kept by the rules a gh answer is (Guard.keepVisibility): public
-// for the pod's life, so the next call reads neither gh nor git, and private and internal not at
-// all, so the next call reads them again. That holds for GraphQL's answers and for ls-remote's
-// public. Each call builds a guard of its own, as every call site does.
+// for the pod's life in $XDG_STATE_HOME and private or internal for privateVisibilityBound in the
+// role's own state volume, so a second call inside the bound reads neither gh nor git. That holds
+// for GraphQL's answers and for ls-remote's public. Each call builds a guard of its own, as every
+// call site does.
 func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
 	reset := now.Add(30 * time.Minute)
@@ -714,15 +721,15 @@ func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 			name:    "GraphQL's private",
 			graphql: answers("PRIVATE"),
 			want:    Private,
-			reads:   2,
-			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromGraphQL},
+			reads:   1,
+			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromCache},
 		},
 		{
 			name:    "GraphQL's internal",
 			graphql: answers("INTERNAL"),
 			want:    Internal,
-			reads:   2,
-			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromGraphQL},
+			reads:   1,
+			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromCache},
 		},
 		{
 			name:    "ls-remote's public",
@@ -734,7 +741,7 @@ func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin, state, records := t.TempDir(), t.TempDir(), t.TempDir()
+			bin, state, roleState, records := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghStandIn(spentRateLimit(reset, reads), tc.graphql(graphql)))
 			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
@@ -742,6 +749,7 @@ func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 			for range 2 {
 				visibility, err := New(Options{
 					Clock:        &visibilityTestClock{now: now},
+					RoleState:    roleState,
 					OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 					Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+state),
 				}).Visibility(bound(t), theRepo)

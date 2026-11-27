@@ -52,6 +52,11 @@ const testMainEnv = "LEGION_CMD_TEST_MAIN"
 // tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
+// testRoleStateEnv names, to this package's test binary run as `legion` (TestMain), the role
+// state volume base directory the leak guard keeps private and internal visibility answers under
+// (ghRoleStateBase). Only this test binary reads the variable; the legion binary has none.
+const testRoleStateEnv = "LEGION_TEST_ROLE_STATE"
+
 // cmdTestParallelism is how many of this package's tests run at once when the command line names
 // no -parallel. Every test calls t.Parallel as its first statement but those that change something
 // the whole process shares, hold code to a wall-clock bound that tests beside them could use up,
@@ -99,6 +104,14 @@ func TestMain(m *testing.M) {
 		// system's own curl.
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
+		}
+		// A test's role state directory for the guard's private/internal visibility keep. Only
+		// this test binary reads the variable; the legion binary has none. Where unset, point at
+		// a non-existent path so no child process reaches the pod's real /var/run/legion/state.
+		if roleState := os.Getenv(testRoleStateEnv); roleState != "" {
+			ghRoleStateBase = roleState
+		} else {
+			ghRoleStateBase = "/nonexistent/legion-test-names-no-role-state"
 		}
 		// A test's bounds of the jj step, of its words of ids and of the push's command, low
 		// enough that a push of a few commits reaches them. Only this test binary reads the
@@ -241,6 +254,13 @@ func runWithoutTheOperatorsJJConfig(m *testing.M) int {
 	}
 	defer os.RemoveAll(buildDir)
 	legionBuildDir = buildDir
+	roleStateDir, err := os.MkdirTemp("", "legion-test-role-state")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	defer os.RemoveAll(roleStateDir)
+	ghRoleStateBase = roleStateDir
 	return m.Run()
 }
 

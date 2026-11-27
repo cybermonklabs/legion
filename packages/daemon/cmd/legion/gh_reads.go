@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // ghCheckedOnlyVisibility is the call log's visibility for a call the shared check alone read
@@ -47,6 +49,12 @@ var ghReadsProvenCheck = struct{ tag, sha256 string }{
 // helper's fork read (readForkUpstream). It is empty in the binary, where the guard then runs
 // /usr/bin/curl; only tests set it, as they set ghReadsProvenCheck's sha256 (TestMain).
 var leakguardCurl string
+
+// ghRoleStateBase is the role state volume base directory every leakguard of `legion gh` and
+// `legion leak-check` keeps private and internal visibility answers under (leakguard.Options.RoleState):
+// leakguard.RoleStateBase in the binary, and a temporary directory in this package's tests
+// (TestMain). No code of the `legion` binary reads an environment variable for it.
+var ghRoleStateBase = leakguard.RoleStateBase
 
 // ghRateLimitRead is the exact `gh api rate_limit`, a GitHub API call with no repository content,
 // which reaches gh before its command is read: it reads no help and no git remote, so a working

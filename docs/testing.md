@@ -1286,6 +1286,7 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
 
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
   The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
+  The guard keeps private and internal answers in the role's own volume (`leakguard.RoleStateBase`) instead, so `internal/leakguard`'s and `cmd/legion`'s `TestMain` point that place at a temporary directory, and a test that runs `legion gh` as a child gives it a directory of its own (`LEGION_TEST_ROLE_STATE`): no test reaches a pod's live `/var/run/legion/state`.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
   Isolated keeps no test input either, so a fixture that needs one appends it after.
 

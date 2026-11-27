@@ -255,6 +255,18 @@ func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
 	}
 }
 
+// A role's guard keeps private and internal repository visibility answers under
+// leakguard.RoleStateBase, which that package spells itself, since this one imports it: the
+// role's own state directory as role-init binds it back inside the role's namespaces alone, and
+// as the controller's pod mounts its one role's. A layout that moved the directory would leave
+// the guard keeping nothing, or reading a root-owned mount point no role can write.
+func TestTheGuardsVisibilityKeepIsInTheRolesOwnStateDirectory(t *testing.T) {
+	t.Parallel()
+	if want := FixedRoot + "/" + RoleStateDir; leakguard.RoleStateBase != want {
+		t.Fatalf("leakguard.RoleStateBase = %s, want the state directory role-init binds for the role alone, %s", leakguard.RoleStateBase, want)
+	}
+}
+
 // The launcher names its own pin in every hello, so the daemon knows to push it the check; a
 // launcher whose environment names no pin says nothing of a check at all, and refuses a check
 // pushed to it anyway, writing nothing.

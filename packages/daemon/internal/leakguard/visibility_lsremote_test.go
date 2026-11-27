@@ -190,8 +190,9 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
 	writeProgram(t, bin, "git", "exec sleep 86400\n")
 	guard := New(Options{
-		Clock: clock,
-		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+		Clock:     clock,
+		RoleState: t.TempDir(),
+		Env:       append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
@@ -272,8 +273,9 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
 			writeProgram(t, bin, "git", ": > "+shQuote(started)+"\nexec sleep 86400\n")
 			guard := New(Options{
-				Clock: clock,
-				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Clock:     clock,
+				RoleState: t.TempDir(),
+				Env:       append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 				Visibility: func(context.Context, string) (Visibility, error) {
 					return "", &rateLimitError{reset: reset}
 				},
@@ -295,6 +297,9 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			tc.stop(t, err)
 			if _, err := os.Stat(guard.visibilityCachePath(theRepo)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("a visibility was kept for the refused read (%v), want none", err)
+			}
+			if _, err := os.Stat(guard.privateVisibilityCachePath(theRepo)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a private visibility was kept for the refused read (%v), want none", err)
 			}
 		})
 	}
@@ -439,6 +444,7 @@ func TestVisibilityNeverReadsAnUnauthenticatedRefusalAsPrivate(t *testing.T) {
 			var sources []VisibilitySource
 			guard := New(Options{
 				Clock:        clock,
+				RoleState:    t.TempDir(),
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          loopbackEnv(t.TempDir(), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 				Visibility: func(context.Context, string) (Visibility, error) {
@@ -469,6 +475,9 @@ func TestVisibilityNeverReadsAnUnauthenticatedRefusalAsPrivate(t *testing.T) {
 			}
 			if _, err := os.Stat(guard.visibilityCachePath(slug)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("a visibility was kept for the refused call (%v), want none", err)
+			}
+			if _, err := os.Stat(guard.privateVisibilityCachePath(slug)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a private visibility was kept for the refused call (%v), want none", err)
 			}
 		})
 	}
