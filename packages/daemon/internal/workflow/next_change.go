@@ -164,8 +164,8 @@ func reasonLines(reasons []record.Defect) []string {
 // the count, each reason and the issue's pull requests (D7). No count stops a change: the issue
 // goes on, and the controller can move it to backlog or icebox as it can any root.
 func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect) error {
-	cap := e.cfg.ReviewRoundCap
-	if cap <= 0 || issue.NextChanges%cap != 0 {
+	every := e.cfg.ReviewRoundCap
+	if every <= 0 || issue.NextChanges%every != 0 {
 		return nil
 	}
 	text := fmt.Sprintf("%s has started %d next changes of itself, and Legion stops none of them.", issue.Key, issue.NextChanges)
@@ -297,7 +297,7 @@ func (e *Engine) changeOpenedNoPullRequest(ctx context.Context, tx pgx.Tx, issue
 	if err != nil || pr == nil {
 		return true, err
 	}
-	return pr.Generation < issue.NextChange, nil
+	return pr.Generation < int64(issue.NextChange), nil
 }
 
 // changeResolved says whether each reason the issue's open change carries is resolved (D7, B08):
