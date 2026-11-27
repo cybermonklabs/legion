@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A CI reconcile pass now writes the row that records it on a context the process's shutdown
+  cannot cancel, the one its end is already written on. A shutdown that landed while that insert
+  was in flight -- after Postgres had committed the row, before the pass had read its id back --
+  left the pass parted from its own row: the pass closed nothing, and the row read as a process
+  killed in the middle of a pass. Such a pass now records the cancellation it was.
+time: 2026-11-27T20:35:51Z
+custom:
+    Issue: INFRA-1075

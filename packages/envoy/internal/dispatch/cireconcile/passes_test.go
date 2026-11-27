@@ -381,6 +381,43 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 	}
 }
 
+// A pass whose caller is already cancelled when it begins records a row, and that row says the
+// caller cancelled it. The shutdown reaches the loop between two passes, or lands while the
+// insert of the row is in flight -- after Postgres has committed the row, before the pass has
+// read its id back -- and both leave the pass with a dead context at its first statement. The
+// insert runs on a context no cancellation reaches (beginPass), so the pass holds its row's id
+// either way; on the pass's own context the read fails, the pass parts from a row Postgres may
+// already hold, and a record that exists to say what the process was doing says either nothing
+// at all or, for the row left open, that the process was killed in the middle of a pass.
+func TestAPassCancelledBeforeItsRowIsReadBackStillRecordsTheCancellation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, reviewerAppID)
+	h.seedProjectDefault(rowRepository)
+	h.listHead()
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+	h.reconciler.PassTimeout = 0
+
+	shutting, shutdown := context.WithCancel(h.ctx)
+	shutdown()
+	h.reconciler.Pass(shutting)
+
+	passes := recent(t, h.pool)
+	if len(passes) == 0 {
+		t.Fatal("the pass recorded no row: a shutdown that reached it before it read its row back left nothing saying the process was in a pass")
+	}
+	pass := passes[0]
+	if pass.State != outcomeCancelled {
+		t.Errorf("the pass reads %q, want %q: its caller had cancelled it before it began: %+v", pass.State, outcomeCancelled, pass)
+	}
+	if pass.EndedAt == nil {
+		t.Error("the pass has no end time, so nothing tells it from a pass whose process died in the middle of it")
+	}
+	if pass.Instance != instance {
+		t.Errorf("the row names instance %q, want this process's %q", pass.Instance, instance)
+	}
+}
+
 // The record outlives the process that wrote it. A restart deletes the process's registry row
 // (Deregister) and the next process registers under an id of its own, and the day of passes the
 // route answers still holds both -- which is the whole reason the counts are in Postgres rather
