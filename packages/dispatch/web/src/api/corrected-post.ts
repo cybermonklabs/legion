@@ -1,3 +1,9 @@
+import type {
+  AskThreadPage,
+  AskThreadRow,
+  CommentThreadPage,
+  MessageThreadPage,
+} from "@legion/contracts";
 import {
   type InfiniteData,
   type Mutation,
@@ -202,6 +208,36 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
 };
 
 /**
+ * The families of `CORRECTED_POST_FAMILIES` that Threads' reads stand under too
+ * (`features/issue-page/threads/thread-reads.ts`), with what a correction writes into the
+ * pages of such a read, each `{ threads, before, remaining }`: each thread's root and replies, or
+ * the replies of an ask's thread, with the quote a reply holds of a block of the post, as the
+ * family's writer writes a row of its flat list; every other field of a thread and of a page,
+ * `last_activity_at` among them, stays as it was. Every other answer of the family is written by
+ * the family's own writer, as before (`familyWrite`).
+ */
+const THREADS_PAGE_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
+  /** Threads' ask pages (`askThreadsQuery`, `["asks", key, "threads", …]`). */
+  asks: ofKind("comment", (answer, post, queryKey) =>
+    isPages<AskThreadPage>(answer)
+      ? markedPages(answer, (page) => markedAskThreadPage(page, post))
+      : CORRECTED_POST_FAMILIES.asks(answer, post, queryKey)
+  ),
+  /** Threads' comment pages (`commentThreadsQuery`, `["comments", key, "threads", …]`). */
+  comments: ofKind("comment", (answer, post, queryKey) =>
+    isPages<CommentThreadPage>(answer)
+      ? markedPages(answer, (page) => markedCommentThreadPage(page, post))
+      : CORRECTED_POST_FAMILIES.comments(answer, post, queryKey)
+  ),
+  /** Threads' message pages (`messageThreadsQuery`, `["issue-messages", key, "threads", …]`). */
+  "issue-messages": ofKind("message", (answer, post, queryKey) =>
+    isPages<MessageThreadPage>(answer)
+      ? markedPages(answer, (page) => markedMessageThreadPage(page, post))
+      : CORRECTED_POST_FAMILIES["issue-messages"](answer, post, queryKey)
+  ),
+};
+
+/**
  * Every query family of `CORRECTED_POST_FAMILIES` whose read Dispatch can refuse with a list of
  * items to choose between, posts among them, with what a correction writes into such a refusal,
  * which the query holds as its error rather than as an answer (`correctRefusal`). Each has a test
@@ -299,6 +335,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  *   ask's thread or a session's conversation holds it;
  * - the quote a reply in any of those rows holds of a block of the post (`reply_block`): removed,
  *   with no text, as a read of the reply answers it;
+ * - each of those in a thread of Threads' pages (`THREADS_PAGE_FAMILIES`): the thread's root, its
+ *   replies, or the replies of an ask's thread, with the quotes they hold of a block of the post;
  * - each event of the post's own that carries its body, in an issue's log and the margin's pinned
  *   events: no `body`, `body_truncated`, `suggestion` or body tree, and the anchor quote the
  *   delete emptied, as the server's read of the event log gives it (`attachPostMarks` in
@@ -436,6 +474,9 @@ function queryFamily(queryKey: QueryKey): string | undefined {
 /** The writer of the answers of the family `family` (`queryFamily`), or undefined for a family that
  *  holds no post. */
 function familyWrite(family: string | undefined): FamilyWrite | undefined {
+  if (family !== undefined && Object.hasOwn(THREADS_PAGE_FAMILIES, family)) {
+    return THREADS_PAGE_FAMILIES[family];
+  }
   return family !== undefined && Object.hasOwn(CORRECTED_POST_FAMILIES, family)
     ? CORRECTED_POST_FAMILIES[family]
     : undefined;
@@ -935,6 +976,20 @@ function markedCommentRead(read: CommentRead, post: CorrectedPost): CommentRead 
     : { ...read, comment: root ?? read.comment, replies: replies ?? read.replies };
 }
 
+/** One page of Threads' comment threads (`commentThreadsQuery`) once `post` is corrected: each
+ *  thread's root and replies, as a comment's read is written (`markedCommentRead`), with its
+ *  `last_activity_at` as it was; undefined where no thread holds a copy of the post. */
+function markedCommentThreadPage(
+  page: CommentThreadPage,
+  post: CorrectedPost
+): CommentThreadPage | undefined {
+  const threads = markEach(page.threads, (thread) => {
+    const read = markedCommentRead(thread, post);
+    return read === undefined ? undefined : { ...thread, ...read };
+  });
+  return threads === undefined ? undefined : { ...page, threads };
+}
+
 /** An ask's thread - an ask's own read, or the thread an ask row carries - once `post`, a
  *  comment, is corrected: its replies; undefined where none is the post or quotes it. */
 function markedAskThread<T extends Pick<AskThread, "replies">>(
@@ -955,6 +1010,13 @@ function markedAskRows(answer: unknown, post: CorrectedPost): unknown[] | undefi
         : markedAskThread(row.thread, post);
     return thread === undefined ? undefined : { ...row, thread };
   });
+}
+
+/** One page of Threads' asks (`askThreadsQuery`) once `post` is corrected: each ask's thread, as
+ *  a list of ask rows is written (`markedAskRows`); undefined where no thread holds a copy. */
+function markedAskThreadPage(page: AskThreadPage, post: CorrectedPost): AskThreadPage | undefined {
+  const threads = markedAskRows(page.threads, post) as AskThreadRow[] | undefined;
+  return threads === undefined ? undefined : { ...page, threads };
 }
 
 /** One page of the reader's answers and ask replies once `post`, a comment, is corrected: each
@@ -1017,6 +1079,20 @@ function markedMessageRead(read: MessageRead, post: CorrectedPost): MessageRead 
  *  message, is corrected; undefined where none holds a copy of the post. */
 function markedMessageReads(answer: unknown, post: CorrectedPost): MessageRead[] | undefined {
   return markEach(rowsOf<MessageRead>(answer), (read) => markedMessageRead(read, post));
+}
+
+/** One page of Threads' message threads (`messageThreadsQuery`) once `post` is corrected: each
+ *  thread's root and replies, as a message's read is written (`markedMessageRead`), with its
+ *  `last_activity_at` as it was; undefined where no thread holds a copy of the post. */
+function markedMessageThreadPage(
+  page: MessageThreadPage,
+  post: CorrectedPost
+): MessageThreadPage | undefined {
+  const threads = markEach(page.threads, (thread) => {
+    const read = markedMessageRead(thread, post);
+    return read === undefined ? undefined : { ...thread, ...read };
+  });
+  return threads === undefined ? undefined : { ...page, threads };
 }
 
 /** The events whose payload is a post of each kind with its body, which the server's read of the

@@ -582,6 +582,19 @@ function threadRows(kind: "comment" | "message") {
   ];
 }
 
+/** `threads` as a Threads read (`features/issue-page/threads/thread-reads.ts`) holds them: its
+ *  first page, `{ threads, before, remaining }`, each thread with its last activity. */
+const threadsReadPages = (threads: readonly object[]) => ({
+  pageParams: [null],
+  pages: [
+    {
+      before: null,
+      remaining: 0,
+      threads: threads.map((thread) => ({ ...thread, last_activity_at: "2026-11-19T00:00:00Z" })),
+    },
+  ],
+});
+
 /** What a row reads of the post's copy an answer holds. */
 interface CopyMarks {
   readonly deleted_at?: string | null;
@@ -762,6 +775,14 @@ const ROWS: readonly WriteRow[] = [
     key: ["asks", "CORE-1", "thread"],
     kind: "comment",
   },
+  // Threads' ask pages: an ask row with its thread.
+  {
+    answer: threadsReadPages([{ id: "ask-1", thread: askThread() }]),
+    copies: (answer) => threadCopies(answer, "pages", 0, "threads", 0, "thread"),
+    family: "asks",
+    key: ["asks", "CORE-1", "threads", {}],
+    kind: "comment",
+  },
   {
     answer: [{ id: "ask-1", thread: askThread() }],
     copies: (answer) => threadCopies(answer, 0, "thread"),
@@ -838,6 +859,25 @@ const ROWS: readonly WriteRow[] = [
     key: ["comments", "CORE-1"],
     kind: "comment",
   },
+  // Threads' comment pages: a thread whose root is the post, with a reply quoting a block of it,
+  // and a thread whose reply is the post.
+  {
+    answer: threadsReadPages([
+      { comment: insertComment(), replies: [quotingReply("comment")] },
+      {
+        comment: commentOf(OTHER, { body: "Ship it?" }),
+        replies: [{ ...commentOf(), body_tree: WORDS_TREE, reply_to: OTHER }],
+      },
+    ]),
+    copies: (answer) => [
+      marksAt(answer, "pages", 0, "threads", 0, "comment"),
+      marksAt(answer, "pages", 0, "threads", 0, "replies", 0, "reply_block"),
+      marksAt(answer, "pages", 0, "threads", 1, "replies", 0),
+    ],
+    family: "comments",
+    key: ["comments", "CORE-1", "threads", { person: "in" }],
+    kind: "comment",
+  },
   {
     answer: { pageParams: [0], pages: [[postEvent("comment")]] },
     copies: (answer) => [marksAt(answer, "pages", 0, 0, "payload")],
@@ -877,6 +917,25 @@ const ROWS: readonly WriteRow[] = [
     ],
     family: "issue-messages",
     key: ["issue-messages", "CORE-1"],
+    kind: "message",
+  },
+  // Threads' message pages: a thread whose root is the post, with a reply quoting a block of it,
+  // and a thread whose reply is the post.
+  {
+    answer: threadsReadPages([
+      { message: wordyMessage(), replies: [quotingReply("message")] },
+      {
+        message: { ...messageOf(OTHER), body: "Ship it?" },
+        replies: [{ ...wordyMessage(), in_reply_to: OTHER }],
+      },
+    ]),
+    copies: (answer) => [
+      marksAt(answer, "pages", 0, "threads", 0, "message"),
+      marksAt(answer, "pages", 0, "threads", 0, "replies", 0, "reply_block"),
+      marksAt(answer, "pages", 0, "threads", 1, "replies", 0),
+    ],
+    family: "issue-messages",
+    key: ["issue-messages", "CORE-1", "threads", { person: "in" }],
     kind: "message",
   },
   {
