@@ -4,4 +4,4 @@ body: |-
   pass and when no REST work is expected. The Dispatch executable keeps its 500 ms ceiling.
 time: 2026-11-27T10:14:32Z
 custom:
-    Issue: INFRA-3862
+    Issue: pr5823
