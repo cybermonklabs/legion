@@ -270,8 +270,9 @@ export async function findPushedBranchHead(input: {
  * `packages/daemon/internal/api/handoff.go`): the planner, the tester, the reviewer and the
  * merger each work one phase, which is the answer wherever the issue stands; the implementer
  * works implementing and retro, and has left retro once the issue stands past it in the
- * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers) and implementing
- * anywhere else; the architect leaves no phase, so its answer is the issue's.
+ * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers: `verifying` is
+ * outside `phase.Order`, so a completion there is of implementing, as Go answers it) and
+ * implementing anywhere else; the architect leaves no phase, so its answer is the issue's.
  */
 function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
   switch (role) {

@@ -22,6 +22,10 @@ async function daemonFixture(name: string): Promise<unknown> {
   return JSON.parse(await readFile(file, "utf8"))
 }
 
+/** What the daemon answers a defect report it recorded: the defect's id, that it was recorded, and
+ * the generation of the next change that carries it. */
+const DEFECT_RECORDED = { defect: "41", state: "recorded", nextChange: 4 }
+
 /** A window of release records as the daemon serves it: two releases, the first woken five
  * minutes later and the second two hours later, each with a first turn observed. */
 const RELEASE_RECORDS = {
@@ -102,6 +106,7 @@ async function daemon(
     "/legion/v1/grants": await daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
     "/legion/v1/phase/backward": {},
+    "/legion/v1/defects/report": DEFECT_RECORDED,
     "/legion/v1/claims/release-records": RELEASE_RECORDS,
   }
   const requests: Request[] = []
@@ -211,6 +216,55 @@ test("answerLegionTool closes only a step and answers an update without closing 
   expect(calls).toEqual(["closed", "update"])
 })
 
+/** A report_defect call whose every field holds. */
+const DEFECT_REPORT = {
+  op: "report_defect",
+  issue: "LEGION-208",
+  defect: "The merged widget drops its last row: `bun test widget` fails on row 12.",
+  head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+}
+
+// report_defect records a defect of the merged change and moves no phase: the role goes on with
+// its step, so a report that succeeded closes no phase and answers no update, for the implementer
+// in retro and the merger in merging alike.
+test("report_defect does not close the phase", async () => {
+  const { client, requests } = await daemon()
+  const calls: string[] = []
+  const hook = {
+    phaseClosed: () => {
+      calls.push("closed")
+    },
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  const posted = {
+    method: "POST",
+    path: "/legion/v1/defects/report",
+    body: {
+      grantId: "grant-for-one-command",
+      issue: "LEGION-208",
+      defect: DEFECT_REPORT.defect,
+      head: DEFECT_REPORT.head,
+    },
+  }
+  for (const role of ["implementer", "merger"] as const) {
+    const runtime = {
+      daemon: client,
+      claim: () => ({ ...implementer, role }),
+      handoffReport: async (): Promise<never> => {
+        throw new Error("a defect report reads no handoff")
+      },
+      branchHead: noBranchHead,
+    }
+    await expect(legionTool.answerLegionTool(runtime, DEFECT_REPORT, hook)).resolves.toEqual(
+      DEFECT_RECORDED,
+    )
+  }
+  expect(calls).toEqual([])
+  expect(requests).toEqual([grantRequest, posted, grantRequest, posted])
+})
+
 test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
   const runtime = {
@@ -237,7 +291,7 @@ test("a named look of a running issue reaches the daemon through executeLegionTo
   expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
 })
 
-test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
+test("declares the seven phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema).toMatchObject({
@@ -250,6 +304,7 @@ test("declares the six phase-worker operations under one op, and names the Envoy
           "request_backward_move",
           "ready_for_update",
           "read_build",
+          "report_defect",
         ],
       },
       issue: { type: "string" },
@@ -262,6 +317,9 @@ test("declares the six phase-worker operations under one op, and names the Envoy
       return_to: { type: "integer", minimum: 1 },
       reason: { type: "string" },
       round: { type: "string" },
+      defect: { type: "string" },
+      head: { type: "string" },
+      check: { type: "string" },
     },
     required: ["op"],
   })
@@ -269,7 +327,9 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the pod replaces the pod anyway. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the pod replaces the pod anyway. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. That move counts no review round: only a review that requests changes counts one. " +
+      PHASE_OP_SENTENCES.reportDefect +
+      "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route. That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -548,7 +608,7 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(
     executeLegionTool(runtime, { op: "set_status", issue: "LEGION-208" }),
   ).rejects.toThrow(
-    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build",
+    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build, report_defect",
   )
   await expect(
     executeLegionTool(runtime, { op: "read_record", issue: "LEGION-208", summary: "x" }),
@@ -556,6 +616,9 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(executeLegionTool(runtime, { op: "handoff_complete" })).rejects.toThrow(
     "handoff_complete requires summary",
   )
+  await expect(
+    executeLegionTool(runtime, { ...DEFECT_REPORT, head: DEFECT_REPORT.head.slice(0, 12) }),
+  ).rejects.toThrow("report_defect's head is the 40-character lower-case commit")
   expect(requests).toEqual([])
 })
 
