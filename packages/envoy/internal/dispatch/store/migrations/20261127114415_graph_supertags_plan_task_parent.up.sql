@@ -44,8 +44,9 @@
 -- The change is stated here as rows rather than read from the file, for the reason the seed
 -- copies its text in: a migration states what the database held at one version and must not
 -- change when the file does. What it leaves is what the seed would build from the file as it
--- stands at version 7, and TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the two
--- together field by field.
+-- stands at version 7: TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the attribute
+-- nodes to the file field by field, and every block type's node to the file's version
+-- (requireEveryBlockTypeCarriesTheFilesVersion).
 --
 -- The runner applies a migration in one transaction, so the commit is the one moment the schema
 -- changes: a server reads the new attribute and the new version together, or neither. The
@@ -86,7 +87,9 @@ values ('attribute', 'plan_task/parent', 'state', 'value', 'live', now(), '{"kin
 -- The version. The seed wrote the schema's version on every block type's supertag node, and the
 -- schema the nodes build takes the highest of them. Each one moves to 7, not `plan_task` alone,
 -- so every type node goes on carrying the version of the schema the store holds, as
--- 20261125125701 left them. A bounded write sets a column to a literal, so each node's whole
+-- 20261125125701 left them; requireEveryBlockTypeCarriesTheFilesVersion fails naming a type that
+-- does not, since the version served, the highest, would not show it.
+-- A bounded write sets a column to a literal, so each node's whole
 -- attributes are written out: what 20261125125701 left on it, its version moved from 6 to 7.
 -- Nothing but a migration writes a type node, so that is what each holds, and this rewrites
 -- nothing but the version (the census says why). A supertag that declares no block type carries

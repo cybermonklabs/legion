@@ -601,14 +601,14 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 	t.Logf("every type node's %d attribute value(s) are the newest value tuples out of it", compared)
 }
 
-// requireEveryBlockTypeCarriesTheFilesVersion holds each block type's supertag node to the file's
-// version, the version every type migration moves all the block types to together, as
+// requireEveryBlockTypeCarriesTheFilesVersion holds each live block type's supertag node to the
+// file's version, the version every type migration moves all the block types to together, as
 // 20261123080000 and each later one state. The schema the nodes build takes the highest version any
 // of them carries (schemanodes.Read), so a migration that forgot one type, leaving its row and its
 // version tuple both at the version before, leaves the served version right and every other check
 // here true; this check names the type it forgot. A row and its newest value tuple agree already
-// (requireTypeNodeValuesAreTheirTuples), so the row is read. A store with no block type fails,
-// since then nothing was compared.
+// (requireTypeNodeValuesAreTheirTuples), so the row is read. A store with no live block type
+// fails, since then nothing was compared.
 func requireEveryBlockTypeCarriesTheFilesVersion(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindSupertag)
@@ -618,7 +618,7 @@ func requireEveryBlockTypeCarriesTheFilesVersion(t *testing.T, ctx context.Conte
 	want := strconv.Itoa(file.Version)
 	compared := 0
 	for _, node := range nodes {
-		if blockType, _ := node.Attributes["block_type"].(bool); !blockType {
+		if blockType, _ := node.Attributes["block_type"].(bool); !blockType || node.State != graphstore.StateLive {
 			continue
 		}
 		compared++
@@ -628,7 +628,7 @@ func requireEveryBlockTypeCarriesTheFilesVersion(t *testing.T, ctx context.Conte
 		}
 	}
 	if compared == 0 {
-		t.Fatalf("the store holds no block type's supertag node, so no version was compared with the file's")
+		t.Fatalf("the store holds no live block type's supertag node, so no version was compared with the file's")
 	}
 }
 
