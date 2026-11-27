@@ -110,25 +110,35 @@ func TestRunReportsTheCommandsOwnFailureWhenAChildInItsGroupHoldsItsOutput(t *te
 //
 // The child leaves the git's process group (setsid) and writes its pid from inside its new session
 // before the git exits (heldChild, escaped), so the Timeout's stop, where os/exec still runs it
-// between Go's reap of the git and Wait's read of its context, finds no group left to signal. A
-// loaded machine can hold the git past a Timeout counted from before its shell started, and that
-// run, which the Timeout's stop ended, shows nothing of this. Only a run whose git was seen reaped
-// before its Timeout could pass is judged (watchReaped), so the row runs the git again until a run
-// of the right order comes, within a minute.
+// between Go's reap of the git and Wait's read of its context, finds no group left to signal.
+//
+// Only a run whose git was seen reaped before its Timeout could pass shows this: a run reaped
+// past it meets the Timeout's stop while Go has not reaped the git, and reports the timeout, as it
+// should. Main's form judged every run, and two things bring the reap past the Timeout: the git's
+// own run, which a loaded machine slows, and Run's own time, from the call to the git's start and
+// from the git's exit to its reap (watchReaped). The row tells them apart by facts of the run:
+// the git records when the kernel made its process (testexec.MarkStart) and the moment just before
+// it exits (testexec.MarkNow), and between the two is the git's own run, which nothing Run does
+// moves (ownBeforeReap). A run reaped inside the Timeout is judged as main judged it. A run reaped
+// past it holds Run's own time to main's Timeout: a Run that spent that long starting the git or
+// reaping it fails, as main's form failed it. Only where Run's own time stays inside the Timeout
+// did the git's own run carry the reap past it: that run is not judged, and the row runs the git
+// again until a run is judged, within a minute.
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline(t *testing.T) {
 	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
-		leader, fakeGit := filepath.Join(dir, "leader"), filepath.Join(dir, "git")
-		script := "#!/bin/sh\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\nexit 128\n"
-		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		leader, fakeGit, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
+		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
+		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		reaped := watchReaped(leader, within)
 		run := NewRunner(timeout, map[string]string{"git": fakeGit})
 
+		calledBoot := testexec.SinceBoot(t)
 		started := time.Now()
 		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
 		elapsed := time.Since(started)
@@ -139,11 +149,16 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 				runs, within, result.ExitCode, result.TimedOut, err, elapsed)
 		}
 		if !at.Before(started.Add(timeout)) {
+			own, began, ran := ownBeforeReap(t, calledBoot, started, at, mark, exited)
+			if own >= timeout {
+				t.Fatalf("run %d: Run spent %s of its own before the git's reap, at or past main's %s Timeout: %s from the call to the git's start, and %s from the git's exit to its reap, which the row saw %s after the call (Run = exit %d, TimedOut %t, error %v after %s)",
+					runs, own, timeout, began, own-began, at.Sub(started), result.ExitCode, result.TimedOut, err, elapsed)
+			}
 			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: the git was seen reaped %s after the run's start, not inside its %s Timeout", runs, at.Sub(started), timeout)
+				t.Logf("run %d is not judged: the git was seen reaped %s after the call, past its %s Timeout, with Run's own time %s inside it: the git's own run %s", runs, at.Sub(started), timeout, own, ran)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs over %s: in each, the git was seen reaped only after its %s Timeout could pass", runs, within, timeout)
+			t.Fatalf("no run judged in %d runs over %s: in each the git was seen reaped past its %s Timeout with Run's own time inside it; in the last, Run's own time was %s, and the git's own run %s", runs, within, timeout, own, ran)
 		}
 		if err != nil {
 			t.Fatalf("run %d: Run = %v, want the command's own exit", runs, err)
@@ -523,9 +538,9 @@ func heldChild(t *testing.T, escaped bool) string {
 const cutRunMargin = procgroup.StopGrace + procgroup.WaitDelay + time.Second
 
 // watchReaped watches, from before the command starts, for the command that writes its own pid to
-// leader as its first act, and answers once when it first saw that pid answer ESRCH, which it does
-// once Go has reaped the command (a zombie still answers), or the zero time where it never did
-// within bound. Each moment is read after the fact it stands for.
+// leader before anything of its own that can block, and answers once when it first saw that pid
+// answer ESRCH, which it does once Go has reaped the command (a zombie still answers), or the zero
+// time where it never did within bound. Each moment is read after the fact it stands for.
 func watchReaped(leader string, bound time.Duration) <-chan time.Time {
 	seen := make(chan time.Time, 1)
 	go func() {
@@ -551,6 +566,25 @@ func exitMark(t *testing.T, path string) time.Duration {
 		t.Fatalf("read the moment the command exited, which it records just before its exit: %v", err)
 	}
 	return at
+}
+
+// ownBeforeReap is the runner's own time before the reap, at (on the wall clock), of a command it
+// was called on at called (on the wall clock; calledBoot is the same moment as a time since boot),
+// and the stand-in's own run, for a row's log. The runner's time is from the call to the command's
+// start, the kernel's record of its process that the command wrote to mark as its first act
+// (testexec.MarkStart), and from the command's exit, the moment it wrote to exited just before it
+// (testexec.MarkNow), to the reap. Between the two is the command's own run, which a loaded machine
+// slows and which nothing the runner does moves. A command that wrote no exit mark was ended in its
+// own run by its budget's stop, and only the time to its start is the runner's.
+func ownBeforeReap(t *testing.T, calledBoot time.Duration, called, at time.Time, mark, exited string) (own, began time.Duration, ran string) {
+	t.Helper()
+	began = testexec.StartedAfter(t, mark, calledBoot)
+	own, ran = began, "never reached its exit mark: its budget's stop ended it in its own run"
+	if exit, unread := testexec.ReadNowMark(exited); unread == nil {
+		own += calledBoot + at.Sub(called) - exit
+		ran = fmt.Sprintf("took %s from its start to its exit", exit-calledBoot-began)
+	}
+	return own, began, ran
 }
 
 // pidIn is the pid a command's shell wrote to path, once the whole line is there, and 0 before.
