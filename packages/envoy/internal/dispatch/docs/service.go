@@ -3430,10 +3430,15 @@ func (s *Service) failRoom(room string, cause error) {
 	s.failRoomLocked(room, state, cause)
 }
 
+// failRoomLocked fails room: it drops the room's settlement and starts the room's eviction
+// (evictFailed), which closes the room's sockets. It logs the failure and its cause once,
+// whichever of its callers made it; some of them log a cause of their own first, as livewrite.go
+// and the settlement retry above do.
 func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	if state.failed != nil {
 		return
 	}
+	slog.Warn("dispatch: a document room failed", "room", room, "error", cause)
 	state.failed = cause
 	s.hooks.countRoomFailure(room)
 	state.failedDone = make(chan struct{})
@@ -3461,7 +3466,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 		if s.beforeFailedEviction != nil {
 			s.beforeFailedEviction(room)
 		}
-		_ = s.evictFailed(room, state)
+		if err := s.evictFailed(room, state); err != nil {
+			slog.Warn("dispatch: a failed document room's eviction failed", "room", room, "error", err)
+		}
 		close(done)
 	}()
 }
