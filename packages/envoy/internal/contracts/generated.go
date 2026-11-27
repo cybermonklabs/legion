@@ -769,6 +769,14 @@ func GithubWorkflowSubject(owner, repo, workflowFilename, action string) string 
 	return GithubRepositoryPrefix(owner, repo) + ".workflow." + SanitizeSubjectSegment(workflowFilename) + "." + action
 }
 
+// GithubDefaultBranchWorkflowSubject is the second subject of a run of a workflow on its
+// repository's default branch, of the repository's own head: its workflow file, its action and its
+// trigger event, each one segment, sanitized. Mirrored on the TS side as
+// `githubDefaultBranchWorkflowSubject`.
+func GithubDefaultBranchWorkflowSubject(owner, repo, workflowFilename, action, event string) string {
+	return GithubRepositoryPrefix(owner, repo) + ".default_branch.workflow." + SanitizeSubjectSegment(workflowFilename) + "." + SanitizeSubjectSegment(action) + "." + SanitizeSubjectSegment(event)
+}
+
 // GithubJobSubject names a finished GitHub Actions job on the default branch, of a run with no pull
 // request, by its run. Mirrored on the TS side as `githubJobSubject`.
 func GithubJobSubject(owner, repo, runID, action string) string {

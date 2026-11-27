@@ -1,5 +1,7 @@
 package webhook
 
+//ci:reads packages/envoy/scripts/fixtures/github/workflow-run-default-branch-schedule.json TestGitHubHandlerPublishesTheDefaultBranchWorkflowCopyBeforeTheWorkflowEnvelope posts it
+
 import (
 	"bytes"
 	"context"
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -1341,5 +1344,73 @@ func TestGitHubHandlerStoresAPushWhoseRefIsFiveThousandBytes(t *testing.T) {
 	if envelope.SourceEventID != "delivery-long-ref" || len(stored.Subject) > contracts.SubjectMaxBytes {
 		t.Fatalf("stored delivery %q on a %d-byte subject, want delivery-long-ref within %d bytes",
 			envelope.SourceEventID, len(stored.Subject), contracts.SubjectMaxBytes)
+	}
+}
+
+// A completed scheduled run of cybermonklabs/legion's e2e.yaml on main, its default branch, posted
+// as GitHub delivered it, is stored by a real NATS server as two messages: its default-branch copy
+// first, then its workflow envelope, with one dedupe key and one event id between them, each under
+// a message id of its own (bus.ForwardMsgID), and each payload giving the run's event. The order is
+// the stream's, so a session that follows both topics takes the copy first, and its client, whose
+// ledger keeps an event id and a dedupe key once, writes the run once, on the copy's topic. The
+// delivery logs a github published line for each of the two topics, and no github mention detected
+// line: the copy is no mention.
+func TestGitHubHandlerPublishesTheDefaultBranchWorkflowCopyBeforeTheWorkflowEnvelope(t *testing.T) {
+	logged := captureLog(t)
+	client := githubStream(t)
+	body, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fixtures", "github", "workflow-run-default-branch-schedule.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
+	postDelivery(t, handler, "workflow_run", "delivery-default-branch-run", body, nil)
+
+	if published, mentions := linesStarting(logged.String(), "github published "), linesStarting(logged.String(), "github mention detected "); len(published) != 2 || len(mentions) != 0 {
+		t.Errorf("logged %d github published and %d github mention detected lines, want two and none:\n%s", len(published), len(mentions), logged.String())
+	}
+	const repository = "notifications.github.cybermonklabs.legion.>"
+	var stored []bus.StoredMessage
+	var envelopes []contracts.Envelope
+	for seq := uint64(0); ; {
+		message, err := client.NextStoredMessage(testwait.Context(t), repository, seq)
+		if errors.Is(err, nats.ErrMsgNotFound) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the stored messages on %s: %v", repository, err)
+		}
+		var envelope contracts.Envelope
+		if err := json.Unmarshal(message.Data, &envelope); err != nil {
+			t.Fatalf("decode the message stored on %s: %v", message.Subject, err)
+		}
+		stored, envelopes = append(stored, message), append(envelopes, envelope)
+		seq = message.Sequence + 1
+	}
+	want := []string{
+		"notifications.github.cybermonklabs.legion.default_branch.workflow.e2e_yaml.completed.schedule",
+		"notifications.github.cybermonklabs.legion.workflow.e2e_yaml.completed",
+	}
+	if len(stored) != len(want) {
+		t.Fatalf("the stream holds %d messages of the run, want %d: the copy and the workflow envelope", len(stored), len(want))
+	}
+	for i, message := range stored {
+		envelope := envelopes[i]
+		if message.Subject != want[i] || envelope.Topic != want[i] {
+			t.Errorf("stored message %d is on %s with topic %s, want %s: the copy first, then the workflow envelope", i+1, message.Subject, envelope.Topic, want[i])
+		}
+		if envelope.DedupeKey != "github.delivery-default-branch-run" || envelope.EventID != envelopes[0].EventID {
+			t.Errorf("the message on %s carries dedupe key %q and event id %q, want github.delivery-default-branch-run and the copy's %q",
+				message.Subject, envelope.DedupeKey, envelope.EventID, envelopes[0].EventID)
+		}
+		if id := bus.ForwardMsgID(envelope.DedupeKey, message.Subject); message.MsgID != id {
+			t.Errorf("the message on %s is stored under message id %q, want %q", message.Subject, message.MsgID, id)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+			t.Fatalf("decode the payload on %s: %v", message.Subject, err)
+		}
+		if payload["event"] != "schedule" || payload["run_id"] != "46014564776" {
+			t.Errorf("the payload on %s gives event %q of run %q, want schedule of run 46014564776", message.Subject, payload["event"], payload["run_id"])
+		}
 	}
 }

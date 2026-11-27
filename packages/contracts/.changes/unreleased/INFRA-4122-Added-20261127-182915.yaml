@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `githubDefaultBranchWorkflowSubject(owner, repo, workflowFilename, action, event)` builds the
+  subject Envoy publishes a run of a repository's default branch on,
+  `notifications.github.<owner>.<repo>.default_branch.workflow.<file>.<action>.<event>`, each
+  segment written as `sanitizeSubjectSegment` writes it; its type
+  `GithubDefaultBranchWorkflowSubject` joins the `Subject` union, and
+  `isGithubDefaultBranchWorkflowSubject(subject)` says whether a subject is one. The Go side's
+  `contracts.GithubDefaultBranchWorkflowSubject` is generated from it.
+time: 2026-11-27T18:29:15Z
+custom:
+    Issue: INFRA-4122

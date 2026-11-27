@@ -72,6 +72,8 @@ granularity they need using wildcard patterns.
 | Mention (repo-level) | `notifications.github.{owner}.{repo}.mention` |
 | Mention (resource-level) | `notifications.github.{owner}.{repo}.{type}.{number}.mention` |
 | Actions job finished on the default branch, of a run with no PR (`githubJobSubject`) | `notifications.github.{owner}.{repo}.job.{run_id}.completed` |
+| Workflow run with no PR (`githubWorkflowSubject`) | `notifications.github.{owner}.{repo}.workflow.{file}.{action}` |
+| The same run on the default branch, of the repository's own head (`githubDefaultBranchWorkflowSubject`) | `notifications.github.{owner}.{repo}.default_branch.workflow.{file}.{action}.{event}` |
 
 ### Subscription granularity
 
