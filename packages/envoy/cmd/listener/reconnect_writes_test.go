@@ -133,11 +133,15 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		return `{"topic":"` + topic + `","message":"a publish through a NATS reconnect"}`
 	}
 	// lines counts the main client's lines of kind (bus.Client's connection callbacks, in Go's text
-	// format); the role lane's connection logs the same lines under name=envoy-role-lane.
+	// format). That client is named `envoy-listener <instance>` (connectListenerBus), which slog
+	// quotes for its space. The listener's other connections log the same lines under names of
+	// their own: the lease's `envoy-listener-lease <instance>` has a hyphen where the main client's
+	// name has the space, and the role lane's `envoy-role-lane` and the session consumers'
+	// `envoy-session-consumers` differ sooner.
 	lines := func(kind string) int {
-		return strings.Count(listener.Output.String(), "envoy nats "+kind+" name=envoy ")
+		return strings.Count(listener.Output.String(), "envoy nats "+kind+` name="envoy-listener `)
 	}
-	// stop stops the server and returns once the listener's client has seen it go.
+	// stop stops the server and returns once the listener's main client has seen it go.
 	stop := func(t *testing.T) {
 		t.Helper()
 		disconnects := lines("disconnected")

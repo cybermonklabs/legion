@@ -50,8 +50,11 @@ func TestAnUnsubscribeThroughANATSReconnectFailsByName(t *testing.T) {
 	listener.waitHealthy(t)
 	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1", topic))
 
+	// disconnected counts the main client's disconnect lines. That client is named
+	// `envoy-listener <instance>` (connectListenerBus), which slog quotes for its space; the
+	// lease's own connection, `envoy-listener-lease <instance>`, has a hyphen there, not the space.
 	disconnected := func() int {
-		return strings.Count(listener.Output.String(), "envoy nats disconnected name=envoy ")
+		return strings.Count(listener.Output.String(), `envoy nats disconnected name="envoy-listener `)
 	}
 	before := disconnected()
 	server.Stop(t)
