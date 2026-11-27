@@ -805,7 +805,7 @@
   - TestABlockAskingTheSameQuestionWithOtherOptionsUnderTheSameIDOpensItsOwnAsk  # 0.9 s
   - TestABrowserAppendOnAClosedIssueIsRefusedWithoutItsNotification  # 0.8 s
   - TestABrowserEditAfterAVersionsCaptureStaysOwed  # 0.7 s
-  - TestABrowsersUpdateTakesNoWritersSlot  # 0.0 s
+  - TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone  # 0.0 s
   - TestACaptureNeverReusesARenderingTheForkHasMovedPast  # 321.8 s
   - TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing  # 0.8 s
   - TestACloseOfAReplacedHistoryClosesOnlyTheRoomItChecked  # 1.0 s
