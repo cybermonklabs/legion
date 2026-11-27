@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // rowDeadline is the deadline every wait of these rows takes: the test binary's, less
@@ -81,6 +82,7 @@ func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockP
 // registration takes no gate. The gate is read held first, so a row that took it would wait here
 // for the registration's 5 seconds and fail.
 func TestTheNextBuildsFleetProcessWaitsForNoOwnerLock(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
@@ -117,20 +119,22 @@ func page(version, creatable int) url.Values {
 	return query
 }
 
-// dialPage opens a document socket to artifactID's room as alice's page presenting query.
-func dialPage(serverURL, artifactID string, query url.Values) (*gws.Conn, *http.Response, error) {
+// dialPage opens a document socket to artifactID's room as alice's page presenting query, through
+// documentDialer.
+func dialPage(t *testing.T, serverURL, artifactID string, query url.Values) (*gws.Conn, *http.Response, error) {
+	t.Helper()
 	address := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/doc/" + artifactID + "?" + query.Encode()
-	return gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
+	return documentDialer(t).Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
 }
 
 // mustDialPage is dialPage for a socket that must be accepted. It closes when the test ends.
 func mustDialPage(t *testing.T, serverURL, artifactID string, query url.Values) *gws.Conn {
 	t.Helper()
-	connection, response, err := dialPage(serverURL, artifactID, query)
+	connection, response, err := dialPage(t, serverURL, artifactID, query)
 	if err != nil {
 		t.Fatalf("connect a page presenting %v: response=%#v err=%v", query, response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	return connection
 }
 
@@ -266,7 +270,7 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 	if err != nil {
 		t.Fatalf("stage the future block as creatable: %v", err)
 	}
-	t.Cleanup(restoreCreatable)
+	testcleanup.Add(t, restoreCreatable)
 	markdown := "# First\n"
 	if future {
 		markdown += "\n:::future{#future-1}\nBody.\n:::\n"
@@ -282,10 +286,10 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restoreUncreatable)
+	testcleanup.Add(t, restoreUncreatable)
 	service := newTestServiceOn(t, database)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	return service, artifactID, server
 }
 
@@ -310,6 +314,8 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 // version older is the shipped build's page, and a live process of the build after this one reads
 // one version above current and creates up to current.
 func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	v, r := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	if r < 1 || r > v {
 		t.Fatalf("this build reads schema version %d and creates up to %d; the cases below need it to create at least 1, what a page from before the manifest creates, and at most what it reads, so a page one version older than the process they run against, which reads %d and creates up to %d (newAdmissionServer), represents everything that process creates",
@@ -371,6 +377,8 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 
 // A closed issue's document is read-only to every page, by the socket and by its token alike.
 func TestSchemaAdmissionOfAClosedIssueIsReadOnly(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close the document's issue: %v", err)
@@ -386,6 +394,8 @@ func TestSchemaAdmissionOfAClosedIssueIsReadOnly(t *testing.T) {
 // a socket's own token is answered with that socket's admission, as often as it asks; and a token
 // its page never presented is read-only.
 func TestATokenIsAnsweredFromTheAdmissionItsSocketCarries(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	version := strconv.Itoa(pmdoc.SchemaVersion())
 	if config, err := service.authorizeSchemaVersion(context.Background(), artifactID, version); err != nil || !config.ReadOnly {
@@ -413,6 +423,8 @@ func TestATokenIsAnsweredFromTheAdmissionItsSocketCarries(t *testing.T) {
 // the process that joins is of the build after this one: it reads one version above version and
 // creates up to version.
 func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	olderPage := page(version-1, creatable)
@@ -445,6 +457,8 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 // (newAdmissionServer), and the newer page is of the build after this one, beside a live process
 // of that build: both read one version above version and create up to version.
 func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
@@ -549,7 +563,7 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 	if err != nil {
 		t.Fatalf("connect a slow page presenting %v: response=%#v err=%v", query, response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	// ygo sends a joining peer the room's state only in answer to that peer's own sync step 1
 	// (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go, reearth/ygo#342), so a page that
 	// asks for nothing is owed nothing and the writes below would never fill its buffer. The
@@ -569,6 +583,8 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 // admission-revoked code after them - never a protocol error from a frame cut in half, and never
 // the bare 1006 of a connection closed without a frame.
 func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	// The process stages one element it reads and cannot create, so it reads version, creates up
 	// to creatable, less than it reads, and a page one version older is still writable
 	// (newAdmissionServer).
@@ -576,7 +592,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restore)
+	testcleanup.Add(t, restore)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, bigDocumentMarkdown())
@@ -587,7 +603,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	accepted := &recordingListener{Listener: server.Listener, kernelSendBuffer: true}
 	server.Listener = accepted
 	server.Start()
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	// A page one version older represents everything this fleet creates, so its socket is
 	// admitted writable; it reads nothing, so the sync message stays part way out.
@@ -676,6 +692,8 @@ const postRevokeMarker = "afterrevoke"
 // runner's TCP pacing and nothing of the revoke. TCP delivers the server's bytes in order and
 // then that FIN, so the stream checked here is exactly what the page reads.
 func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	// The document is cut to the send buffer this host's kernel grants, read back before anything
 	// is seeded: the server's one write of it has to return with every byte queued, since a write
 	// that blocked would have put nothing in the record below.
@@ -690,7 +708,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage the future block as not creatable: %v", err)
 	}
-	t.Cleanup(restore)
+	testcleanup.Add(t, restore)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	slowPage := schemaPage{version: version - 1, creatable: creatable, valid: true}
 	slowQuery := page(slowPage.version, slowPage.creatable)
@@ -704,7 +722,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	accepted := &recordingListener{Listener: server.Listener}
 	server.Listener = accepted
 	server.Start()
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	// The writer presents this build's numbers, which the fleet below still admits writable, so
 	// the re-check leaves its socket open. It stays connected to make the edit after the revoke.
@@ -861,6 +879,7 @@ func revokesCloseBeganBeforeTheEnd(writes []socketWrite, revokedAt, closedAt tim
 // writes: only an admission-revoked close frame attempted after the revoke and while the socket
 // was still open explains its end. The times are a trace's own instants, a millisecond apart.
 func TestOnlyARevokedCloseAttemptedBeforeTheEndIsTheRevokesEnd(t *testing.T) {
+	t.Parallel()
 	at := func(ms int) time.Time { return time.Unix(0, 0).Add(time.Duration(ms) * time.Millisecond) }
 	revokedClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, uint16(contracts.DocumentAdmissionRevokedCloseCode)))
 	otherClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, 1001))
@@ -945,7 +964,7 @@ func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, rev
 func admitSchemaSocket(t *testing.T, service *Service, room, token string, presented schemaPage, writable bool) (context.Context, *schemaAdmission) {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	t.Cleanup(func() { cancel(nil) })
+	testcleanup.Add(t, func() { cancel(nil) })
 	admission := &schemaAdmission{
 		key:      schemaAdmissionKey{room: room, token: token},
 		page:     presented,
@@ -966,6 +985,7 @@ func admitSchemaSocket(t *testing.T, service *Service, room, token string, prese
 // - whichever of the two asks first. Matching a token to a socket by its key, or by the order the
 // two arrive in, answers one of these orders wrongly, since neither says which socket sent it.
 func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
+	t.Parallel()
 	for _, order := range []struct {
 		name         string
 		revokedFirst bool
@@ -1028,6 +1048,7 @@ func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
 // since the fleet no longer admits the page - is admitted and answered read-only, while the
 // revoked socket's late token is answered read-only too.
 func TestARevokedPagesReconnectIsAdmittedBesideItsLateToken(t *testing.T) {
+	t.Parallel()
 	const room, token = "room", "2"
 	service := &Service{}
 	revokedCtx, revoked := admitSchemaSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, true)
@@ -1411,6 +1432,7 @@ func serverFrame(opcode byte, payload []byte) []byte {
 // in each is what that test requires to be past 64 KB, and the frames after it are how it knows
 // the server has finished writing that document.
 func TestTheServerStreamReaderTellsARevokedPagesEndsApart(t *testing.T) {
+	t.Parallel()
 	const head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
 	const documentPayload = 70 * 1024
 	document := serverFrame(opcodeBinary, bytes.Repeat([]byte("d"), documentPayload))

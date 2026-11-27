@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
+import { mouseDrag, viewAtRest } from "./board-drag";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
 import {
@@ -9,9 +10,9 @@ import {
   lastEventSeq,
   listRead,
   logReads,
-  PICK_HOLD_MS,
   pagePicker,
   readAnsweredSince,
+  savesAtRoute,
   savesEnded,
   storedValues,
   watchShown,
@@ -32,82 +33,6 @@ function patchOf(page: Page, key: string) {
       response.request().method() === "PATCH" &&
       new URL(response.url()).pathname === `/api/v1/issues/${key}`
   );
-}
-
-/**
- * Waits until no card is mid-flight. dnd-kit lands every reorder it did not animate itself - the
- * rollback and refetch after a rejected rank included - with a 200 ms transform transition, and a
- * card later in the DOM paints over the ones it crosses, so a press during that flight lifts
- * whichever card is passing the point rather than the one measured there.
- */
-async function boardAtRest(page: Page): Promise<void> {
-  await page.getByRole("region", { name: "Project board" }).evaluate(async (board) => {
-    for (;;) {
-      const running = board.getAnimations({ subtree: true });
-      if (running.length === 0) {
-        return;
-      }
-      await Promise.allSettled(running.map((animation) => animation.finished));
-    }
-  });
-}
-
-/**
- * Waits until a click reaches its target again. dnd-kit's pointer sensors stop every click at the
- * document (capture phase) from the lift until a 50 ms timer after the drop, and a busy main
- * thread runs that timer late, so a control clicked straight after a drop is silently ignored.
- * The probe is a node under `body` outside the React root: only that suppressor can stop it.
- */
-async function clicksDelivered(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const probe = document.body.appendChild(document.createElement("div"));
-    let delivered = false;
-    probe.addEventListener("click", () => {
-      delivered = true;
-    });
-    try {
-      for (;;) {
-        delivered = false;
-        probe.dispatchEvent(new MouseEvent("click"));
-        if (delivered) {
-          return;
-        }
-        const turn = Promise.withResolvers<void>();
-        setTimeout(turn.resolve, 0);
-        await turn.promise;
-      }
-    } finally {
-      probe.remove();
-    }
-  });
-}
-
-/** Drags with the mouse from the middle of `source` to `target` (a card or a column). */
-async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?: number) {
-  await boardAtRest(page);
-  // `hover` presses only once the card holds still and is the element under the pointer; a bare
-  // `mouse.move` to a measured box would press on whatever is painted there.
-  await source.hover();
-  // The hover above waited for the card to be visible and still, so its box is there.
-  const sourceBox = await source.boundingBox();
-  if (sourceBox === null) {
-    throw new Error("drag source is not visible");
-  }
-  await page.mouse.down();
-  await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
-  await target.scrollIntoViewIfNeeded();
-  // The scroll above waited for the target to be visible and still, so its box is there.
-  const targetBox = await target.boundingBox();
-  if (targetBox === null) {
-    throw new Error("drag target is not visible");
-  }
-  await page.mouse.move(
-    targetBox.x + targetBox.width / 2,
-    yOffset === undefined ? targetBox.y + targetBox.height / 2 : targetBox.y + yOffset,
-    { steps: 24 }
-  );
-  await page.mouse.up();
-  await clicksDelivered(page);
 }
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
@@ -702,27 +627,9 @@ async function columnArrived(column: Locator, within: number): Promise<number> {
   }, within);
 }
 
-/** Waits until the scroller has held one frame still. dnd-kit scrolls it with a step a frame
- *  while a carried card is in an edge zone and stops a frame or two after the finger leaves, and
- *  a card in flight takes the snapping off the scroller (`IssueBoard.tsx`), so there is no fling
- *  and no snap behind that scrolling: one unchanged frame is rest. */
-async function scrollerAtRest(scroller: Locator): Promise<void> {
-  await scroller.evaluate(async (element) => {
-    for (;;) {
-      const was = element.scrollLeft;
-      const frame = Promise.withResolvers<void>();
-      requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
-      await frame.promise;
-      if (element.scrollLeft === was) {
-        return;
-      }
-    }
-  });
-}
-
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
-  await scrollerAtRest(scroller);
+  await viewAtRest(scroller);
   // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
@@ -882,7 +789,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // worth anything.
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
-    await scrollerAtRest(scroller);
+    await viewAtRest(scroller);
     // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
@@ -1175,15 +1082,15 @@ test("picker keeps a pick on screen: the priority on the project board, over a l
   }
 });
 
-// The board split by priority: with every save of the issue held at least `PICK_HOLD_MS`, a pick
-// on a card and then two drags of it, each to another priority lane. The row sends no write of
-// its own straight to the server: the project's list read waits for the board's moves
-// (`boardMovesSettled`), so no answer of it lands while they are out.
+// The board split by priority: a pick on a card and then two drags of it, each to another priority
+// lane, both made while the pick's save is held (`holdIssuePatches`, until the row releases it).
+// The row sends no write of its own straight to the server: the project's list read waits for the
+// board's moves (`boardMovesSettled`), so no answer of it lands while they are out.
 // SLOW(>=2s): three saves each held three seconds, two drags across lanes, dnd-kit's landings and
 // a reload.
 test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const anchor = await createIssue({ project: "CORE", title: "P0 card" });
   const issue = await createIssue({ project: "CORE", title: "Picked card" });
@@ -1221,6 +1128,12 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect.poll(() => shown.values.at(-1)).toBe("0");
     const fromDrop = shown.values.length - 1;
     await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // The drop was made while the pick's save was out: the route still holds it, and it is the
+    // only save of the issue to have reached the route, the drag's waiting behind it in the line.
+    expect(
+      savesAtRoute(held),
+      "the saves of the issue at the route once the card is in the P0 lane, and whether each is held"
+    ).toEqual([{ body: { priority: 1 }, held: true }]);
     // A second drag, into the P2 lane, while the pick and the first drag are both out: the newer
     // drag is the card's lane from the moment it is made, although its save waits for the first
     // drag's answer before it goes out.
@@ -1231,20 +1144,19 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     await expect.poll(() => shown.values.at(-1)).toBe("2");
     const fromSecondDrop = shown.values.length - 1;
     await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // So was the second drop: no save of the issue had been answered when the card took the P2
+    // lane, so every answer the card shows through below lands after both drops.
+    expect(
+      savesAtRoute(held),
+      "the saves of the issue at the route once the card is in the P2 lane, and whether each is held"
+    ).toEqual([{ body: { priority: 1 }, held: true }]);
     held.release();
     await savesEnded(page, held);
 
-    // Every save of the issue - the pick's and each drag's - was held at least `PICK_HOLD_MS`.
-    const holds = held.sent.map((patch) => ({
-      body: patch.body,
-      heldMs: (patch.endedAt ?? Number.NaN) - patch.arrivedAt,
-    }));
-    console.log(`PICK-HOLDS [${testInfo.project.name}] ${JSON.stringify(holds)}`);
-    expect(holds.length, `the pick's save and each drag's: ${JSON.stringify(holds)}`).toBe(3);
     expect(
-      holds.every((hold) => hold.heldMs >= PICK_HOLD_MS),
-      `every save of the issue was held at least ${PICK_HOLD_MS} ms: ${JSON.stringify(holds)}`
-    ).toBe(true);
+      held.sent.map(({ body }) => body),
+      "the pick's save and each drag's, as they reached the route"
+    ).toHaveLength(3);
 
     expect(
       shown.values.slice(fromPick, fromDrop).some((value) => value.split("|").includes("3")),

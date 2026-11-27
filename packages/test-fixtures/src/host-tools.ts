@@ -1,6 +1,78 @@
-/** The path of the program on this host's `PATH`, or null when the host does not have it. */
-export function hostTool(name: string): string | null {
-  return Bun.which(name);
+import { beforeEach, describe as bunDescribe, test as bunTest } from "bun:test";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+
+/**
+ * The program `name` itself, never a mise shim of it, or null when this host has neither: the
+ * path a test hands a child, or links into a PATH of the test's own, under a `HOME` it replaces. A
+ * mise shim reads its configuration from the caller's home and from the directories above the
+ * child's working directory, and under a `HOME` of the test's own it refuses the real home's config
+ * there as untrusted ("Config files in <home>/.config/mise/config.toml are not trusted") or finds no
+ * version ("No version is set for shim", "jq is not a valid shim"), and exits 1 before the program
+ * runs. Read it once, at a test file's module scope, before any directory of the test's own goes
+ * first on PATH.
+ *
+ * It walks `PATH` in order and takes the first executable `name`. A link to the `mise` binary is a
+ * shim: it is replaced by what `mise which <name>` names, or, where that names nothing or names a
+ * file at or below `outside`, by the next `name` on PATH, the one the shim would fall back to. On a
+ * host without mise this is the first `name` on PATH, as `Bun.which` gives, and mise is never run.
+ * A directory at or below `outside`, a test's own stand-in directory, is skipped, so a stand-in
+ * never resolves to itself, whether it is first on PATH or what a shim names.
+ *
+ * A `name` that holds a path separator names one file, and PATH is not walked: it is that file
+ * where it is an executable file outside `outside`, what `mise which` names for its base name where
+ * it is a link to mise and that answer is outside `outside` too, and null otherwise, including a
+ * shim mise names nothing for, since no PATH entry follows a file the caller named.
+ *
+ * Every path it returns is absolute, as `Bun.which` returns, so it means the same file from any
+ * working directory: a relative `name` (`./tool`, `bin/tool`) and a relative PATH entry are
+ * resolved against this process's working directory once, before any check reads them.
+ */
+export function hostTool(name: string, outside?: string): string | null {
+  if (name.includes(sep)) {
+    const path = resolve(name);
+    return beyond(outside, path) && executableFile(path)
+      ? programAt(path, basename(path), outside)
+      : null;
+  }
+  for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
+    if (directory === "") continue;
+    const candidate = resolve(directory, name);
+    if (!beyond(outside, candidate) || !executableFile(candidate)) continue;
+    const program = programAt(candidate, name, outside);
+    if (program !== null) return program;
+  }
+  return null;
+}
+
+/** Whether `path`'s directory is neither `outside` nor below it; every path is, where no
+ *  `outside` is given. */
+function beyond(outside: string | undefined, path: string): boolean {
+  if (outside === undefined) return true;
+  const fromOutside = relative(outside, dirname(path));
+  return fromOutside === ".." || fromOutside.startsWith(`..${sep}`) || isAbsolute(fromOutside);
+}
+
+/** Whether `path` is a file this process may execute. */
+function executableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** `candidate` itself where it is no link to the `mise` binary; for a mise shim, what
+ *  `mise which <name>` names, or null where that names nothing or a file at or below `outside`. */
+function programAt(candidate: string, name: string, outside: string | undefined): string | null {
+  const target = realpathSync(candidate);
+  if (basename(target) !== "mise") return candidate;
+  const named = Bun.spawnSync([target, "which", name]);
+  const answer = named.stdout.toString().trim();
+  if (named.exitCode !== 0 || answer === "") return null;
+  const path = resolve(answer);
+  return existsSync(path) && beyond(outside, path) ? path : null;
 }
 
 /**
@@ -24,8 +96,112 @@ export function skipWithout(...names: string[]): boolean {
   return true;
 }
 
+/** What a host gate needs: programs and a reason under the CI rule, and programs never skipped for. */
+export interface HostGateNeeds {
+  /** Programs a missing one of which skips the gated tests outside CI and fails them in CI. */
+  readonly programs?: readonly string[];
+  /** A sentence of the caller's own that holds the same way, such as "This host has no libpq."; empty for none. */
+  readonly reason?: string;
+  /** Programs a missing one of which fails the gated tests on any host, never skipping them. */
+  readonly never?: readonly string[];
+}
+
+/** A gate's own `test` and `describe`, and whether anything it needs is missing. */
+export interface HostGate {
+  /** True when anything the gate needs is missing: a setup hook of the gated tests skips its work. */
+  readonly missing: boolean;
+  /** `test` under the gate. */
+  readonly test: (
+    name: string,
+    fn: Parameters<typeof bunTest>[1],
+    options?: Parameters<typeof bunTest>[2]
+  ) => void;
+  /** `describe` under the gate. */
+  readonly describe: (name: string, fn: () => void) => void;
+}
+
 /**
- * The file that called `skipWithout`: the first frame of the stack that is not this module's own.
+ * The gate for tests that need host programs, under the repository's rule for a test a machine
+ * cannot run (skipOutsideCI in packages/daemon/internal/launcher/rolenamespace_test.go). Where
+ * nothing it needs is missing, its `test` and `describe` are bun's. Where something is missing,
+ * outside CI each gated test is skipped, with one warning naming what is missing and the file, as
+ * `skipWithout` does; under GITHUB_ACTIONS each gated test fails, by its own name, with an error
+ * naming what is missing, since the job that runs it is set up to run it and a skip there would
+ * be a green job with the proof gone. A run is CI only where GITHUB_ACTIONS is exactly `true`, as
+ * GitHub's runner sets it; any other value, or none, is a run outside CI. A missing program of
+ * `never` fails each gated test on any host. `reason` takes a host condition of the caller's own
+ * that no program names (a sudo that asks for a password, a kernel without the feature, another
+ * platform) under the same rule. Call it once, at module scope, and declare the gated tests with
+ * its `test` and `describe`.
+ */
+export function hostGate(needs: HostGateNeeds): HostGate {
+  const never = (needs.never ?? []).filter((name) => hostTool(name) === null);
+  const programs = (needs.programs ?? []).filter((name) => hostTool(name) === null);
+  const reasons = [
+    never.length === 0
+      ? ""
+      : `This host does not have: ${never.join(", ")}, which these tests never skip for.`,
+    programs.length === 0 ? "" : `This host does not have: ${programs.join(", ")}.`,
+    needs.reason ?? "",
+  ].filter((reason) => reason !== "");
+  const file = callerFile(new Error().stack);
+  const where = file === undefined ? "in this file" : `in ${file}`;
+  const fails =
+    never.length > 0 || (reasons.length > 0 && process.env["GITHUB_ACTIONS"] === "true");
+  const skips = reasons.length > 0 && !fails;
+  const failure =
+    `This test cannot run on this host. ${reasons.join(" ")} ` +
+    (never.length > 0
+      ? "It fails rather than skips."
+      : "Under GITHUB_ACTIONS a test this machine cannot run fails, never skips.");
+  if (skips) {
+    console.warn(
+      `Skipped the tests ${where}. ${reasons.join(" ")} Install what is missing and run the tests again.`
+    );
+  }
+  return {
+    missing: reasons.length > 0,
+    test: (name, fn, options) => {
+      if (skips) bunTest.skip(name, fn, options);
+      else if (fails)
+        bunTest(
+          name,
+          () => {
+            throw new Error(failure);
+          },
+          options
+        );
+      else bunTest(name, fn, options);
+    },
+    describe: (name, fn) => {
+      if (skips) bunDescribe.skip(name, fn);
+      else if (fails)
+        bunDescribe(name, () => {
+          beforeEach(() => {
+            throw new Error(failure);
+          });
+          fn();
+        });
+      else bunDescribe(name, fn);
+    },
+  };
+}
+
+/**
+ * For a test that never skips: throws, naming every program of `names` the host lacks, so the test
+ * fails by name rather than at whichever line first runs the program. Call it in the test's body.
+ */
+export function requireHostTools(...names: string[]): void {
+  const missing = names.filter((name) => hostTool(name) === null);
+  if (missing.length === 0) return;
+  throw new Error(
+    `This test needs ${missing.join(", ")} on PATH, which this host does not have; it fails rather than skips.`
+  );
+}
+
+/**
+ * The file that called a gate of this module: the first frame of the stack that is not this
+ * module's own.
  * Without it the warning says only which programs are missing, and a reader of a run of hundreds of
  * files cannot tell whose tests did not run.
  *

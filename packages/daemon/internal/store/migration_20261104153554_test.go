@@ -24,6 +24,7 @@ const issueMemoryCarriedVersion = 20261104153554
 // them, which is after 20261104073148 (the memory columns do not exist before it) and before this
 // migration.
 func TestThePreviousReleasesHandOversAreCarriedBy20261104153554(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, issueMemoryCarriedVersion-1)

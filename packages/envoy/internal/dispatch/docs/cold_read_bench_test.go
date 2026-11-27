@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // BenchmarkColdDocumentRead measures stored-document reads at the same two sizes as the resident
@@ -111,7 +112,7 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 		b.Fatal(err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	b.Cleanup(func() {
+	testcleanup.Add(b, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown cold benchmark service: %v", err)
 		}

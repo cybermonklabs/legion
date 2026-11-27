@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
@@ -9,6 +9,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import {
@@ -21,6 +22,12 @@ import {
   useDraftUpload,
 } from "./ArtifactUpload";
 import { renderHarness, renderWith, UPLOADED } from "./artifact-upload-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // One press, one key: what a press sends when it is attempted again, stopped by the reader and
 // made again, or answered by Dispatch under its key, and which presses go out under a key of

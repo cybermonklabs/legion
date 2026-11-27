@@ -55,7 +55,7 @@
  * make - are `REASONS` in `draft-matrix.sign-in.coverage.ts`, which holds each census item this
  * file answers for to a test above or to one of them.
  */
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -73,6 +73,7 @@ import { realClock, settle, tick } from "./__tests__/fake-clock";
 import { answerRequests } from "./__tests__/network";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { otherTab, renderApp } from "./app-sign-out-fixture";
@@ -84,6 +85,13 @@ import { buildIssuePath } from "./features/refs/routes";
 // spend moments of that clock, which a load on the real one does not keep pace with. So the page
 // is loaded here, with the test file, and no row waits for its load.
 import "./features/agents/AgentsPage";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** When the page's first sign-in check answers, on the held clock. It is later than every wait
  *  before bob types moves that clock (a `findBy` moves it 50 ms a step), and within the 10 s a
@@ -123,13 +131,17 @@ async function typeIntoPlanner(user: UserEvent, words: string) {
   return { field, row };
 }
 
+/** The rail's line naming who is signed in, matched on its own text, which leaves the login out. */
+const SIGNED_IN_LINE = /^Signed in as$/;
+
 /** Every person the shell is drawn for, in order, as its rail names them (`Signed in as`). The
  *  page is read each time its DOM changes, so a shell drawn and replaced between two steps of a
- *  test is named too. `names` gives them space-separated. */
+ *  test is named too. `names` gives them space-separated. The rail draws the login as a link, so
+ *  the line's own text is `Signed in as` (SIGNED_IN_LINE) and its whole text names the person. */
 function shellsDrawn() {
   const logins: string[] = [];
   const read = () => {
-    for (const line of screen.queryAllByText(/^Signed in as /)) {
+    for (const line of screen.queryAllByText(SIGNED_IN_LINE)) {
       const login = (line.textContent ?? "").replace(/^Signed in as /, "");
       if (logins.at(-1) !== login) logins.push(login);
     }
@@ -213,19 +225,19 @@ async function olderCheckAnswersLast(queryClient: QueryClient): Promise<void> {
     // The page settles on whoever its check names. A page that waits on the older check draws
     // alice here, and under Dispatch's client asks again once that check lands and draws bob
     // after her, which the settle below lets run before the shell is read.
-    await screen.findByText(/^Signed in as /);
+    await screen.findByText(SIGNED_IN_LINE);
     await act(settle);
     expect(shells.names()).toBe("bob");
     expect(asked).toBe(2);
 
     const { field, row } = await typeIntoPlanner(user, typed);
-    const signedInLine = screen.getByText("Signed in as bob");
+    const signedInLine = screen.getByText(wholeText("Signed in as bob"));
     expect(olderLanded).toBe(false);
     await tick(OLDER_ANSWER_MS);
     expect(olderLanded).toBe(true);
     expect(within(row).getByRole("textbox", { name: "Comment" })).toBe(field);
     expect(field.value).toBe(typed);
-    expect(screen.getByText("Signed in as bob")).toBe(signedInLine);
+    expect(screen.getByText(wholeText("Signed in as bob"))).toBe(signedInLine);
     expect(shells.names()).toBe("bob");
   } finally {
     realClock();
@@ -262,9 +274,9 @@ test("the same person's sign-in from another tab keeps the shell and the words t
   const tab = new BroadcastChannel("dispatch-sign-in");
   const typed = "Alice's words for the planner";
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const { field, row } = await typeIntoPlanner(user, typed);
-    const signedInLine = screen.getByText("Signed in as alice");
+    const signedInLine = screen.getByText(wholeText("Signed in as alice"));
     expect(asked).toBe(1);
 
     act(() => tab.postMessage("alice"));
@@ -272,7 +284,7 @@ test("the same person's sign-in from another tab keeps the shell and the words t
     await waitFor(() => expect(app.queryClient.isFetching({ queryKey: ["whoami"] })).toBe(0));
     expect(within(row).getByRole("textbox", { name: "Comment" })).toBe(field);
     expect(field.value).toBe(typed);
-    expect(screen.getByText("Signed in as alice")).toBe(signedInLine);
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBe(signedInLine);
     expect(shells.names()).toBe("alice");
   } finally {
     shells.stop();
@@ -554,7 +566,7 @@ async function afterASignOut(where: SignedOutIn): Promise<Record<string, unknown
 
       login = next;
       await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
-      await screen.findByText(`Signed in as ${next}`);
+      await screen.findByText(wholeText(`Signed in as ${next}`));
       const back = await screen.findByRole("form", { name: "Comment composer" });
       const opened = within(back).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
       seen[next] = {

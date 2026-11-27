@@ -110,6 +110,13 @@ export function keptTab(): KeptTab {
   };
 }
 
+/** The names of the writes the page's own tab keeps across a reload, in its `sessionStorage`. */
+export function keptWrites(): string[] {
+  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
+    window.sessionStorage.key(index)
+  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
+}
+
 /** A v7 key minted at `at`, as `newSendKey` mints one: its first twelve hex digits are that
  *  millisecond, which `keyExpired` reads back. */
 export function keyMinted(at: number): string {

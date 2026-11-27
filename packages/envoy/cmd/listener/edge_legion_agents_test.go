@@ -19,6 +19,7 @@ import (
 // listing (legionagents.Store.list), so the outside session is listed once. The control in the same
 // row is the outside session's own entry, which every read answers.
 func TestAnEdgeShowsALegionAgentOnlyOfASessionOfItsIssuesProject(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const (
 		outside   = "ses_agents_outside"

@@ -77,7 +77,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing",
 			holder, got, target)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key: no attempt of this comment names that session",
@@ -139,7 +139,9 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 // settled with nothing sent, and one that failed, where the copy goes under the mention's own
 // key. Both leave that host one copy of the comment.
 func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing.T) {
+	t.Parallel()
 	t.Run("a send that landed settles the copy with nothing sent", func(t *testing.T) {
+		t.Parallel()
 		ctx := store.WithTransactionTracking(context.Background())
 		staged := unpinnedRoleMentionPastItsLease(ctx, t)
 
@@ -166,6 +168,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 	})
 
 	t.Run("a send that failed publishes the copy under that mention's key", func(t *testing.T) {
+		t.Parallel()
 		ctx := store.WithTransactionTracking(context.Background())
 		staged := unpinnedRoleMentionPastItsLease(ctx, t)
 
@@ -184,7 +187,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it published: its mention failed, so the outbox owes that session the comment",
 				staged.holder, row.settled, row.published)
 		}
-		waitFor(t, 10*time.Second, "the copy the mention's failure owes", func() bool {
+		waitFor(t, "the copy the mention's failure owes", func() bool {
 			return len(staged.claimant.received()) > 0
 		})
 		copies := staged.claimant.received()

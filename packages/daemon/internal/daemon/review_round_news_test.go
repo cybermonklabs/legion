@@ -43,6 +43,7 @@ func wantRoundLast(t *testing.T, what, task, own, round string) {
 // between the start's own text and those two sentences, at the start and at the send of the held
 // task again (renderNews), so the reviewer still reads its commit and its entry.
 func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	reviewed := r.member(reconcileChild, reconcileRoot, phase.Reviewing)
 	r.told(reconcileChild, record.AudienceHolder, 4)
@@ -79,6 +80,7 @@ func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing
 // after the news, and the delivery says the task names its round, so its send adds no second pair
 // (supervise's Delivery.message).
 func TestAReviewersNewsOnlyTaskNamesTheRoundTheRecordHolds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		reviewed string

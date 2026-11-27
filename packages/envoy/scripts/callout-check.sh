@@ -21,7 +21,9 @@
 #      has read that connection's close can be routed to the dead replica and is refused at the
 #      hub's authorization timeout (measured), so the check opens the first session only once the
 #      hub lists one envoy-broker-callout connection fewer (both replicas carry that name), inside
-#      the first session's 2 s.
+#      the first session's 2 s. It reads the hub's connection list every CALLOUT_CHECK_POLL_SECONDS
+#      (default 0.02; 0 reads again at once) until it lists one fewer or 2 s have passed since the
+#      kill.
 #
 # Each probe is cmd/natsprobe, run with only the variables it needs: as a session, it trades the
 # pod's exchange token for a broker access token under the session the stack registered the pod
@@ -263,13 +265,14 @@ else
 fi
 
 # callout_connections prints how many connections the hub's connection list names as the auth
-# service's (natscallout's connectionName), or nothing when the list cannot be read inside 2 s.
+# service's (natscallout's connectionName, with the broker's build after it, internal/bus's
+# connectionName, when the binary names one), or nothing when the list cannot be read inside 2 s.
 # nats-server marks a connection closed, and so routes nothing more to its subscriptions
 # (client.go, deliverMsg), before it takes the connection off that list (closeConnection,
 # removeClient).
 callout_connections() {
   curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
-    jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
+    jq -r '[.connections[]? | select((.name // "") | . == "envoy-broker-callout" or startswith("envoy-broker-callout "))] | length' 2>/dev/null || true
 }
 
 # 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first
@@ -301,7 +304,7 @@ else
         fi
       fi
       [ "$waited" -ge 2000 ] && break
-      sleep 0.02
+      [ "${CALLOUT_CHECK_POLL_SECONDS:-0.02}" = 0 ] || sleep "${CALLOUT_CHECK_POLL_SECONDS:-0.02}"
     done
     # A list that could not be read at all after the kill says nothing; one read that still named
     # both connections says the hub kept the killed broker, whatever the reads after it answered.

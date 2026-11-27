@@ -16,18 +16,40 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { defined } from "./dispatch-commands/context";
+import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
+import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
+import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
+import { parentStatusConflictLines } from "./dispatch-commands/failures";
+import {
+  hostedDispatch,
+  hostSessionDirectory,
+  unhostedDispatch,
+} from "./dispatch-commands/host-session";
+import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
-import type { ActiveDispatchConfig } from "./dispatch-config";
-import type { DispatchHost } from "./dispatch-cwd";
+import {
+  documentBytesRefusal,
+  documentFieldRefusal,
+  documentFileRead,
+  uploadedFile,
+} from "./dispatch-commands/stored-text";
+import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import {
   checkDispatchCall,
   dispatchServerUrls,
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
-import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
+import { unstorableBytes } from "./dispatch-file-text";
+import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
+import { LOGIN_COMMAND } from "./dispatch-login-command";
+import { runDispatchProxy, socketPathTaken } from "./dispatch-proxy";
+import { PROXY_COMMAND, parseProxyArgv, proxyExitLine, proxyHelp } from "./dispatch-proxy-command";
+import {
+  SESSION_VARIABLES,
+  sessionDirectory,
+  sessionStateRoot,
+} from "./dispatch-session-directory";
 import {
   appendResult,
   loadSessionMemory,
@@ -39,26 +61,32 @@ import {
   writePicture,
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
+import type { SectionOff } from "./envoy-config";
 import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
-import {
-  handedConfigFile,
-  sessionConfigFile,
-  sessionDispatchSettings,
-  sessionEnvoySettings,
-} from "./session-settings";
+import { sessionDispatchSettings, sessionEnvoySettings } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
 import { createEnvoyClient, EnvoyApiError } from "./transport";
 
 export interface DispatchCliIo {
   /** Where the text the model reads goes: results, refusals and notices alike. */
   stdout(text: string): void;
+  /** Where a body that is not Dispatch's JSON goes, byte for byte, and alone on standard output:
+   *  `dispatch api`'s answer to a 2xx that is stored content or a body that is not JSON
+   *  (`DispatchToolResult.body`), a Markdown download's text among them. Without it the bytes go
+   *  to `stdout` decoded as UTF-8, for a caller that reads text alone. */
+  stdoutBytes?(bytes: Uint8Array): void;
   /** Where a result's warnings go (`DispatchToolResult.warnings`), one line each, beside it. */
   stderr(text: string): void;
-  /** A file's text; `-` is all of stdin. */
+  /** A file's text; `-` is all of stdin. The `dispatch` entry reads it as bytes that must be
+   *  UTF-8 (`readFileText`), and throws `NotUtf8Error` for bytes that are not, which the command
+   *  refuses with Dispatch's own refusal of them. */
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** How long a dry run waits on Dispatch for its step's answer (`DRY_RUN_DEADLINE_MS` unless
+   *  set); a test sets a shorter one. */
+  readonly dryRunDeadlineMs?: number;
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
   readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
@@ -66,16 +94,6 @@ export interface DispatchCliIo {
    *  a test that answers the poll at once. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 }
-
-/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
- *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
-const OK = 0;
-const REFUSED = 1;
-const USAGE = 2;
-
-const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
 /** Claude Code reads back at most 30,000 characters of a command's output by default
  *  (`BASH_MAX_OUTPUT_LENGTH`), and Codex cuts the middle out of a long command output, so under
@@ -99,11 +117,13 @@ const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
 
 /** A line that refuses a call before it reaches Dispatch, each at the start of the line:
- *  `dispatch <command> was not called: …` (an argument problem, exit 2, wherever it is found;
- *  AskGate's block of a write wears the same line and exits 1), or a usage refusal
- *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
- *  nothing: a result's warning
- *  (`dispatch: warning: `), the note that the session's state was not written
+ *  `dispatch <command> was not called: …` (an argument problem of a spec command or of
+ *  `dispatch login`, exit 2, wherever it is found; AskGate's block of a write wears the same line
+ *  and exits 1), or a usage refusal (exit 2), which is `dispatch: ` and its reason: a spec
+ *  command's, and `dispatch proxy`'s refusal of its session or of Dispatch's configuration. The
+ *  proxy's own refusals (`dispatch proxy: …`) and `dispatch login`'s answers at the broker
+ *  (`dispatch login: …`) are of neither form. The CLI's other `dispatch: ` lines refuse nothing:
+ *  a result's warning (`dispatch: warning: `), the note that the session's state was not written
  *  (STATE_WRITE_FAILED), and the notice of a file that is not read, printed beside a result. */
 const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
 const NOT_A_REFUSAL = [
@@ -121,9 +141,9 @@ export interface CliRefusal {
 }
 
 /**
- * Each refusal the dispatch CLI printed in `text`, by its first line: what a reader of the CLI's
- * output (an agent's transcript, where a pipe can hide the exit) needs to tell a refused call from
- * one Dispatch answered. A line counts only at the start of a line of `text`.
+ * Each refusal of those two forms the dispatch CLI printed in `text`, by its first line: what a
+ * reader of the CLI's output (an agent's transcript, where a pipe can hide the exit) needs to tell
+ * a refused call from one Dispatch answered. A line counts only at the start of a line of `text`.
  */
 export function cliRefusals(text: string): CliRefusal[] {
   const found: CliRefusal[] = [];
@@ -144,6 +164,11 @@ export function cliRefusals(text: string): CliRefusal[] {
 /** How long a result waits on the listener for the session's subscriptions, after the write
  *  itself has landed: one attempt, no retry, since the read is best effort. */
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
+
+/** Why the session's Dispatch is off, in the words the call is refused with after `dispatch: `. */
+function dispatchOffText(off: SectionOff): string {
+  return off.error === null ? off.notice : `dispatch config: ${off.error}`;
+}
 
 /**
  * The output, at most `limit` characters (unbounded for a host that shows all of it). Within the
@@ -193,7 +218,7 @@ export function fitOutput(
 }
 
 /**
- * One `dispatch` command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
+ * One spec command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
  * the host session the environment names, and prints what the model reads. The host plugin sets
  * `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` (the envoy.json it chose) and the session's id in the
  * agent's shell (`CLAUDE_CODE_SESSION_ID` under Claude Code, where claude-envoy's QA override
@@ -240,34 +265,132 @@ function commandHost(
   return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
 }
 
+/**
+ * `dispatch proxy --socket <path> -- <command>`: its own arguments (`parseProxyArgv`), then the
+ * host, the session, its directory and Dispatch resolved as every spec command resolves them
+ * (`hostSessionDirectory`, `hostedDispatch`), under `DISPATCH_TOKEN_BROKER=1` with a DPoP
+ * credential, then the proxy itself (`runDispatchProxy`). It reads the settings a spec command
+ * reads, but it never runs on the token files: it starts only under `DISPATCH_TOKEN_BROKER=1`,
+ * which the files refuse beside them, so it trades its own token at the broker. Every line of its
+ * own goes to standard error, since standard output belongs to its command, and none goes to the
+ * session's records: it calls neither `refuse` nor `recordOutcome`. A run that cannot start ends
+ * with the exit line, as every run does; `--help`, `--dry-run` and a refusal of its own arguments
+ * print none. `--dry-run` checks what a run checks before it trades and prints the Dispatch
+ * server, the session and the socket on standard output.
+ */
+async function runProxyCommand(
+  rest: readonly string[],
+  env: Readonly<Record<string, string>>,
+  rawEnv: Readonly<Record<string, string | undefined>>,
+  io: DispatchCliIo,
+  hostName: () => string | undefined
+): Promise<number> {
+  const say = (text: string): void => io.stderr(`${text}\n`);
+  const parsed = parseProxyArgv(rest, io.cwd);
+  if (parsed.kind === "help") {
+    io.stdout(proxyHelp());
+    return OK;
+  }
+  if (parsed.kind === "refused") {
+    say(`dispatch proxy: ${parsed.problem} Run dispatch proxy --help.`);
+    return USAGE;
+  }
+  const { dryRun, socket, command } = parsed;
+  const cannotStart = (text: string): number => {
+    say(text);
+    if (!dryRun) say(proxyExitLine(0, 0, 0));
+    return USAGE;
+  };
+
+  const hosted = hostSessionDirectory(hostName(), env);
+  if ("problem" in hosted) return cannotStart(hosted.problem);
+  const { sessionId, file } = hosted;
+  // Read before the configuration, whose refusal without the setting would name a bearer the
+  // proxy never presents. A value other than 1 is refused there too, unquoted.
+  if ((env.DISPATCH_TOKEN_BROKER ?? "").trim() !== "1") {
+    return cannotStart(
+      "dispatch proxy: DISPATCH_TOKEN_BROKER is not 1, so this session holds no broker token for the proxy to serve with. The proxy runs only where the deployment trades this session's Dispatch credential at the secrets broker, and never with a bearer."
+    );
+  }
+  const resolved = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
+  for (const line of resolved.warnings) say(line);
+  if ("problem" in resolved) return cannotStart(resolved.problem);
+  const { config } = resolved;
+  if (config.credential.scheme !== "DPoP") {
+    return cannotStart(
+      "dispatch proxy: this session's Dispatch credential is not a DPoP-bound broker token, and the proxy serves only with one."
+    );
+  }
+
+  if (dryRun) {
+    const taken = socketPathTaken(socket);
+    if (taken !== undefined) return cannotStart(taken);
+    io.stdout(
+      [`Dispatch server: ${config.url}`, `Session: ${sessionId}`, `Socket: ${socket}`, ""].join(
+        "\n"
+      )
+    );
+    return OK;
+  }
+  // The command's environment is the one the proxy was given, an empty variable kept as it is.
+  const commandEnv: Record<string, string> = {};
+  for (const [name, value] of Object.entries(rawEnv)) {
+    if (value !== undefined) commandEnv[name] = value;
+  }
+  return await runDispatchProxy({
+    socket,
+    command,
+    env,
+    commandEnv,
+    cwd: io.cwd,
+    config,
+    sessionId,
+    stderr: (text) => io.stderr(text),
+  });
+}
+
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
   io: DispatchCliIo
 ): Promise<number> {
-  const print = (text: string): void => io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  // `dispatch api`'s lines from before its request (`note`), held until its answer says where they
+  // go: before text they are printed first, as every command prints them, and beside an answer
+  // written as bytes, which takes standard output alone, they go to standard error.
+  const held: string[] = [];
+  const print = (text: string): void => {
+    for (const line of held.splice(0)) io.stdout(`${line}\n`);
+    io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  };
+  /** Writes `bytes` to standard output as they came (`DispatchCliIo.stdoutBytes`), and the held
+   *  lines, then `notes`, the CLI's own, to standard error. */
+  const writeBody = (bytes: Uint8Array, notes: readonly string[] = []): void => {
+    for (const line of [...held.splice(0), ...notes]) io.stderr(`${line}\n`);
+    if (io.stdoutBytes === undefined) io.stdout(new TextDecoder().decode(bytes));
+    else io.stdoutBytes(bytes);
+  };
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
-  if (argv[0] === "login") {
+  // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
+  // `dispatch-config.ts` says when a call below runs on the files.
+  if (argv[0] === LOGIN_COMMAND) {
     return await loginCommand(argv.slice(1), env, {
       print,
       fetchImpl: io.fetchImpl,
       sleep: io.sleep,
     });
   }
-  // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
-  // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
-  // skill-scenario rig) sees a call whose output a pipe, `$(…)` or another program swallowed.
+  // A refusal before the call reaches Dispatch, but `dispatch proxy`'s, goes to the session's
+  // ledger too, whenever this call knows its session, so a reader of the ledger (pi-envoy's
+  // run-end check, the skill-scenario rig) sees a call whose output a pipe, `$(…)` or another
+  // program swallowed.
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
-  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
-  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
   // The host, worked out once and only when asked: the walk of the parent processes it may take
   // runs at most once per call, for the refusal ledger and the call alike.
   let resolvedHost: { readonly name: string | undefined } | undefined;
@@ -277,6 +400,25 @@ export async function runDispatchCli(
     };
     return resolvedHost.name;
   };
+  /** Appends `text`, a refusal made before the call reached Dispatch, to the ledger of the
+   *  session this call knows, if any: Codex's thread under Codex, else the first id of
+   *  `SESSION_VARIABLES` that is set. */
+  const ledgerRefusal = (text: string, tool?: string, askgate?: ResultInput["askgate"]): void => {
+    const sessionId =
+      ledgerHost() === "codex"
+        ? env.CODEX_THREAD_ID
+        : SESSION_VARIABLES.map((variable) => env[variable]).find((id) => id !== undefined);
+    if (sessionId === undefined) return;
+    try {
+      appendResult(sessionDirectory(env, sessionId), {
+        tool: tool ?? "dispatch",
+        error: text.trimEnd(),
+        ...(askgate === undefined ? {} : { askgate }),
+      });
+    } catch {
+      // The session's directory is unusable; the printed refusal stands on its own.
+    }
+  };
   const refuse = (
     text: string,
     code: number,
@@ -284,23 +426,16 @@ export async function runDispatchCli(
     askgate?: ResultInput["askgate"]
   ): number => {
     print(text);
-    const sessionId =
-      ledgerHost() === "codex"
-        ? env.CODEX_THREAD_ID
-        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
-    if (sessionId !== undefined) {
-      try {
-        appendResult(sessionDirectory(env, sessionId), {
-          tool: tool ?? "dispatch",
-          error: text.trimEnd(),
-          ...(askgate === undefined ? {} : { askgate }),
-        });
-      } catch {
-        // The session's directory is unusable; the printed refusal stands on its own.
-      }
-    }
+    ledgerRefusal(text, tool, askgate);
     return code;
   };
+
+  // No Dispatch tool spec defines `dispatch proxy`: its own parser takes `--` and the command
+  // after it, and it prints every line of its own on standard error, since its command's
+  // standard output is the command's alone.
+  if (argv[0] === PROXY_COMMAND) {
+    return await runProxyCommand(argv.slice(1), env, rawEnv, io, ledgerHost);
+  }
 
   let parsed: ParsedCommand;
   try {
@@ -325,87 +460,193 @@ export async function runDispatchCli(
           parsed.tool
         );
   }
-
-  const hostName = ledgerHost();
-  const host = HOSTS.find((name) => name === hostName);
-  if (host === undefined) {
-    return refuse(
-      hostName === undefined
-        ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
-      USAGE,
-      parsed.tool
+  // The local checks of a text alone run here, once the flags are read: before the arguments are
+  // checked and before anything that needs Dispatch (its configuration, the refusal of a Dispatch
+  // that is off, any client), so the dry run and the call refuse a text from this one step alike,
+  // with Dispatch on or off and whether or not DISPATCH_DRY_RUN_LOCAL is set, in Dispatch's own
+  // refusal and with its exit code, and send nothing. The command's table entry names the fields
+  // held to a Markdown document's rule (`DispatchCommand.documentFields`, `documentPathField`).
+  // Such a field's text, given inline or read from a file or stdin, is refused as the upload of a
+  // Markdown `--path` file of the same bytes refuses it, the size first, then the first U+0000 or
+  // byte that is not UTF-8 (`documentBytesRefusal`), whether or not the bytes read are UTF-8; a
+  // text the strict read decoded, and one given inline, can fail only for its size or a U+0000
+  // (`documentFieldRefusal`). A text given in argv holds no U+0000 on any kernel. Linux holds one
+  // argument to MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB
+  // pages, so with 4 KiB pages argv carries no text past 1 MiB, and with 64 KiB pages it can. An
+  // in-process caller's text can be either on any kernel. Inline text is checked here however it
+  // is given, so nothing here depends on the page size: such a text is refused as a text read from
+  // a file is, and the dry run and the call refuse it alike with Dispatch off too.
+  // Any other field read from a file or stdin is no document, so it is refused only for bytes that
+  // are not UTF-8 (an `unstorable` parse), at their first U+0000 or byte that is not UTF-8
+  // (`unstorableBytes`); a U+0000 in its UTF-8 goes to Dispatch, which answers it. Bytes that are
+  // not UTF-8 hold such a byte, so each finds a refusal. The file the command uploads is checked
+  // as its upload is (`documentFileRead`), which reads it once, only where Dispatch stores it as a
+  // Markdown document, and refuses it in the same order: past the bytes one document holds by its
+  // size, then by the bytes read, then at the first U+0000 or byte that is not UTF-8. The bytes it
+  // read are handed on (`uploadBytes`). The dry run's step checks those bytes and does not read the
+  // file again. The call checks and sends them too, save where AskGate reviews it (`gatedWrite`,
+  // with AskGate on for this session): AskGate's check reads the file a second time for its
+  // digest, and the call sends the bytes that read took in place of these, which
+  // `documentFileBytes` checks again before they are sent. A file it cannot read is no refusal of
+  // its text, so it is left to what comes after: the argument check, and then the dry run's step,
+  // where it runs, and the call, which read the file and throw the read's own error. It does not
+  // read a FIFO, a device or a socket, whose read can wait forever, so the dry run's step asks
+  // Dispatch nothing about it, and the call uploads it unchecked, for Dispatch's upload to judge.
+  const command = dispatchCommands[parsed.tool as DispatchToolName];
+  const documentFields = command?.documentFields ?? [];
+  if (parsed.kind === "unstorable") {
+    const { tool, field, bytes } = parsed;
+    const refusal = (documentFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
+      field,
+      bytes
     );
+    return refuse(messageFor(refusal), REFUSED, tool);
   }
-  const [sessionId, sessionVariable] =
-    host === "claude"
-      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : host === "codex"
-        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
-        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
-  if (sessionId === undefined) {
-    return refuse(
-      `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
-      USAGE,
-      parsed.tool
-    );
+  for (const field of documentFields) {
+    const text = parsed.args[field];
+    if (typeof text !== "string") continue;
+    const refusal = documentFieldRefusal(field, text);
+    if (refusal !== undefined) return refuse(messageFor(refusal), REFUSED, parsed.tool);
   }
-  let dir: string;
-  try {
-    dir = sessionDirectory(env, sessionId);
-  } catch (error) {
-    return refuse(messageFor(error), USAGE, parsed.tool);
+  const uploadPath =
+    command?.documentPathField === undefined ? undefined : parsed.args[command.documentPathField];
+  let pathBytes: Uint8Array<ArrayBuffer> | undefined;
+  if (typeof uploadPath === "string") {
+    const read = await documentFileRead(uploadedFile(io.cwd, uploadPath));
+    if (read.kind === "refused") return refuse(messageFor(read.refusal), REFUSED, parsed.tool);
+    if (read.kind === "passed") pathBytes = read.bytes;
   }
 
-  // The file the session's plugin handed its shell (each plugin sets DISPATCH_HOST and
-  // ENVOY_CONFIG_FILE together), else the host's own rule.
-  const file =
-    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
-    sessionConfigFile(host, env);
-  if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
-    // The call's own argument check, so the call refuses no arguments its dry run passed; what
-    // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone. A call whose dry run
-    // Dispatch answers goes on below, as the call itself does.
-    const settings =
-      file.path === null
-        ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
-    const { problems } = await checkDispatchCall({
+  // `dispatch api` also runs where no host is found (`commandHost`), as in a GitHub Actions job,
+  // like `dispatch login`: it reads Dispatch from the environment alone (`unhostedDispatch`),
+  // keeps no session's state, and runs the call as the contract's command does (`sendApiCall`,
+  // dispatch-commands/api.ts) once the check every call has passed. No session runs it, so there
+  // is no session ledger: only the refusals made before a credential is resolved, its usage
+  // errors and AskGate's refusal of a write (with AskGate's mark), go to the ledger of the session
+  // the environment names, if any, under its tool; a failure of the credential, the broker's
+  // refusal of a trade among them, or of the request records nothing.
+  if (parsed.tool === "dispatch_api" && ledgerHost() === undefined) {
+    const { problems, args } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
       cwd: io.cwd,
       env,
-      serverUrls: settings?.enabled === true ? dispatchServerUrls(settings) : [],
+      serverUrls: [],
     });
     if (problems.length > 0) {
       return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
     }
+    if (parsed.dryRun) {
+      print(JSON.stringify(parsed.args, null, 2));
+      return OK;
+    }
+    const resolved = await unhostedDispatch(env);
+    if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
+    const { url, credential } = resolved.config;
+    try {
+      const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
+      const result = await sendApiCall(args, env, client);
+      if (result.body === undefined) print(result.text);
+      else writeBody(result.body);
+      return OK;
+    } catch (error) {
+      if (error instanceof ToolInputError) return refuse(error.message, USAGE, parsed.tool);
+      if (error instanceof ApiGateRefusal) {
+        return refuse(error.message, REFUSED, parsed.tool, error.askgate);
+      }
+      print(messageFor(error));
+      return REFUSED;
+    }
+  }
+
+  const hosted = hostSessionDirectory(ledgerHost(), env);
+  if ("problem" in hosted) return refuse(hosted.problem, USAGE, parsed.tool);
+  const { host, sessionId, file, dir } = hosted;
+
+  if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
+    // The call's own argument check, so the call refuses no arguments its dry run passed. It runs
+    // with Dispatch off too, reading a dashboard-URL ref only against a server it knows. A call
+    // whose dry run Dispatch answers (`dryRunAsksDispatch`: a `dispatch result` record) goes on
+    // below, as the call itself does.
+    const resolved = await sessionDispatchSettings(file, env, {
+      cwd: io.cwd,
+      session: sessionId,
+      tokenFiles: true,
+    });
+    const settings = resolved.dispatch;
+    const checked = await checkDispatchCall({
+      tool: parsed.tool,
+      args: parsed.args,
+      cwd: io.cwd,
+      env,
+      serverUrls: settings.enabled ? dispatchServerUrls(settings) : [],
+    });
+    if (checked.problems.length > 0) {
+      return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
+    }
+    // A command whose call asks Dispatch a question before it writes asks it here too, from the
+    // session's Dispatch as the call resolves it, and is refused as the call is, with its output
+    // and exit code (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store
+    // its inline text, and whether Dispatch refuses a Markdown file's bytes, and refuses a text
+    // the call refuses for its spelling or for the text alone. With
+    // DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments alone
+    // (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's other
+    // answers) is read here. Every line besides a refusal goes to stderr, so the standard output
+    // of a dry run that passes is the JSON alone.
+    const step = command?.dryRun;
+    if (step !== undefined && env.DISPATCH_DRY_RUN_LOCAL !== "1") {
+      const deadlineMs = io.dryRunDeadlineMs ?? DRY_RUN_DEADLINE_MS;
+      const deadline = AbortSignal.timeout(deadlineMs);
+      const verdict = await step({
+        tool: parsed.tool,
+        args: checked.args,
+        cwd: io.cwd,
+        ...defined("uploadBytes", pathBytes),
+        deadline,
+        deadlineMs,
+        client: () => {
+          for (const warning of resolved.warnings) io.stderr(`dispatch: ${warning}\n`);
+          if (!settings.enabled) {
+            throw new Error(file.path === null ? file.error : dispatchOffText(settings));
+          }
+          // The client stops at the dry run's deadline and asks once within it
+          // (askOnceWithinDryRun).
+          return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
+            signal: deadline,
+            ...askOnceWithinDryRun(deadlineMs),
+          });
+        },
+      });
+      // The call prints what it throws as `messageFor` prints it, and exits 2 on a
+      // `ToolInputError` and 1 on any other error, and so does its dry run.
+      if (verdict.kind === "refused") {
+        return refuse(
+          messageFor(verdict.refusal),
+          verdict.refusal instanceof ToolInputError ? USAGE : REFUSED,
+          parsed.tool
+        );
+      }
+      if (verdict.warning !== undefined) io.stderr(`${verdict.warning}\n`);
+    }
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
   }
-  if (file.path === null) {
-    return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
-  }
-  // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
-    cwd: io.cwd,
-    session: sessionId,
-  });
+  // The session this call acts as is the session a broker trade writes under, and the command
+  // takes the token files (hostedDispatch).
+  const resolved = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
+  // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
+  // standard error, so its standard output is the object alone. `dispatch api`'s are held until
+  // its answer is known (`held`).
+  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const note = (line: string): void => {
+    if (wholeJson) io.stderr(`${line}\n`);
+    else if (parsed.tool === "dispatch_api") held.push(line);
+    else print(line);
+  };
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
-  for (const warning of warnings) print(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
-    return refuse(
-      resolution.error === null
-        ? `dispatch: ${resolution.notice}`
-        : `dispatch: dispatch config: ${resolution.error}`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  const config: ActiveDispatchConfig = resolution;
+  for (const line of resolved.warnings) note(line);
+  if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
+  const { config } = resolved;
 
   // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
   // pull-request body line the record would print, which Dispatch writes and records nothing
@@ -546,7 +787,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,
@@ -578,6 +819,8 @@ export async function runDispatchCli(
   }
   const { tool, args } = parsed;
   let text: string;
+  // The body of an answer written as bytes (`DispatchToolResult.body`), which no line joins.
+  let body: Uint8Array | undefined;
   const pictures: string[] = [];
   const notes: string[] = [];
   const problems: string[] = [];
@@ -588,7 +831,9 @@ export async function runDispatchCli(
       tool,
       args,
       cwd: io.cwd,
-      ...(uploadBytes === undefined ? {} : { uploadBytes }),
+      // AskGate's bytes, where its check read the file, are the bytes it digested, so they are sent
+      // in place of those read once the flags were read.
+      ...defined("uploadBytes", uploadBytes ?? pathBytes),
       host,
       sessionId,
       sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
@@ -598,6 +843,7 @@ export async function runDispatchCli(
       subscriptions,
     });
     text = result.text;
+    body = result.body;
     for (const warning of result.warnings ?? []) {
       io.stderr(`${warning}\n`);
     }
@@ -620,22 +866,35 @@ export async function runDispatchCli(
     // is never told an issue was filed. Its text is the same either way.
     code = result.refused === true ? REFUSED : OK;
   } catch (error) {
-    text = messageFor(error);
+    // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
+    // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
+    // each open issue.
+    text = (parentStatusConflictLines(error, tool, args) ?? [messageFor(error)]).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
-    // was only a step of its command (a picture, a closing reason) into a failure of its own.
+    // was only a step of its command (a picture, a closing reason) into a failure of its own. A
+    // call that writes nothing whose answer Dispatch kept no copy of (`DispatchAnswerNotKeptError`)
+    // made nothing, so it is no landing: it exits 1 below, its line saying to run it again.
     if (error instanceof DispatchWriteLandedError) {
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;
     } else {
-      entry = { tool, error: text };
+      // `dispatch api`'s refusal of a write in a session AskGate gates carries AskGate's mark, as
+      // the CLI's own refusal of a gated write does, so pi-envoy counts it.
+      entry = {
+        tool,
+        error: text,
+        ...(error instanceof ApiGateRefusal ? { askgate: error.askgate } : {}),
+      };
       // An argument the executor refuses (a ref naming another owner, a picture that is not
       // there, an id that matches no ask) is the same usage error as one the parse refuses, and
       // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
       // so the two stay one answer. A refusal the executor makes during the call, such as an id
       // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
-      // Everything else here is Dispatch's own refusal or failure.
+      // Everything else here exits 1. That is Dispatch's own refusal or failure, a Dispatch the
+      // command cannot reach, a trade at the secrets broker that fails, and a call that writes
+      // nothing whose answer Dispatch kept no copy of.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
@@ -645,6 +904,12 @@ export async function runDispatchCli(
     problems.push(messageFor(error));
   }
   const kept = [...notes, ...problems.map(stateWriteFailed)];
+  // An answer written as bytes takes standard output alone, as it came: nothing cuts it or moves
+  // it to a file, and the CLI's own lines go to standard error. Its ledger line holds its details.
+  if (body !== undefined) {
+    writeBody(body, kept);
+    return code;
+  }
   const writeFull = (full: string): string => {
     try {
       return writeLongOutput(dir, full);
@@ -652,12 +917,17 @@ export async function runDispatchCli(
       return `not written, ${messageFor(error)}`;
     }
   };
+  // A cut JSON object is no JSON object, so a call whose output is one is printed whole on every
+  // host, and its kept lines go to standard error.
+  if (wholeJson) for (const line of kept) note(line);
   print(
     fitOutput(
       text,
       pictures,
-      kept,
-      host === "claude" || host === "codex" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      wholeJson ? [] : kept,
+      (host === "claude" || host === "codex") && !wholeJson
+        ? CLAUDE_OUTPUT_MAX
+        : Number.POSITIVE_INFINITY,
       writeFull
     )
   );

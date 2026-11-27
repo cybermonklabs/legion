@@ -66,6 +66,8 @@ var loadStepRates = []int{4, 40}
 // minute after the step's last write, which fails the test. Per burst it reports the drain time:
 // from the first write to the last arrival.
 func TestTheOutboxLoadSteps(t *testing.T) {
+	// Not parallel: it measures the outbox's publish rates and latencies, which other tests' processes
+	// on the same cores would move.
 	if os.Getenv(loadStepsEnv) != "1" {
 		t.Skipf("set %s=1 to run the outbox load steps; they take minutes and CI does not run them", loadStepsEnv)
 	}

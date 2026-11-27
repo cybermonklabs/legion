@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    An Envoy listener call answered 408 is sent once more, as one answered with a 5xx is, and a
+    send an attempt of which was answered 408 may or may not have arrived, as after a 5xx: the
+    listener writes no 408, so one is a hop's timeout, which a hop can send after it forwarded the
+    send. A 429 is still not sent again. A Dispatch write a gateway answered 408 may have landed
+    too, and ends saying so with its key, not that a retry may succeed.
+time: 2026-11-23T18:30:38.670481592Z
+custom:
+    Issue: pr5230

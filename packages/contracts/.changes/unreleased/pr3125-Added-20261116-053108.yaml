@@ -1,0 +1,5 @@
+kind: Added
+body: '`DISPATCH_READING_FORMS` names the seven ways a stored text names a node (a bare issue key, an address, a dashboard URL, a question id, a short id, a party and a link whose words its author wrote), and a row of `DISPATCH_READING_SURFACES` says which of them its surface cannot carry and why (`cannotCarry`): a rendered surface whose text is no record, or is a record that belongs to no document, carries no question id.'
+time: 2026-11-16T05:31:08.424635807Z
+custom:
+    Issue: pr3125

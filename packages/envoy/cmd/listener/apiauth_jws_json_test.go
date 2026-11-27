@@ -20,6 +20,7 @@ import (
 )
 
 func TestRedTeamUnlistedGoogleIdentityAsJWSJSON(t *testing.T) {
+	t.Parallel()
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 	cluster := newClusterIssuer(t)
 	genuine := google.token(t, listenerGoogleOtherEmail, true, listenerGoogleAudience) // unlisted account

@@ -23,6 +23,7 @@ const designGatesPublishVersion = 20261110235320
 // holds this kind's rows alone, so another issue's publish and another kind's second row of the
 // same issue are both untouched by it.
 func TestTheOutboxTakesTheDesignGatesPublishKindWith20261110235320(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designGatesPublishVersion-1)

@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  Legion's metrics read the order of each issue's steps from its plan. Before the first phase the
+  sampler observed for an issue, its timeline comes from the event log (a role's first event, a
+  handoff, a Dispatch status), and each such mark now takes its phase from the plan that applied
+  at that mark: the newest plan made at or before it, or the first run's plan for a mark before
+  every plan, or the default steps for an issue with no plan. So an issue whose task runs its steps
+  in another order gets the phases of that order, and its review rounds and send-backs are read by
+  them.
+time: 2026-11-23T09:29:42Z
+custom:
+    Issue: pr5161

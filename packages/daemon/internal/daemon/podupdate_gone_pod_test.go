@@ -47,6 +47,7 @@ import (
 // of its own, with the issue whose round ended waiting behind it for its own next round, over the
 // pod in its place.
 func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
+	t.Parallel()
 	const (
 		waiting    = "LEGION-485"
 		waitingPod = "2e7c9a41-6b0d-4f58-a3c2-91d4e8b07f63"
@@ -56,12 +57,12 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 		// The member the end never reached: it answered the round before the round's own
 		// replacement, and its relaunch came up in the pod that replaced the round's own, which
 		// it records, leaving the round as that pod left it (supervise's leftPodRoundAt).
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
 		// The members the end did reach: in no round, and in that same pod.
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod},
-		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod},
 	)
 	// The pod in the place of the round's own was built before the change the round was opened
@@ -132,6 +133,7 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 // read the round again would end it again at each of the five sweeps, post five more ends to the
 // tester, and keep the slot for a round it has ended.
 func TestARoundOverAGonePodIsDecidedOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		waiting    = "LEGION-485"
 		waitingPod = "2e7c9a41-6b0d-4f58-a3c2-91d4e8b07f63"
@@ -209,6 +211,7 @@ func TestARoundOverAGonePodIsDecidedOnce(t *testing.T) {
 // Over five sweeps the issue is told once: a sweep that read the round again would write the
 // message again at each sweep.
 func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -253,7 +256,8 @@ func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
 // The tester comes back in the pod in the gone pod's place, still in the round, and the new
 // daemon's first sweep ends the round on it.
 func TestARoundOverAGonePodIsEndedAgainAfterARestart(t *testing.T) {
-	const overAPodInItsPlace = "supervise: the pod this issue's update round was opened over is gone; the round is over"
+	t.Parallel()
+	const overAPodInItsPlace = podWentOverLine
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig, ends := newPodUpdateRigCountingEnds(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -324,7 +328,7 @@ func (r *podUpdateRig) driftingIssue(key, pod string) claim.Token {
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, supervise.Claim{
 		Token: token, Project: podUpdateProject, Tree: key, Issue: key, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+		Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 		Session: "ses_" + key, SessionFile: "/sessions/" + key + ".jsonl",
 		Locator: podUpdateLocator(token, key, pod),
 	})
@@ -389,12 +393,14 @@ func newPodUpdateRigCountingEnds(t *testing.T, roles ...podUpdateRole) (*podUpda
 
 // podUpdateEndLines is the line the sweep logs as it ends a round, for each way a round ends: its
 // own replacement, its pod gone with another pod recorded in its place, its pod read gone with
-// every member answered, and its pod gone with a member that had not answered.
+// every member answered, its pod gone with a member that had not answered and ran a worker in it,
+// and its pod gone where each member that had not answered ran no worker in it.
 var podUpdateEndLines = []string{
 	podUpdateReplacedLine,
-	"supervise: the pod this issue's update round was opened over is gone; the round is over",
-	"supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over",
-	"supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
+	podWentOverLine,
+	podNotThereOverLine,
+	podWentLostLine,
+	podWentNoWorkerLine,
 }
 
 // endsLogged is how many times the sweep logged the end of round on the rig's issue, by any of

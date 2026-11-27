@@ -160,8 +160,7 @@ registry_url=$(ci_tools_registry_url)
 # So the address's own path comes off here rather than staying in front of the location.
 # ghcr.io serves the API at its root, where the two readings are the same string; they differ
 # wherever CI_TOOLS_GHCR_BASE puts the package behind a path, which is the case
-# `an upload location written as a path, with the package behind a path of its own` of
-# .github/scripts/mirror-ci-tools.test.sh.
+# `.github/scripts/mirror-ci-tools.test.sh#an upload location written as a path, with the package behind a path of its own`.
 origin_scheme=${registry_url%%://*}
 origin_host=${registry_url#*://}
 origin_host=${origin_host%%/*}

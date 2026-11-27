@@ -1,0 +1,19 @@
+{
+  "key": "ACME-1549",
+  "project": "ACME",
+  "number": 1549,
+  "status": "done",
+  "priority": null,
+  "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzh",
+  "labels": [],
+  "parent": "ACME-1547",
+  "blocked_by": [],
+  "claim": null,
+  "resolved_repo": "acme/widgets",
+  "last_seq": 4,
+  "advice": {
+    "issue_status": "done",
+    "session_writes_since_human": 0,
+    "your_open_asks": []
+  }
+}

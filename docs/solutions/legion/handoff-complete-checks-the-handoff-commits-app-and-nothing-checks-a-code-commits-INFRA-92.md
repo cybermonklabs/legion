@@ -25,9 +25,7 @@ is why a branch can carry one anyway with every gate green, and what a role does
   handoff carried by a commit another App authored, so a role's handoffs are checked on every
   round. Nothing checks the App of a **code** commit. A round that pushes code and a handoff
   therefore has one commit guarded and one not, and the unguarded one is the one that reaches
-  `main`. The only thing that would catch it is the pre-push identity read in
-  `skill://legion-worker/references/default-branch-check.md`, which is a step a role performs,
-  not a gate.
+  `main`.
 - **Treat the working-copy commit you find at a turn's start as another role's until you have
   read it.** `jj log -r @ -T 'author.email()'`. When it is empty and not yours, `jj new @-`;
   never `jj split` it, which keeps its author and takes you as committer — the pair that put the

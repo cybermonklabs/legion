@@ -10,6 +10,8 @@ import (
 // flags, and setting the previous slog default back undoes neither, so every log.Print after
 // the test would write into its finished buffer instead of stderr (internal/logtest).
 func TestAssetTestsGiveTheLogPackageItsOutputBack(t *testing.T) {
+	// Not parallel: it reads the log package's process-wide output and flags, and runs two tests
+	// that replace the process's default logger (logtest.SetDefault).
 	for _, test := range []struct {
 		name string
 		run  func(*testing.T)

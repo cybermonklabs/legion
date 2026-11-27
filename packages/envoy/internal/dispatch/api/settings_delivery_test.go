@@ -14,6 +14,7 @@ import (
 )
 
 func TestGetDeliverySettingsWithoutAnyIsNull(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/delivery", nil, "alice")
 	if response.Code != http.StatusOK {
@@ -25,6 +26,7 @@ func TestGetDeliverySettingsWithoutAnyIsNull(t *testing.T) {
 }
 
 func TestPutDeliverySettingsRejectsIncompleteInput(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/delivery", map[string]any{
 		"deploy_repo": "acme/widgets",
@@ -38,6 +40,7 @@ func TestPutDeliverySettingsRejectsIncompleteInput(t *testing.T) {
 // (no event is appended: delivery_settings has no project/issue/artifact to own one -- see the
 // handler's own doc comment).
 func TestPutDeliverySettingsWritesSettings(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"acme/widgets": "read"}}
 	handler, database := newArchitectureSourceServer(t, fake)
 
@@ -71,6 +74,7 @@ func TestPutDeliverySettingsWritesSettings(t *testing.T) {
 // TestPutDeliverySettingsTrimsTheProductionJobNamesAndApplyStep checks that each production-job
 // name and the optional apply step are trimmed, and that the GET preserves the names' order.
 func TestPutDeliverySettingsTrimsTheProductionJobNamesAndApplyStep(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"acme/widgets": "read"}}
 	handler, _ := newArchitectureSourceServer(t, fake)
 	response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/delivery", map[string]any{
@@ -100,6 +104,7 @@ func TestPutDeliverySettingsTrimsTheProductionJobNamesAndApplyStep(t *testing.T)
 // TestPutDeliverySettingsRefusesABadProductionJobList proves malformed production name lists do
 // not write settings.
 func TestPutDeliverySettingsRefusesABadProductionJobList(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		names any
 		want  string
@@ -140,6 +145,7 @@ func TestPutDeliverySettingsRefusesABadProductionJobList(t *testing.T) {
 }
 
 func TestPutDeliverySettingsRefusesWithoutGitHubAccess(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{}}
 	handler, _ := newArchitectureSourceServer(t, fake)
 
@@ -158,6 +164,7 @@ func TestPutDeliverySettingsRefusesWithoutGitHubAccess(t *testing.T) {
 // TestPutDeliverySettingsRoundTripsThePipelineJobNames proves the three optional job names the
 // Pipeline page follows are stored as sent and read back through the GET.
 func TestPutDeliverySettingsRoundTripsThePipelineJobNames(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"acme/widgets": "read"}}
 	handler, _ := newArchitectureSourceServer(t, fake)
 
@@ -195,6 +202,7 @@ func TestPutDeliverySettingsRoundTripsThePipelineJobNames(t *testing.T) {
 // TestPutDeliverySettingsWithoutThePipelineJobNamesStoresNull proves the three job names are
 // optional: a PUT that leaves them out, or sends one empty, stores null, and the GET answers null.
 func TestPutDeliverySettingsWithoutThePipelineJobNamesStoresNull(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"acme/widgets": "read"}}
 	handler, database := newArchitectureSourceServer(t, fake)
 
@@ -233,6 +241,7 @@ func TestPutDeliverySettingsWithoutThePipelineJobNamesStoresNull(t *testing.T) {
 }
 
 func TestAgentPutsDeliverySettingsWithItsActor(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"acme/widgets": "read"}}
 	handler, database := newArchitectureSourceServer(t, fake)
 
@@ -263,6 +272,7 @@ func TestAgentPutsDeliverySettingsWithItsActor(t *testing.T) {
 // that name. An excluded repository that only begins like the old name is stored as given, and
 // the excluded repositories keep their order.
 func TestPutDeliverySettingsStoresARenamedRepositoryUnderItsNewName(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"cybermonklabs/legion": "read"}}
 	handler, database := newRenamingArchitectureSourceServer(t, fake,
 		refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}))

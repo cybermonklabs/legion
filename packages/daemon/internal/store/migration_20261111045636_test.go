@@ -41,6 +41,7 @@ const experimentAssignmentsVersion = 20261111045636
 // The second reading is what says the normalisation costs no reader of those three fields
 // anything; the first is what the unnormalised copy fails.
 func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, experimentAssignmentsVersion-1)

@@ -66,8 +66,8 @@ test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment sh
     });
 
     // Inbox ask cards: the asker's copy-handles button stays, and the live link sits beside it,
-    // never inside it. From 1280 px the card is the reading pane's (INFRA-575), so each
-    // question is read on the card that width draws for it.
+    // never inside it. The card is the pane's, beside the list from 1280 px (INFRA-575) and in
+    // place of it below (INFRA-5200), so each question is read on the card its row opens.
     await page.goto("/");
     for (const [askId, id, name, running] of [
       [seeded.runAsk, runId, runCurrent, true],
@@ -199,7 +199,8 @@ test("on a phone the ask card's asker reads its whole name beside Waiting on you
   try {
     const page = await alice.newPage();
     await page.goto("/");
-    const card = page.getByTestId(`ask-${seeded.runAsk}`);
+    // The card of the row the reader opens: below 1280 px it is read in place of the list.
+    const card = await askCard(page, seeded.runAsk);
     await expect(card.getByTestId(`turn-${seeded.runAsk}`)).toHaveText("Waiting on you");
     await expect(
       card.getByRole("link", { exact: true, name: `Open live conversation with ${runCurrent}` })

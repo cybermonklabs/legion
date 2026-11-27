@@ -95,7 +95,7 @@ func appliedRead(t *testing.T, pool *store.Pool, api, base string, mergeable boo
 	pull.Base.Ref, pull.Head.Ref, pull.Head.SHA = base, "legion/CAPTURE-1", "code"
 	github := githubrest.Client{Token: "outbox-token", API: githubrest.RepositoryAPI(api, ghrepo.MustParse("acme/widgets"))}
 	pr := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 86, Base: base, HeadSHA: "code"}
-	if err := w.applyMergeability(context.Background(), github, pr, pull, time.Now().UTC(), eventID); err != nil {
+	if _, err := w.applyMergeability(context.Background(), github, pr, pull, time.Now().UTC(), eventID); err != nil {
 		t.Fatalf("apply the read: %v", err)
 	}
 	applied := facts.facts()
@@ -120,6 +120,7 @@ func appliedRead(t *testing.T, pool *store.Pool, api, base string, mergeable boo
 // why. A base whose name holds `#` and `/` reads its own rules, each segment escaped. A read that
 // finds the head mergeable reads no rules at all.
 func TestAConflictSecondReadCarriesTheBaseRules(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	const (
 		rules    = "/repos/acme/widgets/rules/branches/main"
@@ -270,18 +271,26 @@ func secondReadRow(t *testing.T, pool *store.Pool) (due time.Time, attempts int,
 // the base main requiring lint (green nowhere) and pr-checks-result; the runtime that reads it, its
 // waits cut to readRigWait through its own seam (mergeStateRetry) and its log kept; and the runner
 // of its second read (secondReadRunner). The second read's tests and the merge-state reads' share
-// it, so a read of either kind meets the same GitHub.
+// it, so a read of either kind meets the same GitHub. A batch's GraphQL query that asks for pull
+// request 86 by number (readBase) is a read of it too: it takes the next answer and counts as a
+// read, answered as GraphQL answers the same pull request (graphQLAnswerOf). refuseREST, once set,
+// has the next GET /pulls/86 answered refusedPull, whatever its count, and counted as a read, while
+// a batch's query takes its answer as before: a test sets it to refuse a climb's read and no
+// other, whichever reaches GitHub first.
 type readRig struct {
-	pool   *store.Pool
-	w      *workflowRuntime
-	runner *outbox
-	logs   *syncBuffer
-	reads  atomic.Int32
+	pool       *store.Pool
+	w          *workflowRuntime
+	runner     *outbox
+	logs       *syncBuffer
+	reads      atomic.Int32
+	refuseREST atomic.Bool
 }
 
-// pullAnswer is GitHub's answer to one read of pull request 86: a status, and a body.
+// pullAnswer is GitHub's answer to one read of pull request 86: a status, the headers GitHub sends
+// with it beside the stand-in's own, and a body.
 type pullAnswer struct {
 	status int
+	header http.Header
 	body   string
 }
 
@@ -292,11 +301,27 @@ func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(re
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
-			got := answer(rig.reads.Add(1))
+			read := rig.reads.Add(1)
+			got := refusedPull
+			if !rig.refuseREST.CompareAndSwap(true, false) {
+				got = answer(read)
+			}
+			for name, values := range got.header {
+				w.Header()[name] = values
+			}
 			if got.status != 0 {
 				w.WriteHeader(got.status)
 			}
 			_, _ = io.WriteString(w, got.body)
+		case "/graphql":
+			asked := readBatchRequest(t, r)
+			if !slices.Equal(asked, []int{86}) {
+				http.Error(w, `{"message":"a query of pull requests other than 86 alone"}`, http.StatusBadRequest)
+				return
+			}
+			status, body := graphQLAnswerOf(t, answer(rig.reads.Add(1)), asked)
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
 		case "/repos/acme/widgets/pulls/86/reviews":
 			_, _ = io.WriteString(w, `[]`)
 		case "/repos/acme/widgets/rules/branches/main":
@@ -341,11 +366,16 @@ func (rig *readRig) lines(t *testing.T, msg string) []map[string]any {
 }
 
 // GitHub answers for pull request 86 at head code: `mergeable` null (unknown), false (conflicting)
-// or true, with the merge state that goes with each.
+// or true (clean), with the merge state that goes with each; a 502 (unavailable); and refusedPull,
+// GitHub's answer once the implement App installation's REST budget is spent: 403, with the
+// budget's remaining count at 0.
 var (
 	unknownPull     = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":null,"mergeable_state":"unknown"}`}
 	conflictingPull = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":false,"mergeable_state":"dirty"}`}
+	cleanPull       = pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
 	unavailablePull = pullAnswer{status: http.StatusBadGateway, body: `{"message":"Server Error"}`}
+	refusedPull     = pullAnswer{status: http.StatusForbidden, header: http.Header{"X-Ratelimit-Remaining": {"0"}},
+		body: `{"message":"API rate limit exceeded for installation ID 171972716.","documentation_url":"https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api"}`}
 )
 
 // One CONFLICTING read acts on nothing (dispatch://INFRA-4374 R2): it queues a second read of the
@@ -356,6 +386,7 @@ var (
 // the first read, so the next conflicting read starts the two reads again. A row whose head the
 // record has left, or whose first read a later read already released, reads nothing.
 func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
+	t.Parallel()
 	// The record keeps the times to the microsecond.
 	first := time.Now().UTC().Truncate(time.Microsecond)
 
@@ -480,6 +511,7 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 // nor the release its last attempt applies is about that first read. The newer first read's own
 // row reads GitHub a minute after it, and GitHub's CONFLICTING then confirms the conflict.
 func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(t *testing.T) {
+	t.Parallel()
 	// The reads are timed below the microsecond, as the daemon's clock times them: the row and the
 	// record keep a first read's time in jsonb, whole, so the newer first read's own row still
 	// finds the record holding its first read.
@@ -552,12 +584,21 @@ func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(
 }
 
 // recordCapture writes CAPTURE-1's pull request record as change leaves it, as no fact would: the
-// state a test reads a row against.
+// state a test reads a row against. It writes under the lock every fact the daemon applies takes
+// (intake.SerializeFacts), as each of the daemon's own writes of the record does. Without it, a
+// fact the daemon applies meanwhile — a merge state read's, which reads the row and writes the
+// whole row back (record.PutPullRequest) — can read the row before this write commits and write it
+// back after, putting the change out of the record again; a moved head lost that way leaves the
+// reads after the ladder following the old head for ever: the likely cause of the one time
+// TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown ran out its wait in twenty parallel runs.
 func recordCapture(t *testing.T, pool *store.Pool, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return err
+		}
 		pr, err := records.PullRequest(ctx, tx, "CAPTURE-1")
 		if err != nil {
 			return err

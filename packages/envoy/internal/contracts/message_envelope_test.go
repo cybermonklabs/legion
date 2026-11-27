@@ -11,6 +11,7 @@ import (
 // both go on the session's agent subject under the one dedupe key of that delivery, which the
 // stream counts as naming the event; each build is still an event of its own.
 func TestAgentSendEnvelopeIsTheSessionsSendUnderItsKey(t *testing.T) {
+	t.Parallel()
 	frame := `{"delivery":{"id":"att-1"}}`
 	send := Message{
 		Source:       "dispatch",
@@ -51,6 +52,7 @@ func TestAgentSendEnvelopeIsTheSessionsSendUnderItsKey(t *testing.T) {
 // host count as a minted key, so a re-send of that envelope is dropped as a repeat and another
 // send is not.
 func TestAgentSendEnvelopeMintsAKeyForASendThatNamesNone(t *testing.T) {
+	t.Parallel()
 	first := AgentSendEnvelope("ses_a", "", Message{Text: "hi"})
 	second := AgentSendEnvelope("ses_a", "", Message{Text: "hi"})
 	if !strings.HasPrefix(first.DedupeKey, "agent.ses_a.") || !mintedDedupeKey.MatchString(first.DedupeKey) {
@@ -68,6 +70,7 @@ func TestAgentSendEnvelopeMintsAKeyForASendThatNamesNone(t *testing.T) {
 // payload it did not name is absent from the envelope on the wire, as the listener has always
 // written it.
 func TestMessageEnvelopeLeavesOutWhatTheSenderDidNotName(t *testing.T) {
+	t.Parallel()
 	item := AgentSendEnvelope("ses_a", "k", Message{Text: "hi"})
 	if item.Source != "agent" {
 		t.Errorf("source = %q, want agent", item.Source)
@@ -97,6 +100,7 @@ func TestMessageEnvelopeLeavesOutWhatTheSenderDidNotName(t *testing.T) {
 // where the summary is not all of it, unless the sender gave a payload, which is kept as given,
 // an empty one too.
 func TestMessageEnvelopeReadsTheSummaryAndPayloadFromTheText(t *testing.T) {
+	t.Parallel()
 	empty, frame := "", `{"delivery":{"id":"att-1"}}`
 	long := strings.Repeat("x", 200)
 	for _, test := range []struct {

@@ -40,26 +40,49 @@
  *  otherwise have to think about (`e2e/local-instance-support.ts`). */
 import { startStacks, stopStacks } from "./harness-pool";
 import { shellQuote } from "./local-instance-support";
+import { armsStopListener } from "./signal-ignores";
 
+// SIGINT, SIGHUP and SIGQUIT are this script's own once the stack is up: the pool hands SIGINT
+// back then (`e2e/harness-pool.ts`, `unwatchInterrupt`), a closing terminal sends SIGHUP and its
+// quit key SIGQUIT, and the stack's processes are this process's children, each started
+// detached, in a session of its own (`e2e/local-instance-support.ts`), so none of the three
+// reaches them, and the stack would be left serving loopback ports. So each of the three stops
+// the stack here.
+//
+// The listeners are armed before the start, never after it: the pool takes its own SIGINT
+// listener off as the start returns, and Bun, as Node does, puts a signal back to its default
+// action when its last listener goes, so an interrupt between that and a listener armed here
+// afterwards would end this process by that default and leave the stack running
+// (`e2e/__tests__/harness-up.test.ts`). They stay armed until this process ends, so a repeat of
+// any of the three - a second Ctrl-C while the stack stops, the SIGHUP a terminal and then its
+// shell send - finds a listener that does nothing more, rather than the default action half-way
+// through the stop, and no second stop starts. A signal during the start is the pool's as well:
+// it cancels the start, which stops what it began, and `startStacks` rejects. A signal this script
+// was started with ignored, as `nohup bun e2e/harness-up.ts &` ignores SIGHUP and a shell's `&` job
+// ignores SIGINT, gets no listener here and none from the pool: a listener would end the script on
+// the signal it was started to outlive, since taking one off brings back the default action, not
+// the ignore. Where that cannot be read, no SIGHUP or SIGQUIT listener is armed either
+// (`armsStopListener`, e2e/signal-ignores.ts).
+const stopSignals = ["SIGINT", "SIGHUP", "SIGQUIT"] as const;
+const interrupted = Promise.withResolvers<void>();
+for (const signal of stopSignals) {
+  if (armsStopListener(signal)) process.on(signal, () => interrupted.resolve());
+}
 const [stack] = await startStacks(1);
 for (const [variable, value] of Object.entries(stack.env)) {
   console.log(`export ${variable}=${shellQuote(value)}`);
 }
 console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 
-// Until the caller stops it. SIGINT is this script's own: the pool hands that
-// signal back once its stacks are up (`e2e/harness-pool.ts`, `unwatchInterrupt`), so from here
-// on nothing else handles it, and the stack's processes are this process's children, which a
-// Ctrl-C would otherwise leave serving loopback ports.
+// Until the caller stops it.
 //
-// SIGTERM is not listened for here. The pool keeps its own listener for that one as long as the
-// stack is up, and that listener stops this same stack and then re-raises the signal, so this
-// process ends with SIGTERM's own disposition. A second listener for it would stop one stack
-// twice at once: the other caller finds the Supervisor's children already taken and goes on to
-// `pg_ctl -m immediate stop` and to clear the run directory under a server that is still
-// shutting down, which the server reports as a failed deregistration (dispatch://INFRA-1410).
-const interrupted = Promise.withResolvers<void>();
-process.once("SIGINT", () => interrupted.resolve());
+// The pool answers SIGTERM, SIGHUP and SIGQUIT itself as long as the stack is up, since a
+// Playwright run's runner handles none of them: its listener stops this same stack and then
+// sends the signal again. Its stop and the one below are one (`stopStacks` waits for a stop under
+// way), so a SIGHUP or a SIGQUIT stops the stack once, and the signal the pool sends again finds
+// the listener above and does nothing: this script ends as a Ctrl-C ends it. SIGTERM is the pool's
+// alone, so this process ends with SIGTERM's own disposition once the stack is stopped, and a
+// second SIGTERM ends it at once, the pool's rule for a sender that will not wait.
 await interrupted.promise;
 // The stack wrote its output to this process's stderr rather than to a log directory, which is
 // what a run of one stack does, so there are no logs to keep.

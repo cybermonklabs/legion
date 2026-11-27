@@ -37,8 +37,7 @@ func TestAReopenedClosedClaimResumesTheSessionItKept(t *testing.T) {
 	h.must(RequestRetry{Claim: testToken})
 	h.wantState(StateLaunching)
 
-	calls := h.rt.Calls()
-	last := calls[len(calls)-1]
+	last := h.lastStartCall()
 	if last.Method != "Resume" {
 		t.Fatalf("the reopened claim was launched with %s, want Resume: A10 says a reopened done "+
 			"child resumes each worker's old session, and a Spawn starts an agent that has read "+

@@ -83,9 +83,17 @@ type harness struct {
 	// reviewer is the review App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
+	// verdict is the verdict App's id this test's listener was built with, "" for none:
+	// startListener gives it to the webhook handler, as cmd/listener does.
+	verdict string
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
+	// verify says startListener opens the listener's store with ENVOY_CI_VERIFY on
+	// (cistore.WithVerify), so its summary loop publishes only after a verify pass answers.
+	verify bool
+	// loopLogs is what the listener's summary loop logged.
+	loopLogs *syncBuffer
 	// defaults counts the projects seedProjectDefault has made, so each one it makes has a key of
 	// its own.
 	defaults int
@@ -98,6 +106,25 @@ func newHarness(t *testing.T, reviewer string) *harness {
 	h := newHarnessBeforeTheListener(t, reviewer)
 	h.startListener()
 	return h
+}
+
+// newVerifyHarness is newHarness with the listener's ENVOY_CI_VERIFY on. GitHub answers a
+// repository's installation and identity under any casing of its name, and a verify request names
+// the repository as GitHub spells it, where a pass reads it under its lower-cased row;
+// the stand-in answers only the names it was given, so it is given GitHub's spelling too.
+func newVerifyHarness(t *testing.T, reviewer string) *harness {
+	t.Helper()
+	h := newHarnessBeforeTheListener(t, reviewer)
+	h.verify = true
+	h.github.setRepository(gitHubRepository, gitHubRepository, repositoryID)
+	h.startListener()
+	return h
+}
+
+// verifyPass runs one pass of the verify loop (Reconciler.Verify).
+func (h *harness) verifyPass() {
+	h.t.Helper()
+	h.reconciler.Verify(h.ctx)
 }
 
 // newHarnessBeforeTheListener is the stack with no CI bucket: NATS is up, so a pass runs, but
@@ -152,11 +179,11 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
-// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes wait until
-// the pass making it has run out of its own bound. It is a CI bucket slower to answer than the
-// pass has left, which is the one thing that can take a pass past its bound in the middle of a
-// page its query answered whole: those heads cost no request of their own, so nothing else
-// about them can be slow.
+// holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes, each the
+// runs of one head, wait until the pass making it has run out of its own bound. It is a CI bucket
+// slower to answer than the pass has left, which is the one thing that can take a pass past its
+// bound in the middle of a page its query answered whole: those heads cost no request of their
+// own, so nothing else about them can be slow.
 //
 // The count is the harness's rather than one pass's, so the pass after the one that was held
 // writes every head of its own without waiting.
@@ -176,16 +203,16 @@ func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
 	}
 }
 
-// holdingWriter is the CI record writer with hold run before each check run it is given
+// holdingWriter is the CI record writer with hold run before each write of a head's check runs
 // (holdWriteUntilTheBoundFalls).
 type holdingWriter struct {
 	Writer
 	hold func(ctx context.Context)
 }
 
-func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.hold(ctx)
-	return w.Writer.Record(ctx, observation)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 // startListener opens the listener's own store, which makes the bucket and watches it, and its
@@ -193,7 +220,7 @@ func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObse
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
@@ -204,10 +231,11 @@ func (h *harness) startListener() {
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
+	h.loopLogs = &syncBuffer{}
 	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
-		metrics.New().NewGauge("held", ""), logging.New("loop"))
+		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
@@ -456,8 +484,18 @@ func (h *harness) recordAt(repository string, number int64, sha string) (*cistor
 	return &state, entry.Revision()
 }
 
-// post sends the listener's real webhook handler one GitHub event, as GitHub sends it.
+// post sends the listener's real webhook handler one GitHub event, as GitHub sends it, and fails
+// the test unless the handler answers 200.
 func (h *harness) post(event, body, delivery string) {
+	h.t.Helper()
+	if code, answer := h.serve(event, body, delivery); code != http.StatusOK {
+		h.t.Fatalf("the webhook answered %d: %s", code, answer)
+	}
+}
+
+// serve sends the listener's real webhook handler one GitHub event, as GitHub sends it, and
+// answers the status and body the handler answered.
+func (h *harness) serve(event, body, delivery string) (int, string) {
 	h.t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
 	request.Header.Set("X-GitHub-Delivery", delivery)
@@ -467,9 +505,7 @@ func (h *harness) post(event, body, delivery string) {
 	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	recorder := httptest.NewRecorder()
 	h.webhook.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		h.t.Fatalf("the webhook answered %d: %s", recorder.Code, recorder.Body.String())
-	}
+	return recorder.Code, recorder.Body.String()
 }
 
 // lines is the fields of every line the pass logged under msg, oldest first.

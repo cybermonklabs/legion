@@ -15,9 +15,11 @@
 // packed into an Oh My Pi profile of the run's own, and this checkout's `dispatch` command first on
 // its PATH. Its model is the real one: the model gateway ANTHROPIC_BASE_URL names, reached through
 // a counting proxy of the driver's own, with the key the file APPROVED_VERSION_NEWS_MODEL_KEY_FILE
-// names, which this driver reads into memory and gives to each pane's own environment and to
-// nothing else. The Envoy listener the panes register with, claim their roles at and publish to is
-// `packages/envoy/cmd/listener`, on a broker of this driver's own, natsd
+// names, which this driver reads at the start of each run and gives to that run's panes' own
+// environment and to nothing else. The script can write a new key into that file while part two
+// runs, the pod's identity token it mints again before the hour it lasts ends, so a run that starts
+// late reads the key the file holds then. The Envoy listener the panes register with, claim their
+// roles at and publish to is `packages/envoy/cmd/listener`, on a broker of this driver's own, natsd
 // (`packages/envoy/internal/testnats/cmd/natsd`), as scripts/e2e/envoy-session-delivery.sh runs
 // them: the listener is built and tested against the checkout's nats-server, which the pinned one
 // the script's lib starts is not. Dispatch is the real server built from the checkout, on that
@@ -83,8 +85,8 @@
 //     before the assertion. It passes when the reviewer's transcript holds an Envoy message naming
 //     version 2 and the changed check, the child's architect's transcript holds its envoy_publish
 //     to the reviewer's role topic naming the same, and the child has no approval request;
-//   - off-the-architect-tells-the-holders: under gates.design off, a root in implementing and its
-//     child in reviewing, both holders and the child's own architect live; the root's architect
+//   - off-the-architect-tells-the-holders: under gates.design off, a root in retro and its child
+//     in reviewing, both holders and the child's own architect live; the root's architect
 //     is asked to write version 2 of the root's spec. It passes when each holder's transcript
 //     holds an Envoy message naming version 2 and the change, and the root architect's transcript
 //     holds its envoy_publish to that holder's role topic naming the same;
@@ -148,12 +150,10 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,7 +231,7 @@ const (
 // news task (prompts/go/worker-common.md).
 const (
 	sessionsArchitectMark = "Send that news yourself: for a version of a child's documents"
-	sessionsWorkerMark    = "A news task tells you that a person approved a new version of your tree's design."
+	sessionsWorkerMark    = "A news task tells you of an approved new version of your tree's design."
 )
 
 // sessionsLive is what every run of part two shares: the broker, the listener and Dispatch, the
@@ -247,11 +247,11 @@ type sessionsLive struct {
 	home     string
 	profile  string
 	overlays []string
-	// key is the model key, which reaches each pane's environment and nothing else: no line this
-	// driver prints holds it.
-	key   string
-	model string
-	calls *sessionsModelProxy
+	// keyFile is the file of the model key, which each run reads at its start (modelKey) and gives
+	// to its panes' environment and to nothing else: no line this driver prints holds the key.
+	keyFile string
+	model   string
+	calls   *sessionsModelProxy
 	// base is the directory the base commit's prompt files were extracted into, and baseCommit
 	// the commit, as a note names it.
 	base, baseCommit string
@@ -266,6 +266,7 @@ type sessionsLive struct {
 // that failed its assertion, or one that stopped before it. It stops at a run of either arm that
 // the harness failed too (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of PATH in newSessionsLive).
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
 	if err != nil {
@@ -324,13 +325,10 @@ func newSessionsLive(t *testing.T) *sessionsLive {
 	if gateway == "" {
 		t.Fatal("ANTHROPIC_BASE_URL is unset, so there is no model gateway for a session to reach")
 	}
-	key, err := os.ReadFile(keyFile)
-	if err != nil {
-		t.Fatalf("read the model key file %s: %v", keyFile, err)
-	}
-	if s.key = strings.TrimSpace(string(key)); s.key == "" {
-		t.Fatalf("the model key file %s is empty", keyFile)
-	}
+	s.keyFile = keyFile
+	// A file that holds no key fails the test here, before anything starts; each run reads the
+	// file again at its start.
+	s.modelKey(t)
 	if s.model = os.Getenv(sessionsModelEnv); s.model == "" {
 		s.model = sessionsDefaultModel
 	}
@@ -377,6 +375,22 @@ func newSessionsLive(t *testing.T) *sessionsLive {
 	return s
 }
 
+// modelKey is the model key keyFile holds now. The script can mint the key again while part two
+// runs (the pod's identity token, which lasts an hour), so each run reads it at its start (newRun)
+// rather than once for every run. A file that cannot be read or holds no key fails t.
+func (s *sessionsLive) modelKey(t *testing.T) string {
+	t.Helper()
+	key, err := os.ReadFile(s.keyFile)
+	if err != nil {
+		t.Fatalf("read the model key file %s: %v", s.keyFile, err)
+	}
+	trimmed := strings.TrimSpace(string(key))
+	if trimmed == "" {
+		t.Fatalf("the model key file %s is empty", s.keyFile)
+	}
+	return trimmed
+}
+
 // writeProfile writes the profile every pane shares, and the overlays each is told: the one
 // provider, the gateway's anthropic-messages API behind the counting proxy, whose key a pane reads
 // from its own ANTHROPIC_API_KEY, so the key is written to no file; the one model for every model
@@ -414,8 +428,8 @@ type sessionsRun struct {
 	liveAgentProof
 	s         *sessionsLive
 	name, arm string
-	// repo is the repository the run's project maps; launchable is every claim the run seeded,
-	// the only ones its runtime starts.
+	// repo is the default repository of the run's project; launchable is every claim the run
+	// seeded, the only ones its runtime starts.
 	repo       string
 	launchable map[claim.Token]bool
 	members    []*sessionsMember
@@ -532,12 +546,12 @@ func (s *sessionsLive) newRun(t *testing.T, name, arm string, gates config.Desig
 		s: s, name: name, arm: arm, repo: "acme/" + strings.ToLower(cfg.Project), launchable: map[claim.Token]bool{},
 	}
 	r.dispatchAs(http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news sessions"}, nil)
-	r.dispatchAs(http.MethodPut, "/api/v1/settings/repo-projects/"+r.repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": r.repo}, nil)
 	r.rt = newLocalRuntime(t, cfg.StateDir, s.legion, s.omp, s.home, s.profile)
 	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = cfg.DaemonURL, s.listener, []string{s.natsURL}
 	r.rt.overlays = func(claim.Token) []string { return s.overlays }
 	r.rt.dispatchURL, r.rt.dispatchTokenFile = s.dispatch.base, cfg.DispatchTokenFile
-	r.rt.environment = []string{"ANTHROPIC_API_KEY=" + s.key}
+	r.rt.environment = []string{"ANTHROPIC_API_KEY=" + s.modelKey(t)}
 	return r
 }
 
@@ -807,21 +821,16 @@ func (r *sessionsRun) keepTranscripts() []string {
 	return refused
 }
 
-// version2 answers whether artifact has a version 2, and that version as Dispatch answers it.
+// version2 answers whether artifact has a version 2, and that version as Dispatch answers it
+// (dispatchExchange, with the agent bearer).
 func (r *sessionsRun) version2(artifact string) (bool, string) {
 	r.t.Helper()
-	request, err := http.NewRequest(http.MethodGet, r.s.dispatch.base+"/api/v1/artifacts/"+artifact+"/versions/2", nil)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+r.s.dispatch.token)
-	response, err := r.s.client.Do(request)
+	status, answer, err := dispatchExchange(r.s.client, r.s.dispatch.base, http.MethodGet, "/api/v1/artifacts/"+artifact+"/versions/2", nil,
+		bearing(r.s.dispatch.token))
 	if err != nil {
 		r.t.Fatalf("read version 2 of %s: %v", artifact, err)
 	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(response.Body)
-	return response.StatusCode == http.StatusOK, string(body)
+	return status == http.StatusOK, string(answer)
 }
 
 // approvalAsks is every approval request Dispatch holds on key, as the issue's asks list it.
@@ -897,44 +906,25 @@ func (r *sessionsRun) edit(artifact, session, find, with string, want int) {
 // dispatchAs sends one request to Dispatch as the person smoke, requiring a 2xx answer.
 func (r *sessionsRun) dispatchAs(method, path string, body, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, 0, into, func(request *http.Request) { request.Header.Set("X-Dispatch-User", versionNewsPerson) })
+	r.dispatchCall(method, path, body, 0, into, dispatchUser(versionNewsPerson))
 }
 
 // dispatchAgent sends one request to Dispatch with the agent bearer, requiring want.
 func (r *sessionsRun) dispatchAgent(method, path string, body any, want int, into any) {
 	r.t.Helper()
-	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.s.dispatch.token) })
+	r.dispatchCall(method, path, body, want, into, bearing(r.s.dispatch.token))
 }
 
-// dispatchCall is one request to Dispatch; want 0 takes any 2xx answer. A failure fails the run's
-// own test, from the goroutine that runs it.
+// dispatchCall is one request to Dispatch (dispatchExchange); want 0 takes any 2xx answer. A
+// failure fails the run's own test, from the goroutine that runs it.
 func (r *sessionsRun) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
 	r.t.Helper()
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequest(method, r.s.dispatch.base+path, reader)
+	status, answer, err := dispatchExchange(r.s.client, r.s.dispatch.base, method, path, body, identify)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	identify(request)
-	response, err := r.s.client.Do(request)
-	if err != nil {
-		r.t.Fatalf("Dispatch %s %s: %v", method, path, err)
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
-	if err != nil {
-		r.t.Fatalf("read Dispatch's answer to %s %s: %v", method, path, err)
-	}
-	if (want != 0 && response.StatusCode != want) || (want == 0 && response.StatusCode/100 != 2) {
-		r.t.Fatalf("Dispatch %s %s = %d %s", method, path, response.StatusCode, answer)
+	if refused := dispatchRefused(method, path, want, status, answer); refused != "" {
+		r.t.Fatal(refused)
 	}
 	if into != nil {
 		if err := json.Unmarshal(answer, into); err != nil {

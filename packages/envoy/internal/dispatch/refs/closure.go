@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 
@@ -77,35 +78,61 @@ const targetNode = `coalesce(item_block.kind, case when r.to_kind = 'block' then
 
 // oneRowPerNode ends both statements of the read. far holds a row for each link: the node at its
 // far end (node_kind, node_id), its kind, and its via at the near end. It leaves out the issue and
-// its own content, the rows (kind, id) that own selects, read once into an array, and keeps one
-// row for each other node: the distinct kinds of its links in order, and its lowest via, the
-// least pair of via kind and via id as arrays compare, element by element in the database's order.
+// its own content, the rows of own, the relation that holds them as (kind, id), and keeps one row
+// for each other node: the distinct kinds of its links in order, and its lowest via, the least
+// pair of via kind and via id as arrays compare, element by element in the database's order.
+//
+// It leaves them out by an anti-join, `not exists` over own, and not, as the read did before, by a
+// test of each row against an array of own's rows,
+// `not (row(f.node_kind, f.node_id) = any(array(...)))` over `select row(o.kind, o.id) from own o`
+// in the out statement and over `select row(t.kind, t.id) from targets t` in the in statement.
+// Postgres pushed the array's test into each arm of the links, and it does not hash an array an
+// InitPlan reads, so it compared each link with every row of own in turn. On a copy of a
+// dispatch:local database seeded at production's size (block_refs 876,018 rows), for an issue
+// with 2,041 own targets, the in statement read 5,000 links in 3.44-3.48 s, past the route's 2 s
+// budget, and its plan spent 2.58 s of 2.67 s in that test; with an anti-join, hashed or merged,
+// it read them in 0.27-0.36 s. On the seed of api's
+// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks, 2,042 own targets and 10,000
+// links from 500 documents, the read with the array answered 503 at 2.01 s in a shared pod and 200
+// in 931 ms on a 10-CPU build machine, so the plan, which api's
+// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin holds, is the proof and not
+// the time.
 func oneRowPerNode(own string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),
 		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2]
 		from far f
-		where not (row(f.node_kind, f.node_id) = any(array(` + own + `)))
+		where not exists (select 1 from ` + own + ` x where x.kind = f.node_kind and x.id = f.node_id)
 		group by f.node_kind, f.node_id`
 }
 
-// linksOutQuery is the out statement of the references read of the issue whose key is $1: every
-// node the issue's own content links to, read from the links of that content by their source.
-// The issue's own content is its documents and its items, those of each item kind (itemKinds:
-// its comments, its messages and its asks), each read by the issue's key. Its links are each
-// one's own refs rows, read by refs' primary key (from_kind, from_id); every link of its
-// documents' blocks, mentions and the pointers block_ref_listed lists, read from block_refs by
-// its primary key's document; and the links of the current blocks of each item whose own refs
-// rows do not hold every mention its blocks hold (ItemKind.refsHoldBlockLinks), an ask's parts,
-// read from the kind's block mentions table by its primary key's item (itemBlockLinks). A
-// comment's or a message's own refs rows hold every mention its blocks hold, so their block links
-// need no read of their own. A source whose block links are read so, a document or such an item,
-// counts its own mention of a target a block of it holds as that block's link and not again
-// (heldByABlock), so a pointer's target takes the pointer's kind alone. Each read is a lateral
-// for one source, which `offset 0` keeps a nested loop keyed by that source: pulled up into a
-// join, it could be planned as a hash or a merge join over a whole read of its table. Each item
-// kind's items are read once by the issue's key (own_<its items table>), for its sources and for
-// the read of its block links alike.
+// ownDocuments is the issue's own documents both statements of the read start from: those of the
+// issue whose key is $1 that the acting person, whose credential is $2, may see. A document
+// reserved for another author is no source of the out statement and no target of the in
+// statement, so it is neither a link's via nor reached through one (VisibleKind).
+func ownDocuments() string {
+	return `own_documents as (
+			select a.id, a.ref_key from artifacts a where a.issue_key = $1 and ` + VisibleKind("artifact", "a.ref_key", "$2") + `
+		)`
+}
+
+// linksOutQuery is the out statement of the references read of the issue whose key is $1, as the
+// acting person whose credential is $2 (VisibilityArg) reads it: every node the issue's own
+// content links to, read from the links of that content by their source. The issue's own content
+// is its documents and its items, those of each item kind (itemKinds: its comments, its messages
+// and its asks), each read by the issue's key. Its links are each one's own refs rows, read by
+// refs' primary key (from_kind, from_id); every link of its documents' blocks, mentions and the
+// pointers block_refs lists (blockRefListed), read from block_refs by its primary key's document;
+// and the links of the current blocks of each item whose own refs rows do not hold every mention
+// its blocks hold (ItemKind.refsHoldBlockLinks), an ask's parts, read from the kind's block
+// mentions table by its primary key's item (itemBlockLinks). A comment's or a message's own refs
+// rows hold every mention its blocks hold, so their block links need no read of their own. A
+// source whose block links are read so, a document or such an item, counts its own mention of a
+// target a block of it holds as that block's link and not again (heldByABlock), so a pointer's
+// target takes the pointer's kind alone. Each read is a lateral for one source, which `offset 0`
+// keeps a nested loop keyed by that source: pulled up into a join, it could be planned as a hash
+// or a merge join over a whole read of its table. Each item kind's items are read once by the
+// issue's key (own_<its items table>), for its sources and for the read of its block links alike.
 //
 // heldByABlock probes block_refs by the mention's target and its document's id as text
 // (`artifact_id::text = from_id`), which block_refs_to_source keys by its three columns, to_kind,
@@ -125,7 +152,17 @@ func oneRowPerNode(own string) string {
 // other source as sources names it. Its rows are one for each node, with the kinds of its links
 // and its lowest via: a document of the issue by its uuid, the id its links are written under, an
 // item by its uuid (oneRowPerNode).
-var linksOutQuery = func() string {
+//
+// A link is read only where the acting person may see both its ends. Its source is content of
+// the issue they may see (ownDocuments, and each item kind's items by that kind's predicate), and
+// a link a block holds counts only while they may see that block too; its target, as the link
+// spells it, is held to the predicate of its kind (VisibleEnd), so a link into a block they may
+// not see adds neither a kind nor a via to its document's row. The node the target counts as is
+// held to its predicate by the loader that names it (Closure, resolveNodes). The statement is
+// rendered at its first use and not as the variable is initialized, because the predicates it
+// binds read the registry, which init fills after every variable of the package (nodeRegistry):
+// rendered before that, every predicate would be `false` and the read empty.
+var linksOutQuery = sync.OnceValue(func() string {
 	ownItems := make([]string, 0, len(itemKinds))
 	sources := []string{`select 'artifact', o.id::text from own_documents o`}
 	// blockLinksRead is every kind of source whose block links an arm of links reads: a
@@ -135,14 +172,15 @@ var linksOutQuery = func() string {
 			from own_documents o
 			cross join lateral (
 				select r.kind, r.to_kind, r.to_id from block_refs r
-				where r.artifact_id = o.id and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
+				where r.artifact_id = o.id and ` + blockRefListed("r") + `
+				  and ` + VisibleKind("block", "r.from_node", "$2") + `
 				offset 0
 			) r`}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		own := `own_` + tables.items
 		ownItems = append(ownItems, own+` as (
-			select x.id from `+tables.items+` x where x.issue_key = $1
+			select x.id from `+tables.items+` x where x.issue_key = $1 and `+VisibleKind(string(item), "x.id::text", "$2")+`
 		)`)
 		sources = append(sources, `select '`+string(item)+`', o.id::text from `+own+` o`)
 		if item.refsHoldBlockLinks() {
@@ -154,13 +192,12 @@ var linksOutQuery = func() string {
 			cross join lateral (
 				select r.kind, r.to_kind, r.to_id from `+itemBlockLinks(item)+`
 				where r.`+tables.item+` = o.id and `+itemBlockCurrent+`
+				  and `+VisibleKind(item.BlockKind(), "r.from_node", "$2")+`
 				offset 0
 			) r`)
 	}
 	return `
-		with own_documents as (
-			select a.id, a.ref_key from artifacts a where a.issue_key = $1
-		),
+		with ` + ownDocuments() + `,
 		` + strings.Join(ownItems, `,
 		`) + `,
 		sources (kind, id) as (
@@ -193,22 +230,23 @@ var linksOutQuery = func() string {
 			` + itemBlockHeld + `
 			where (` + documentTarget + ` or r.to_kind not in ('artifact', 'block'))
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
-		)` + oneRowPerNode(`select row(o.kind, o.id) from own o`)
-}()
+			  and ` + VisibleEnd("r.to_kind", "r.to_id", true, "$2") + `
+		)` + oneRowPerNode(`own`)
+})
 
-// linksInQuery is the in statement of the references read of the issue whose key is $1: every
-// node that links to the issue or to its own content, read from the links into them by their
-// target. It reads the issue's own targets once (targets): the issue node by its key, its
-// documents by ref_key and their current blocks (document_blocks, by its primary key's document),
-// and its asks, comments and messages by the issue's key and their current blocks
-// (itemBlockCurrent). Then it reads each link table once for each kind of target, `to_kind =
-// <kind> and to_id = any(<the ids of that kind>)` (keys), through the table's index of targets
-// (refs_to, block_refs_to_source, ask_block_refs_to, comment_block_refs_to,
-// message_block_refs_to), in a lateral that `offset 0` keeps a nested loop keyed by the kind, as
-// the out statement keeps its reads: a source block of an item while it is current
-// (itemBlockLinks, itemBlockCurrent), a block's pointer while block_ref_listed lists it, and an
-// item's own mention of a target that a block of that item holds as that block's link alone
-// (heldByABlock).
+// linksInQuery is the in statement of the references read of the issue whose key is $1, as the
+// acting person whose credential is $2 (VisibilityArg) reads it: every node that links to the
+// issue or to its own content, read from the links into them by their target. It reads the
+// issue's own targets once (targets): the issue node by its key, its documents by ref_key and
+// their current blocks (document_blocks, by its primary key's document), and its asks, comments
+// and messages by the issue's key and their current blocks (itemBlockCurrent). Then it reads each
+// link table once for each kind of target, `to_kind = <kind> and to_id = any(<the ids of that
+// kind>)` (keys), through the table's index of targets (refs_to, block_refs_to_source,
+// ask_block_refs_to, comment_block_refs_to, message_block_refs_to), in a lateral that `offset 0`
+// keeps a nested loop keyed by the kind, as the out statement keeps its reads: a source block of
+// an item while it is current (itemBlockLinks, itemBlockCurrent), a block's pointer while
+// block_refs lists it (blockRefListed), and an item's own mention of a target that a block of
+// that item holds as that block's link alone (heldByABlock).
 //
 // Each link's source is reduced to its node: a document's block to its document and a block of
 // an item to the item. A source document, or a source block's document, is named by its ref_key,
@@ -217,19 +255,28 @@ var linksOutQuery = func() string {
 // counts as (targetNode), its via: the id a link to that node stores, the issue's key, a
 // document's ref_key or an item's uuid. The issue and its own content are left out (targets).
 // Its rows are one for each node, with the kinds of its links and its lowest via (oneRowPerNode).
-var linksInQuery = func() string {
+//
+// A link is read only where the acting person may see both its ends. Its target is one of the
+// targets they may see, each held to the predicate of its kind, so a node that links into content
+// of the issue reserved for another author is not listed through it; its source is held to the
+// predicate of the node it counts as (VisibleEnd), and a link a block holds counts only while
+// they may see that block too. It is rendered at its first use, as linksOutQuery is.
+var linksInQuery = sync.OnceValue(func() string {
 	targets := []string{
-		`select 'issue', $1::text`,
+		`select 'issue', $1::text where ` + VisibleKind("issue", "$1::text", "$2"),
 		`select 'artifact', o.ref_key from own_documents o`,
-		`select 'block', d.node_id from own_documents o join document_blocks d on d.artifact_id = o.id`,
+		`select 'block', d.node_id from own_documents o join document_blocks d on d.artifact_id = o.id
+			where ` + VisibleKind("block", "d.node_id", "$2"),
 	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
+		visibleItem := VisibleKind(string(item), "x.id::text", "$2")
 		targets = append(targets,
-			`select '`+string(item)+`', x.id::text from `+tables.items+` x where x.issue_key = $1`,
+			`select '`+string(item)+`', x.id::text from `+tables.items+` x where x.issue_key = $1 and `+visibleItem,
 			`select '`+item.BlockKind()+`', b.node_id
 			from `+tables.items+` x join `+tables.blocks+` b on b.`+tables.item+` = x.id
-			where x.issue_key = $1 and `+itemBlockCurrent)
+			where x.issue_key = $1 and `+itemBlockCurrent+` and `+visibleItem+`
+			  and `+VisibleKind(item.BlockKind(), "b.node_id", "$2"))
 	}
 	// byTarget reads the links of from, its link table aliased r, that end at a target of each
 	// kind of keys and meet condition, as rows of their source node (columns), their kind and
@@ -254,17 +301,15 @@ var linksInQuery = func() string {
 		byTarget(`'artifact', src.ref_key, r.kind, r.to_kind, r.to_id`,
 			`block_refs r
 				cross join lateral (select a.ref_key from artifacts a where a.id = r.artifact_id limit 1) src`,
-			`(r.to_types is null or block_ref_listed(r.to_types, r.to_id))`),
+			blockRefListed("r")+` and `+VisibleKind("block", "r.from_node", "$2")),
 	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		links = append(links, byTarget(`'`+string(item)+`', r.`+tables.item+`::text, r.kind, r.to_kind, r.to_id`,
-			itemBlockLinks(item), itemBlockCurrent))
+			itemBlockLinks(item), itemBlockCurrent+` and `+VisibleKind(item.BlockKind(), "r.from_node", "$2")))
 	}
 	return `
-		with own_documents as (
-			select a.id, a.ref_key from artifacts a where a.issue_key = $1
-		),
+		with ` + ownDocuments() + `,
 		targets (kind, id) as (
 			` + strings.Join(targets, `
 			union all
@@ -283,8 +328,9 @@ var linksInQuery = func() string {
 			from links r
 			` + itemBlockHeld + `
 			where r.node_id is not null
-		)` + oneRowPerNode(`select row(t.kind, t.id) from targets t`)
-}()
+			  and ` + VisibleEnd("r.node_kind", "r.node_id", true, "$2") + `
+		)` + oneRowPerNode(`targets`)
+})
 
 // ClosureTag starts every statement Closure sends, so that the query text pg_stat_activity shows
 // for any statement of the read, the loaders' included, names it. A caller that sends statements
@@ -319,14 +365,20 @@ type linkRow struct {
 // resolveNodes does not name, a node gone since or of a kind this build does not know, is left
 // out, as Edges leaves such an edge out. Each list is in the order of the node's kind, then its
 // id. Members are the documents of Links, each at depth 1 with its row's via, by ref_key. Every
-// statement it sends, through q, starts with ClosureTag.
-func Closure(ctx context.Context, q Queryer, issueKey string) (References, error) {
+// statement it sends, through q, starts with ClosureTag. serverURL is the deployment whose
+// dashboard URLs are references, which a node's name is cut around (resolvedNode.name).
+//
+// It answers for who: a link whose source or target who may not see is no link of the read, so a
+// node is never listed through, or named as the via of, a node reserved for another author, and
+// such a node is never listed itself, since resolveNodes names only the nodes who may see
+// (VisibleKind, VisibleEnd).
+func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey, serverURL string) (References, error) {
 	tagged := taggedQueryer{q}
-	out, err := readLinkRows(ctx, tagged, linksOutQuery, issueKey)
+	out, err := readLinkRows(ctx, tagged, linksOutQuery(), who, issueKey)
 	if err != nil {
 		return References{}, fmt.Errorf("read the links out of %s's own content: %w", issueKey, err)
 	}
-	in, err := readLinkRows(ctx, tagged, linksInQuery, issueKey)
+	in, err := readLinkRows(ctx, tagged, linksInQuery(), who, issueKey)
 	if err != nil {
 		return References{}, fmt.Errorf("read the links into %s and its own content: %w", issueKey, err)
 	}
@@ -336,7 +388,7 @@ func Closure(ctx context.Context, q Queryer, issueKey string) (References, error
 			lookups = append(lookups, edgeRow{otherKind: row.kind, otherID: row.id})
 		}
 	}
-	nodes, err := resolveNodes(ctx, tagged, true, lookups)
+	nodes, err := resolveNodes(ctx, tagged, who, true, lookups)
 	if err != nil {
 		return References{}, err
 	}
@@ -347,12 +399,17 @@ func Closure(ctx context.Context, q Queryer, issueKey string) (References, error
 		}
 	}
 	slices.SortFunc(members, func(left, right Member) int { return strings.Compare(left.RefKey, right.RefKey) })
-	return References{Members: members, Links: related(out, nodes), LinkedFrom: related(in, nodes)}, nil
+	return References{
+		Members:    members,
+		Links:      related(out, nodes, serverURL),
+		LinkedFrom: related(in, nodes, serverURL),
+	}, nil
 }
 
-// readLinkRows runs statement, the out or the in statement, for issueKey and answers its rows.
-func readLinkRows(ctx context.Context, q Queryer, statement, issueKey string) ([]linkRow, error) {
-	rows, err := q.Query(ctx, statement, issueKey)
+// readLinkRows runs statement, the out or the in statement, for issueKey as who reads it, and
+// answers its rows.
+func readLinkRows(ctx context.Context, q Queryer, statement string, who model.Actor, issueKey string) ([]linkRow, error) {
+	rows, err := q.Query(ctx, statement, issueKey, VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -363,16 +420,16 @@ func readLinkRows(ctx context.Context, q Queryer, statement, issueKey string) ([
 	})
 }
 
-// related is each of rows whose node nodes names, in the order of the node's kind, then its id.
-// It is never nil.
-func related(rows []linkRow, nodes map[[2]string]resolvedNode) []model.ReferenceLink {
+// related is each of rows whose node nodes names, in the order of the node's kind, then its id,
+// each named as resolvedNode.name names it under serverURL. It is never nil.
+func related(rows []linkRow, nodes map[[2]string]resolvedNode, serverURL string) []model.ReferenceLink {
 	list := make([]model.ReferenceLink, 0, len(rows))
 	for _, row := range rows {
 		node, found := nodes[[2]string{row.kind, row.id}]
 		if !found {
 			continue
 		}
-		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(), Kinds: row.kinds, Via: row.via})
+		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(serverURL), Kinds: row.kinds, Via: row.via})
 	}
 	slices.SortFunc(list, func(left, right model.ReferenceLink) int {
 		return cmp.Or(strings.Compare(left.Node.Kind, right.Node.Kind), strings.Compare(left.Node.ID, right.Node.ID))

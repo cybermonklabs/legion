@@ -23,6 +23,7 @@ import (
 // a wait inside the append is statement time, not a gap. Only holding the lock and asking what
 // the waiter holds does.
 func TestAThreadMarkWaitsForTheProjectLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Mark behind the project", "A spec")
 	thread := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Waiting"}, "alice")

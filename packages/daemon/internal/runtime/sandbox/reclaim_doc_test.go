@@ -71,6 +71,7 @@ const (
 // Claude Code launch adds its configuration directory), so the walk runs once for each
 // (backendsRunning) rather than for a backend named here.
 func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 

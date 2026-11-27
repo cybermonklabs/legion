@@ -1,0 +1,5 @@
+kind: Added
+body: 'With `DISPATCH_SEARCH_FILL=off`, the boot line `dispatch: the keyword fill is deferred` also says whether `search_text_versions` and its cursor table each hold a row: `search_text_versions_rows` and `search_text_versions_fill_rows`, each `none` or `some`, or `unknown` with the read''s error, which never stops the boot. So the boot log shows, with no read of the database, that a server started with the fill off found both tables empty. With the setting `on` or unset, nothing changes.'
+time: 2026-11-22T17:02:42.294743576Z
+custom:
+    Issue: pr5041

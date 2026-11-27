@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+    A claim write's 5 s bound now counts from the moment the database pool hands the write a
+    connection, not from before its wait for one. At boot the daemon relaunches every unfinished
+    claim at once through one pool of max(4, CPUs) connections, so on a loaded node the last writes
+    of a large wave spent their whole bound queued behind the others and were cut, and each such
+    launch waited for the next probe, 30 s later, to be tried again. The wait in the pool's queue
+    has a bound of its own, 30 s; a dial the write waits for, its BEGIN and its statements stay
+    under the 5 s, so a database that stops answering holds a claim's machine for up to about 10 s
+    per try of a write that holds a connection (a dial that ends just short of 5 s, then a BEGIN
+    never answered), and for at most 37 s per try of a write that queues first (the queue's 30 s,
+    the write's 5 s, and 2 s to settle a commit whose reply was lost). A write whose BEGIN the
+    database answered is tried at most twice (INFRA-3904's entry), each try under these bounds, so
+    it holds the machine for at most two of them before it is owed. A write handed a pooled
+    connection the server closed while it sat idle, as after a database restart, begins on another
+    connection.
+    The boot's replay of the stored claims' ready and failed facts counts each
+    of its budgets the same way, so a boot whose pool is busy with the restored claims' live
+    failures no longer fails its replay for the wait.
+time: 2026-11-23T16:26:35Z
+custom:
+    Issue: INFRA-1075

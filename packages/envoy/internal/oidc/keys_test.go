@@ -13,6 +13,8 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testAlgorithm is the algorithm oidctest signs and publishes with, the one a caller asks Key for.
@@ -454,31 +456,156 @@ func TestAGoodReadAfterAFailedOneSettlesAMissingKeyID(t *testing.T) {
 }
 
 // A caller that hangs up ends only its own wait: the read it started runs on, reaches the issuer
-// and is kept, so the next caller is answered from that read with no read of its own.
+// and is kept, so the next caller is answered from that read with no read of its own. The caller
+// that hung up is ErrKeySet in either order of its leaving and its read's end, each held here
+// (hungUpCaller): its read held before the issuer when the caller has its answer, and its read
+// ended before the caller looks at it, the order a loaded runner gave in CI. The second order runs
+// 64 times: where wait leaves the choice to a select, each run is the read's set or ErrKeySet at
+// random, so 64 runs that are all ErrKeySet pass by chance once in 2^64.
 func TestACallerThatHangsUpEndsOnlyItsOwnWait(t *testing.T) {
 	issuer := oidctest.New(t)
-	keys, _ := keysFor(t, issuer, "exchange-key")
+	source, _ := keysFor(t, issuer, "exchange-key")
+	for _, order := range []struct {
+		name          string
+		readEndsFirst bool
+		runs          int
+	}{
+		{"the caller leaves while its read is held before the issuer", false, 1},
+		{"the read ends before the caller looks at it", true, 64},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			for run := range order.runs {
+				hungUpCaller(t, issuer, source.jwksURI, order.readEndsFirst, run, order.runs)
+			}
+		})
+	}
+}
+
+// hungUpCaller is one caller that hung up before it asked a new Keys at jwksURI for a key no read
+// has fetched: it must be ErrKeySet, and the read it started must be kept and answer the next
+// caller, with no read of that caller's own. The read is held in the transport, before it reaches
+// the issuer, until the test lets it go, so the test sets the order. With readEndsFirst the caller
+// is held where its wait begins (its keys deadline's look-up, heldWait) until its read, let go,
+// has ended; without it the caller has its answer while its read is still held, and the read is
+// let go after.
+func hungUpCaller(t *testing.T, issuer *oidctest.Issuer, jwksURI string, readEndsFirst bool, run, runs int) {
+	t.Helper()
+	keys := NewKeysAt(jwksURI)
+	// The read is held for as long as the test chooses, so its own bound is the test binary's
+	// deadline, not a span that a machine which stalls the test could outlast.
+	keys.FetchTimeout = testwait.Remaining(t, 30*time.Second)
+	release, letGo := context.WithCancel(context.Background())
+	defer letGo()
+	keys.HTTPClient = &http.Client{Transport: heldRead{release: release.Done()}}
+	inFlight := func() *keysFetch {
+		keys.mu.Lock()
+		defer keys.mu.Unlock()
+		return keys.inflight
+	}
+	reads := issuer.JWKSFetches()
+	notAtTheIssuer := func(when string) *keysFetch {
+		read := inFlight()
+		if read == nil {
+			t.Fatalf("run %d of %d: no read in flight %s, though the transport holds it", run+1, runs, when)
+		}
+		if fetches := issuer.JWKSFetches() - reads; fetches != 0 {
+			t.Fatalf("run %d of %d: the issuer had %d key-set reads %s, though the transport holds the read", run+1, runs, fetches, when)
+		}
+		return read
+	}
 	hungUp, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := keys.Key(hungUp, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
-		t.Fatalf("Key for a caller that hung up before any set was read: err = %v, want ErrKeySet", err)
+	var caller context.Context = hungUp
+	held := false
+	if readEndsFirst {
+		caller = &heldWait{Context: hungUp, hold: func() {
+			read := notAtTheIssuer("where the hung-up caller's wait begins")
+			letGo()
+			testwait.Receive(t, "the end of the read the hung-up caller started", read.done)
+			held = true
+		}}
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, fetched := keys.state(); !fetched.IsZero() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the read the hung-up caller started never landed within 5 s (key set read %d times)", issuer.JWKSFetches())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if _, err := keys.Key(caller, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("Key for a caller that hung up before any set was read: err = %v, want ErrKeySet (run %d of %d)", err, run+1, runs)
+	}
+	if readEndsFirst && !held {
+		t.Fatalf("run %d of %d: the hung-up caller's wait never looked its keys deadline up, so its read did not end first: the order was not held", run+1, runs)
+	}
+	if !readEndsFirst {
+		read := notAtTheIssuer("once the hung-up caller had its answer")
+		letGo()
+		testwait.Receive(t, "the end of the read the hung-up caller started", read.done)
+	}
+	if _, fetched := keys.state(); fetched.IsZero() {
+		t.Fatalf("run %d of %d: the hung-up caller's read was not kept: no set has been read", run+1, runs)
 	}
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-		t.Fatalf("Key after the hung-up caller's read landed: %v, want the key from that read", err)
+		t.Fatalf("run %d of %d: Key after the hung-up caller's read landed: %v, want the key from that read", run+1, runs, err)
 	}
-	if fetches := issuer.JWKSFetches(); fetches != 1 {
-		t.Fatalf("key set read %d times, want 1: the hung-up caller's read, kept for the next", fetches)
+	if fetches := issuer.JWKSFetches() - reads; fetches != 1 {
+		t.Fatalf("run %d of %d: key set read %d times, want 1: the hung-up caller's read, kept for the next", run+1, runs, fetches)
 	}
+}
+
+// A wait that has ended before it begins is ErrKeySet even where the read it waits on has ended
+// too, for both ways a wait ends: a caller that hung up, and a live caller whose keys deadline has
+// passed. fetch and settleMiss both wait through wait. Both of wait's cases are ready from the
+// start here, so each runs 64 times: where the select alone decides, each run is the read's set
+// at random, and 64 runs that are all ErrKeySet pass by chance once in 2^64.
+func TestAWaitThatEndedBeforeItBeganIsErrKeySetThoughItsReadHasEnded(t *testing.T) {
+	hungUp, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, ended := range []struct {
+		name   string
+		caller context.Context
+		cause  error
+	}{
+		{"a caller that hung up", hungUp, context.Canceled},
+		{"a live caller whose keys deadline has passed", WithKeysDeadline(context.Background(), time.Now().Add(-time.Second)), context.DeadlineExceeded},
+	} {
+		t.Run(ended.name, func(t *testing.T) {
+			keys := NewKeysAt("https://keys.example/keys")
+			for run := range 64 {
+				read := &keysFetch{done: make(chan struct{}), keys: []jose.JSONWebKey{{KeyID: "exchange-key"}}}
+				close(read.done)
+				set, err := keys.wait(ended.caller, read)
+				if set != nil || !errors.Is(err, ErrKeySet) || !errors.Is(err, ended.cause) {
+					t.Fatalf("wait for %s, its read ended: %d keys, err = %v, want none and ErrKeySet wrapping %v (run %d of 64)", ended.name, len(set), err, ended.cause, run+1)
+				}
+			}
+		})
+	}
+}
+
+// heldRead holds each key-set read in the transport, before it reaches the issuer, until release
+// is closed or the read's own context ends, and then sends it on.
+type heldRead struct {
+	release <-chan struct{}
+}
+
+func (h heldRead) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case <-h.release:
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// heldWait is a caller's context whose first look-up of the keys deadline runs hold. wait looks
+// the keys deadline up before it looks at the read or at the caller's end, so hold runs where the
+// caller's wait begins, after the read the caller joined or started is under way.
+type heldWait struct {
+	context.Context
+	once sync.Once
+	hold func()
+}
+
+func (c *heldWait) Value(key any) any {
+	if _, deadline := key.(keysDeadlineKey); deadline {
+		c.once.Do(c.hold)
+	}
+	return c.Context.Value(key)
 }
 
 // Callers that hang up while a key set accepts the connection and never answers start no extra
@@ -754,6 +881,29 @@ func TestNewKeysRefusesAnIssuerThatDoesNotDiscover(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), issuer.URL()) {
 		t.Errorf("NewKeys error %q names no issuer", err)
+	}
+}
+
+// An issuer a made-up token was pasted into, as its user name or in its query, whose discovery
+// cannot be read: NewKeys and the code flow's discovery name it through redact.URL and the failure
+// by its class, holding no part of the token, though the failure's own text quotes the discovery
+// URL, which is the issuer's with its path appended.
+func TestDiscoveryErrorsPrintNoCredentialOfTheIssuer(t *testing.T) {
+	const token = "madeUpIssuerToken0123456789"
+	refused := testport.Refused(t)
+	for name, issuer := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "/?token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, keysErr := NewKeys(context.Background(), issuer)
+			flowErr := NewCodeFlow(issuer, "client", "secret", "").Discover(context.Background())
+			for _, err := range []error{keysErr, flowErr} {
+				if err == nil || strings.Contains(err.Error(), token[:10]) {
+					t.Fatalf("discovery error %v holds part of the token, or is nil", err)
+				}
+			}
+		})
 	}
 }
 
