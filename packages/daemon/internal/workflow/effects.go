@@ -52,9 +52,9 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
 // Until then this name has callers of its own inside this module: leftItsPhase and noticeFor's
-// two reads (engine.go), startFix, tellStepsOfFix and moveFromHold (fix.go), mergeForward and
-// mergeForwardLanded (merge_forward.go), tellChecks (review.go) and
-// one test (checks_red_test.go). Each reads the same table as a
+// two reads (engine.go), startFix (fix_start.go), tellStepsOfFix (fix_tell.go) and
+// moveFromHold (fix_end.go), mergeForward and mergeForwardLanded (merge_forward.go),
+// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
 // caller of phase.RoleFor, since that is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
