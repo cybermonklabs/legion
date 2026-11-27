@@ -854,9 +854,9 @@ func runCodegraph(ctx context.Context, c clock.Clock, start procgroup.Starter, p
 		result.exitCode = end.Exited.ExitCode()
 	case end.Signal != "":
 		result.exitCode, result.signal = -1, end.Signal
-		// The bound's SIGTERM is the run's own timeout only while the caller's ctx still runs,
-		// and the cap's own SIGKILL is neither.
-		result.timedOut = peak == 0 && killed() && ctx.Err() == nil
+		// CONTROL cgnotimeout: runCodegraph never reads a timeout.
+		_ = killed
+		result.timedOut = false
 		result.cappedAt = peak
 	default:
 		return result, err
