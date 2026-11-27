@@ -115,9 +115,15 @@ const KEYS = ["CORE-1", "CORE-2", "CORE-3", "CORE-4"] as const;
  *  against one document - an issue's spec for its comments, asks and messages, the document a
  *  comment or an ask is anchored to, a document's own text (`refs.ScopeOf`) - so a driver whose
  *  record belongs to a document of its own writes this block into it and takes its world
- *  through `scopedTo`. */
-export function readingQuestionBlock(): string {
-  return `:::ask{#${READING_QUESTION_ID} urgency="med" multiple="false"}\n${READING_QUESTION}\n\n- Yes\n- No\n:::`;
+ *  through `scopedTo`.
+ *
+ *  `urgency` is the block's own: a decision's own document declares the question with another
+ *  urgency (`"high"`), since a block of another document of the issue that asks exactly what a
+ *  block of the same id asks is a copy of that block and shows its ask (`docs/copied_asks.go`),
+ *  so the spec's own block would make that one name the spec's ask; with another urgency it
+ *  settles into an ask of its own. */
+export function readingQuestionBlock(urgency: "med" | "high" = "med"): string {
+  return `:::ask{#${READING_QUESTION_ID} urgency="${urgency}" multiple="false"}\n${READING_QUESTION}\n\n- Yes\n- No\n:::`;
 }
 
 /** The address of the ask the question block of document `artifactId` settled into, once the

@@ -16,7 +16,7 @@ const REASONS = {
   4: "4. A standing box's reply is its own address, so it draws no Cancel reply (asserted absent).",
   5: "5. The box has no anchor, so it draws no Close (asserted absent below).",
   6: "6. An Agent row's box always answers a message of its thread (`agentReplyTo`), and its `AgentMessageComposer` draws the issue picker only while it answers none, so it draws no issue picker (asserted absent below).",
-  7: "7. `CommentThreadBody` and `AgentThreadBody` draw a loading line or an error in place of the thread while its read is out or failed, which unmounts the box as the move to another row does, and the box drawn when the read lands again is the one that row draws.",
+  7: "7. `CommentThreadBody` draws a loading line or an error in place of the thread while its read is out or failed, and `AgentThreadBody` an error where its row carries no conversation of its own; either unmounts the box as the move to another row does, and the box drawn once the thread is there again is the one that row draws.",
   8: "8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is read when the thread is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a box that is on screen; the shell draws no thread before it knows who is signed in, and another person is the sign-in file's row.",
   9: "9. An Agent row's box is drawn only while its session is in the live list; a session that leaves it and comes back unmounts and draws the box again at the same thread, as the move to another row and back does.",
   10: "10. A thread in a document is drawn inside the document's page where its block is found and beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`, `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the same thread, as the move to another row and back does, and a version or an admission that hides the document's page keeps the box mounted at its thread.",
@@ -84,10 +84,9 @@ export const coverage: readonly CoverageEntry[] = [
     "AgentThreadBody | AgentMessageComposer | key | <AgentMessageComposer key={`composer:${thread.thread_id}`}>",
     cells(`${HOST} · the column moves to another row, then back · an Agent row's box`)
   ),
-  ...answers(
-    "AgentThreadBody | AgentMessageComposer | conditional | !(agent === undefined || read === undefined || newest === undefined) ? …",
-    { reason: REASONS[9] }
-  ),
+  ...answers("AgentThreadBody | AgentMessageComposer | conditional | !(agent === undefined) ? …", {
+    reason: REASONS[9],
+  }),
   ...answers("ThreadTurns | AgentMessageComposer | conditional | (composerFirst) ? …", {
     reason: REASONS[8],
   }),
@@ -95,11 +94,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[8],
   }),
   ...answers(
-    "AgentThreadBody | AgentMessageComposer | early return | if (messages.isPending) return …",
-    { reason: REASONS[7] }
-  ),
-  ...answers(
-    "AgentThreadBody | AgentMessageComposer | early return | if (messages.isError) return …",
+    "AgentThreadBody | AgentMessageComposer | early return | if (read === undefined) return …",
     { reason: REASONS[7] }
   ),
   ...answers("AgentThreadBody | AgentMessageComposer | address prop | agent={agent}", {
@@ -253,11 +248,11 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers("Inbox | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[12] }),
   ...answers(
-    "Inbox | ReadingPane | early return | if (inbox.isPending || whoAmI.isPending) return …",
+    "Inbox | ReadingPane | early return | if (whoAmI.isPending || inboxAsks.pending) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "Inbox | ReadingPane | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
+    "Inbox | ReadingPane | early return | if (inboxAsks.failed || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
   ...answers("Inbox | ReadingPane | conditional | if (shown.length === 0 && held === undefined)", {
@@ -291,11 +286,11 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[12],
   }),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (inbox.isPending || whoAmI.isPending) return …",
+    "Inbox | ThreadCardRow | early return | if (whoAmI.isPending || inboxAsks.pending) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
+    "Inbox | ThreadCardRow | early return | if (inboxAsks.failed || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
   ...answers(

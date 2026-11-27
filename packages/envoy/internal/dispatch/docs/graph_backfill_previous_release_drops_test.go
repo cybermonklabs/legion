@@ -212,6 +212,71 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 	}
 }
 
+// A block's mention of a person, an agent's session or a role (refs.IdentityKinds) is no link of
+// the block's pairs: the index states it in the store alone, since no block_refs row holds a party,
+// and retracts it only where the version's text of the block no longer names it. So the pass over
+// a version the release before this one indexed after the store last stated the document, which
+// reads what the store still asserts of its blocks and retracts each link no pair of the version
+// holds, leaves those mentions standing. A retraction of the person's would be refused
+// (graphstore.ErrPersonTupleOutsideToPerson) and fail every index of the document, the forms
+// drain's among them, so the edges of the forms that release cannot read would never come back;
+// the session's and the role's would be missing from the store until a later index of the
+// document, which states again each mention the text names that the store does not hold.
+//
+// This build indexes version 1, the stand-in for the previous release writes and indexes version
+// 2, which appends a paragraph and drops no link (indexAsThePreviousRelease), and the forms drain
+// then indexes the document, which that version owes it.
+func TestThePassOverAVersionThePreviousReleaseIndexedKeepsItsBlocksIdentityMentions(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+
+	const body = "Over to [Person One](dispatch://person/person-1@example.com), dispatch://agent/session-1 and dispatch://role/reviewer.\n"
+	document := createOwedDocument(t, database, service, "CORE-1", "", "identities", "# Identities\n\n"+body, "")
+	settle(t, database, document)
+	drainBlockIndex(t, service, "version 1")
+	var refKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
+		t.Fatalf("read the document's ref_key: %v", err)
+	}
+	address := refKey + "#" + holderOf(t, service, document, "dispatch://role/reviewer")
+	mentions := func(when string) []string {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, address, []string{graphstore.TupleMentions})
+		if err != nil {
+			t.Fatalf("read what %s mentions %s: %v", address, when, err)
+		}
+		named := make([]string, len(held))
+		for index, tuple := range held {
+			named[index] = tuple.ToKind + " " + tuple.ToID
+		}
+		return named
+	}
+	stated := mentions("after this build indexed version 1")
+	for _, kind := range refs.IdentityKinds {
+		if !slices.ContainsFunc(stated, func(mention string) bool { return strings.HasPrefix(mention, kind+" ") }) {
+			markdown, _, err := service.TextWithBlocks(ctx, document)
+			t.Fatalf("the block states the mentions %v after this build indexed the text %q (%v), none of a %s: this test proves nothing",
+				stated, markdown, err, kind)
+		}
+	}
+
+	indexAsThePreviousRelease(t, database, service, document, func(tree *pmdoc.Node) *pmdoc.Node {
+		tree.Children = append(tree.Children, paragraphNode("previous-release-tail", "Rewritten by the previous release."))
+		return tree
+	}, nil, nil)
+	if _, owed := formsOwedRows(t, database)["artifact "+document]; !owed {
+		t.Fatalf("the forms queue does not hold the document after the previous release wrote version 2: this test proves nothing")
+	}
+
+	tick := reconcileRefsForms(t, service)
+
+	if tick.Documents != 1 || tick.OwedTexts != 0 {
+		t.Fatalf("the forms drain's pass = %#v over the version the previous release indexed, want the document indexed and its row settled", tick)
+	}
+	if after := mentions("after the forms drain indexed version 2"); !slices.Equal(after, stated) {
+		t.Errorf("the block states the mentions %v after the forms drain indexed version 2, want %v kept", after, stated)
+	}
+}
+
 // indexAsThePreviousRelease writes the document's next version as the release before this one
 // writes and indexes it, with every write that release makes and none of the store: the edit
 // reaches the store through the room, the settlement writes the version and its artifact.version

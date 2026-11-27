@@ -186,6 +186,8 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay",
   "inbox-threads.e2e.ts":
     "the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry",
+  "inbox-unchanged.e2e.ts":
+    "boots the base build and this build over a database of their own and compares the pages both serve over the same rows",
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
@@ -258,6 +260,7 @@ export const realStackReasons: Record<string, string> = {
   "nested-directive.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
+  "one-inbox.e2e.ts": "the one read answers from the tuples the server's writers append",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
   "parent-status-choice.e2e.ts":
     "each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote",
@@ -292,7 +295,7 @@ export const realStackReasons: Record<string, string> = {
   "reading-agents.e2e.ts":
     "the Agents rows write a message and a session's reply and read back what the server stored and threaded, for a session the fake registry lists, and the live rows open on a view the relay builds from the session's replay; every key and address reads the title the server holds for its issue",
   "reading-answers.e2e.ts":
-    "every row writes a record through the API and reads it back on a page the server builds from that write - the Answers rows are its `/me/answers` over the asks alice answered and replied on, the Reply thread is its `/me/replies` - and each key, address and party draws with the title and name the server's issue summaries and agent registry answer",
+    "every row writes a record through the API and reads it back on a page the server builds from that write - the Answers rows are its `/me/answers` over the asks alice answered and replied on, the Reply thread is its `/me/inbox`, the person page row is its `/people/{login}/nodes` over the records alice wrote - and each key, address and party draws with the title and name the server's issue summaries and agent registry answer",
   "reading-broadcasts.e2e.ts":
     "each row writes a broadcast or a recipient's reply through the API and reads it back on the broadcast's page, the Broadcasts list or the Agents page; the issue titles and the session name those texts draw come from the server's summaries and the fake listener's registry, and the send row reads the strip the page keeps after Dispatch refuses the send",
   "reading-conversation.e2e.ts":

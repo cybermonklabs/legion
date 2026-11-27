@@ -11,8 +11,9 @@ import (
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
 // with that table; the four after them are the people and the agents, which no table projects;
 // the eight after those are the ties of decisions, readings and asks
-// that block_refs, document_blocks, asks and ask_followers project; and the six after those are
-// the same ties as graph_edges answers them (edgeProjection), each one that view answers.
+// that block_refs, document_blocks, asks and ask_followers project; the six after those are the
+// same ties as graph_edges answers them (edgeProjection), each one that view answers; and the last
+// are the inbox's (inboxProjections, census_inbox.go).
 //
 // Each of the first three holds a row to the tuples that answer it as well as to its node row.
 // A row that names its node is answered from the tuples by graph_edges, refs.Edges and
@@ -29,7 +30,7 @@ import (
 // a session named past it is no node either. Each row side leaves those addresses out and counts
 // them as a class of its own (pastBound), so the census reports no difference the writers made on
 // purpose, in both directions.
-var projections = []projection{{
+var projections = append([]projection{{
 	name:     graphstore.KindComment,
 	nodeKind: graphstore.KindComment,
 	table:    "comments",
@@ -63,7 +64,8 @@ var projections = []projection{{
 	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
 		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
 		" tuples the node states now, a block with no part_of telling itself from one the document holds directly" +
-		" and a part_of to an ask's node read as the ask's block in the node's own document",
+		" and a part_of to an ask's node read as the ask's block in the node's own document;" +
+		" an item's block, whose rows are comment_blocks, message_blocks and ask_blocks, is no node of this kind",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
@@ -76,7 +78,7 @@ var projections = []projection{{
 		where octet_length(d.node_id) <= ` + addressBound,
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + placedLinks(`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	owed:    typedNodeOwed,
@@ -112,31 +114,51 @@ var projections = []projection{{
 		) named on named.from_node = r.from_node
 		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound + `
 		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
-	// Every block node is read, and not only those a row names: a mention or a pointer the store
-	// states out of a block no block_refs row names is a link graph_edges answers, and a node
-	// side that began at the rows could never find it. A block whose only links are of other
-	// kinds - its placement, its from_ask, its decided_by - states no link here and is no node
-	// of this kind; the block kind holds its placement.
+	// Every document block node is read, and not only those a row names: a mention or a pointer
+	// the store states out of a block no block_refs row names is a link graph_edges answers, and a
+	// node side that began at the rows could never find it. A block whose only links are of other
+	// kinds - its placement, its from_ask, its decided_by - states no link here and is no node of
+	// this kind; the block kind holds its placement. An item's block projects into its kind's link
+	// table, not into block_refs, so it is none either. Nor is a block's identity mention, its
+	// mentions of a person, an agent's session or a role (refs.IdentityKinds): the block index
+	// states it in the store alone, since block_refs holds no party (refs.TargetOf), so no row
+	// projects it, and the kind counts it as a figure of its own (identity_mentions).
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[])`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[]) and not `+blockIdentityMention) + ` as links
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`) + `
 		) held
 		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	narrowings: []narrowing{{
+		name: "identity_mentions",
+		note: "mentions of a person, an agent's session or a role out of a document's block, which the block index" +
+			" states in the store alone and no block_refs row projects, since block_refs holds no party",
+		count: `
+		select count(*) from graph_nodes n
+		cross join lateral (
+			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.asserted`,
+			`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = n.id and t.to_kind <> '`+graphstore.KindValue+`'
+			  and t.kind = any($1::text[]) and `+blockIdentityMention) + `
+		) held
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + refs.ItemBlockAddress(`n.id`) + ` and held.asserted`,
+	}},
 	rowOwed: typedRowOwed,
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author, asks.author, asks.answer, block_refs.decided_by, graph_tuples.kept_by, events.payload",
+	table:    "comments.author, messages.author, asks.author, asks.answer, asks.asked_of, block_refs.decided_by, graph_tuples.kept_by, events.payload, user_threads, user_agent_read, user_agent_state, user_agent_reply_read, user_agent_thread_dismissed, user_ask_snooze",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
 		" the owner of each session the server proved that wrote one, the person each ask's answer names and each" +
 		" answer the store took ever named, who wrote each decision and reading and their proved owners, and" +
-		" each person a decision's Keep ever named",
+		" each person a decision's Keep ever named, beside the person of each inbox and read-state row this" +
+		" release marked, the person each open ask it stated waits on, and every person a delivered_to, a" +
+		" mentions, a participates_in or a mark of the store's log ever named, which the writer of that tuple" +
+		" made a node of",
 	names:    `select p.login from (` + commentPeople(censusAuthors) + `) p`,
 	authored: true,
 	rows: `
@@ -147,12 +169,12 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindSession,
 	nodeKind: graphstore.KindSession,
-	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, block_refs.decided_by, events.payload",
+	table:    "comments.author, messages.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, block_refs.decided_by, events.payload",
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
 		" as askers, as followers and as who wrote a decision or a reading, and every session an ask.opened" +
 		" event named as the asker, an ask.follower_added event named or a comment.delivery receipt says the" +
 		" listener took an attempt to",
-	names:    `select s.id from (` + recordedSessions(censusAuthors) + `) s`,
+	names:    `select s.id from (` + recordedSessions(censusAuthors, MessagesNameTheirNode) + `) s`,
 	authored: true,
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
@@ -339,7 +361,7 @@ var projections = []projection{{
 			" node not gone, read node by node, as the triple of that node, anchored_to and its document, against"+
 			" every anchored_to a live ask node states now, an edge the old arm answers from an unmarked row aside",
 		askRowUnmarked, askPastBound, graphstore.KindAsk),
-}
+}, inboxProjections...)
 
 // addressBound is the store's address bound (graphstore.MaxAddressBytes) as a statement spells
 // it. It is written into the text rather than bound as a parameter because each side is spliced
@@ -354,6 +376,12 @@ func statedLinks(links ...string) string {
 	return `(select coalesce(string_agg(stated.link, ',' order by stated.link), '')
 		from (values (` + strings.Join(links, `), (`) + `)) stated (link))`
 }
+
+// blockIdentityMention is a predicate over a tuple t that holds of an identity mention: a
+// `mentions` to a person, an agent's session or a role (refs.IdentityKinds), which an index
+// states in the store alone, no projected row holding a party (block_ref's identity_mentions).
+var blockIdentityMention = `(t.kind = '` + graphstore.TupleMentions + `' and t.to_kind in ('` +
+	strings.Join(refs.IdentityKinds, `', '`) + `'))`
 
 // currentLinks is every link the node n of kind fromKind states now under the tuple kinds the
 // predicate kinds selects (written over t.kind), read as a statement reads a current relation:

@@ -27,8 +27,8 @@ import {
   createMessage,
   createProject,
   disconnectLiveSockets,
+  getAgentConversation,
   getAgentStates,
-  listAgentMessages,
   putAgentState,
   queuedEnvelopesOf,
   replyToMessageDelivery,
@@ -653,7 +653,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
   await setCreatedAt("messages", followUp.id, at(30));
   // The fixture holds only if the server lists A first, with both replies unread.
   expect(
-    (await listAgentMessages(planner.session_id)).map((read) => [
+    (await getAgentConversation(planner.session_id)).map((read) => [
       read.message.body,
       (read.replies ?? [])
         .filter((reply) => reply.author.id === planner.session_id)

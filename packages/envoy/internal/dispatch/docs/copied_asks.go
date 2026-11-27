@@ -172,9 +172,9 @@ type copySourcesRead func(
 	unindexed []string,
 ) (map[string]copiedSource, error)
 
-// readBlockAsks reads, in tx, the ask each of blocks, ask blocks of the document artifactID, has
-// (blockAsks): the rows first, as the caller's transaction, which holds the document owner's lock,
-// reads them; then the asks the blocks no row indexes are copies of, through copies:
+// readBlockAsks reads the ask each block of the document artifactID has (blockAsks).
+// It reads the rows without locking them, then looks for a copy source for each block
+// with no row, through copies:
 // copiedAskSources for settlement, which opens an ask from what it reads, and readCopiedAskSources
 // for every other reader, which opens none and so takes no copy lock. owner is the document's
 // owner, nil where the caller does not hold it, and then read only where a block no row indexes

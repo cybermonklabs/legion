@@ -10,9 +10,24 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// openNextCommentDeliveryAttempt opens the next attempt of comment's delivery to target, as a
+// Retry's claim does (claimCommentDeliveryAttempt): the attempt's number and the transaction's
+// now() read first, then the attempt opened at them.
+func openNextCommentDeliveryAttempt(ctx context.Context, tx pgx.Tx, comment model.Comment, target ResolvedMention) (attemptClaim, error) {
+	var next int
+	var at time.Time
+	if err := tx.QueryRow(ctx, `
+		select coalesce(max(attempt), 0) + 1, now() from comment_deliveries where comment_id = $1 and target = $2
+	`, comment.ID, target.Target).Scan(&next, &at); err != nil {
+		return attemptClaim{}, err
+	}
+	return openCommentDeliveryAttempt(ctx, tx, comment, target, next, at)
+}
 
 // A comment list is answered under a validator read before its body is built: the watermark three
 // deferred constraint triggers raise for every write of comments, comment_mentions and
@@ -81,7 +96,7 @@ func TestADeliveryClaimMovesTheCommentListsValidator(t *testing.T) {
 		t.Fatalf("open the claim's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := openCommentDeliveryAttempt(ctx, tx, comment, ResolvedMention{Target: "session:s1", Delivery: "steer"}); err != nil {
+	if _, err := openNextCommentDeliveryAttempt(ctx, tx, comment, ResolvedMention{Target: "session:s1", Delivery: "steer"}); err != nil {
 		t.Fatalf("claim the delivery attempt: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -115,7 +130,7 @@ func TestADeliveryResolutionMovesTheCommentListsValidator(t *testing.T) {
 		t.Fatalf("open the claim's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	claim, err := openCommentDeliveryAttempt(ctx, tx, comment, ResolvedMention{Target: "session:s1", Delivery: "steer"})
+	claim, err := openNextCommentDeliveryAttempt(ctx, tx, comment, ResolvedMention{Target: "session:s1", Delivery: "steer"})
 	if err != nil {
 		t.Fatalf("claim the delivery attempt: %v", err)
 	}
@@ -399,7 +414,7 @@ func TestTwoWritersCommittingAtOnceEachKeepTheirBump(t *testing.T) {
 		t.Fatalf("open the claim's transaction: %v", err)
 	}
 	defer func() { _ = claimer.Rollback(ctx) }()
-	if _, err := openCommentDeliveryAttempt(ctx, claimer, comment, ResolvedMention{Target: "session:s1", Delivery: "steer"}); err != nil {
+	if _, err := openNextCommentDeliveryAttempt(ctx, claimer, comment, ResolvedMention{Target: "session:s1", Delivery: "steer"}); err != nil {
 		t.Fatalf("claim the delivery attempt: %v", err)
 	}
 

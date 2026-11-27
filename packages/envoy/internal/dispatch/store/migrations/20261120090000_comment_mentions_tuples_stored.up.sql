@@ -1,0 +1,31 @@
+-- 20261120090000_comment_mentions_tuples_stored.up.sql
+--
+-- comment_mentions learns whether the node and tuple store holds what its row says (R5):
+--   tuples_stored   true for a row whose writer stated, in the transaction that wrote the row, the
+--                   mentions tuple out of the comment's node to the row's target, the second one
+--                   to resolved_session_id where the target resolved to a session, and the
+--                   comment's urgency, its `delivery` value tuple, which delivery projects (api's
+--                   commentMentionFacts). False for a row an older build wrote, for the row of a
+--                   comment the store leaves out, and for a target or a session past the store's
+--                   address bound, which states no tuple.
+--
+-- It is the row's marker, as comments.tuples_stored (20261116124447) and refs.tuples_stored
+-- (20261116135959) are: the census of the inbox's projections reads a row that holds true as the
+-- projection of those tuples, and a row that holds false as the old writer's, until nothing
+-- writes one. A flag rather than a moment, as those two are, because nothing updates a
+-- comment_mentions row: its writer inserts it with its comment, in the same transaction, and every
+-- later statement on the table reads it or locks it. Every writer of this release sets the column
+-- in the insert that writes the row. A row a build of the release before this one inserts, during
+-- a roll or after a rollback, names no such column and takes the default.
+--
+-- A column with a constant default and no constraint beyond `not null` is a catalog change on
+-- PostgreSQL 11 and later: no stored row is rewritten or read, and every existing row reads false,
+-- which is true of it, since no writer before this one stated a mention as a tuple. The ALTER takes
+-- ACCESS EXCLUSIVE on comment_mentions for its catalog write and no lock on any other table, so it
+-- closes no cycle with a comment write of the release still serving, which takes comment_mentions
+-- after the comment's row; the runner's lock_timeout bounds its wait (pgmigrate.LockTimeout), and
+-- the runner applies it again on a timeout (pgmigrate.LockTimeoutAttempts). The release before this
+-- one reads and writes comment_mentions by naming its columns, so the two roll side by side;
+-- rolling back past this migration is an image rollback alone, and the column left behind is read
+-- by nothing.
+alter table comment_mentions add column tuples_stored boolean not null default false;

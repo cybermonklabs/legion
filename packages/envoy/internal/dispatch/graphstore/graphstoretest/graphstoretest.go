@@ -22,15 +22,22 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // graph_tuples from outside that package goes through, a fresh slice for each caller: Write and
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
 // queued on a write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's
-// statement; and QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for
-// the writers that record an author, a reached session and a session an ask names. Each is a
-// function of the package, never a method, so a call of one is named by the package wherever it
-// is made. It is the one list the source scans that hold the store's writers read: graphstore's
-// register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers
-// of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore). The list holds FillScopes
-// too, the backfill's fill of the project of a node stored with none.
+// statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
+// writers that record an author, a reached session and a session an ask names; QueueAttempted,
+// which states what a delivery attempt's row holds after each write of it;
+// ToPerson, QueueToPerson and ToPersonArms, the one writer of a delivered_to, a mentions or a
+// participates_in that names a person; FromPerson, QueueFromPerson, QueueMarksEnded and MarkArm,
+// the one writer of a mark from a person (read_through, dismissed, cleared, reply_read and
+// snoozed); and FillScopes, the backfill's fill of the project of a node stored with none. Each
+// is a function of the package, never a method, so a call of one is named by the package wherever
+// it is made. It is the one list the source scans that hold the store's writers read:
+// graphstore's register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan
+// of the writers of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
-		"QueueAuthored", "QueueReached", "QueueSessionRecorded", "FillScopes"}
+		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
+		"QueueAttempted", "ToPerson", "QueueToPerson", "ToPersonArms",
+		"FromPerson", "QueueFromPerson", "QueueMarksEnded", "MarkArm",
+		"FillScopes"}
 }

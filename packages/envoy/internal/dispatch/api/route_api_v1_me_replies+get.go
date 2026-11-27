@@ -6,6 +6,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// kept for one release: inbox-old-reads
 var _ = declareRoute(routeDecl{
 	Method:      http.MethodGet,
 	Pattern:     "/api/v1/me/replies",

@@ -168,6 +168,7 @@ var testHookRoutes = []string{
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
 	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
 	"POST /api/v1/writes/_test/slow",
+	"PUT /api/v1/writes/_test/fail-between/{writer}",
 	"POST /api/v1/settings/new-issue/_test",
 	"GET /api/v1/messages/_test/queued",
 }
@@ -736,6 +737,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/inbox",
 		"GET /api/v1/me/answers",
 		"GET /api/v1/me/replies",
+		// The one read of what is tied to a person is no older row either: it answers for the
+		// credential's own person alone, so a credential that proves none has nothing to read.
+		"GET /api/v1/me/inbox",
 		"PUT /api/v1/me/threads/{id}/read",
 		// The Inbox's Mark all read is no older row either: it writes the person's own read
 		// marks, so it is theirs as the two rows above it are.
@@ -743,6 +747,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
 		"GET /api/v1/agents/{session_id}/messages",
+		// The conversation read is this change's own row: it answers the rows the read above
+		// answers, one session's conversation, so it needs that read's scope.
+		"GET /api/v1/agents/{session_id}/conversation",
 		// Which sessions Dispatch holds a record of is this change's own row: it answers only
 		// what the conversation read above already tells a caller, so it admits the callers
 		// that read admits and needs its scope.

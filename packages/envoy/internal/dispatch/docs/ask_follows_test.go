@@ -107,7 +107,7 @@ func requireFollowCausedAt(t *testing.T, reconciled *settlementReconciliation, a
 	if err != nil {
 		t.Fatalf("match the follows to their events: %v", err)
 	}
-	if stated := caused[place]; len(caused) != 1 || len(stated) != 2 || stated[0] != node || stated[1] != followed {
+	if stated := caused[place].stated; len(caused) != 1 || len(stated) != 2 || stated[0] != node || stated[1] != followed {
 		t.Fatalf("the follows matched to %v, want the node and the follow of ask %s at the ask.opened's place, %d", caused, ask, place)
 	}
 	if _, err := reconciled.causedByEvent(appended[:place]); err == nil || !strings.Contains(err.Error(), ask) {

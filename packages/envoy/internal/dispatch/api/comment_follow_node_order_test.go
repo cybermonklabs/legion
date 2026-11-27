@@ -44,6 +44,16 @@ func TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder(t *testing.T)
 	const token = "a-token-proving-the-ask-threads-session"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	issue := rig.seedRoutedIssue(t)
+	// The ask waits on whoever holds the issue, and its create reaches that person, which writes
+	// their person node (inboxwrite.Record's assignee arm). A new issue is held by the person who
+	// created it, alice here, so it is handed to carol first, a person who is neither of the two
+	// authors this test races: the ask's create then leaves both of their nodes unwritten, as the
+	// race needs them.
+	const waitingPerson = "carol"
+	seedPeople(t, rig.database, waitingPerson)
+	if handed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"assignee": waitingPerson}); handed.Code != http.StatusOK {
+		t.Fatalf("hand the issue to %s: status=%d body=%s", waitingPerson, handed.Code, handed.Body.String())
+	}
 	ask := openAskAs(t, rig.handler, issue, "the-session-that-asked", "Which option?")
 
 	// The comment runs on a store of one connection, so the backend it waits on is known before

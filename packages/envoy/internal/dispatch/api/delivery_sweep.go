@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -495,7 +496,12 @@ func (s *server) settleUndeliverableMention(ctx context.Context, undeliverable u
 	if err != nil {
 		return false, err
 	}
-	receipt, err := s.appendEvent(ctx, tx, commentDeliveryReceipt(comment, comment.Author, failed))
+	// The receipt, and under it what the attempt's row now holds (graphstore.QueueAttempted), in
+	// one batch.
+	receipt, err := s.appendEventThen(ctx, tx, commentDeliveryReceipt(comment, comment.Author, failed), func(b *store.WriteBatch) error {
+		graphstore.QueueAttempted(b, comment.Author, graphstore.LatestEvent, graphstore.CommentAttempt(comment.ID, failed.Target, failed.Attempt))
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}

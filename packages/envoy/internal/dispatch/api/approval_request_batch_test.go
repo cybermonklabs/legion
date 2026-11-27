@@ -145,37 +145,39 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  11. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
 //  12. a batch of 2: the owning issue's owner lock, and in the statement after it the row that
-//     lock guards (requireOpenOwner, through store.LockOwnerAndRead). The lock assigns no
-//     transaction id, and the read is a statement of its own because a statement's snapshot is
-//     taken before it waits;
+//     lock guards, with the project its asks fall through to, which is none here: the issue holds
+//     an assignee, so no project lock is taken (requireOpenOwnerStatusHoldingDefault, through
+//     store.LockOwnerAndRead). The lock assigns no transaction id, and the read is a statement of
+//     its own because a statement's snapshot is taken before it waits;
 //  13. the document's settled version number (settledVersionNumber);
 //  14. a batch of 3: the approval before the write - the latest review and the open request
 //     (attachApproval's queueApprovals) - and the transaction's now(), which dates the new ask's
 //     node and is the default its row's created_at takes (requestArtifactApproval);
 //  15. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
-//  16. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
-//     every read of that person shares), read over the owner before the ask's row is queued;
+//  16. the person this request reaches, which the answer names and the request is delivered to
+//     (askWaitingOnPerson, the one rule every read of that person shares), read over the owner
+//     before the ask's row is queued;
 //  17. the latest approved review the request carries (docs.LatestApprovedReview); the new ask's
 //     id is drawn in the process (openApprovalAsk) and its time was read in 14, so neither costs
 //     a round trip;
 //  18. the question's references as they stand, which the replacement is planned against
-//     (queueNewAskReferences, through refs.PlanReplace);
+//     (queueNewAskReferences, through refs.PlanItemReplace);
 //  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
-//     refs.ReadItemIndex);
-//  20. a batch of 20: the whole write phase, sent back to back - the ask's node, in its
-//     document's project, which costs no read of its own since the document was read with its
-//     project, and its author's (graphstore.AskFacts), in the three statements of the store's
-//     node write (graphstore.QueueNodes: the insert, the check that no node moves project, and
-//     the move), the ask row naming its node, its block state and the part rows of its question
-//     and options, the references and the row the ask owes the grammar's re-index queue, deleted
-//     with them (refs.Replacement.Queue), the ask.opened event with its payload and the
-//     issue's last_seq, the reference stamps, the ask's authored_by and the base attributes the
-//     node write stated - its visibility, its state and its project - appended under that event
-//     (graphstore.QueueCaused), the author's follow, its follower row marked for the ask's node
-//     in one statement, and its followed_by stated under that ask.opened in the statement after
-//     it (asks.PlanFollowNewAsk, which reads nothing for an ask this request creates), and the
-//     approval as the request leaves it;
+//     refs.ReadItemIndex); the request's record in its thread reads nothing, since an opening
+//     write is handed the person it reaches (inboxwrite.PlanRecord);
+//  20. one batch: the whole write phase, sent back to back - the ask's node, in its document's
+//     project, which costs no read of its own since the document was read with its project, and
+//     its author's (graphstore.AskFacts), in the statements of the store's node write
+//     (graphstore.QueueNodes), the ask row naming its node, its block state and the part rows of
+//     its question and options, the references and the row the ask owes the grammar's re-index
+//     queue, deleted with them (refs.Replacement.Queue), the ask.opened event with its payload
+//     and the issue's last_seq, the reference stamps, the ask's authored_by and the base
+//     attributes the node write stated, appended under that event (graphstore.QueueCaused), the
+//     author's follow and its followed_by (asks.PlanFollowNewAsk), what the parts and the
+//     citations state, the request's record in its thread - the requester's participates_in and
+//     the participates_in and delivered_to of the person it waits on (inboxwrite.Recording.Queue)
+//     - and the approval as the request leaves it;
 //  21. commit;
 //  22. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);

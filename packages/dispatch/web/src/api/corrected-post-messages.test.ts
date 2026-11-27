@@ -70,10 +70,10 @@ test("a message's edit writes its time into the issue's message list, as into th
 });
 
 // The Agents page's reply composer quotes the message it answers from `["agents", session,
-// "messages"]` (`AgentsPage.tsx`, `replyParentOf(…, messages.data)`), and stays open with that
+// "conversation"]` (`AgentsPage.tsx`, `replyParentOf(…, messages.data)`), and stays open with that
 // quote when the conversation's refetch fails. An issue message targeted at a session is listed
 // there, so its delete must mark that copy too.
-const AGENT = ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "messages"];
+const AGENT = ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "conversation"];
 
 test("a message's delete writes its mark into the Agents page's copy of the session's messages", () => {
   const client = cached();

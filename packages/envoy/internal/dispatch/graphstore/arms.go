@@ -55,6 +55,9 @@ type Claim struct {
 // A node's or a tuple's SourceEvent may be LatestEvent, for a record whose event its write phase
 // appends right before this statement: every cause column is read through causeOf.
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
+	if err := refusePersonTuples(tuples, claims); err != nil {
+		return "", nil, err
+	}
 	sql, params, _, err := writeArms(first, nodes, tuples, claims, true)
 	return sql, params, err
 }
@@ -67,6 +70,9 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 // base attributes were stated here would be a row naming one event and base tuples naming
 // another. A node the arm found there is another write's and is neither marked nor caused.
 func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, Uncaused, error) {
+	if err := refusePersonTuples(tuples, claims); err != nil {
+		return "", nil, Uncaused{}, err
+	}
 	return writeArms(first, nodes, tuples, claims, false)
 }
 
@@ -166,6 +172,18 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
 // nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMarks), as
 // made, so the append that cause comes with states those same attributes for that event.
+//
+// A node the store holds already is left out before the insert, by a probe of graph_nodes' key
+// for each node handed in, and only the nodes it does not hold reach the upsert; the conflict arm
+// stays for them, because two writes can make the same new node at once - two requests reaching
+// a person the store holds no node of - and a plain insert would fail the second with a unique
+// violation where this one finds the first's row and does nothing. A node is history and never
+// goes, so the probe, which reads the statement's snapshot as the rest of the write does, leaves
+// out only nodes that stay. It is a subquery behind an offset 0, so it stays one index probe per
+// node handed in whatever the planner estimates of the arrays: joined plainly, a thousand-person
+// delivery could be planned as a hash anti-join over every node. Leaving the held nodes out of
+// the upsert cost 5.1 ms where the conflict arm alone cost 7.7 for 999 people the store held
+// (medians of 30, 2026-11-21).
 func nodeArm(first int, states bool) string {
 	source := causeOf("source_event")
 	if !states {
@@ -176,15 +194,27 @@ func nodeArm(first int, states bool) string {
 	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `,
 	       project_key, string_to_array(parties, ' ')
 	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
+	where not exists (select 1 from graph_nodes held where held.kind = node.kind and held.id = node.id offset 0)
 	order by kind, id
 	on conflict (kind, id) do nothing
-	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
+	returning ` + nodeWrittenColumns + `
 )`
 	if !states {
 		return written
 	}
 	return written + `,
-graph_node_attributes as (
+` + nodeAttributesArm
+}
+
+// nodeWrittenColumns is what the insert of graph_nodes_written answers of each node it made, which
+// nodeAttributesArm reads.
+const nodeWrittenColumns = `kind, id, visibility, state, project_key, parties, made_at, made_by, source_event`
+
+// nodeAttributesArm states the base attributes of each node graph_nodes_written made, read off the
+// rows its insert answered (nodeWrittenColumns), at the node's own made_at, made_by and
+// source_event: its visibility and state always, and its project and parties where it carries them.
+// nodeArm and ToPersonArms write it right after their insert of the nodes.
+const nodeAttributesArm = `graph_node_attributes as (
 	insert into graph_tuples (` + tupleWriteColumns + `)
 	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
 	       written.made_at, written.made_by, written.source_event, null, true
@@ -196,7 +226,6 @@ graph_node_attributes as (
 	where attribute.value is not null
 	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
 )`
-}
 
 // claimArms append what each claim changed. The far ends a node holds now are read the way
 // CurrentOut reads them (CurrentTupleRead), through graph_tuples_as_of_out: the kind each read

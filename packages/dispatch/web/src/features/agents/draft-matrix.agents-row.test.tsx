@@ -87,10 +87,12 @@ import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
+import { agentConversationQuery } from "../../api/queries";
 import type { IssueSummary, Message } from "../../api/types";
 import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -220,13 +222,13 @@ async function openAgents(): Promise<Page> {
   const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
   let queryClient = newClient();
   // Newest first, as Dispatch answers: the row folds every exchange but the newest.
-  const messages = spyOn(api, "listAgentMessages").mockResolvedValue([
+  const messages = spyOn(api, "getAgentConversation").mockResolvedValue([
     { message: messageB, replies: [] },
     { message: messageA, replies: [] },
   ]);
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
     spyOn(api, "listAgents").mockResolvedValue([planner]),
     messages,
     spyOn(api, "listIssues").mockResolvedValue([coreIssue]),
@@ -254,7 +256,9 @@ async function openAgents(): Promise<Page> {
     dropMessageA: async () => {
       messages.mockResolvedValue([{ message: messageB, replies: [] }]);
       await act(() =>
-        queryClient.invalidateQueries({ queryKey: ["agents", "planner-session", "messages"] })
+        queryClient.invalidateQueries({
+          queryKey: agentConversationQuery("planner-session").queryKey,
+        })
       );
       await waitFor(() =>
         expect(row().querySelector('[data-turn="message:message-1"]')).toBe(null)

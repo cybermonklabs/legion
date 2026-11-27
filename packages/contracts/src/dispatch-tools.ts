@@ -1949,7 +1949,9 @@ export const dispatchToolSpecs = [
     name: "dispatch_message",
     example: { issue: "DSP-1", body: "Implementation started." },
     description:
-      "Post a note humans must read now: a reply to a human's message or a deliverable that landed. A to-do only a human can " +
+      "Post a note on an issue: a reply to a human's message or a deliverable that landed. It reaches the Inbox of the other people " +
+      "who take part in its thread (who wrote, answered or were mentioned in it) and of each person it names by address " +
+      "(dispatch://person/<login>), and no one else: a message that starts a thread reaches only the people it names. A to-do only a human can " +
       "complete is an ask (dispatch ask), so it reaches their inbox. Never progress or status updates - Dispatch is a high-signal " +
       "record, not a log. Not a design question (write it as an ask block in the document), a design decision you made (write it as a " +
       "`decision` block in the spec's `## Decisions` part), or document feedback (dispatch comment). " +

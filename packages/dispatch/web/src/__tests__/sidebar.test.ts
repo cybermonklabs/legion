@@ -7,8 +7,17 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../api/client";
 import { whoAmIQuery } from "../api/queries";
-import type { CredentialPendingRow, IssueSummary, Priorities, Project } from "../api/types";
+import type {
+  CredentialPendingRow,
+  IssueSummary,
+  MyReplyRow,
+  OpenAskRow,
+  Priorities,
+  Project,
+} from "../api/types";
+import { answerOneRead } from "../features/inbox/inbox-fixture";
 import { Sidebar } from "../features/sidebar/Sidebar";
+import { replyRow } from "../features/threads/replies-fixture";
 
 /** The summary call the rail reads (`?summary=true`): the two fault counts, and `empty` where
  *  the deployment has written no priority at all. Neither answer carries a priority row. */
@@ -81,15 +90,25 @@ function project(overrides: Partial<Project> = {}): Project {
 
 /** `pending` is the broker's list of credential requests waiting on the viewer; without it this
  *  Dispatch has no broker (the list answers `null`). `priorities` is what the rail's summary
- *  call answers; by default this deployment has written none. */
+ *  call answers; by default this deployment has written none. `threads` are the reader's Reply
+ *  rows. The reader's asks and threads reach the Inbox count through the one read, which answers
+ *  every ask below - one of them waiting on an agent - so the count is the rail's own narrowing
+ *  to the asks that wait on the reader. */
 function renderSidebar(
   pathname = "/",
-  pending?: CredentialPendingRow[],
-  priorities: Priorities = summary(0, 0, false)
+  {
+    pending,
+    priorities = summary(0, 0, false),
+    threads = [],
+  }: {
+    pending?: CredentialPendingRow[];
+    priorities?: Priorities;
+    threads?: readonly MyReplyRow[];
+  } = {}
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
   railSpies.push(listPriorities);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([
+  const asks: OpenAskRow[] = [
     {
       anchor: null,
       answer: null,
@@ -207,7 +226,8 @@ function renderSidebar(
       },
       urgency: "med",
     },
-  ]);
+  ];
+  railSpies.push(answerOneRead({ asks, threads }));
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(
     pending === undefined ? null : { pending }
   );
@@ -240,7 +260,6 @@ function renderSidebar(
   );
   return {
     getCredentialPending,
-    getInbox,
     getIssue,
     listIssues,
     listPriorities,
@@ -264,7 +283,6 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -272,22 +290,23 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
 });
 
 test("sidebar counts a pending credential request in the Inbox count, beside the asks waiting on you", async () => {
-  const sidebar = renderSidebar("/", [
-    {
-      identifiers: ["DEMO_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-1",
-      requested_at: "2026-09-10T00:00:00Z",
-      session: { enrollment: null, request: null },
-    },
-  ]);
+  const sidebar = renderSidebar("/", {
+    pending: [
+      {
+        identifiers: ["DEMO_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-1",
+        requested_at: "2026-09-10T00:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+    ],
+  });
 
   try {
     expect(await screen.findByRole("link", { name: "Inbox 3" })).toBeTruthy();
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -298,25 +317,27 @@ test("sidebar counts a pending credential request in the Inbox count, beside the
 // can decide it any more, so the rail's count leaves it out: only the pending request is counted
 // beside the asks.
 test("sidebar leaves an expired credential request out of the Inbox count", async () => {
-  const sidebar = renderSidebar("/", [
-    {
-      identifiers: ["DEMO_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-1",
-      requested_at: "2026-09-10T00:00:00Z",
-      session: { enrollment: null, request: null },
-      state: "pending",
-    },
-    {
-      expires_at: "2026-09-10T01:00:00Z",
-      identifiers: ["DEEL_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-2",
-      requested_at: "2026-09-09T00:00:00Z",
-      session: { enrollment: null, request: null },
-      state: "expired",
-    },
-  ]);
+  const sidebar = renderSidebar("/", {
+    pending: [
+      {
+        identifiers: ["DEMO_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-1",
+        requested_at: "2026-09-10T00:00:00Z",
+        session: { enrollment: null, request: null },
+        state: "pending",
+      },
+      {
+        expires_at: "2026-09-10T01:00:00Z",
+        identifiers: ["DEEL_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-2",
+        requested_at: "2026-09-09T00:00:00Z",
+        session: { enrollment: null, request: null },
+        state: "expired",
+      },
+    ],
+  });
 
   try {
     expect(await screen.findByRole("link", { name: "Inbox 3" })).toBeTruthy();
@@ -324,7 +345,6 @@ test("sidebar leaves an expired credential request out of the Inbox count", asyn
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -340,7 +360,6 @@ test("sidebar marks the current project", async () => {
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -358,7 +377,6 @@ test("sidebar never requests the full issue list", async () => {
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -377,18 +395,13 @@ for (const [unread, name] of [
       kind: "user",
       login: "alice",
     });
-    const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
-      as_of: "2026-10-12T00:00:00Z",
-      limit: 1,
-      offset: 0,
-      rows: [],
-      total: unread,
+    const sidebar = renderSidebar("/", {
+      threads: Array.from({ length: unread }, (_, index) => replyRow(`c${index}`)),
     });
-    const sidebar = renderSidebar("/");
 
     try {
       await waitFor(() =>
-        expect(listMyReplies).toHaveBeenCalledWith({ kind: ["reply", "agent"], limit: 1 })
+        expect(api.getMeInboxPage).toHaveBeenCalledWith({ limit: 1, state: "unread" })
       );
       await waitFor(() =>
         expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe(name)
@@ -397,19 +410,19 @@ for (const [unread, name] of [
     } finally {
       sidebar.view.unmount();
       sidebar.getCredentialPending.mockRestore();
-      sidebar.getInbox.mockRestore();
       sidebar.getIssue.mockRestore();
       sidebar.listIssues.mockRestore();
       sidebar.listProjects.mockRestore();
       whoAmI.mockRestore();
-      listMyReplies.mockRestore();
     }
   });
 }
 
 test("sidebar keeps its hide control available while navigation loads", async () => {
   const user = userEvent.setup();
-  const getInbox = spyOn(api, "getInbox").mockImplementation(() => new Promise<never>(() => {}));
+  const getMeInbox = spyOn(api, "getMeInboxPage").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
   const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
     () => new Promise<never>(() => {})
   );
@@ -439,7 +452,7 @@ test("sidebar keeps its hide control available while navigation loads", async ()
     expect(hideCount).toBe(1);
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    getMeInbox.mockRestore();
     getCredentialPending.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
@@ -449,7 +462,7 @@ test("sidebar keeps its hide control available while navigation loads", async ()
 // The rail's Priorities entry (INFRA-2947, R8): the way to the page from every other page, with
 // the number of faults now beside it, which is the two fault counts added.
 test("the rail's Priorities entry opens the page and counts both faults as one number", async () => {
-  const sidebar = renderSidebar("/", undefined, summary(5, 7));
+  const sidebar = renderSidebar("/", { priorities: summary(5, 7) });
 
   try {
     const entry = await screen.findByRole("link", { name: /^Priorities/ });
@@ -458,7 +471,6 @@ test("the rail's Priorities entry opens the page and counts both faults as one n
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();
@@ -477,7 +489,6 @@ test("the rail's Priorities entry carries no number where no priority exists", a
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
-    sidebar.getInbox.mockRestore();
     sidebar.getIssue.mockRestore();
     sidebar.listIssues.mockRestore();
     sidebar.listProjects.mockRestore();

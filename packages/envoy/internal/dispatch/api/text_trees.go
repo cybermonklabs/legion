@@ -79,6 +79,10 @@ type displayTreeReader struct {
 	// so a shaper that fans out gathers its parts before it registers them or calls resolve.
 	texts []readDisplayText
 	at    map[[32]byte]int
+	// preread says the request's own statement already read the table's trees of its texts, and
+	// held is what it answered (readDisplayTreesHeld), which resolve takes in place of a query.
+	preread bool
+	held    map[[32]byte]json.RawMessage
 }
 
 // readDisplayText is one distinct text of a request, the fields its tree fills, and that tree
@@ -118,6 +122,18 @@ func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode,
 		return nil
 	}
 	return &displayTreeReader{server: s, ctx: ctx, mode: mode}
+}
+
+// readDisplayTreesHeld is readDisplayTrees for a read whose one statement has already read the
+// table's trees of the texts its answer carries (GET /api/v1/me/inbox): held is what that
+// statement answered, which resolve takes in place of a query of its own. A text it holds no tree
+// of is read for display and stored back, as every reader's misses are.
+func (s *server) readDisplayTreesHeld(ctx context.Context, trees bool, held map[[32]byte]json.RawMessage) *displayTreeReader {
+	reader := s.readDisplayTrees(ctx, trees)
+	if reader != nil {
+		reader.preread, reader.held = true, held
+	}
+	return reader
 }
 
 // builtDisplayTrees is the reader of an answer whose texts are read where they stand: a write's
@@ -296,8 +312,13 @@ func (r *displayTreeReader) resolve() {
 
 // storedTrees is the table's tree of each of sums, and nothing at all where there is no table to
 // ask, where a connection of the caller's is already held, or where the query failed - each of
-// which leaves every text to be read for display, as it was before there was a table.
+// which leaves every text to be read for display, as it was before there was a table. A reader
+// whose request's statement read the table itself (preread) asks nothing and answers what that
+// statement held.
 func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMessage {
+	if r.preread {
+		return r.held
+	}
 	if r.server == nil || len(sums) == 0 || store.HoldsPooledConnection(r.ctx) {
 		return nil
 	}

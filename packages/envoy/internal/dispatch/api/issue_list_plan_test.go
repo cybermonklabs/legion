@@ -23,6 +23,7 @@ type analyzedNode struct {
 	Relationship     string         `json:"Parent Relationship,omitempty"`
 	RelationName     string         `json:"Relation Name,omitempty"`
 	IndexName        string         `json:"Index Name,omitempty"`
+	Filter           string         `json:"Filter,omitempty"` // the filter a scan applies (walkScaleAgentArm)
 	Rows             float64        `json:"Actual Rows"`
 	Loops            float64        `json:"Actual Loops"`
 	RemovedByFilter  float64        `json:"Rows Removed by Filter,omitempty"`

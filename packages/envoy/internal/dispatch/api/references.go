@@ -31,21 +31,25 @@ import (
 // them all. The parts are read with the whole grammar, through a reader of their own
 // (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
 // resolve against for an ask whose insert this transaction has queued
-// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads.
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads; scope is
+// likewise the ask's node as that write queued it (refs.WrittenItem), nil for one the store holds.
 // questionReconciled says the write queued the reconciliation of the ask's question before the
 // parts (queueNewAskReferences, queueEditedReferences); a write that holds the parts alone - an
 // answer, a resolution, a restoration - passes false, and the parts' step reconciles the question
 // too and settles the ask's row of the forms queue after both (docs.Ledger.QueueAskParts).
+// What the parts state in the store - their block nodes, part_of and links - is answered for the
+// caller to queue under the event it appends (graphstore.QueueCaused).
 func (s *server) queueAskParts(
 	ctx context.Context,
 	ledger *docs.Ledger,
 	ask model.Ask,
 	document *refs.PendingDocument,
+	scope *refs.ItemScope,
 	at time.Time,
 	questionReconciled bool,
 	beside model.ReferenceChanges,
-) (model.ReferenceChanges, error) {
-	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, questionReconciled, beside)
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, scope, at, questionReconciled, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event

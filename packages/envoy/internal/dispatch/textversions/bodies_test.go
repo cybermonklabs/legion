@@ -683,7 +683,7 @@ func writeOwnedComment(t *testing.T, database *store.Store, broker *events.Broke
 			t.Fatalf("insert the comment: %v", err)
 		}
 		if indexed {
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, noServerURL, createdAt, nil, nil); err != nil {
+			if _, _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.id, body, noServerURL, createdAt, nil, nil); err != nil {
 				t.Fatalf("index the comment's blocks: %v", err)
 			}
 		}
@@ -717,7 +717,7 @@ func indexComment(t *testing.T, database *store.Store, id, body string) {
 		if err := tx.QueryRow(ctx, `select created_at from comments where id = $1::uuid`, id).Scan(&createdAt); err != nil {
 			t.Fatalf("read the comment: %v", err)
 		}
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noServerURL, createdAt, nil, nil); err != nil {
+		if _, _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noServerURL, createdAt, nil, nil); err != nil {
 			t.Fatalf("index the comment's blocks: %v", err)
 		}
 	})
@@ -745,7 +745,7 @@ func writeEdit(t *testing.T, tx pgx.Tx, broker *events.Broker, id, body string) 
 	`, id, body).Scan(&editedAt, &owner.issue, &owner.document); err != nil {
 		t.Fatalf("edit the comment: %v", err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noServerURL, editedAt, nil, nil); err != nil {
+	if _, _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, noServerURL, editedAt, nil, nil); err != nil {
 		t.Fatalf("index the edited comment's blocks: %v", err)
 	}
 	return appendOwnedCommentEvent(t, tx, broker, owner, "comment.edited", id, body, editedAt)

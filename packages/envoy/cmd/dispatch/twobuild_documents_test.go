@@ -1340,7 +1340,7 @@ func refRowsMoved(got, written []string) (lost, added []string) {
 // requireRefsKept fails unless got holds every row of written that the reader owes it: every edge
 // of a kind it extracts from the body, and, from a reader that keeps edges to the node kinds it
 // does not know, those edges too. Whether it keeps them is read from its manifest: the guard that
-// keeps one (refs.replaceRefs) ships with the node list this release added to the block manifest,
+// keeps one (refs.PlanReplace) ships with the node list this release added to the block manifest,
 // so a build whose manifest names its nodes carries it. A reader from before that guard deletes
 // every edge of the source it rewrites, so each edge of a kind it extracts none of is logged as
 // dropped rather than failed: the protection binds from the release after the one that carries it

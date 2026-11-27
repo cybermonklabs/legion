@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -15,8 +17,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
@@ -192,7 +196,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, owner)
+	// An ask on a project document, or on an issue nobody holds, waits on its project's default,
+	// which the one writer of its thread reads to deliver it (inboxwrite.PlanRecord): that
+	// project's owner lock is taken shared right after the owner's, in the owner check's own read
+	// (requireOpenOwnerStatusHoldingDefault), so a move of the default either committed already or
+	// waits for this create.
+	status, err := s.requireOpenOwnerStatusHoldingDefault(r.Context(), tx, owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -208,9 +217,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	rowID := ask.ID
 	// The person this question reaches, read here in the read phase, under the owner's lock
-	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
-	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
-	// new ask is handed to nobody, so the rule is read over its owner alone
+	// requireOpenOwnerStatusHoldingDefault took, through the rule every read of that person
+	// shares, so the caller is told whose Inbox it just landed in rather than having to read the
+	// ask again. A new ask is handed to nobody, so the rule is read over its owner alone
 	// (askWaitingOnPerson): the row itself is only queued below.
 	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, owner, nil)
 	if err != nil {
@@ -282,9 +291,15 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	nodeKind, nodeAddress := graphstore.AskRowNode(rowID, marked)
+	// The row says in its own insert since when the store holds the tuples this release states of
+	// the ask at its create - its citations and its parts, appended below under its ask.opened -
+	// and an answer writer sets it again at the answer's own moment (asks.tuples_stored_at,
+	// migration 20261116140001). graph_edges does not read it: the ask's citations are told apart
+	// row by row by refs.tuples_stored (migration 20261116135959). It is the ask's created_at: both
+	// are the transaction's now(), read above.
 	if err := queueExec(ledger, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at, node_kind, node_address, tuples_stored_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $11)
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt, nodeKind, nodeAddress); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -325,8 +340,20 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
 	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
 	// statements follow the row's insert, queued above, which the rows of a part reference. The
-	// event below names what the question and the parts moved between them.
-	askChanges, err := s.queueNewAskReferences(r.Context(), tx, ledger, ask)
+	// event below names what the question and the parts moved between them, and what they state
+	// in the store - the parts' nodes, their part_of and links, and the ask's citations, stated
+	// out of the ask's node queued above - waits for it.
+	askChanges, indexed, err := s.queueNewAskReferences(r.Context(), tx, ledger, ask, nodes[0])
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The asker takes part in the thread the ask opens, and the person it waits on, read above,
+	// is delivered it, by the one writer of its thread (inboxwrite.PlanRecord), planned here and
+	// queued right after the ask.opened: an ask holds its marker from its insert, so the trigger
+	// user_threads_ask passes it by, and the event names the row its asker is about to hold.
+	inbox := inboxwrite.Opened(ask.ID, actor, ask.CreatedAt, owner.IssueKey, owner.ArtifactID, project).WaitingOn(waitingOnPerson)
+	recording, err := inboxwrite.PlanRecord(r.Context(), tx, inbox)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -340,20 +367,22 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		}
 		appended = append(appended, snapshotEvent)
 	}
-	// The ask's thread_logins are read by its event's insert, after the ask's own insert and the
-	// user_threads trigger it fires.
+	// The ask's thread_logins are read by its event's insert, after the ask's own insert, with the
+	// asker's own row, which the record queued after the event keeps.
 	event, err := s.queueLoggedEvent(ledger, owner.event(
 		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
-	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
+	), events.ThreadLoginsOf(ask.ID, inbox.KeptLogins()...), "ask", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
+	// The ask's node, the asker's follow, what the question and the parts state, and the ask's
+	// record in its thread learn the ask.opened event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
-		return nil
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		return recording.Queue(b, graphstore.LatestEvent)
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -626,7 +655,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question)
+	askChanges, cited, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question, editedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -635,7 +664,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// them at the edited_at the queued update writes, which the row above carries already, queue
 	// the index after that update and after the question's reconciliation just queued, and name
 	// what they moved beside the rest.
-	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, true, askChanges)
+	askChanges, indexed, err := s.queueAskParts(documentCtx, ledger, ask, nil, nil, editedAt, true, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -646,6 +675,16 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	), "ask", ask.ID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the edit states in the store - its parts' nodes and links and the ask's citations -
+	// under the ask.edited that records it, queued right after that event.
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -683,24 +722,25 @@ func timestampValue(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
+// openAskOwner is what an open ask stands on, as GET /api/v1/asks/open has answered it from its
+// first release: the issue or the project document of the row's own issue and document.
 type openAskOwner struct {
-	Issue    *inboxIssue    `json:"issue,omitempty"`
-	Document *inboxDocument `json:"document,omitempty"`
+	Issue    *askOwnerIssue    `json:"issue,omitempty"`
+	Document *askOwnerDocument `json:"document,omitempty"`
 }
 
+// openAsk is one row of GET /api/v1/asks/open: the open-ask row every read of open asks answers
+// (openAskRow, built once in ask_rows.go), and beside it what this read has carried from its
+// first release - the ask's SPA item route, its age, its owner, and whether a person has replied
+// in its thread. WaitingOn and WaitingOnPerson stand in front of the ask's own two, which a read
+// of an ask may leave out (model.Ask), because every row of this read has always carried both.
 type openAsk struct {
-	ID           string              `json:"id"`
-	Ref          string              `json:"ref"`
-	Question     string              `json:"question"`
-	Kind         string              `json:"kind"`
-	Urgency      string              `json:"urgency"`
-	CreatedAt    time.Time           `json:"created_at"`
-	AgeSeconds   int64               `json:"age_seconds"`
-	Priority     *int                `json:"priority"`
-	Owner        openAskOwner        `json:"owner"`
-	HumanReplied bool                `json:"human_replied"`
-	LastReply    *model.AskLastReply `json:"last_reply"`
-	WaitingOn    string              `json:"waiting_on"`
+	openAskRow
+	Ref          string       `json:"ref"`
+	AgeSeconds   int64        `json:"age_seconds"`
+	Owner        openAskOwner `json:"owner"`
+	HumanReplied bool         `json:"human_replied"`
+	WaitingOn    string       `json:"waiting_on"`
 	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression): the person it
 	// was handed to, else its issue's assignee, else its project's default assignee.
 	WaitingOnPerson string `json:"waiting_on_person"`
@@ -716,29 +756,77 @@ type openAsksResponse struct {
 	Asks           []openAsk `json:"asks"`
 }
 
-// listOpenAsks returns every active open ask in one scope, oldest first: authored by one host
-// session (?author_session=) across issues and unlinked project documents, or every open ask on
-// one project's issues and documents (?project=) regardless of author -- issue-owned via
-// issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
-// parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply. An ask is open as the Inbox picks it: its row's state and its
-// node's (askOpenOf).
+// openAsksWaitingOn turns ?waiting_on= into the login listOpenAsks binds: "" where the key is
+// absent, which narrows nothing, and otherwise the canonical login of a person who has signed in,
+// canonicalised as allowedLogin canonicalises a person named anywhere else. A repeated key, a
+// blank value and a login nobody has signed in as are 400 INVALID_QUERY naming the key: each
+// names nobody the read could narrow to.
+func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (string, error) {
+	values, present := query["waiting_on"]
+	if !present {
+		return "", nil
+	}
+	value := ""
+	if len(values) == 1 {
+		value = strings.TrimSpace(values[0])
+	}
+	if value == "" {
+		return "", errorf(http.StatusBadRequest, "INVALID_QUERY",
+			"waiting_on is one login of a person who has signed in to Dispatch")
+	}
+	login, err := s.allowedLogin(ctx, value)
+	var refused *apiError
+	if errors.As(err, &refused) {
+		return "", errorf(http.StatusBadRequest, "INVALID_QUERY",
+			"waiting_on names %q, who has not signed in to Dispatch; it is a login of a person who has", value)
+	}
+	return login, err
+}
+
+// listOpenAsks returns the active open asks of one scope, in priority order and oldest first
+// within it: those one host session authored (?author_session=), across issues and unlinked
+// project documents; every open ask on one project's issues and documents (?project=), whoever
+// authored it - issue-owned via issues.project_key, document-owned via artifacts.project_key; or,
+// with neither, every open ask of every project. At most one of the two scopes is named, and a
+// scope key sent blank is refused rather than read as left out, which would widen the read to
+// every project. ?waiting_on= narrows any of them to the asks that wait on one person. Every row
+// passes the visibility predicate of the ask's node for the acting credential
+// (refs.VisibleKind), so the read answers no ask the caller may not see. A human clarification
+// leaves an ask open but makes the author responsible for the next reply. An ask is open as the
+// Inbox picks it: its row's state and its node's (askOpenOf).
+//
+// The read is two statements on the pool, sent as one batch, which runs them in order and each in
+// a snapshot and at a statement_timestamp() of its own: what the scope holds as of now - the moment
+// it answers in as_of, and whether an ask of it, in any state, opened at or after ?since= - and then
+// the rows, each an open-ask row (scanOpenAskRow) with this read's own fields beside it, finished
+// as every read of open asks on the pool finishes them (finishOpenAskRows). The moment is taken
+// first, so a caller that sends it back as its next ?since= is told of every ask opened after it.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	sessionID := strings.TrimSpace(r.URL.Query().Get("author_session"))
-	project := strings.TrimSpace(r.URL.Query().Get("project"))
-	if sessionID == "" && project == "" {
-		writeError(w, "AUTHOR_SESSION_OR_PROJECT_REQUIRED", http.StatusBadRequest, "exactly one of author_session or project is required")
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("author_session"))
+	project := strings.TrimSpace(query.Get("project"))
+	switch {
+	case query.Has("author_session") && sessionID == "":
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "author_session is blank: name one session, or leave it out")
+		return
+	case query.Has("project") && project == "":
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "project is blank: name one project, or leave it out")
+		return
+	case sessionID != "" && project != "":
+		writeError(w, "AUTHOR_SESSION_OR_PROJECT_CONFLICT", http.StatusBadRequest, "author_session and project are mutually exclusive; supply at most one")
 		return
 	}
-	if sessionID != "" && project != "" {
-		writeError(w, "AUTHOR_SESSION_OR_PROJECT_CONFLICT", http.StatusBadRequest, "author_session and project are mutually exclusive; supply exactly one")
+	waitingOn, err := s.openAsksWaitingOn(r.Context(), query)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var since *time.Time
-	if values, ok := r.URL.Query()["since"]; ok {
+	if values, ok := query["since"]; ok {
 		if len(values) != 1 {
 			writeError(w, "INVALID_SINCE", http.StatusBadRequest, "since must be one RFC3339 timestamp")
 			return
@@ -750,71 +838,58 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		}
 		since = &value
 	}
-
+	// The scope over the ask aliased a and the joins askedOfPersonExpression reads, bound the same
+	// in both statements: $1 the session, $2 the project, $3 ?waiting_on='s login, which narrows on
+	// the person the ask waits on exactly as the Inbox's ?assignee= does (listInbox), and $4 the
+	// acting credential the ask node's visibility predicate binds.
+	scope := `($1 = '' or (a.author->>'kind' = 'session' and a.author->>'id' = $1))
+		  and ($2 = '' or coalesce(i.project_key, ar.project_key) = $2)
+		  and ($3 = '' or ` + askedOfPersonExpression + ` = $3)
+		  and ` + refs.VisibleKind(graphstore.KindAsk, "a.id::text", "$4")
+	visibility := refs.VisibilityArg(who)
+	// The snooze a row carries is the caller's own: the person the credential acts for, and none
+	// for a credential that acts for nobody.
+	snoozer, _ := actorPerson(who)
+	response := openAsksResponse{SessionID: sessionID, Asks: []openAsk{}}
 	var asOf time.Time
-	var openedSince bool
-	var rawAsks []byte
-	err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		with mine as (
-			select a.* from asks a
-			left join issues i on i.key = a.issue_key
-			left join artifacts ar on ar.id = a.artifact_id
-			where
-				($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
-				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3)
-		), active as (
-			select
-				a.id::text,
-				`+askItemRefExpression+` as ref,
-				a.question,
-				a.kind,
-				a.urgency,
-				a.created_at,
-				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
-				i.priority,
-				-- The issue's own assignee beside its key and title, which is not the person the
-				-- question reaches: a question on an issue nobody holds carries a null assignee
-				-- here and the project's default in waiting_on_person below. The Inbox's rows
-				-- carry the pair the same way (inboxIssue, api/inbox.go).
-				case
-					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title, 'assignee', i.assignee))
-					else jsonb_build_object('document', jsonb_build_object('project', ar.project_key, 'slug', ar.slug, 'name', ar.name))
-				end as owner,
-				exists (
-					select 1 from comments c
-					where c.ask_id = a.id and c.author->>'kind' = 'user'
-				) as human_replied,
-				case when lr.created_at is null then null else jsonb_build_object(
-					'author', lr.author,
-					'created_at', lr.created_at
-				) end as last_reply,
-				`+waitingOnExpression+` as waiting_on,
-				`+askedOfPersonExpression+` as waiting_on_person
-			from mine a`+askedOfPersonJoins+lastReplyJoin+`
-			where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
+	batch := &pgx.Batch{}
+	batch.Queue(`
+		select statement_timestamp(), $5::timestamptz is not null and exists (
+			select 1 from asks a`+askedOfPersonJoins+`
+			where `+scope+` and a.created_at >= $5
 		)
-		select
-			statement_timestamp(),
-			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
-			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
-	if err != nil {
+	`, sessionID, project, waitingOn, visibility, since).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&asOf, &response.OpenedSince)
+	})
+	batch.Queue(`
+		select `+openAskRowColumns+`,
+		       `+askItemRefExpression+`,
+		       greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint,
+		       exists (select 1 from comments c where c.ask_id = a.id and c.author->>'kind' = 'user')
+		`+openAskRowFrom("$5")+`
+		where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
+		  and `+scope+`
+		order by i.priority asc nulls last, a.created_at asc, a.id
+	`, sessionID, project, waitingOn, visibility, snoozer).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			var ask openAsk
+			row, err := scanOpenAskRow(rows, &ask.Ref, &ask.AgeSeconds, &ask.HumanReplied)
+			if err != nil {
+				return err
+			}
+			ask.openAskRow = row
+			ask.Owner = openAskOwner{Issue: row.Issue, Document: row.Document}
+			ask.WaitingOn, ask.WaitingOnPerson = row.WaitingOn, row.WaitingOnPerson
+			response.Asks = append(response.Asks, ask)
+		}
+		return rows.Err()
+	})
+	if err := s.deps.Store.Pool.SendBatch(r.Context(), batch).Close(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-
-	asks := []openAsk{}
-	if err := json.Unmarshal(rawAsks, &asks); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("decode open asks: %w", err))
-		return
-	}
-	response := openAsksResponse{
-		SessionID:   sessionID,
-		AsOf:        timestampValue(asOf),
-		OpenedSince: openedSince,
-		Asks:        asks,
-	}
-	for _, ask := range asks {
+	response.AsOf = timestampValue(asOf)
+	for _, ask := range response.Asks {
 		switch ask.WaitingOn {
 		case "human":
 			response.WaitingOnHuman++
@@ -826,6 +901,16 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response.Count = len(response.Asks)
+	listed := make([]*openAskRow, len(response.Asks))
+	for index := range response.Asks {
+		listed[index] = &response.Asks[index].openAskRow
+	}
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	if err := s.finishOpenAskRows(r.Context(), who, listed, reader); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, response)
 }
 
@@ -1259,11 +1344,33 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 // ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
 // server serves anything.)
 func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
-	ask, err := scanAskRow(tx.QueryRow(ctx, `
+	return s.scanAskForTransition(ctx, tx, tx.QueryRow(ctx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
 		where a.id = $1
 	`, id))
+}
+
+// readAskAndDefaultForTransition is readAskForTransition answering, beside the ask, the project
+// whose default assignee it falls through to, "" for none, read off the same row in the same
+// statement by the one rule every writer into an ask's thread reads (inboxwrite.AskDefaultProject),
+// for an answer, which holds that project before it reads who takes part in the thread
+// (transitionAskTx). The caller holds the ask's owner lock, under which none of the rows the rule
+// reads moves.
+func (s *server) readAskAndDefaultForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, string, error) {
+	var project string
+	ask, err := s.scanAskForTransition(ctx, tx, tx.QueryRow(ctx, `
+		select `+askRowColumns+`, `+inboxwrite.AskDefaultProject+`
+		`+askRowFrom+`
+		where a.id = $1
+	`, id), &project)
+	return ask, project, err
+}
+
+// scanAskForTransition decodes row, one ask askRowColumns reads, with extra receiving the columns
+// after them, and attaches the event that opened it.
+func (s *server) scanAskForTransition(ctx context.Context, tx pgx.Tx, row pgx.Row, extra ...any) (model.Ask, error) {
+	ask, err := scanAskRow(row, extra...)
 	if err != nil {
 		return model.Ask{}, err
 	}

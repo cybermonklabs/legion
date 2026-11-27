@@ -279,7 +279,9 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		// written resolved, while their rows still read open, beside the resolved and answered block
 		// asks' blocks and copies from their rows as they stand, and every unindexed block marked
 		// resolved. Every document write comes before the first event, and each withdrawal is
-		// planned after them, as a close plans it (planWithdrawal).
+		// planned after them, as a close plans it (planWithdrawal). The sweep takes the project's
+		// owner lock shared before it locks any asks row where the issue's asks fall through to its
+		// default, as the close takes it (sweepIssueAskBlocksTx).
 		openAsks, withdrawing, err := s.readOpenIssueAsks(documentCtx, tx, issueKey)
 		if err != nil {
 			return repair, err

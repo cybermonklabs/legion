@@ -1,6 +1,6 @@
 import { type ReactNode, type RefCallback, type RefObject, useLayoutEffect, useRef } from "react";
 
-import type { InboxRow } from "../../api/types";
+import type { OpenAskRow } from "../../api/types";
 import { focusVisibleRing, linkHoverText, linkText } from "../../theme/classes";
 import { COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import { closestMatching } from "../shell/roving";
@@ -131,7 +131,7 @@ function AskReadingViewMark({
   marked,
   onMark,
 }: {
-  ask: InboxRow;
+  ask: OpenAskRow;
   marked: boolean;
   onMark: (id: string) => void;
 }): ReactNode {

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 
 import { reaskHeldCredentialList } from "../features/credentials/pending";
 import {
+  isInboxFetching,
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
@@ -11,12 +12,9 @@ import {
 import { markCorrectedPost } from "./corrected-post";
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
-import { inboxQuery } from "./queries";
 import { hearLiveEvent } from "./query-client";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent } from "./types";
-
-const inboxQueryKey = inboxQuery().queryKey;
 
 export interface EventPages {
   pageParams: unknown[];
@@ -84,21 +82,22 @@ export const BATCH_WINDOW_MS = 100;
 export const WHOLE_CACHE_REFRESH_MS = 5_000;
 
 /**
- * An ask event that arrives while the Inbox is fetching, for a thread the cache does not hold
- * yet, is invisible to the flush: its `["ask-thread", id]` key matches nothing, and a card that
- * mounts from the landing rows seeds that thread from a body composed before the event. The
- * Inbox's own refetch once its load settles does not reach this - a card can mount from the
+ * An ask event that arrives while a read of the Inbox is fetching - the read of the open asks, or
+ * the one read the page draws the reader's own asks from - for a thread the cache does not
+ * hold yet, is invisible to the flush: its `["ask-thread", id]` key matches nothing, and a card
+ * that mounts from the landing rows seeds that thread from a body composed before the event. The
+ * read's own refetch once its load settles does not reach this - a card can mount from the
  * landing rows first - so the marker makes the card read the ask endpoint instead of trusting
  * the row it mounted from. An event that moves every thread on an issue (`askThreadsIssue`: a
  * claim, a release, a route change) marks the issue the same way, since its refresh reaches only
- * the threads already cached. Exported for the tests, which hold an Inbox fetch open around it.
+ * the threads already cached. Exported for the tests, which hold a read open around it.
  */
 export function markAskThreadsSeededByAnInFlightInbox(
   queryClient: QueryClient,
   targets: readonly RefreshTarget[],
   issue: string | null
 ): void {
-  if (queryClient.getQueryState(inboxQueryKey)?.fetchStatus !== "fetching") {
+  if (!isInboxFetching(queryClient)) {
     return;
   }
   for (const { queryKey } of targets) {

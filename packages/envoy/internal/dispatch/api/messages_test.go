@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -925,6 +926,121 @@ func TestAgentConversationReplyStaysInThatAgentsConversation(t *testing.T) {
 	if crossIssue.Code != http.StatusBadRequest || !strings.Contains(crossIssue.Body.String(), `"code":"MESSAGE_INPUT"`) {
 		t.Fatalf("issue parent for agent reply: status=%d body=%s", crossIssue.Code, crossIssue.Body.String())
 	}
+}
+
+// The conversation read answers exactly the rows the messages read answers for one session, byte
+// for byte: a person's direct message, and issue messages that reach the session through their
+// own target or through a delivery attempt that names it (a role's message its holder took), each
+// sent once while the listener took it and once while it took nothing. An issue message is in the
+// conversation through its target or its attempt whatever that attempt's state, and never through
+// a delivered_to tuple: an attempt the listener has not taken states none (R7 of
+// the spec).
+func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
+	t.Parallel()
+	taking := true
+	const session = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+			_, _ = w.Write([]byte(session))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte("[" + session + "]"))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/legion-planner":
+			_, _ = w.Write([]byte(`{"role":"legion-planner","holder":"s1","title":"planner","capabilities":["aside","btw","steer"]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			// A listener behind its starting gate past the take-over window answers 503, a failure
+			// Dispatch does not queue, so the attempt fails without the listener taking it.
+			if !taking {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"service starting"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found"}`))
+		}
+	}))
+	defer listener.Close()
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "The conversation read", "before")
+
+	direct := decodeBody[model.Message](t, created(t, "alice's direct message to s1", postAgentMessage(t, handler, "s1",
+		map[string]any{"body": "Is the conversation read here?", "delivery": "btw"}, "alice")))
+	targetedTaken := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "Targeted at s1, taken.", "target": "session:s1", "delivery": "btw",
+	}, "alice")
+	roleTaken := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "For the planner, taken.", "target": "role:legion-planner", "delivery": "btw",
+	}, "alice")
+	taking = false
+	targetedOwed := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "Targeted at s1, not taken.", "target": "session:s1", "delivery": "btw",
+	}, "alice")
+	roleOwed := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "For the planner, not taken.", "target": "role:legion-planner", "delivery": "btw",
+	}, "alice")
+
+	// Each message's one attempt names s1, and the listener took it or did not; only a taken
+	// attempt states a delivered_to tuple, so the two it did not take reach the read below by
+	// their target and by their attempt alone.
+	for _, sent := range []struct {
+		what    string
+		message model.Message
+		taken   bool
+	}{
+		{"the direct message", direct, true},
+		{"the targeted issue message the listener took", targetedTaken, true},
+		{"the role's issue message the listener took", roleTaken, true},
+		{"the targeted issue message the listener did not take", targetedOwed, false},
+		{"the role's issue message the listener did not take", roleOwed, false},
+	} {
+		want := "failed"
+		if sent.taken {
+			want = "sent"
+		}
+		if got := sent.message.Deliveries; len(got) != 1 || got[0].SessionID != "s1" || got[0].State != want {
+			t.Fatalf("%s's attempts = %#v, want one %s attempt naming s1", sent.what, got, want)
+		}
+		var delivered int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and asserted
+		`, graphstore.KindDeliveryAttempt, graphstore.MessageAttempt(sent.message.ID, 1).ID(), graphstore.TupleDeliveredTo).Scan(&delivered); err != nil {
+			t.Fatalf("read %s's delivered_to tuples: %v", sent.what, err)
+		}
+		if (delivered > 0) != sent.taken {
+			t.Fatalf("%s's attempt states %d delivered_to tuples, want some exactly when the listener took it (%t)",
+				sent.what, delivered, sent.taken)
+		}
+	}
+
+	conversation := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/conversation", nil, "alice")
+	messages := dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice")
+	if conversation.Code != http.StatusOK || messages.Code != http.StatusOK {
+		t.Fatalf("the conversation read answers %d %s and the messages read %d %s, want 200 both",
+			conversation.Code, conversation.Body.String(), messages.Code, messages.Body.String())
+	}
+	if !bytes.Equal(conversation.Body.Bytes(), messages.Body.Bytes()) {
+		t.Fatalf("the conversation read answers\n%s\nand the messages read\n%s", conversation.Body.String(), messages.Body.String())
+	}
+	var roots []string
+	for _, row := range decodeBody[[]messageRead](t, conversation) {
+		roots = append(roots, row.Message.ID)
+	}
+	slices.Sort(roots)
+	want := []string{direct.ID, targetedTaken.ID, roleTaken.ID, targetedOwed.ID, roleOwed.ID}
+	slices.Sort(want)
+	if !slices.Equal(roots, want) {
+		t.Fatalf("the conversation read answers the roots %v, want %v", roots, want)
+	}
+}
+
+// The conversation read admits exactly the callers the messages read admits, each the same way
+// (expectSameCallersAsConversationRead), since it answers the same rows.
+func TestTheConversationReadAdmitsExactlyTheCallersTheMessagesReadAdmits(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	expectSameCallersAsConversationRead(t, rig, "GET /api/v1/agents/s1/conversation", "s1", "/api/v1/agents/s1/conversation")
 }
 
 // deliveryFrame is the {event, delivery} frame a targeted send carries as its `payload`

@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -56,43 +57,8 @@ func EditedTargets(previous, body, serverURL string, found []text.Ref) []Target 
 	return targets
 }
 
-// replaceRefs reconciles the Dispatch references written by one source with found: targets no
-// longer mentioned are deleted, new ones inserted with insertedAt as created_at (nil: now()), and
-// an edge that persists keeps its created_at and source_seq. It returns the targets whose inbound
-// edges moved — deleted or inserted, oldest state first — so its caller can resolve the ones
-// a reader refreshes by name (CountedChanges). It is PlanReplace and Queue back to back, the
-// queued statements run at once as a batch of their own. Only targets of a node kind this
-// build knows (nodeKinds) are deleted: during a release a newer build writes the same sources, and
-// an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
-// edge.
-//
-// What it queues settles what the source owes the re-index queues (Replacement.Queue): the whole
-// grammar's always, since this text has now been read with the whole grammar, and the forms
-// queue only when whole says the write indexed the source's blocks in tx before this call, so the
-// text it read is the source's whole text and every delete that index made, its blocks' included,
-// came before this settle (Replacement.SettlingForms, RefsFormsOwed). A write that leaves the
-// blocks for later - rebuild-refs - passes false and leaves the source owed until this build's
-// own block index of it. So a write this build makes costs the drains nothing, and only an older
-// build's write stays owed.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, whole bool) ([]Target, error) {
-	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
-	if err != nil {
-		return nil, err
-	}
-	if whole {
-		replacement = replacement.SettlingForms()
-	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		replacement.Queue(b)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return replacement.Changed(), nil
-}
-
 // Replacement is one source's references reconciled with found, the references its text now
-// cites, as replaceRefs reconciles them. It is planned against the edges the source holds
+// cites. It is planned against the edges the source holds
 // (PlanReplace, PlanReplaceFrom), so the targets it moves are known before anything is written,
 // and written by Queue, which puts its statements on a write phase's batch: a writer that decides
 // everything first and writes last plans in its read phase and queues in its write phase.
@@ -105,6 +71,122 @@ type Replacement struct {
 	// forms says the replacement's settle deletes the source's rows of the forms queues as well as
 	// the whole grammar's (SettlingForms).
 	forms bool
+	// cited is the tuples the rows the insert writes and the dropped ones stand for, held for the
+	// write's event (Cited).
+	cited []graphstore.UncausedTuple
+	// scope and leaves are, for an item's replacement (PlanItemReplace, PlanItemAfter), the item's
+	// scope and the item's refs rows as the replacement leaves them once written, each with its
+	// tuples_stored: what a second replacement of the same item in the same transaction is
+	// planned against (PlanItemAfter). A row the insert writes holds tuples_stored where scope
+	// holds the item's node and its far end fits the store's bound.
+	scope  ItemScope
+	leaves []heldCitation
+}
+
+// PlanItemReplace is PlanReplace for a comment, a message or an ask, under the item's scope
+// (ItemScope), with the item's citations planned beside the rows: for an item whose node the store
+// holds, each row the insert writes is the item's citation, a `mentions` tuple out of the item's
+// node - the kind every refs row holds - to the row's own far end, and the row holds tuples_stored
+// from its own insert (migration 20261116135959), which is what graph_edges reads to answer it from
+// that tuple rather than from its refs arm (migration 20261126045003). A row it deletes that held
+// tuples_stored is retracted; a row that held none had no tuple to retract. A surviving row keeps
+// its marker and earns nothing: a row an older build wrote for the item keeps false, and the refs
+// arm keeps answering it. An item the store holds no node of and a far end past the store's
+// address bound state no tuple and hold false. Every row it inserts takes `at` as its created_at,
+// and every tuple is dated by `at`, the moment of the write whose text it indexes, made by the
+// item's maker; an asserted one takes the source_seq the write's event stamps on its row
+// (graphstore.UncausedTuple's LegacyFromCause). The tuples are held for the write's event (Cited).
+func PlanItemReplace(ctx context.Context, q Queryer, scope ItemScope, kind ItemKind, itemID string, found []text.Ref, at time.Time) (Replacement, error) {
+	held, err := heldCitations(ctx, q, string(kind), itemID)
+	if err != nil {
+		return Replacement{}, err
+	}
+	return planItemReplaceOver(held, scope, kind, itemID, found, at), nil
+}
+
+// planItemReplaceOver is PlanItemReplace against held, the item's refs rows with their
+// tuples_stored as they stand before this replacement: read from the table, or left by an earlier
+// replacement of the same item in this transaction (PlanItemAfter).
+func planItemReplaceOver(held []heldCitation, scope ItemScope, kind ItemKind, itemID string, found []text.Ref, at time.Time) Replacement {
+	targets := make([]Target, len(held))
+	stored := make(map[Target]heldCitation, len(held))
+	for index, row := range held {
+		targets[index] = row.target
+		stored[row.target] = row
+	}
+	replacement := PlanReplaceFrom(targets, string(kind), itemID, found, &at)
+	replacement.scope = scope
+	replacement.leaves = make([]heldCitation, 0, len(replacement.held))
+	for _, target := range replacement.held {
+		row, kept := stored[target]
+		if !kept {
+			// A row this replacement inserts holds tuples_stored as the insert writes it: for an
+			// item the store holds, where the far end fits the store's bound.
+			row = heldCitation{target: target, kind: graphstore.TupleMentions, stored: scope.held && graphstore.AddressFits(target.ID)}
+		}
+		replacement.leaves = append(replacement.leaves, row)
+	}
+	if !scope.held {
+		return replacement
+	}
+	tuple := func(relation string, target Target, asserted bool) graphstore.UncausedTuple {
+		return graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: string(kind), FromID: itemID, Kind: relation, ToKind: target.Kind, ToID: target.ID,
+			At: at, Who: scope.node.MadeBy, Asserted: asserted,
+		}, LegacyFromCause: asserted}
+	}
+	cited := make(map[Target]struct{}, len(replacement.held))
+	for _, target := range replacement.held {
+		cited[target] = struct{}{}
+	}
+	for _, row := range held {
+		if _, kept := cited[row.target]; !kept && row.stored {
+			replacement.cited = append(replacement.cited, tuple(row.kind, row.target, false))
+		}
+	}
+	for _, target := range replacement.held {
+		if _, kept := stored[target]; !kept && graphstore.AddressFits(target.ID) {
+			replacement.cited = append(replacement.cited, tuple(graphstore.TupleMentions, target, true))
+		}
+	}
+	return replacement
+}
+
+// PlanItemAfter plans the next reconciliation of r's item in the same transaction, with found,
+// written at `at`. It plans against the rows r leaves once written (leaves), not the table, which
+// still holds the rows from before r. So it retracts the citations r asserted for rows it drops,
+// asserts citations for rows it adds, and a row r inserted holding tuples_stored stays that way.
+func (r Replacement) PlanItemAfter(found []text.Ref, at time.Time) Replacement {
+	return planItemReplaceOver(r.leaves, r.scope, ItemKind(r.fromKind), r.fromID, found, at)
+}
+
+// heldCitation is one refs row of a source as PlanItemReplace plans against it: its far end, its
+// kind, and whether it holds tuples_stored, which says the store holds the citation it stands for.
+type heldCitation struct {
+	target Target
+	kind   string
+	stored bool
+}
+
+// heldCitations is the refs rows q holds for one source, read with the predicate the reconciling
+// delete visits them by (HeldTargets), each with its kind and tuples_stored.
+func heldCitations(ctx context.Context, q Queryer, fromKind, fromID string) ([]heldCitation, error) {
+	rows, err := q.Query(ctx, `
+		select to_kind, to_id, kind, tuples_stored from refs
+		where from_kind = $1 and from_id = $2 and to_kind = any($3)
+	`, fromKind, fromID, nodeKinds)
+	if err != nil {
+		return nil, fmt.Errorf("read references: %w", err)
+	}
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldCitation, error) {
+		var held heldCitation
+		err := row.Scan(&held.target.Kind, &held.target.ID, &held.kind, &held.stored)
+		return held, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read references: %w", err)
+	}
+	return held, nil
 }
 
 // PlanReplace plans the reconciliation of fromKind/fromID's references with found against the
@@ -119,7 +201,7 @@ func PlanReplace(ctx context.Context, q Queryer, fromKind, fromID string, found 
 
 // HeldTargets is the targets of the edges q holds for one source, read with the predicate the
 // reconciling delete visits them by: an edge to a node kind this build does not know (nodeKinds)
-// is one that delete keeps, so it is neither held nor moved here (replaceRefs).
+// is one that delete keeps, so it is neither held nor moved here (Replacement.Queue).
 func HeldTargets(ctx context.Context, q Queryer, fromKind, fromID string) ([]Target, error) {
 	held, err := scanTargets(q.Query(ctx, `
 		select to_kind, to_id from refs where from_kind = $1 and from_id = $2 and to_kind = any($3)
@@ -168,6 +250,13 @@ func (r Replacement) Held() []Target {
 	return r.held
 }
 
+// Cited is what the replacement states in the node and tuple store for an item whose node it
+// holds (PlanItemReplace): the item's citations, held for the write's event, which the write
+// queues with graphstore.QueueCaused right after that event. Every other replacement holds none.
+func (r Replacement) Cited() graphstore.Uncaused {
+	return graphstore.Uncaused{Tuples: r.cited}
+}
+
 // SettlingForms is the replacement settling the source's rows of the forms queues too
 // (RefsFormsOwed, RefsDecisionsFormsOwed), in the statements that settle the whole grammar's
 // (queueSettleSourceOwed), so the settle costs the write no more than a statement after the
@@ -197,11 +286,12 @@ func (r Replacement) Queue(b *store.WriteBatch) {
 	`, r.fromKind, r.fromID, r.kinds, r.ids, nodeKinds)
 	if len(r.kinds) > 0 {
 		b.Queue("write reference", `
-			insert into refs (from_kind, from_id, to_kind, to_id, created_at)
-			select $1, $2, target.kind, target.id, coalesce($5::timestamptz, now())
+			insert into refs (from_kind, from_id, to_kind, to_id, created_at, tuples_stored)
+			select $1, $2, target.kind, target.id, coalesce($5::timestamptz, now()),
+			       $6::boolean and octet_length(target.id) <= $7
 			from unnest($3::text[], $4::text[]) as target(kind, id)
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
-		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt)
+		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt, r.scope.held, graphstore.MaxAddressBytes)
 	}
 	queueSettleSourceOwed(b, r.fromKind, r.fromID, r.forms)
 }

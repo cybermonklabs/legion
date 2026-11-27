@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useStat
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { AskApproval, InboxRow } from "../../api/types";
+import type { AskApproval, OpenAskRow } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
@@ -37,7 +37,7 @@ type PaneSubject =
 /** An approval request is about its document's latest version; a question written as a decision
  *  block is about the document it sits in. An anchored question, and a question in no document,
  *  are the card the Inbox has always drawn. */
-function subjectOf(ask: InboxRow): PaneSubject {
+function subjectOf(ask: OpenAskRow): PaneSubject {
   if (ask.kind === "approval" && ask.approval !== undefined) {
     return { approval: ask.approval, artifactId: ask.approval.artifact_id, kind: "approval" };
   }
@@ -64,7 +64,7 @@ export interface ReadingPaneProps {
 
 /** What every flow's head is given; each adds the controls that are its own. */
 interface PaneFlowProps {
-  ask: InboxRow;
+  ask: OpenAskRow;
   onAnswered: (askId: string) => void;
   onAssignWrite: (askId: string, live: boolean) => void;
   onSnoozeLive: (askId: string, live: boolean) => void;

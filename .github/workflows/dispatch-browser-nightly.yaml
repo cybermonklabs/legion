@@ -162,9 +162,12 @@ jobs:
         run: bun run build:dispatch
         working-directory: packages/contracts
       # Built here rather than left to run-server.sh, which would build it inside the harness's
-      # own boot wait, as the multiprocess job does for the same reason.
+      # own boot wait, as the multiprocess job does for the same reason, and stamped with this
+      # checkout's commit as that job's build is, so run-server.sh's own build finds it current.
       - name: Build the Dispatch server
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          commit=$(git rev-parse HEAD)
+          go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Build dispatch dashboard
         run: bun run build:web

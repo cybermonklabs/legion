@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -16,36 +18,50 @@ import (
 // recursion over `comments`, so the two can be read against each other; query_plan_test.go pins
 // both from there.
 
+// inboxAskEditsQuery is every recorded rewording of the asks $1 names (text[]), read off their
+// ask.edited events in the order each was made, one row per edit (scanInboxAskEdit). GET
+// /api/v1/me/inbox splices it into its one statement over the asks of its page.
+const inboxAskEditsQuery = `
+		select payload->>'id', payload->'previous', payload->'edited_by', created_at
+		from events
+		where type = 'ask.edited' and payload->>'id' = any($1::text[])
+		order by payload->>'id', id
+	`
+
+// scanInboxAskEdit reads one row of inboxAskEditsQuery: the ask's id and the edit.
+func scanInboxAskEdit(row pgx.Row) (string, model.AskEdit, error) {
+	var askID string
+	var previous, editedBy []byte
+	var at time.Time
+	if err := row.Scan(&askID, &previous, &editedBy, &at); err != nil {
+		return "", model.AskEdit{}, fmt.Errorf("scan inbox ask edit: %w", err)
+	}
+	var edit model.AskEdit
+	if err := json.Unmarshal(previous, &edit.Previous); err != nil {
+		return "", model.AskEdit{}, fmt.Errorf("decode inbox ask edit previous: %w", err)
+	}
+	if err := json.Unmarshal(editedBy, &edit.EditedBy); err != nil {
+		return "", model.AskEdit{}, fmt.Errorf("decode inbox ask edit editor: %w", err)
+	}
+	edit.At = timestampValue(at)
+	return askID, edit, nil
+}
+
 func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskEdit, error) {
 	edits := make(map[string][]model.AskEdit, len(askIDs))
 	for _, askID := range askIDs {
 		edits[askID] = []model.AskEdit{}
 	}
-	rows, err := q.Query(ctx, `
-		select payload->>'id', payload->'previous', payload->'edited_by', created_at
-		from events
-		where type = 'ask.edited' and payload->>'id' = any($1::text[])
-		order by payload->>'id', id
-	`, askIDs)
+	rows, err := q.Query(ctx, inboxAskEditsQuery, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask edits: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var askID string
-		var previous, editedBy []byte
-		var at time.Time
-		if err := rows.Scan(&askID, &previous, &editedBy, &at); err != nil {
-			return nil, fmt.Errorf("scan inbox ask edit: %w", err)
+		askID, edit, err := scanInboxAskEdit(rows)
+		if err != nil {
+			return nil, err
 		}
-		var edit model.AskEdit
-		if err := json.Unmarshal(previous, &edit.Previous); err != nil {
-			return nil, fmt.Errorf("decode inbox ask edit previous: %w", err)
-		}
-		if err := json.Unmarshal(editedBy, &edit.EditedBy); err != nil {
-			return nil, fmt.Errorf("decode inbox ask edit editor: %w", err)
-		}
-		edit.At = timestampValue(at)
 		edits[askID] = append(edits[askID], edit)
 	}
 	if err := rows.Err(); err != nil {
@@ -54,26 +70,40 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, askIDs []stri
 	return edits, nil
 }
 
+// inboxAskFollowersQuery is every session following the asks $1 names (uuid[]), each ask's in the
+// order they began following, one row per follower (scanInboxAskFollower). GET /api/v1/me/inbox
+// splices it into its one statement over the asks of its page.
+const inboxAskFollowersQuery = `
+		select ask_id::text, session_id, since
+		from ask_followers
+		where ask_id = any($1::uuid[])
+		order by ask_id, since, session_id
+	`
+
+// scanInboxAskFollower reads one row of inboxAskFollowersQuery: the ask's id and its follower.
+func scanInboxAskFollower(row pgx.Row) (string, model.AskFollower, error) {
+	var askID string
+	var follower model.AskFollower
+	if err := row.Scan(&askID, &follower.SessionID, &follower.Since); err != nil {
+		return "", model.AskFollower{}, fmt.Errorf("scan inbox ask follower: %w", err)
+	}
+	return askID, follower, nil
+}
+
 func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskFollower, error) {
 	followers := make(map[string][]model.AskFollower, len(askIDs))
 	for _, askID := range askIDs {
 		followers[askID] = []model.AskFollower{}
 	}
-	rows, err := q.Query(ctx, `
-		select ask_id::text, session_id, since
-		from ask_followers
-		where ask_id = any($1::uuid[])
-		order by ask_id, since, session_id
-	`, askIDs)
+	rows, err := q.Query(ctx, inboxAskFollowersQuery, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask followers: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var askID string
-		var follower model.AskFollower
-		if err := rows.Scan(&askID, &follower.SessionID, &follower.Since); err != nil {
-			return nil, fmt.Errorf("scan inbox ask follower: %w", err)
+		askID, follower, err := scanInboxAskFollower(rows)
+		if err != nil {
+			return nil, err
 		}
 		followers[askID] = append(followers[askID], follower)
 	}
@@ -169,28 +199,43 @@ func (s *server) loadAskReaches(ctx context.Context, askIDs []string) (map[strin
 	return reaches, nil
 }
 
-// scanAskReaches reads every listed ask's claimant and route in one query and returns with the
-// pooled connection released; an empty id or route is none. A project document's ask joins no
-// issue, and an ask the query does not find keeps the zero askReach, so every key is null.
-func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string]askReach, error) {
-	reaches := make(map[string]askReach, len(askIDs))
-	rows, err := q.Query(ctx, `
+// askReachesQuery is the claimant and the route of each ask $1 names (uuid[]), one row per ask
+// (scanAskReach): an empty id or route is none, and a project document's ask joins no issue. GET
+// /api/v1/me/inbox splices it into its one statement over the asks of its page.
+const askReachesQuery = `
 		select a.id::text,
 			case when i.claimed_by->>'kind' = 'session' then nullif(i.claimed_by->>'id', '') end,
 			nullif(i.route, '')
 		from asks a
 		left join issues i on i.key = a.issue_key
 		where a.id = any($1::uuid[])
-	`, askIDs)
+	`
+
+// scanAskReach reads one row of askReachesQuery: the ask's id and its claimant and route, the
+// route's reach not yet read.
+func scanAskReach(row pgx.Row) (string, askReach, error) {
+	var askID string
+	var reach askReach
+	if err := row.Scan(&askID, &reach.Claimant, &reach.Route); err != nil {
+		return "", askReach{}, fmt.Errorf("scan ask reach: %w", err)
+	}
+	return askID, reach, nil
+}
+
+// scanAskReaches reads every listed ask's claimant and route in one query and returns with the
+// pooled connection released. An ask the query does not find keeps the zero askReach, so every
+// key is null.
+func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string]askReach, error) {
+	reaches := make(map[string]askReach, len(askIDs))
+	rows, err := q.Query(ctx, askReachesQuery, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load ask reach: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var askID string
-		var reach askReach
-		if err := rows.Scan(&askID, &reach.Claimant, &reach.Route); err != nil {
-			return nil, fmt.Errorf("scan ask reach: %w", err)
+		askID, reach, err := scanAskReach(rows)
+		if err != nil {
+			return nil, err
 		}
 		reaches[askID] = reach
 	}

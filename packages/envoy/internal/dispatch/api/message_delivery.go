@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -177,9 +180,12 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(ctx)
 	// Every attempt is opened, resumed and accepted under this lock, so what the checks below
 	// read cannot move before the update. It is FOR NO KEY UPDATE, which serialises it against
-	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
-	// through its insert's foreign key, this row FOR KEY SHARE, which FOR UPDATE would wait for
-	// while this transaction waits for the attempt row the reply holds.
+	// the claim's, and not FOR UPDATE. A session's reply takes its thread root's row FOR NO KEY
+	// UPDATE before its attempt (inboxwrite's Recording.QueueRootLock), so where this message is
+	// that root the reply queues behind this lock before it holds anything. Where it is not, the
+	// reply takes the attempt row and then, through its insert's foreign key, this row FOR KEY
+	// SHARE, which FOR UPDATE would wait for while this transaction waits for the attempt row the
+	// reply holds.
 	if _, err := tx.Exec(ctx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -270,7 +276,12 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	appended, err := s.appendEvent(ctx, tx, event)
+	// The event, and under it what the attempt's row now holds (graphstore.QueueAttempted), in one
+	// batch.
+	appended, err := s.appendEventThen(ctx, tx, event, func(b *store.WriteBatch) error {
+		graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, number))
+		return nil
+	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -391,9 +402,11 @@ func (s *server) recordPendingMessageDelivery(
 			return pendingMessageDelivery{}, err
 		}
 	}
-	// FOR NO KEY UPDATE, as the accept's is: the session's reply takes an attempt row and then
-	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
-	// while this transaction waits below for the attempt row the reply holds. A message of an
+	// FOR NO KEY UPDATE, as the accept's is: a session's reply whose thread root is this message
+	// takes this row FOR NO KEY UPDATE before its attempt (inboxwrite's Recording.QueueRootLock)
+	// and so queues behind this lock; one whose root is another message takes an attempt row and
+	// then this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for
+	// that while this transaction waits below for the attempt row the reply holds. A message of an
 	// issue has its text read here too, under the issue's owner lock every writer of it holds
 	// (lockedMessageForCorrection), so the frame and the send carry the body as the lock's
 	// previous holder left it, not as the caller read it before the lock. A message with no issue,
@@ -465,15 +478,15 @@ func (s *server) recordPendingMessageDelivery(
 		}
 		// An unpinned row takes the session this resolution found, as the unbound resume below
 		// pins one, so the row names the session its frame is going to and that session can
-		// answer it.
+		// answer it. What the row then holds is stated in the same batch as the claim, so the
+		// claim costs one round trip (claimAttempt).
 		pending.attempt = bound.Attempt
-		if err := tx.QueryRow(ctx, `
+		if err := claimAttempt(ctx, tx, message.ID, &pending, `
 			update message_deliveries
 			set session_id = coalesce(nullif(session_id, ''), $3), claimed_at = now()
 			where message_id = $1 and attempt = $2 and state = 'pending'
 			returning claimed_at, session_id
-		`, message.ID, pending.attempt, resolved.attemptSessionID,
-		).Scan(&pending.claimedAt, &pending.resolved.attemptSessionID); err != nil {
+		`, message.ID, pending.attempt, resolved.attemptSessionID); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 		if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
@@ -481,24 +494,43 @@ func (s *server) recordPendingMessageDelivery(
 		}
 		return pending, nil
 	}
+	// The pending attempt this send would resume, if there is one, and the number an attempt this
+	// send opens would take, with the transaction's now() its node is made at, are read in one
+	// statement, so the claim's xid window, which the message row's lock opens, holds no read of the
+	// number of its own (insertMessageDeliveryAttempt). The number rides here and not on the lock: a
+	// lock statement that waited for an earlier holder reads under a snapshot taken before that
+	// holder committed, so it would miss the attempt that holder opened. This statement starts once
+	// the lock is held, so it sees every attempt an earlier holder opened, and no other is opened
+	// until this transaction ends. The row comes back with no attempt pending too: its pending
+	// columns are then zero and lapsed is false.
 	var stranded model.MessageDelivery
 	var strandedUrgency *string
 	var lapsed bool
+	var nextAttempt int
+	var at time.Time
 	err = tx.QueryRow(ctx, `
-		select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+`, `+model.DeliveryClaimFreeSQL+`
-		from message_deliveries
-		where message_id = $1 and state = 'pending'
-		order by attempt
-		limit 1
-		for update
+		select coalesce(pending.attempt, 0), coalesce(pending.delivery, ''), coalesce(pending.session_id, ''),
+		       pending.urgency, coalesce(pending.connected_only, false), coalesce(pending.free, false),
+		       highest.attempt + 1, now()
+		from (select coalesce(max(attempt), 0) as attempt from message_deliveries where message_id = $1) highest
+		left join (
+			select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+` as connected_only,
+			       `+model.DeliveryClaimFreeSQL+` as free
+			from message_deliveries
+			where message_id = $1 and state = 'pending'
+			order by attempt
+			limit 1
+			for update
+		) pending on true
 	`, message.ID).Scan(
 		&stranded.Attempt, &stranded.Delivery, &stranded.SessionID, &strandedUrgency, &pending.connectedOnly, &lapsed,
+		&nextAttempt, &at,
 	)
 	var superseded *model.Event
 	switch {
-	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return pendingMessageDelivery{}, err
-	case err == nil && lapsed:
+	case lapsed:
 		// Nobody holds this attempt, or whoever claimed it never came back. It keeps the
 		// recipient its row names; only an attempt stranded before anything was resolved,
 		// whose row names none, goes to the message's target. Either way the resolution has
@@ -530,12 +562,17 @@ func (s *server) recordPendingMessageDelivery(
 			`, message.ID, stranded.Attempt, failure).Scan(&stranded.Attempt); err != nil {
 				return pendingMessageDelivery{}, err
 			}
-			receipt, err := s.appendEvent(ctx, tx, messageDeliveryReceipt(message, actor, stranded, resolved.title))
+			receipt, err := s.appendEventThen(ctx, tx, messageDeliveryReceipt(message, actor, stranded, resolved.title), func(b *store.WriteBatch) error {
+				graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, stranded.Attempt))
+				return nil
+			})
 			if err != nil {
 				return pendingMessageDelivery{}, err
 			}
 			superseded = &receipt
-			if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
+			// The settle above updates the stranded row and adds none, so the number read with
+			// it is still the next one.
+			if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, nextAttempt, at, &pending); err != nil {
 				return pendingMessageDelivery{}, err
 			}
 			break
@@ -548,23 +585,23 @@ func (s *server) recordPendingMessageDelivery(
 		// this resolution found, so the row names the session its frame is going to either
 		// way and that session can answer it.
 		pending.attempt, pending.urgency = stranded.Attempt, strandedUrgency
-		if err := tx.QueryRow(ctx, `
+		if err := claimAttempt(ctx, tx, message.ID, &pending, `
 			update message_deliveries
 			set delivery = $3, session_id = coalesce(nullif(session_id, ''), $4), claimed_at = now()
 			where message_id = $1 and attempt = $2
 			returning claimed_at, session_id
-		`, message.ID, pending.attempt, resolved.Delivery, resolved.attemptSessionID,
-		).Scan(&pending.claimedAt, &pending.resolved.attemptSessionID); err != nil {
+		`, message.ID, pending.attempt, resolved.Delivery, resolved.attemptSessionID); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 	default:
 		// No attempt is pending, or a live sender holds the one that is, so this send opens an
 		// attempt of its own rather than two senders driving the same one. The message row is
-		// locked, so the highest attempt cannot move between reading it and inserting beside it.
+		// locked, so the highest attempt cannot move between reading it with the pending attempt
+		// above and inserting beside it.
 		if target != resolved.Target {
 			return pendingMessageDelivery{}, errStaleResolution
 		}
-		if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
+		if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, nextAttempt, at, &pending); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 	}
@@ -600,10 +637,13 @@ func (s *server) openFirstMessageDeliveryAttempt(
 	if resumeAttempt != 1 {
 		return pendingMessageDelivery{}, errAttemptNotPending
 	}
+	// The check reads the transaction's now() beside it, which the attempt's node is made at: a
+	// message with no attempt, under the lock tx holds, gets none but the one this opens, attempt 1.
 	var attempted bool
+	var at time.Time
 	if err := tx.QueryRow(ctx,
-		`select exists (select 1 from message_deliveries where message_id = $1)`, message.ID,
-	).Scan(&attempted); err != nil {
+		`select exists (select 1 from message_deliveries where message_id = $1), now()`, message.ID,
+	).Scan(&attempted, &at); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	if attempted {
@@ -613,7 +653,7 @@ func (s *server) openFirstMessageDeliveryAttempt(
 		return pendingMessageDelivery{}, errStaleResolution
 	}
 	pending := pendingMessageDelivery{resolved: resolved}
-	if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
+	if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, 1, at, &pending); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
@@ -622,10 +662,26 @@ func (s *server) openFirstMessageDeliveryAttempt(
 	return pending, nil
 }
 
-// finishPendingMessageDelivery builds the frame this claimed attempt will be sent with and
-// commits the claim transaction. Both claim paths end here, so a bound sender's frame says
-// exactly what an ordinary one's does. message is the message as the claim read it under its
-// lock, which the attempt's send carries too (pendingMessageDelivery.message).
+// claimAttempt runs claim, the statement that claims pending's attempt of messageID, an update
+// returning the claim's time and the session it names, and the statement of what the row then
+// holds after it, in one batch: a claim opens no event, so the facts are the delivery machinery's,
+// at the sentinel (graphstore.QueueAttempted, graphstore.AttemptWriter).
+func claimAttempt(ctx context.Context, tx pgx.Tx, messageID string, pending *pendingMessageDelivery, claim string, args ...any) error {
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("", claim, args...).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&pending.claimedAt, &pending.resolved.attemptSessionID)
+		})
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.MessageAttempt(messageID, pending.attempt))
+		return nil
+	})
+}
+
+// finishPendingMessageDelivery builds the frame the claimed attempt will be sent with and commits
+// the claim transaction. Both claim paths end here, so a bound sender's frame says exactly what an
+// ordinary one's does. Whichever statement claimed the attempt - a resume that pinned it, or the
+// insert that opened it - stated what its row holds in its own batch (claimAttempt,
+// insertMessageDeliveryAttempt). message is the message as the claim read it under its lock,
+// which the attempt's send carries too (pendingMessageDelivery.message).
 func finishPendingMessageDelivery(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -671,10 +727,16 @@ func finishPendingMessageDelivery(
 // delivery, and this attempt's own fate was never learned.
 const supersededByModeChangeText = "superseded by a retry in another mode; it may already have been delivered"
 
-// insertMessageDeliveryAttempt opens an attempt of this send's own, under the recipient the
-// resolution was taken for, recording requestedBy - the actor this send carries - as who asked
-// for it. The message row is locked by the caller, so the highest attempt cannot move between
-// reading it and inserting beside it.
+// insertMessageDeliveryAttempt opens attempt number attempt, of this send's own, under the
+// recipient the resolution was taken for, recording requestedBy - the actor this send carries - as
+// who asked for it. The message row is locked by the caller, so the highest attempt cannot move
+// between its caller's read of it and the insert beside it: attempt is that read's next number,
+// and at the transaction's now() read beside it, because the attempt's node is addressed by the
+// number and goes in before the row that names it (graphstore.AttemptOpened). The caller reads
+// both in a statement its claim makes anyway - the read of the pending attempt it would resume
+// (recordPendingMessageDelivery), or the check that the message has no attempt, which makes this
+// attempt 1 (openFirstMessageDeliveryAttempt) - so the claim's xid window holds no read of its
+// own for them. The node, the row and what the row holds go in one batch.
 //
 // connected_only is attempt 1's, never this send's request's: the request that stored the message
 // is the only one that says whether it asks for a session running now (createStoredMessage), so a
@@ -687,24 +749,34 @@ const supersededByModeChangeText = "superseded by a retry in another mode; it ma
 // (openFirstMessageDeliveryAttempt).
 func (s *server) insertMessageDeliveryAttempt(
 	ctx context.Context, tx pgx.Tx, message model.Message, requestedBy model.Actor, resolved ResolvedMention,
-	pending *pendingMessageDelivery,
+	attempt int, at time.Time, pending *pendingMessageDelivery,
 ) error {
 	requester, err := json.Marshal(requestedBy)
 	if err != nil {
 		return err
 	}
-	return tx.QueryRow(ctx, `
-		insert into message_deliveries (message_id, attempt, delivery, session_id, state, claimed_at,
-		                                requested_by, connected_only)
-		values (
-			$1,
-			(select coalesce(max(attempt), 0) + 1 from message_deliveries where message_id = $1),
-			$2, $3, 'pending', now(), $4,
-			(select connected_only from message_deliveries where message_id = $1 order by attempt limit 1)
-		)
-		returning attempt, claimed_at, `+model.ConnectedOnlySQL+`
-	`, message.ID, resolved.Delivery, resolved.attemptSessionID, requester,
-	).Scan(&pending.attempt, &pending.claimedAt, &pending.connectedOnly)
+	pending.attempt = attempt
+	// A send's claim opens the attempt and records no event of its own, so the node and what the
+	// row holds are the delivery machinery's, at the sentinel (graphstore.AttemptWriter).
+	key := graphstore.MessageAttempt(message.ID, attempt)
+	nodeKind, nodeAddress, opened := graphstore.AttemptOpened(key, graphstore.AttemptWriter, at)
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, opened)
+		b.Queue("", `
+			insert into message_deliveries (message_id, attempt, delivery, session_id, state, claimed_at,
+			                                requested_by, connected_only, node_kind, node_address)
+			values (
+				$1, $2, $3, $4, 'pending', now(), $5,
+				(select connected_only from message_deliveries where message_id = $1 order by attempt limit 1),
+				$6, $7
+			)
+			returning claimed_at, `+model.ConnectedOnlySQL+`
+		`, message.ID, attempt, resolved.Delivery, resolved.attemptSessionID, requester, nodeKind, nodeAddress,
+		).QueryRow(func(row pgx.Row) error { return row.Scan(&pending.claimedAt, &pending.connectedOnly) })
+		graphstore.QueueCaused(b, opened, graphstore.NoEvent)
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
+		return nil
+	})
 }
 
 // messageDeliveryReceipt is the message.delivery receipt an attempt row owes, read off that
@@ -763,9 +835,15 @@ func (s *server) completeMessageDelivery(
 		// The session this attempt reached, in the transaction that records that it did and
 		// under the receipt that records it (graphstore.QueueReached): an attempt the listener
 		// took, sent or queued (model.DeliveryTaken), is a delivery and its session is a node
-		// from this moment, a pending or failed one reached nobody and writes nothing.
+		// from this moment, a pending or failed one reached nobody and writes nothing. Then what
+		// the settle made of the attempt, under the same receipt, as the receipt's actor writes it
+		// (graphstore.QueueAttempted).
 		func(b *store.WriteBatch, settled model.MessageDelivery) error {
-			return graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
+			if err := graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent); err != nil {
+				return err
+			}
+			graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, settled.Attempt))
+			return nil
 		},
 	)
 }
@@ -935,13 +1013,13 @@ func (s *server) holdMessageDeliveryClaim(
 		return pending, false, err
 	}
 	defer tx.Rollback(ctx)
-	err = tx.QueryRow(ctx, `
+	// The renewal and what the row then holds, in one batch (claimAttempt).
+	err = claimAttempt(ctx, tx, message.ID, &next, `
 		update message_deliveries
 		set claimed_at = now(), session_id = coalesce(nullif(session_id, ''), $4)
 		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 		returning claimed_at, session_id
-	`, message.ID, pending.attempt, pending.claimedAt, next.resolved.attemptSessionID,
-	).Scan(&next.claimedAt, &next.resolved.attemptSessionID)
+	`, message.ID, pending.attempt, pending.claimedAt, next.resolved.attemptSessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pending, false, nil
 	}
@@ -978,24 +1056,32 @@ type messageReplyPlan struct {
 	block *namedBlock
 	// body is the reply row's, which its index and its references were planned for.
 	body string
-	// node is the write of the reply's node, planned for the reserved id (planMessageNode).
-	node graphstore.Uncaused
+	// parent is the message the plan was made for, which a first reply answers; stored is the
+	// reply's node and the facts its row states under parent (planMessageNode), and recording its
+	// record in its thread (inboxwrite.PlanRecord). A follow-up answers that first reply instead,
+	// in the same thread and issue, so insertSessionReply plans the two again under it.
+	parent    string
+	stored    messageStoreWrite
+	recording inboxwrite.Recording
 }
 
-// planMessageReply plans one session reply above every row lock the route takes: the block the
-// reply names with the index its message owes, and the reply's own index and references, for an
-// id and a created_at reserved here. Nothing it plans is written here.
+// planMessageReply plans one session reply above every row lock the route takes but one: the
+// block the reply names with the index its message owes, the reply's node, its own index and
+// references, and last its record in its thread, whose plan takes the thread's root first where
+// the message is on no issue (inboxwrite.PlanRecord), for an id and a created_at reserved here.
+// Nothing it plans is written here.
 //
 // The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
 // named by the fields that row will hold (planPendingItem, refs.PendingSource), as
-// createStoredMessage hands it over for a row it has only queued. The named block is addressed
-// here for the same reason: the read that gives a stored reply its block would find no row yet.
-// A direct message writes no mention, so its blocks hold none and it moves nothing. who is the
-// session replying, which a block it may not see is refused to.
+// createStoredMessage hands it over for a row it has only queued, and so is the reply's node,
+// out of which its blocks are stated (refs.WrittenItem). The named block is addressed here for the
+// same reason: the read that gives a stored reply its block would find no row yet. A direct
+// message writes no mention, so its blocks hold none and it moves nothing. who is the session
+// replying, which a block it may not see is refused to.
 func (s *server) planMessageReply(
 	ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message, body string, inReplyToBlock *string,
 ) (messageReplyPlan, error) {
-	plan := messageReplyPlan{body: body}
+	plan := messageReplyPlan{body: body, parent: message.ID}
 	if inReplyToBlock != nil {
 		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
 		if err != nil {
@@ -1008,17 +1094,46 @@ func (s *server) planMessageReply(
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
 		return plan, err
 	}
-	// The reply's node, in its message's issue's project or between its thread's parties
-	// (planMessageNode); a follow-up answers the first reply, in the same thread and issue.
+	// The reply's node, in its message's issue's project or between its thread's parties, then its
+	// own index and references, then its record in its thread, which reaches each person its text
+	// newly mentions (planSessionReplyRecord).
 	var err error
-	if plan.node, err = planMessageNode(ctx, tx, plan.id, message.IssueKey, &message.ID, who, message.Target, plan.createdAt); err != nil {
+	if plan.stored, err = planSessionReplyNode(ctx, tx, plan, message, who); err != nil {
 		return plan, err
 	}
-	plan.changes, plan.write, err = s.planPendingItem(
+	plan.changes, plan.write, plan.indexed, err = s.planPendingItem(
 		ctx, tx, who, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
-		plan.createdAt, message.IssueKey != nil,
+		refs.WrittenItem(plan.stored.node), plan.createdAt, message.IssueKey != nil,
 	)
+	if err != nil {
+		return plan, err
+	}
+	plan.recording, err = planSessionReplyRecord(ctx, tx, plan, plan.stored, message, who)
 	return plan, err
+}
+
+// planSessionReplyNode plans, for the session reply plan holds under parent, the reply's node and
+// the facts its row states (planMessageNode), naming the block the plan names.
+func planSessionReplyNode(ctx context.Context, tx pgx.Tx, plan messageReplyPlan, parent model.Message, who model.Actor) (messageStoreWrite, error) {
+	return planMessageNode(ctx, tx, graphstore.MessageRow{
+		ID: plan.id, IssueKey: deref(parent.IssueKey), InReplyTo: parent.ID,
+		RepliesToBlock: deref(plan.block.nodeID()), Target: deref(parent.Target),
+	}, who, plan.createdAt, nil)
+}
+
+// planSessionReplyRecord plans the record in its thread (inboxwrite.PlanRecord) of the session
+// reply plan holds under parent, whose node and facts are stored: it reaches the person who started
+// a direct conversation the reply joins (inboxwrite.Write.Starter) and each person the reply's text
+// newly mentions, as its index states them (plan.indexed, inboxwrite.Write.ReachesMentioned). A reply
+// whose row names no node is recorded as the trigger bodies would have recorded it: its thread's
+// rows moved and left to the backfill, its root's Agent dismissals cleared, and no tuple of its
+// own (inboxwrite.Write.Unstored).
+func planSessionReplyRecord(
+	ctx context.Context, tx pgx.Tx, plan messageReplyPlan, stored messageStoreWrite, parent model.Message, who model.Actor,
+) (inboxwrite.Recording, error) {
+	inbox := stored.inbox(model.Message{ID: plan.id, IssueKey: parent.IssueKey, InReplyTo: &parent.ID, CreatedAt: plan.createdAt}, who).ReachesMentioned(plan.indexed)
+	inbox.Starter = stored.starter
+	return inboxwrite.PlanRecord(ctx, tx, inbox)
 }
 
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
@@ -1090,8 +1205,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// The first read is for the issue key alone. A delete committing behind it leaves the row
 	// it holds stale, so the issue is locked first - the order createStoredMessage takes
 	// (messages.go) - and the row this route judges and answers from is the one read again
-	// under that lock. A message with no issue takes no lock and needs none: a delete refuses
-	// one (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set.
+	// under that lock. A message with no issue takes no owner lock: a delete refuses one
+	// (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set, and its thread's root, which orders
+	// the writers of a thread on no issue as an issue's owner lock orders an issue's, is taken
+	// where the reply is planned, before the reply reads who takes part in the thread
+	// (planMessageReply, inboxwrite.PlanRecord).
 	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
@@ -1114,15 +1232,29 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// This reply - its own body, and the block it names - is read and planned here, before the
-	// first statement that takes a row lock, so no document work runs while the transaction
-	// holds a transaction id (INFRA-636). The refusal the planning earns is raised in the
-	// branch that answers with it, where it was raised; the index it finds the parent owes is
-	// written there too, under the parent's lock, which is taken below: the order
-	// refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a route
-	// with a write phase.
+	// first statement that takes a row lock, so no document work runs while the transaction holds a
+	// transaction id (INFRA-636): the plan's own last statement, a reply on no issue's lock of its
+	// thread's root, comes after every read of the body (planMessageReply). The refusal the
+	// planning earns is raised in the branch that answers with it, where it was raised; the index
+	// it finds the parent owes is written there too, under the parent's lock, which is taken below:
+	// the order refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a
+	// route with a write phase.
 	var plan messageReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planMessageReply(r.Context(), tx, actor, message, *input.Body, input.InReplyToBlock); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The thread's root before every other row this reply takes, `for no key update`: the
+		// reply's clear of its root's Agent dismissals moves the root's agent_dismissed_at, so the
+		// root is the first row of the thread a writer of it holds (inboxwrite.Recording.QueueRootLock,
+		// the lock order written on api/inbox_read.go's markInboxReadThreads). A reply on no issue
+		// took the root already, as its plan walked to it, and this queues nothing. A follow-up is
+		// planned again under the first reply, in the same thread, so its root is this one.
+		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+			plan.recording.QueueRootLock(b)
+			return nil
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1208,7 +1340,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		receipt, err := s.appendEvent(r.Context(), tx, messageDeliveryReceipt(message, actor, updated, ""))
+		// The receipt, and under it what the attempt's row now holds (graphstore.QueueAttempted).
+		receipt, err := s.appendEventThen(r.Context(), tx, messageDeliveryReceipt(message, actor, updated, ""), func(b *store.WriteBatch) error {
+			graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, updated.Attempt))
+			return nil
+		})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1231,17 +1367,25 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// The session answered, so the message reached it whatever the attempt recorded: a failed
 		// attempt (a stale receipt, an error the session itself reported) reads as sent and answered.
 		// So the session that attempt names is a node of the store from this write on, as a
-		// settle's is, written in the same batch as the attempt's update. The store records no
-		// delivery of a message yet, though a message is a node, so the answer states the
-		// session's node alone and no delivered_to (queueAnsweredDelivery).
+		// settle's is, written in the same batch as the attempt's update. The answer states that
+		// node alone and no delivered_to out of the message's node (queueAnsweredDelivery, which is
+		// handed no item): the store records a message attempt's delivery on the attempt's node,
+		// which the attempt's statement below states once its row reads sent. Then the attempt,
+		// sent and answered by the reply, whose node insertSessionReply wrote, is stated under the
+		// message.answered event insertSessionReply appended for the reply
+		// (graphstore.QueueAttempted).
 		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 			b.Queue("", `
 				update message_deliveries set reply_id = $3, state = 'sent', error = null
 				where message_id = $1 and attempt = $2
 			`, message.ID, input.Attempt, reply.ID)
-			return queueAnsweredDelivery(b, answeredDelivery{
+			if err := queueAnsweredDelivery(b, answeredDelivery{
 				session: attempt.SessionID, was: attempt.State,
-			}, actor, answered.CreatedAt, answered.ID)
+			}, actor, answered.CreatedAt, answered.ID); err != nil {
+				return err
+			}
+			graphstore.QueueAttempted(b, actor, answered.ID, graphstore.MessageAttempt(message.ID, input.Attempt))
+			return nil
 		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1341,10 +1485,12 @@ func followUpRequested(r *http.Request) (bool, error) {
 //
 // plan carries the row: its id and created_at, written explicitly because its index and its
 // references were planned for them before this insert ran, the body, the block it names, the
-// step that writes its index and the write of its node (planMessageReply). A follow-up names no
-// block, and its thread and issue are the first reply's, so the plan's serves both rows the route
-// can insert. Nothing of the body and nothing of the reply's own row is read here, so this write
-// holds the transaction id for its own statements alone, which the xid window tests count.
+// step that writes its index, the write of its node and its record in its thread
+// (planMessageReply). A follow-up names no block, and its thread and issue are the first reply's,
+// so the plan's index serves both rows the route can insert; its node's facts and its record
+// name the message it answers, so a follow-up plans those two again under the first reply
+// (planSessionReplyNode, planSessionReplyRecord). Nothing of the body and nothing of the reply's own
+// row is read here.
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
@@ -1352,24 +1498,40 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	// The reply's node goes in before its row. The node write and the row's insert go to the
-	// server as one batch (store.WriteBatch), the node write first, as createStoredMessage writes
-	// a message's node and row: the node write adds no round trip while the reply holds its
-	// transaction id. What that write states is appended in the batch that appends the
-	// message.answered event below (appendCausingEvent).
+	stored, recording := plan.stored, plan.recording
+	if parent.ID != plan.parent {
+		if stored, err = planSessionReplyNode(ctx, tx, plan, parent, actor); err != nil {
+			return model.Message{}, model.Event{}, err
+		}
+		if recording, err = planSessionReplyRecord(ctx, tx, plan, stored, parent, actor); err != nil {
+			return model.Message{}, model.Event{}, err
+		}
+	}
+	// The reply's node goes in before its row, in the parent's issue's project or between its
+	// thread's parties, under the message it answers, in one batch with the row, which names the
+	// node in its insert; what that write states waits for the message.answered event below. The
+	// failure point between the two is decided here and queued between them
+	// (failpoint.DirectReply). The reply's blocks, the mentions each holds and its own references
+	// were planned above the route's locks; their statements follow the row in the same batch,
+	// where the index of a reply this route wrote has always run, right after its row.
+	fails := failpoint.Planned(ctx, failpoint.DirectReply)
+	nodeKind, nodeAddress := stored.rowNode()
 	var reply model.Message
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		graphstore.QueueNodes(b, plan.node)
+		graphstore.QueueNodes(b, stored.written)
+		failpoint.Queue(b, fails)
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
 			returning `+messageColumns+`
-		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt).QueryRow(func(row pgx.Row) error {
+		`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt, nodeKind, nodeAddress,
+		).QueryRow(func(row pgx.Row) error {
 			var err error
 			reply, err = scanMessage(row)
 			return err
 		})
-		return nil
+		return plan.write(b)
 	}); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1380,12 +1542,6 @@ func (s *server) insertSessionReply(
 	if plan.block != nil {
 		replyParent.ReplyBody = messageReplyPreview(plan.block.excerpt)
 	}
-	// The reply's blocks, the mentions each holds and its own references were planned above the
-	// route's locks; their statements run here as one batch of their own, where the index of a
-	// reply this route wrote has always run.
-	if err := store.RunWrite(ctx, tx, plan.write); err != nil {
-		return model.Message{}, model.Event{}, err
-	}
 	thread, err := replyParent.thread(ctx, tx)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
@@ -1395,14 +1551,33 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	event, err := s.appendCausingEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload), plan.node)
+	// The event, and in the batch that appends it the stamp of the reply's references, what its
+	// node write and its index stated, who wrote it and its record in its thread. The session
+	// takes no row of its own, so the event names exactly the rows already there. A reply under a
+	// direct conversation reaches the person who started it (R2's direct-conversation arm): the
+	// record appends that delivered_to beside the participants' own, whether or not that person's
+	// participation still stands, and user_threads_message, which returns on a message on no
+	// issue, never did. Who wrote it is stated before any write of the session the answered
+	// attempt names (queueAnsweredDelivery), which is the order that write is held to, and the
+	// clear trigger passes a reply that holds threads_recorded (migration 20261116160001), so the
+	// record also ends every Agent dismissal of its root - a reply whose row names no node too, by
+	// its record's thread pass alone (inboxwrite.Write.Unstored).
+	event, err := s.appendEventThen(ctx, tx, messageEvent(reply, "message.answered", actor, payload), func(b *store.WriteBatch) error {
+		if reply.IssueKey != nil {
+			refs.QueueStamp(b, graphstore.KindMessage, reply.ID)
+		}
+		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
+		// What the reply's body is in the store, under the same event (planPendingItem).
+		graphstore.QueueCaused(b, plan.indexed, graphstore.LatestEvent)
+		if stored.projected {
+			if err := graphstore.QueueAuthored(b, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, graphstore.LatestEvent); err != nil {
+				return err
+			}
+		}
+		return recording.Queue(b, graphstore.LatestEvent)
+	})
 	if err != nil {
 		return model.Message{}, model.Event{}, err
-	}
-	if reply.IssueKey != nil {
-		if err := refs.Stamp(ctx, tx, "message", reply.ID, event.ID); err != nil {
-			return model.Message{}, model.Event{}, err
-		}
 	}
 	return reply, event, nil
 }
@@ -1433,6 +1608,14 @@ func scanMessageDelivery(row pgx.Row, extra ...any) (model.MessageDelivery, erro
 	return delivery, nil
 }
 
+// messageDeliveriesQuery is every delivery attempt of the messages $1 names (uuid[]), each
+// message's in attempt order, one row per attempt (scanMessageDelivery). GET /api/v1/me/inbox
+// splices it into its one statement over the messages of its page.
+const messageDeliveriesQuery = `
+		select ` + messageDeliveryColumns + `
+		from message_deliveries where message_id = any($1::uuid[]) order by message_id, attempt
+	`
+
 // loadMessageDeliveries reads every delivery attempt of the given messages in one query, keyed
 // by message id and ordered by attempt within each; a message with no attempts maps to an empty
 // (never nil) slice.
@@ -1444,10 +1627,7 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 	if len(messageIDs) == 0 {
 		return deliveries, nil
 	}
-	rows, err := q.Query(ctx, `
-		select `+messageDeliveryColumns+`
-		from message_deliveries where message_id = any($1::uuid[]) order by message_id, attempt
-	`, messageIDs)
+	rows, err := q.Query(ctx, messageDeliveriesQuery, messageIDs)
 	if err != nil {
 		return nil, err
 	}

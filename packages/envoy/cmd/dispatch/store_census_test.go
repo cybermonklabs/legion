@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -76,6 +77,23 @@ const censusSigningKey = "store-census-signing-key"
 // kind that checks zero rows fails this test with that kind reported. The list is the test's
 // own, so a kind the census stops checking is read by a person before this test agrees with it.
 var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
+
+// inboxCensusKinds are the kinds of the one inbox, which `census --store` prints a line
+// for beside the kinds above (graphcensus's inboxProjections): the messages node, the comment
+// pointers, the comment mentions, the item block and link tables, the two attempt tables, the
+// published destinations, user_threads and its version, and the five other read-state tables. This
+// run's corpus is the node store's, so it writes rows of some of them and none of others; what
+// holds each of them to a population of both releases is c-census, whose corpus seeds every arm.
+// Here a difference in either direction fails, as it does for the decision kinds.
+var inboxCensusKinds = []string{
+	"message", "comment_pointers", "comment_mentions",
+	"comment_block", "message_block", "ask_block",
+	"comment_block_ref", "message_block_ref", "ask_block_ref",
+	"comment_deliveries", "message_deliveries", "published_destinations",
+	"user_threads", "user_threads_version",
+	"user_agent_read", "user_agent_state", "user_agent_reply_read",
+	"user_agent_thread_dismissed", "user_ask_snooze",
+}
 
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the
@@ -1409,6 +1427,13 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	for _, kind := range report {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
+		case slices.Contains(inboxCensusKinds, kind.kind):
+			// The one inbox's kinds: this run's corpus holds rows of some and none of
+			// others, and c-census is what holds each to a population; a difference fails here.
+			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
+				t.Errorf("kind %s reads %d row(s) without a tuple and %d tuple(s) without a row",
+					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)
+			}
 		case slices.Contains(decisionCensusKinds, kind.kind), slices.Contains(decisionEdgeCensusKinds, kind.kind):
 			// The decision tie kinds and graph_edges' answers of them, which this run writes no
 			// decision for and which a store may hold none of: no row and no node of one is no
@@ -1551,6 +1576,17 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // projection equality says nothing about this: both sides can agree and the answer a reader gets
 // still change.
 //
+// Every read but one must answer exactly what the older build answers. The one is GET
+// /api/v1/asks/open: this change makes it the Inbox's read of open asks, so each ask it lists now
+// carries the Inbox's ask row (contracts' OpenAskRow) and with it fields the older build's row did
+// not answer (openAskFieldsAdded). Each of its ask rows is held to every field the older build's
+// row answers, equal, and may carry beside them only the fields that list names; the rest of its
+// answer must be equal whole, as every other read's is. One field of those rows, age_seconds, is
+// the ask's age in whole seconds at the moment each build answered, so two reads a second apart
+// answer it a second apart: it is held to at least the older build's and at most that plus the
+// whole seconds measured from the start of the older build's read to the end of this build's, and
+// every other field strictly.
+//
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
 // answers nothing fails the run by name, and the denominator printed is the reads that compared
@@ -1570,10 +1606,13 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	// blocks, the lists a project page reads, the asks and the inbox. A read of an artifact
 	// that belongs to an issue is refused by its own route (ARTIFACT_LINKED), so the issue's
 	// own comment read is the one here. lists names the fields of an object answer that hold
-	// what the read lists; a read that names none lists its own items, or is one object.
+	// what the read lists; a read that names none lists its own items, or is one object. added
+	// names the fields this build's rows listed under lists may carry beside the older build's,
+	// and is nil for a read whose two answers must be equal whole.
 	reads := []struct {
 		path  string
 		lists []string
+		added []string
 	}{
 		{path: "/api/v1/issues/" + seeded.issue},
 		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
@@ -1585,13 +1624,15 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/blocks"},
 		{path: "/api/v1/artifacts/" + seeded.artifact + "/references", lists: []string{"outgoing", "referenced_by"}},
 		{path: "/api/v1/projects/" + seeded.project + "/artifacts"},
-		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}},
+		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}, added: openAskFieldsAdded},
 		{path: "/api/v1/inbox"},
 	}
 	compared, differing := 0, 0
 	for _, read := range reads {
+		started := time.Now()
 		was := decodeRead(t, before.call(t, http.MethodGet, read.path, "", http.StatusOK))
 		is := decodeRead(t, now.call(t, http.MethodGet, read.path, "", http.StatusOK))
+		between := int64(math.Ceil(time.Since(started).Seconds()))
 		elements := answerElements(was, read.lists)
 		if elements == 0 {
 			t.Errorf("GET %s answers nothing on the older build, so comparing it with this build's answer compares nothing: the seed must write what it lists",
@@ -1599,10 +1640,15 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		} else {
 			compared++
 		}
-		if !reflect.DeepEqual(was, is) {
+		if differences := answerDifferences(was, is, read.lists, read.added, between); len(differences) > 0 {
 			differing++
-			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
-				read.path, mustEncode(t, was), mustEncode(t, is))
+			t.Errorf("GET %s answers differently on the two builds: %s\nthe older build %s\nthis build     %s",
+				read.path, strings.Join(differences, "; "), mustEncode(t, was), mustEncode(t, is))
+			continue
+		}
+		if read.added != nil {
+			t.Logf("GET %s answers every field the older build answers on both builds, over %d element(s), its rows adding only fields of %v",
+				read.path, elements, read.added)
 			continue
 		}
 		t.Logf("GET %s answers field for field on both builds, over %d element(s)", read.path, elements)
@@ -1610,6 +1656,102 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	t.Logf("the old read beside the new: %d of %d read(s) compared an answer that holds something, %d of the %d answering differently",
 		compared, len(reads), differing, len(reads))
 	requireADenominator(t, "the old read beside the new read", compared)
+}
+
+// openAskFieldsAdded are the fields of contracts' OpenAskRow that each ask of this build's GET
+// /api/v1/asks/open carries and the older build's did not answer: the read now carries the Inbox's
+// ask row (compareTheOldReadWithTheNew).
+var openAskFieldsAdded = []string{
+	"anchor", "answer", "artifact_id", "asked_of", "asked_of_at", "asked_of_by", "author", "block_id", "edited_at",
+	"issue", "issue_key", "multiple", "opened_event_id", "options", "referenced_by_count", "revision",
+	"snoozed_until", "state", "thread",
+}
+
+// answerDifferences names each way this build's answer is differs from the older build's was. A
+// read that may add no field (added nil) differs wherever the two are not equal whole. One that may
+// (added) differs, each named by its field, where a field of the answer's object or of a row listed
+// under lists that the older build answers is dropped or answered otherwise, where this build's
+// object carries a field the older build's does not, where a list holds another number of rows,
+// and where one of this build's rows carries a field the older build's row does not and added does
+// not name. A row's age_seconds is answered otherwise only where this build's is below the older
+// build's or above it by more than between, the whole seconds between the two reads.
+func answerDifferences(was, is any, lists, added []string, between int64) []string {
+	if added == nil {
+		if reflect.DeepEqual(was, is) {
+			return nil
+		}
+		return []string{"the two answers are not equal"}
+	}
+	wasObject, wasIsObject := was.(map[string]any)
+	isObject, isIsObject := is.(map[string]any)
+	if !wasIsObject || !isIsObject {
+		return []string{"an answer is no object"}
+	}
+	var found []string
+	heldEqual := func(at string, wasFields, isFields map[string]any) {
+		for name, value := range wasFields {
+			held, answered := isFields[name]
+			switch {
+			case !answered:
+				found = append(found, at+name+" is dropped")
+			case name == "age_seconds":
+				if !ageWithin(value, held, between) {
+					found = append(found, fmt.Sprintf("%s%s is %v on the older build and %v on this one, outside the %d whole second(s) between the two reads",
+						at, name, value, held, between))
+				}
+			case !reflect.DeepEqual(value, held):
+				found = append(found, at+name+" is answered otherwise")
+			}
+		}
+	}
+	others := map[string]any{}
+	for name, value := range wasObject {
+		if !slices.Contains(lists, name) {
+			others[name] = value
+		}
+	}
+	heldEqual("", others, isObject)
+	for name := range isObject {
+		if _, answered := wasObject[name]; !answered {
+			found = append(found, name+" is added")
+		}
+	}
+	for _, list := range lists {
+		wasRows, _ := wasObject[list].([]any)
+		isRows, _ := isObject[list].([]any)
+		if len(wasRows) != len(isRows) {
+			found = append(found, fmt.Sprintf("%s holds %d row(s) on the older build and %d on this one", list, len(wasRows), len(isRows)))
+			continue
+		}
+		for index := range wasRows {
+			row := fmt.Sprintf("%s[%d]", list, index)
+			at := row + "."
+			wasRow, wasIsRow := wasRows[index].(map[string]any)
+			isRow, isIsRow := isRows[index].(map[string]any)
+			if !wasIsRow || !isIsRow {
+				if !reflect.DeepEqual(wasRows[index], isRows[index]) {
+					found = append(found, row+" is answered otherwise")
+				}
+				continue
+			}
+			heldEqual(at, wasRow, isRow)
+			for name := range isRow {
+				if _, answered := wasRow[name]; !answered && !slices.Contains(added, name) {
+					found = append(found, at+name+" is added, which openAskFieldsAdded does not name")
+				}
+			}
+		}
+	}
+	slices.Sort(found)
+	return found
+}
+
+// ageWithin reports whether is, this build's age_seconds, is a whole number of seconds at least
+// was, the older build's, and at most between above it.
+func ageWithin(was, is any, between int64) bool {
+	older, wasNumber := was.(float64)
+	newer, isNumber := is.(float64)
+	return wasNumber && isNumber && newer == math.Trunc(newer) && newer >= older && newer-older <= float64(between)
 }
 
 // answerElements counts what one read's answer holds: the items of a list answer, and an object

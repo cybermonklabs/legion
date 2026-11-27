@@ -1,13 +1,25 @@
 import type {
-  InboxRow,
+  MyRepliesResponse,
   MyReplyRow,
+  OpenAskRow,
   SessionAnswersResponse,
   WhoamiResponse,
 } from "@legion/contracts";
-import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
+import {
+  awaitsDecision,
+  inboxThreadRow,
+  meInboxAsks,
+  meInboxThreads,
+  serviceSubjectLabel,
+} from "@legion/contracts";
 import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
-import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
+import {
+  type CredentialPendingRow,
+  type DispatchClient,
+  DispatchServiceError,
+  isNoRoute,
+} from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
@@ -185,7 +197,7 @@ const INBOX_QUESTION_HEAD = 80;
  * ask shortens it; a row Dispatch lists with no snooze at all is not deferred, and neither is one
  * whose moment has passed.
  */
-function inboxSnoozed(row: InboxRow, now: number): boolean {
+function inboxSnoozed(row: OpenAskRow, now: number): boolean {
   if (row.snoozed_until === null) return false;
   const at = Date.parse(row.snoozed_until);
   return !Number.isNaN(at) && at > now;
@@ -197,7 +209,7 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  * them now; every other row sits under whose turn it is. A row the Inbox lists without a turn
  * belongs to no band, as on the page, and so is listed under no heading.
  */
-function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
+function inboxSection(row: OpenAskRow, now: number): "agent" | "human" | "later" | undefined {
   if (inboxSnoozed(row, now)) return "later";
   const waiting = row.waiting_on;
   return waiting === "agent" || waiting === "human" ? waiting : undefined;
@@ -206,7 +218,7 @@ function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" |
 /** Where an inbox row's ask lives: the issue key or the document slug its line is named by, and
  *  the ask's own `dispatch://` address under that owner. Every row the Inbox lists has one owner
  *  or the other; a row with neither, which no read makes, is named by the ask's id alone. */
-function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: string } {
+function inboxAskOwner(row: OpenAskRow): { readonly label: string; readonly ref: string } {
   const key = row.issue?.key ?? row.issue_key;
   if (key !== null) {
     return { label: key, ref: dispatchChildRef(dispatchIssueRef(key), "ask", row.id) };
@@ -221,10 +233,41 @@ function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: s
   return { label: row.id, ref: row.id };
 }
 
-function inboxAskLine(row: InboxRow): string {
+function inboxAskLine(row: OpenAskRow): string {
   const { label, ref } = inboxAskOwner(row);
   const priority = row.priority === null ? "P-" : `P${row.priority}`;
   return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
+}
+
+/** A time as the server's `time.RFC3339Nano` writes it, as two parts that order it: its whole
+ *  second in epoch milliseconds, then its fraction's digits padded to nanoseconds. `Date.parse`
+ *  reads milliseconds alone, and the fraction is not fixed-width, so neither the parse nor the
+ *  text orders two times to the microsecond the server writes. It mirrors the web's
+ *  `compareTimestamps` (`packages/dispatch/web/src/lib/timestamps.ts`). */
+function inboxInstant(at: string): readonly [number, string] {
+  const fraction = /\.(\d+)/.exec(at)?.[1] ?? "";
+  return [Date.parse(at.replace(/\.\d+/, "")), fraction.padEnd(9, "0")];
+}
+
+/** The asks in the order the summary prints them within a band: the issue's priority, none last;
+ *  a person's turn before an agent's; the newest activity, the last reply else the ask's opening;
+ *  then the greater id. Each ask's time is read once, not once per comparison. */
+function inboxAskOrder(rows: readonly OpenAskRow[]): OpenAskRow[] {
+  const priority = (row: OpenAskRow) => row.priority ?? Number.POSITIVE_INFINITY;
+  const turn = (row: OpenAskRow) => (row.waiting_on === "human" ? 0 : 1);
+  const keyed = rows.map((row) => ({
+    at: inboxInstant(row.last_reply?.created_at ?? row.created_at),
+    row,
+  }));
+  keyed.sort(({ at: [aSecond, aFraction], row: a }, { at: [bSecond, bFraction], row: b }) => {
+    if (priority(a) !== priority(b)) return priority(a) - priority(b);
+    if (turn(a) !== turn(b)) return turn(a) - turn(b);
+    if (aSecond !== bSecond) return bSecond - aSecond;
+    if (aFraction !== bFraction) return aFraction > bFraction ? -1 : 1;
+    if (a.id === b.id) return 0;
+    return a.id > b.id ? -1 : 1;
+  });
+  return keyed.map(({ row }) => row);
 }
 
 /** What an unread thread's line is named by: the issue key of a thread on an issue, the slug of
@@ -333,34 +376,37 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
 
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
- * with its count, then the rows under it, in the order the page bands them. The rows within a
- * band are the server's order and nothing re-sorts them.
+ * with its count, then the rows under it, in the order the page bands them. The asks within a
+ * band are in `inboxAskOrder`, and the threads in the order Dispatch answers them, which nothing
+ * re-sorts.
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
- * construction because the list is read as `?approver=me`. Its asks are the band's own rows and
- * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
- * page's default view does. The count is the page's rule: those rows plus the pending credential
- * requests, which are listed under `Credential requests` and not under this heading, so the
- * count is higher than the rows under it by that number. An expired credential request
- * waits on nobody (`awaitsDecision`), so it is not counted here, as the page does not count it,
- * though `Credential requests` lists and counts it until somebody dismisses it.
+ * construction because the list is read as `?approver=me`. The one read's `inbox` state and the
+ * fallback (`inboxReadOfTheReleaseBefore`) both hold only the asks that wait on the caller.
+ * The heading counts the caller's unsnoozed asks waiting on a person and pending credential
+ * requests. The requests appear under `Credential requests`, not under `Needs you`. Expired
+ * requests do not count toward `Needs you` and stay under `Credential requests` until dismissed.
  *
- * `Unread threads` is the page's thread list (`GET /api/v1/me/replies?kind=reply,agent`): the
- * threads the person is reading that somebody else has written in since, and the messages they
- * sent an agent session that it answered, newest reply first.
+ * `Unread threads` is the page's thread list (the one read's `unread` state, or the read of the
+ * release before): the threads the person is reading that somebody else has written in since, and
+ * the messages they sent an agent session that it answered, newest first.
  *
  * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
  * requests first, then the expired ones nobody has dismissed.
  */
 function formatInboxSummary(
-  rows: readonly InboxRow[],
+  rows: readonly OpenAskRow[],
   threads: readonly MyReplyRow[],
   requests: readonly CredentialPendingRow[],
   now: number
 ): string {
-  const sections = { agent: [] as InboxRow[], human: [] as InboxRow[], later: [] as InboxRow[] };
+  const sections = {
+    agent: [] as OpenAskRow[],
+    human: [] as OpenAskRow[],
+    later: [] as OpenAskRow[],
+  };
   for (const row of rows) {
     const section = inboxSection(row, now);
     if (section !== undefined) sections[section].push(row);
@@ -384,6 +430,65 @@ function formatInboxSummary(
 }
 
 /**
+ * The rows of the one read's `state` that `dispatch inbox` prints - the asks of `inbox`, the
+ * threads of `unread` - read as the command read them before the one read, where `error` is the
+ * answer `GET /api/v1/me/inbox?state=<state>` got from a Dispatch without that route: the asks
+ * that wait on the caller from `GET /api/v1/inbox?assignee=me`, and the threads from
+ * `GET /api/v1/me/replies?kind=reply,agent`, which a server of the release before answers as it
+ * answered that release's command. The plugins release from main as this merges while Dispatch's
+ * own server is deployed by hand later, so for a while the command runs against such a server.
+ * The one read is asked once (`DispatchClient.meInbox`), so the answer of no route reaches here
+ * as it came (`isNoRoute`), and the command waits for no roll: every build serves the two routes
+ * read here. Any other failure is thrown as it came, and nothing is read.
+ * kept for one release: dispatch-inbox-fallback
+ */
+function inboxReadOfTheReleaseBefore(
+  client: DispatchClient,
+  state: "inbox",
+  error: unknown
+): Promise<OpenAskRow[]>;
+function inboxReadOfTheReleaseBefore(
+  client: DispatchClient,
+  state: "unread",
+  error: unknown
+): Promise<MyReplyRow[]>;
+async function inboxReadOfTheReleaseBefore(
+  client: DispatchClient,
+  state: "inbox" | "unread",
+  error: unknown
+): Promise<OpenAskRow[] | MyReplyRow[]> {
+  if (!isNoRoute(error)) throw error;
+  if (state === "inbox") {
+    return (await readOfTheReleaseBefore(
+      client,
+      `/api/v1/inbox?${new URLSearchParams({ assignee: "me" })}`
+    )) as OpenAskRow[];
+  }
+  const replies = (await readOfTheReleaseBefore(
+    client,
+    `/api/v1/me/replies?${new URLSearchParams({ kind: "reply,agent" })}`
+  )) as MyRepliesResponse;
+  return replies.rows ?? [];
+}
+
+/**
+ * Dispatch's JSON in the answer of one read of the release before (`DispatchClient.readRoute`),
+ * read out of that answer as `dispatch api` reads it (`sendApiCall`). Both routes answer
+ * Dispatch's JSON, so a 2xx whose body came back as the bytes that came (`RouteAnswer`'s `body`)
+ * is not Dispatch's answer, and it is thrown, naming the route and what came.
+ * kept for one release: dispatch-inbox-fallback
+ */
+async function readOfTheReleaseBefore(client: DispatchClient, path: string): Promise<unknown> {
+  const answer = await client.readRoute(path);
+  if ("body" in answer) {
+    throw new Error(
+      `GET ${path} answered a body that is not Dispatch's JSON: ${answer.body.byteLength} bytes (${answer.type ?? "no Content-Type"})`
+    );
+  }
+  return answer.payload;
+}
+
+/**
  * `dispatch inbox`: what the person's Inbox page shows. It names no owner, so it runs on the
  * session's context alone.
  */
@@ -392,25 +497,38 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   // All four reads at once: they depend on nothing of each other, and the credential list is
   // the slow one, since Dispatch relays it to the secrets broker.
   const pending = settleSideRead(client.credentialPending());
-  const unread = settleSideRead(client.myReplies());
+  const unread = settleSideRead(
+    client.meInbox("unread").then(
+      meInboxThreads,
+      // kept for one release: dispatch-inbox-fallback
+      (error: unknown) => inboxReadOfTheReleaseBefore(client, "unread", error)
+    )
+  );
   let identity: WhoamiResponse;
-  let rows: InboxRow[];
+  let asks: OpenAskRow[];
   try {
-    [identity, rows] = await Promise.all([client.whoami(), client.inbox("me")]);
+    [identity, asks] = await Promise.all([
+      client.whoami(),
+      client.meInbox("inbox").then(
+        meInboxAsks,
+        // kept for one release: dispatch-inbox-fallback
+        (error: unknown) => inboxReadOfTheReleaseBefore(client, "inbox", error)
+      ),
+    ]);
   } catch (error) {
-    // The inbox route needs `person`, and a credential without it is refused 403
+    // The one read needs `person`, and a credential without it is refused 403
     // OAUTH_SCOPE_REQUIRED, whose message names the scope: the code is what the caller acts
     // on, so it reaches the text. `whoami` needs no scope.
     throw refusalWithCode(error);
   }
   const viewer = whoamiPerson(identity);
+  const rows = inboxAskOrder(asks);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none.
   const requests: readonly CredentialPendingRow[] =
     sideRead(await pending, "credential requests", warnings)?.pending ?? [];
-  const threads: readonly MyReplyRow[] =
-    sideRead(await unread, "unread threads", warnings)?.rows ?? [];
+  const threads: readonly MyReplyRow[] = sideRead(await unread, "unread threads", warnings) ?? [];
   return {
     text: formatInboxSummary(rows, threads, requests, Date.now()),
     details: {

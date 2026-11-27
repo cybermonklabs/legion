@@ -6,6 +6,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// kept for one release: inbox-old-reads
 var _ = declareRoute(routeDecl{
 	Method:      http.MethodGet,
 	Pattern:     "/api/v1/inbox",
@@ -14,5 +15,5 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listInbox,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing},
-	Shape:       routeShape{Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
+	Shape:       routeShape{Status: http.StatusOK, Response: []openAskRow{}, Params: inboxQuery{}},
 })

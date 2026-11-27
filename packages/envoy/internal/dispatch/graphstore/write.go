@@ -33,7 +33,10 @@ import (
 const LatestEvent int64 = -1
 
 // causeOf is the SQL a source_event or legacy_source_seq column is written through: the column's
-// own value, or the latest event's id for LatestEvent.
+// own value, or the latest event's id for LatestEvent. store.LatestEventID reads that id in a
+// scalar subquery, which Postgres runs once per statement rather than once per row. No statement
+// that writes through it appends an event of its own, so the latest event is one id for all of its
+// rows.
 func causeOf(column string) string {
 	return `(case when ` + column + ` = ` + strconv.FormatInt(LatestEvent, 10) + ` then ` + store.LatestEventID + ` else ` + column + ` end)`
 }
@@ -82,6 +85,14 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) {
 	})
 }
 
+// queueRefused queues err, a refusal a queue writer of this store reached while it queued, so the
+// write fails Send rather than the call, which answers nothing (QueueWrite): Send sends the
+// statements queued before it and returns err unchanged, and sends nothing of this one, whose
+// build fails (store.WriteBatch's QueueBuilt).
+func queueRefused(b *store.WriteBatch, err error) {
+	b.QueueBuilt("", `select 1`, func() ([]any, error) { return nil, err })
+}
+
 // Uncaused is a write of this store whose cause did not exist while its node write was queued,
 // held by its writer until it does. Such a writer orders itself node row, projection row, event,
 // tuples: the node first because the projection row's foreign key names it, the event after both
@@ -103,6 +114,12 @@ type Uncaused struct {
 	// Tuples are the facts the write states, each appended under the event by Caused, the base
 	// attributes its node write stated among them, which stand after the first baseAt of these.
 	Tuples []UncausedTuple
+	// People are the facts of the write that name a person - a mentions tuple from the write's
+	// node to a person its text names, or the retraction of one its text no longer names - which
+	// only ToPerson appends (ErrPersonTupleOutsideToPerson): QueueCaused hands them to
+	// QueueToPerson under the event, each with the event as its legacy_source_seq, after Tuples,
+	// so each person's node is written beside them as every such fact's is.
+	People []Tuple
 	// mark is what the node write left on the rows it made or moved (nodeMarks), 0 for a write
 	// that marked none.
 	mark int64
@@ -130,10 +147,59 @@ func Counting(write Uncaused, appended *int64) Uncaused {
 // index inserts outside a first indexing is written with none, and refs.QueueStamp or docs'
 // stampVersionEvent fills it with that event in the same transaction, so the tuple's
 // legacy_source_seq is that event's id, which the writer cannot read back once the tuple is
-// appended. A fact no row dates that way keeps the legacy_source_seq its writer gave it.
+// appended. A session's or a role's mention is marked so too (refs' stateMention,
+// CommentMentionFacts), which graph_edges dates by that id as a mention of a person is dated
+// (QueueCaused). A fact no row dates that way keeps the legacy_source_seq its writer gave it.
 type UncausedTuple struct {
 	Tuple
 	LegacyFromCause bool
+}
+
+// A Cause is the event a write's facts are stated under, as QueueCaused states them, held once
+// for all of them. Each fact carries the event as its source_event, and a fact a ?since= read
+// dates by that event - one marked LegacyFromCause, or a mention of a person a text names
+// (Uncaused.People) - opts in to carrying it as its legacy_source_seq too, where it carries none
+// of its own (State's dated). No fact is dated by NoEvent, and LatestEvent dates each with the
+// event the write phase appended right before, which the append writes into both columns
+// (causeOf). A writer with no write phase to queue QueueCaused on states such facts through it as
+// well (Append), so every writer of them stamps them one way, and the builders of those facts
+// (refs.ItemIdentityMentions, refs.ItemUnnamedMentions, CommentMentionFacts) state none of it.
+type Cause struct {
+	event int64
+	// legacy is event as a legacy_source_seq, nil under NoEvent: one value, which every fact the
+	// cause dates points at.
+	legacy *int64
+}
+
+// CauseOf is the Cause of event: an event's id, LatestEvent or NoEvent.
+func CauseOf(event int64) Cause {
+	cause := Cause{event: event}
+	if event != NoEvent {
+		legacy := event
+		cause.legacy = &legacy
+	}
+	return cause
+}
+
+// State is tuple stated under the cause: the cause's event as its source_event, and, where dated
+// is true and tuple carries no legacy_source_seq of its own, that event as its legacy_source_seq
+// too, none under NoEvent. A fact that is not dated - a delivery, a participation, a comment's
+// delivery mode - keeps whatever legacy_source_seq it carries.
+func (c Cause) State(tuple Tuple, dated bool) Tuple {
+	tuple.SourceEvent = c.event
+	if dated && tuple.LegacySourceSeq == nil {
+		tuple.LegacySourceSeq = c.legacy
+	}
+	return tuple
+}
+
+// Append is dst with each of tuples appended stated under the cause (State), dated as dated
+// says, as the builtin append answers it; tuples is left as it was.
+func (c Cause) Append(dst []Tuple, dated bool, tuples ...Tuple) []Tuple {
+	for _, tuple := range tuples {
+		dst = append(dst, c.State(tuple, dated))
+	}
+	return dst
 }
 
 // PlanUncaused is a write whose nodes are written before the event that causes it exists, held
@@ -205,26 +271,31 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // a second node write per node for one column, and the upsert's own guard would refuse it, since
 // nothing else about the node moved.
 //
-// Each tuple is stated under event as the append binds it, read from write where it stands when
-// the write phase sends the statements, rather than copied here: a version's block index holds a
-// tuple a block. The writer does not change write after this call, and a tuple that cannot be
-// encoded fails Send rather than this call, which answers nothing (QueueWrite).
+// Each tuple is stated under event as the append binds it (Cause.State), dated where it is marked
+// LegacyFromCause, read from write where it stands when the write phase sends the statements,
+// rather than copied here: a version's block index holds a tuple a block. The writer does not
+// change write after this call, and a tuple that cannot be encoded fails Send rather than this
+// call, which answers nothing (QueueWrite). The facts that name a person (Uncaused.People) go to
+// QueueToPerson under the same event, after the append, each dated by it, as a session's or a
+// role's mention marked LegacyFromCause is: every one of them is the mention of a person a text
+// names (refs' stateMention), and graph_edges answers a mention's legacy_source_seq as its
+// source_seq, so a ?since= read of References whose window holds the event lists it. Under NoEvent
+// it takes none, as no fact of Tuples does.
 func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
-	legacy := event
+	cause := CauseOf(event)
 	queueAppend(b, appending{
 		tuples: len(write.Tuples),
 		tuple: func(index int) Tuple {
 			held := write.Tuples[index]
-			tuple := held.Tuple
-			tuple.SourceEvent = event
-			if held.LegacyFromCause && tuple.LegacySourceSeq == nil && event != NoEvent {
-				tuple.LegacySourceSeq = &legacy
-			}
-			return tuple
+			return cause.State(held.Tuple, held.LegacyFromCause)
 		},
 		nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt,
 		cause: &event, sentinel: write.sentinel, appended: write.appended,
 	})
+	if len(write.People) == 0 {
+		return
+	}
+	QueueToPerson(b, cause.Append(make([]Tuple, 0, len(write.People)), true, write.People...))
 }
 
 // The base attributes, as the kind of the tuple that states each spells it. graph_nodes carries a
@@ -605,9 +676,20 @@ type appending struct {
 // for the arguments it already holds: one statement over a version's 150,001 block nodes and
 // their 150,001 tuples bound some 81 MB of arguments and held 377 MB of encoding at the heap's
 // peak.
+//
+// It is what QueueWrite and QueueCaused append through, so a tuple of ToPerson's three kinds
+// naming a person, and a mark from a person, which is FromPerson's, are refused here
+// (refusePersonTuple), before any statement of the append is queued, encoded or sent, which fails
+// Send (queueRefused).
 func queueAppend(b *store.WriteBatch, write appending) {
 	if write.tuples == 0 && write.mark == 0 && !(write.sentinel && len(write.nodes) > 0) {
 		return
+	}
+	for index := range write.tuples {
+		if err := refusePersonTuple("", write.tuple(index)); err != nil {
+			queueRefused(b, err)
+			return
+		}
 	}
 	order, majors, before, baseSlot := appendOrder(write.tuples, write.tuple, write.baseAt)
 	nodes := write.nodes

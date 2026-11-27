@@ -109,7 +109,7 @@ const named = (login: string): SignedInUser => ({ event_head: "0", kind: "user",
 function answerAgentReads(): () => void {
   const reads = [
     spyOn(api, "listAgents").mockResolvedValue([planner]),
-    spyOn(api, "listAgentMessages").mockResolvedValue([]),
+    spyOn(api, "getAgentConversation").mockResolvedValue([]),
     spyOn(api, "getMyAgentState").mockResolvedValue({}),
   ];
   answerAgentStates().mockImplementation(async () => ({ unread_replies: 0 }));

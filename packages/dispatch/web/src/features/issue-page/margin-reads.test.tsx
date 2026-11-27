@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { specArtifact } from "../margin/margin-fixture";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
 import { ReferencedBy } from "../refs/ReferencedBy";
@@ -31,22 +32,22 @@ afterEach(() => {
   restoreWindowFocus();
 });
 
-/** Every read the margin of an issue sends on its Comments tab with no pin: the inbox, the
- *  reader's state, the issue's comments and its asks (`useAnsweredAsks`). */
+/** Every read the margin of an issue sends on its Comments tab with no pin: the open asks
+ *  (`openAsksQuery`), the reader's state, the issue's comments and its asks (`useAnsweredAsks`). */
 interface MarginReads {
-  readonly getInbox: Mock<typeof api.getInbox>;
   readonly getMyState: Mock<typeof api.getMyState>;
   readonly listComments: Mock<typeof api.listComments>;
   readonly listIssueAsks: Mock<typeof api.listIssueAsks>;
+  readonly listOpenAsks: Mock<typeof api.listOpenAsks>;
 }
 
 /** Each of the margin's reads, answered empty. */
 function stubMarginReads(): MarginReads {
   const reads: MarginReads = {
-    getInbox: spyOn(api, "getInbox").mockResolvedValue([]),
     getMyState: spyOn(api, "getMyState").mockResolvedValue({}),
     listComments: spyOn(api, "listComments").mockResolvedValue([]),
     listIssueAsks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    listOpenAsks: answerOpenAsks([]),
   };
   restore = () => {
     for (const read of Object.values(reads)) read.mockRestore();
@@ -117,8 +118,8 @@ const BESIDE = [
 // them the same way: a window focus past the app's 30 s staleness reads neither again. Beside the
 // shown spec it reads the decisions too, which the outline also reads under this key and keeps
 // fresh by events, and the same focus reads them again no more than it reads the asks and the
-// comments. The inbox and the reader's state keep the app's defaults there too, so their second
-// read shows the focus was handled.
+// comments. The open asks and the reader's state keep the app's defaults there too, so their
+// second read shows the focus was handled.
 test.each(
   BESIDE
 )("in Details beside %s, a focus past 30 s sends no read of the margin's asks, comments or decisions", async (_beside, spec) => {
@@ -130,7 +131,7 @@ test.each(
     await firstAnswers(client, reads, decisions);
     await focusPastStaleness(client);
     await waitFor(() => {
-      expect(reads.getInbox).toHaveBeenCalledTimes(2);
+      expect(reads.listOpenAsks).toHaveBeenCalledTimes(2);
       expect(reads.getMyState).toHaveBeenCalledTimes(2);
     });
     expect(reads.listIssueAsks).toHaveBeenCalledTimes(1);
@@ -154,7 +155,7 @@ test.each(
     await firstAnswers(client, reads, decisions);
     await focusPastStaleness(client);
     await waitFor(() => {
-      expect(reads.getInbox).toHaveBeenCalledTimes(2);
+      expect(reads.listOpenAsks).toHaveBeenCalledTimes(2);
       expect(reads.getMyState).toHaveBeenCalledTimes(2);
       expect(reads.listIssueAsks).toHaveBeenCalledTimes(2);
       expect(reads.listComments).toHaveBeenCalledTimes(2);

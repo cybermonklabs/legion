@@ -249,6 +249,7 @@ test("a read is listed only where the list names the route the table serves it b
         "/api/v1/artifacts/7d432ff7-f1ea-4f39-8927-99fd01738306/text",
         "/api/v1/projects/CORE/artifacts/runbook",
         "/api/v1/issues",
+        "/api/v1/asks/open",
       ])
     )
   ).toEqual([]);
@@ -259,7 +260,6 @@ test("a read is listed only where the list names the route the table serves it b
   expect(
     unlistedShotReads(
       new Set([
-        "/api/v1/asks/open",
         "/api/v1/issues/resolve",
         "/api/v1/search",
         "/api/v1/issues/CORE-1/asks/extra",
@@ -268,7 +268,6 @@ test("a read is listed only where the list names the route the table serves it b
       ])
     )
   ).toEqual([
-    "/api/v1/asks/open (/api/v1/asks/open)",
     "/api/v1/issues/CORE-1/asks/extra (no route)",
     "/api/v1/issues/resolve (/api/v1/issues/resolve)",
     "/api/v1/issuesX (no route)",

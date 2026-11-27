@@ -9,6 +9,7 @@ import {
   patchIssue,
 } from "./api";
 import { askCard, centreRow, inboxRow, listScrollTop, selectedRow } from "./inbox-pane";
+import { inboxRead } from "./pick-writes";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -514,14 +515,16 @@ async function stopTravelling(page: Page): Promise<{ arrived: number; dispatched
   });
 }
 
-/** How many answers to `GET /api/v1/inbox` the page has finished reading: the arrival's own
- *  answer is in the page from the moment this grows, whether or not the list has adopted it. */
+/** How many answers to the one read's `inbox` state the page has finished reading: the
+ *  arrival's own answer is in the page from the moment this grows, whether or not the list has
+ *  adopted it. */
 async function inboxAnswersRead(page: Page): Promise<number> {
   return page.evaluate(
     () =>
-      performance
-        .getEntriesByType("resource")
-        .filter((entry) => new URL(entry.name).pathname === "/api/v1/inbox").length
+      performance.getEntriesByType("resource").filter((entry) => {
+        const url = new URL(entry.name);
+        return url.pathname === "/api/v1/me/inbox" && url.searchParams.get("state") === "inbox";
+      }).length
   );
 }
 
@@ -620,10 +623,15 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   const release = Promise.withResolvers<void>();
   const delivered = Promise.withResolvers<void>();
   let hold = true;
-  await page.route("**/api/v1/inbox", async (route) => {
+  await page.route(inboxRead, async (route) => {
     const response = await route.fetch();
-    const listed = (await response.json()) as Array<{ question?: string }>;
-    if (!hold || !listed.some((row) => row.question === "Travelling pointer arrival")) {
+    const listed = (await response.json()) as {
+      entries?: Array<{ ask?: { question?: string } }> | null;
+    };
+    const arrived = (listed.entries ?? []).some(
+      (entry) => entry.ask?.question === "Travelling pointer arrival"
+    );
+    if (!hold || !arrived) {
       await route.fulfill({ json: listed, response });
       return;
     }
@@ -682,7 +690,7 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   } finally {
     await stopTravelling(page);
     release.resolve();
-    await page.unroute("**/api/v1/inbox");
+    await page.unroute(inboxRead);
   }
 }
 

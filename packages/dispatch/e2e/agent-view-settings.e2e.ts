@@ -8,7 +8,7 @@ import {
 import {
   baseUrl,
   e2eAgentToken,
-  listAgentMessages,
+  getAgentConversation,
   mintAgentToken,
   publishAgentStreamFrame,
   replyToMessageDelivery,
@@ -236,7 +236,7 @@ async function storedSwitch(
   await expect
     .poll(async () => {
       const frame = (await getSentMessages()).find((sent) => sent.message === body);
-      const read = (await listAgentMessages(sessionID)).find((row) => row.message.body === body);
+      const read = (await getAgentConversation(sessionID)).find((row) => row.message.body === body);
       if (frame === undefined || read === undefined) return false;
       const { delivery } = JSON.parse(String(frame.payload)) as { delivery: { attempt: number } };
       found = { attempt: delivery.attempt, author: read.message.author, id: read.message.id };
@@ -664,7 +664,7 @@ test("a person's own token sends a switch recorded as them with the agent beside
     'Bearer error="insufficient_scope", scope="person"'
   );
   expect(await getSentMessages()).toEqual([]);
-  expect(await listAgentMessages(id)).toEqual([]);
+  expect(await getAgentConversation(id)).toEqual([]);
 
   const sent = await fetch(new URL(`${messagesPath}?session=${agentSession}`, baseUrl), {
     body: JSON.stringify(switchBody),
@@ -673,7 +673,7 @@ test("a person's own token sends a switch recorded as them with the agent beside
   });
   expect(sent.status, await sent.text()).toBe(201);
   const stored = await storedSwitch(id, "/model anthropic/model-b");
-  const read = await listAgentMessages(id);
+  const read = await getAgentConversation(id);
   expect(read).toHaveLength(1);
   expect(read[0]?.message.author).toMatchObject({
     act: { session: agentSession },

@@ -13,6 +13,7 @@ package graphstore
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -56,6 +57,12 @@ const MaxAddressBytes = 1024
 // AddressFits is whether address is inside that bound, the one question every writer of this
 // store asks of each node id and each relation end before it writes it.
 func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
+
+// AddressFitsSQL is AddressFits in SQL, over the text expression expr: true of an address inside
+// that bound.
+func AddressFitsSQL(expr string) string {
+	return `octet_length(` + expr + `) <= ` + strconv.Itoa(MaxAddressBytes)
+}
 
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the

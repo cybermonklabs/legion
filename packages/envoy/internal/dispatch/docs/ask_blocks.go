@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -67,11 +69,24 @@ type settlementReconciliation struct {
 	// a session author's node is written before the ask.opened that records the ask exists, and
 	// learns that event right after the settlement appends it (causedByEvent).
 	follows []openedFollow
+	// indexed are the asks this settlement indexed - opened, restored or reworded - each with
+	// what that index stated in the node and tuple store, which waits for the event of its own
+	// that records the write (causedByEvent).
+	indexed []indexedAsk
 	// answers are the answer states this settlement wrote through the one writer of an ask's
 	// answer state (asks.PlanSettle) - a retraction of an ask whose block left, the restoration of
 	// one whose block came back - each beside the event that records it, whose facts on the ask's
 	// node wait for that event (causedByEvent).
 	answers []settledAnswer
+	// threads are the writes this settlement made in the threads of asks - each ask it opened,
+	// and each answer it restored - each with its record planned in the read phase
+	// (inboxwrite.PlanRecord) and beside the type of the event that records it, which the one
+	// writer of those threads queues right after that event (causedByEvent).
+	threads []threadWrite
+	// restoredOpen are the asks a settlement retracted that this settlement restored open, each
+	// with the move of its delivery to the person it waits on now, queued right after its
+	// ask.opened (causedByEvent): no move reached the ask while it was retracted.
+	restoredOpen []restoredAsk
 	// copiedFrom is, for every ask block of the tree settlement read, the ask its block is a copy
 	// of (copiedAskSources), or "" for a block that is no copy, which claimCopies states as the
 	// copied_from of the block's node once the version's blocks are indexed.
@@ -197,61 +212,196 @@ type settledAnswer struct {
 
 // openedFollow is one ask this settlement opened: the write of the ask's own node, queued before
 // its row (createAskBlock), and its follow by its author, both held for the ask.opened that
-// records it. followed is the node the follow holds for that event, which the follow's own write
-// step fills when the write phase runs it, before the step that appends the event.
+// records it, and the ask's create as the one writer of its thread records it (inboxwrite.Opened),
+// naming the person the ask waits on as the create read them (inboxwrite.Write.WaitingOn).
+// followed is the node the follow holds for that event, which the follow's own write step fills
+// when the write phase runs it, before the step that appends the event. scope is the ask's node as
+// the create queued it (refs.WrittenItem), which the index of its question and its parts is
+// planned under: no read finds the ask's row before the write phase runs.
 type openedFollow struct {
 	ask      string
 	node     *graphstore.Uncaused
 	followed *graphstore.Uncaused
+	inbox    inboxwrite.Write
+	scope    refs.ItemScope
+}
+
+// threadWrite is one write a settlement made in an ask's thread (inboxwrite.Write), its record as
+// the read phase planned it (inboxwrite.PlanRecord), and the type of the event its settlement
+// appends for it, found among the settlement's events by that type and the ask, as causedByEvent
+// finds an answer state's.
+type threadWrite struct {
+	eventType string
+	write     inboxwrite.Write
+	recording inboxwrite.Recording
+}
+
+// restoredAsk is one ask a settlement retracted that this settlement restored open, and the move
+// of its delivery to the person it waits on now (inboxwrite.Restored), queued under the ask.opened
+// that records its restore.
+type restoredAsk struct {
+	ask  string
+	move inboxwrite.Move
+}
+
+// indexedAsk is one ask this settlement indexed: its id, the type of the event of its own that
+// records the write that indexed it - ask.opened for an ask it opened or restored open,
+// ask.answered for one it restored answered, ask.edited for one it reworded - and what its
+// citations and its parts state in the store (planAskReferences, planAskPartsCounted).
+type indexedAsk struct {
+	ask, event string
+	write      graphstore.Uncaused
+}
+
+// eventWrites is what the write phase queues with one event a settlement appends (appendEvents):
+// kept, the logins whose rows the event's writes keep, which its thread_logins names beside the
+// rows its thread holds before them (inboxwrite.Write.KeptLogins); stated, the writes of the node
+// and tuple store the event causes, in the order they are stated; and after, the steps queued
+// right after those under the same event (graphstore.LatestEvent): the record of each write the
+// event records in an ask's thread, and the move of each ask it records restored open.
+type eventWrites struct {
+	kept   []string
+	stated []*graphstore.Uncaused
+	after  []WriteStep
 }
 
 // causedByEvent is, for each of events that records a write of this reconciliation held for it,
-// the writes that event causes, by the event's place in events, which the write phase states under
-// it right after its append (appendEvents): under the ask.opened of each ask this reconciliation
-// opened, the ask's own node and its author's follow, and the ties of its block
-// (writeOpenedAskTies); and under the event recording each answer state it wrote (settledAnswer) -
-// the ask.resolved of a retraction, the ask.opened or ask.answered of a restoration - what that
-// write stated on the ask's node. It matches by the type and the ask its payload names rather than
-// by a position recorded when the write was, because events is edited after the writes are
-// recorded: withholdAnswersWithoutRoom drops the block.repaired of a repair it takes back, which
-// moves every event after it. A write whose event is not among events is a settlement that lost
-// the event recording a write it made, and fails here naming the ask.
-func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int][]*graphstore.Uncaused, error) {
-	if len(r.follows) == 0 && len(r.openedTies) == 0 && len(r.answers) == 0 {
+// the writes that event causes, by the event's place in events, which the write phase queues right
+// after its append (appendEvents): under the ask.opened of each ask this reconciliation opened,
+// the ask's own node and its author's follow, what its question and its parts stated, and the ties
+// of its block (writeOpenedAskTies); under the event recording each other ask it indexed - the
+// ask.opened or ask.answered of a restoration, the ask.edited of a rewording - what that index
+// stated; and under the event recording each answer state it wrote (settledAnswer) - the
+// ask.resolved of a retraction, the ask.opened or ask.answered of a restoration - what that write
+// stated on the ask's node. After those, under the same event, the one writer of an ask's thread
+// records each write this reconciliation made there: who opened each ask, and who answered each
+// answer a restoration brought back, take part in that thread, and a restored answer reaches
+// everyone else in it (inboxwrite.Recording.Queue), as the trigger user_threads_ask recorded it
+// before this release marked such a write. And each ask it restored open moves to the person it
+// waits on now (inboxwrite.QueueMoveWaiting): while a settlement's retraction stood the ask was not
+// open, so no move reached it - a hand-on refuses an ask that is not open, and a change of its
+// issue's assignee or of its project's default moves open asks alone - and an assignee or a
+// default written meanwhile is where it goes, as an issue's reopen moves the asks its close
+// withdrew.
+//
+// It matches by the type and the ask its payload names rather than by a position recorded when
+// the write was, because events is edited after the writes are recorded:
+// withholdAnswersWithoutRoom drops the block.repaired of a repair it takes back, which moves every
+// event after it. A write whose event is not among events is a settlement that lost the event
+// recording a write it made, and fails here naming the ask.
+//
+// One settlement can index one ask twice - its restoration, then the rewording of the block that
+// came back (reconcileAskBlocks) - and the second index may state again the part_of of a part the
+// first one placed. A part has one place, so each part's part_of is stated once, under the event
+// of the first write that stated it.
+func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int]eventWrites, error) {
+	if len(r.follows) == 0 && len(r.indexed) == 0 && len(r.openedTies) == 0 && len(r.answers) == 0 &&
+		len(r.threads) == 0 && len(r.restoredOpen) == 0 {
 		return nil, nil
 	}
 	type recorded struct{ ask, eventType string }
 	places := make(map[recorded]int, len(events))
 	for index, event := range events {
-		if payload, ok := event.Payload.(model.AskEventPayload); ok {
+		switch payload := event.Payload.(type) {
+		case model.AskEventPayload:
+			places[recorded{payload.ID, event.Type}] = index
+		case model.AskEditEventPayload:
 			places[recorded{payload.ID, event.Type}] = index
 		}
 	}
-	caused := make(map[int][]*graphstore.Uncaused, len(r.follows)+len(r.answers))
-	for _, follow := range r.follows {
-		index, found := places[recorded{follow.ask, "ask.opened"}]
+	place := func(ask, eventType, wrote string) (int, error) {
+		index, found := places[recorded{ask, eventType}]
 		if !found {
-			return nil, fmt.Errorf("settlement opened ask %s and appended no ask.opened for it", follow.ask)
+			return 0, fmt.Errorf("settlement %s ask %s and appended no %s for it", wrote, ask, eventType)
 		}
-		caused[index] = append(caused[index], follow.node, follow.followed)
+		return index, nil
+	}
+	caused := make(map[int]eventWrites, len(r.follows)+len(r.indexed)+len(r.answers))
+	state := func(index int, stated ...*graphstore.Uncaused) {
+		writes := caused[index]
+		writes.stated = append(writes.stated, stated...)
+		caused[index] = writes
+	}
+	for _, follow := range r.follows {
+		index, err := place(follow.ask, "ask.opened", "opened")
+		if err != nil {
+			return nil, err
+		}
+		state(index, follow.node, follow.followed)
+	}
+	// placed is each part whose part_of an earlier index of this settlement states, by its node.
+	var placed map[string]struct{}
+	for position := range r.indexed {
+		indexed := &r.indexed[position]
+		index, err := place(indexed.ask, indexed.event, "indexed")
+		if err != nil {
+			return nil, err
+		}
+		if placed != nil {
+			// The held tuples share their array with the plan whose step writes the parts, so
+			// the repeated part_of are dropped from a copy.
+			indexed.write.Tuples = slices.DeleteFunc(slices.Clone(indexed.write.Tuples), func(held graphstore.UncausedTuple) bool {
+				_, stated := placed[held.FromID]
+				return stated && partOfItsAsk(held.Tuple)
+			})
+		}
+		for _, held := range indexed.write.Tuples {
+			if partOfItsAsk(held.Tuple) {
+				if placed == nil {
+					placed = map[string]struct{}{}
+				}
+				placed[held.FromID] = struct{}{}
+			}
+		}
+		state(index, &indexed.write)
 	}
 	for _, ask := range slices.Sorted(maps.Keys(r.openedTies)) {
-		index, found := places[recorded{ask, "ask.opened"}]
-		if !found {
-			return nil, fmt.Errorf("settlement opened ask %s and appended no ask.opened for it", ask)
+		index, err := place(ask, "ask.opened", "opened")
+		if err != nil {
+			return nil, err
 		}
 		ties := r.openedTies[ask]
-		caused[index] = append(caused[index], &ties)
+		state(index, &ties)
 	}
 	for position := range r.answers {
 		answer := &r.answers[position]
-		index, found := places[recorded{answer.ask, answer.eventType}]
-		if !found {
-			return nil, fmt.Errorf("settlement wrote the answer state of ask %s and appended no %s for it", answer.ask, answer.eventType)
+		index, err := place(answer.ask, answer.eventType, "wrote the answer state of")
+		if err != nil {
+			return nil, err
 		}
-		caused[index] = append(caused[index], &answer.held)
+		state(index, &answer.held)
+	}
+	for _, thread := range r.threads {
+		index, err := place(thread.write.NodeID, thread.eventType, "wrote in the thread of")
+		if err != nil {
+			return nil, err
+		}
+		recording := thread.recording
+		writes := caused[index]
+		writes.kept = append(writes.kept, thread.write.KeptLogins()...)
+		writes.after = append(writes.after, func(b *store.WriteBatch) error { return recording.Queue(b, graphstore.LatestEvent) })
+		caused[index] = writes
+	}
+	for _, restored := range r.restoredOpen {
+		index, err := place(restored.ask, "ask.opened", "restored open")
+		if err != nil {
+			return nil, err
+		}
+		move := restored.move
+		writes := caused[index]
+		writes.after = append(writes.after, func(b *store.WriteBatch) error {
+			return inboxwrite.QueueMoveWaiting(b, move, graphstore.LatestEvent)
+		})
+		caused[index] = writes
 	}
 	return caused, nil
+}
+
+// partOfItsAsk is whether tuple states the place of an ask's part: its part_of, asserted, out of
+// the part's block node into the ask.
+func partOfItsAsk(tuple graphstore.Tuple) bool {
+	return tuple.Asserted && tuple.Kind == graphstore.TuplePartOf && tuple.FromKind == graphstore.KindBlock &&
+		tuple.ToKind == graphstore.KindAsk
 }
 
 // claimCopies plans, for each ask block of the tree settlement read whose block node the
@@ -698,11 +848,23 @@ func settlementRetracted(ask model.Ask) bool {
 }
 
 // settlementRetraction reports whether resolution is a retraction settlement wrote when its ask's
-// block left the document (settlementRetracted). reopenOwedAskDocuments holds this rule in SQL,
-// for the reopen's mark, so a change to one is a change to the other.
+// block left the document (settlementRetracted). settlementRetractedSQL holds this rule in SQL, so
+// a change to one is a change to the other.
 func settlementRetraction(resolution model.AskResolution) bool {
 	return resolution.Kind == "retracted" &&
 		(resolution.Actor.SameAs(SettlementActor) || strings.HasPrefix(resolution.Reason, SettlementRetractionReason))
+}
+
+// settlementRetractedSQL is settlementRetracted's rule in SQL over the asks row named ask, read
+// off its stored state and resolution: resolved, of kind "retracted", by an actor of kind
+// actorKind and id actorID or for a reason that opens with reason, each the placeholder its
+// statement binds SettlementActor.Kind, SettlementActor.ID and SettlementRetractionReason to. The
+// reopen's mark (reopenOwedAskDocuments) and a settlement's hold of the default
+// (mayDeliverAskBlock) read the rule through it.
+func settlementRetractedSQL(ask, actorKind, actorID, reason string) string {
+	return ask + `.state = 'resolved' and ` + ask + `.resolution->>'kind' = 'retracted'
+		and ((` + ask + `.resolution->'actor'->>'kind' = ` + actorKind + ` and ` + ask + `.resolution->'actor'->>'id' = ` + actorID + `)
+			or starts_with(` + ask + `.resolution->>'reason', ` + reason + `))`
 }
 
 // closeWithdrawn reports whether ask is resolved as its issue's close withdrew it
@@ -784,10 +946,38 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
+	// A block no ask row of this document names opens an ask, which on a project document, or on
+	// an issue nobody holds, waits on its project's default, read to deliver it when its thread is
+	// recorded (createAskBlock, inboxwrite.Write.WaitingOn); and a block naming an ask a
+	// settlement retracted may restore it open, whose delivery then moves to whoever it waits on
+	// (restoredAsk). The project's owner lock is held shared in this read phase, after the
+	// document's owner lock and before the person is read or anything is written, so a move of the
+	// default - which takes that lock exclusive and then the asks rows it moves - either committed
+	// already or waits for this settlement (inboxwrite.HoldDefault). Which blocks open or restore an
+	// ask is read with no lock: the owner lock this settlement holds stops every other writer of
+	// this document's asks.
+	if !issueClosed && len(blocks) > 0 {
+		delivers, err := mayDeliverAskBlock(ctx, tx, artifactID, blocks)
+		if err != nil {
+			return settlementReconciliation{}, err
+		}
+		if delivers {
+			var document *string
+			if owner.IssueKey == nil {
+				document = &artifactID
+			}
+			if err := inboxwrite.HoldDefault(ctx, tx, owner.IssueKey, document); err != nil {
+				return settlementReconciliation{}, err
+			}
+		}
+	}
 	// The rows and the copies' sources through the one read of which ask each block has, which
 	// takes the project's copy lock right before it reads the sources (copiedAskSources).
 	read, err := readBlockAsks(ctx, tx, artifactID, &owner, blocks, copiedAskSources)
 	if err != nil {
+		return settlementReconciliation{}, err
+	}
+	if err := lockAskBlocksForWrite(ctx, tx, artifactID); err != nil {
 		return settlementReconciliation{}, err
 	}
 	rows, sources := read.rows, read.sources
@@ -940,9 +1130,11 @@ func (s *Service) reconcileAskBlocks(
 			// ask's row is queued (createAskBlock), so the document its `#id`s resolve against -
 			// this very document, which holds the question blocks they name - is named by the
 			// fields that row will hold rather than read from the row, and read only if the
-			// question names a block (refs.PendingAskDocument).
+			// question names a block (refs.PendingAskDocument). Both are planned under the ask's
+			// node as createAskBlock queued it (openedFollow.scope), which no read finds yet, so
+			// the question's citations and the parts' nodes hang from it.
 			reader := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL, refs.PendingAskDocument(ask))
-			changes, index, err := planAskReferences(ctx, tx, reader, ask.ID, ask.Question)
+			changes, index, cited, err := planAskReferences(ctx, tx, reader, ask.ID, ask.Question, &opening.scope)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
 			}
@@ -954,13 +1146,23 @@ func (s *Service) reconcileAskBlocks(
 			// row's own insert, which this transaction has queued (createAskBlock), since every
 			// part row names its ask, and after the question's reconciliation just queued
 			// (questionReconciled).
-			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, changes)
+			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, changes, &opening.scope)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
 			if err := write(ctx, tx, parts); err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
+			// The asker takes part in the thread the ask opens, and the ask reaches the person it
+			// waits on, recorded once its ask.opened is in, which names the row the asker is about
+			// to hold (causedByEvent).
+			recording, err := inboxwrite.PlanRecord(ctx, tx, opening.inbox)
+			if err != nil {
+				return settlementReconciliation{}, err
+			}
+			reconciled.threads = append(reconciled.threads, threadWrite{eventType: "ask.opened", write: opening.inbox, recording: recording})
+			indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: "ask.opened", write: indexed})
 			reconciled.follows = append(reconciled.follows, opening)
 			if reconciled.opened == nil {
 				reconciled.opened = map[string]string{}
@@ -979,7 +1181,7 @@ func (s *Service) reconcileAskBlocks(
 		stated := false
 		if settlementRetracted(ask) && !issueClosed {
 			var held graphstore.Uncaused
-			restored, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
+			restored, answered, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
@@ -988,16 +1190,34 @@ func (s *Service) reconcileAskBlocks(
 			eventType := "ask.opened"
 			if ask.State == "answered" {
 				eventType = "ask.answered"
+			} else {
+				// Open again, it waits on whoever its issue or its project names now, and its
+				// delivery moves there under the ask.opened of its restore, at that event's
+				// moment, the transaction's now() its created_at takes.
+				at, err := transactionNow(ctx, tx)
+				if err != nil {
+					return settlementReconciliation{}, err
+				}
+				reconciled.restoredOpen = append(reconciled.restoredOpen, restoredAsk{ask: ask.ID, move: inboxwrite.Restored(ask.ID, at, actor)})
 			}
 			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
+			if answered != nil {
+				// The answer the restoration brought back is a write in the ask's thread, recorded
+				// under the same event, which names the row its answerer is about to hold.
+				recording, err := inboxwrite.PlanRecord(ctx, tx, *answered)
+				if err != nil {
+					return settlementReconciliation{}, err
+				}
+				reconciled.threads = append(reconciled.threads, threadWrite{eventType: eventType, write: *answered, recording: recording})
+			}
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved. The parts are written
 			// after the restoring update, which this transaction has queued. The restoration holds
 			// the parts alone, so their step reconciles the question's references after them too
 			// and settles the forms queue there (questionReconciled false).
 			restoredAt := refs.AskPartsAt(ask)
-			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL),
-				ask, restoredAt, false, model.ReferenceChanges{})
+			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL),
+				ask, restoredAt, false, model.ReferenceChanges{}, nil)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
 			}
@@ -1006,6 +1226,7 @@ func (s *Service) reconcileAskBlocks(
 			}
 			payload := model.NewAskEventPayload(ask, changes)
 			payload.Restored = true
+			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: eventType, write: indexed})
 			reconciled.events = append(reconciled.events, documentAskEvent(owner, artifactID, eventType, actor, payload))
 		}
 
@@ -1054,7 +1275,7 @@ func (s *Service) reconcileAskBlocks(
 			recordAskBlock(ctx, tx, artifactID, ask)
 			// The question and the parts through one reader (refs.NewReader).
 			reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL)
-			changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
+			changes, index, cited, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index reconciled ask: %w", err)
 			}
@@ -1066,13 +1287,15 @@ func (s *Service) reconcileAskBlocks(
 			// references. The parts are written after the queued update that gives the row that
 			// wording, which the row this plans from carries already (edited_at), and after the
 			// question's reconciliation queued above (questionReconciled).
-			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, true, changes)
+			changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, true, changes, nil)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}
 			if err := write(ctx, tx, parts); err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}
+			indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
+			reconciled.indexed = append(reconciled.indexed, indexedAsk{ask: ask.ID, event: "ask.edited", write: indexed})
 			reconciled.events = append(reconciled.events, documentAskEvent(
 				owner,
 				artifactID,
@@ -1480,11 +1703,72 @@ func parseAskBlockLeniently(node *pmdoc.Node) (askBlock, error) {
 	return askBlock{node: node, id: blockID, question: question, options: options, multiple: multiple, urgency: urgency}, nil
 }
 
-// loadAskBlocks reads every ask anchored to a block of this document, as the transaction's queued
-// writes leave them (recordAskBlock). It takes no row lock: its caller holds the document owner's
-// lock, which every writer of a block ask takes first - settlement's reconciliation, the ask
-// routes' answers, edits and resolutions, a version's approval carry - so the rows hold still
-// until the caller's transaction ends.
+// mayDeliverAskBlock is whether a settlement of document artifactID may deliver an ask to the
+// person it waits on (reconcileAskBlocks): one of blocks, the document's readable ask blocks, has
+// no ask row naming it, so the settlement may open an ask, or names an ask a settlement retracted
+// (settlementRetractedSQL), which it may restore open (restoredAsk). A copy of another document's
+// ask has no row here either and opens none, a block whose ask this transaction has queued and not
+// written has none yet, and a retracted ask may come back answered, so the answer may say yes
+// where the settlement then delivers nothing; it never says no where the settlement delivers one.
+// It reads with no lock.
+func mayDeliverAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, blocks []askBlock) (bool, error) {
+	ids := make([]string, len(blocks))
+	for index, block := range blocks {
+		ids[index] = block.id
+	}
+	var delivers bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select 1 from unnest($2::text[]) as named (id)
+			where not exists (select 1 from asks a where a.block_artifact_id = $1 and a.block_id = named.id)
+		) or exists (
+			select 1 from asks a
+			where a.block_artifact_id = $1 and a.block_id = any($2::text[])
+			  and `+settlementRetractedSQL("a", "$3", "$4", "$5")+`
+		)
+	`, artifactID, ids, SettlementActor.Kind, SettlementActor.ID, SettlementRetractionReason).Scan(&delivers); err != nil {
+		return false, fmt.Errorf("read which ask blocks of document %s open or restore an ask: %w", artifactID, err)
+	}
+	return delivers, nil
+}
+
+// lockAskBlocksForWrite locks the asks rows of the document's ask blocks `for no key update`, in
+// ascending id, before the writes of those asks: queued where the transaction's writes are queued,
+// so it runs in the write phase, and at once in the decisions step's restore (joinAtOnce). The
+// writer has taken the document owner's lock and any copy lock it needs (lockProjectCopies)
+// already. No writer changes the key columns.
+//
+// A move of a project's default assignee (api's putProjectDefaultAssignee) takes no issue's or
+// document's owner lock: it takes the project's owner lock exclusive and then locks, in ascending
+// id, every open asks row that falls through to that default, across the project's issues nobody
+// holds and its documents. One call of this takes its rows in that order, but a writer that locks
+// asks rows in more than one pass - one document's after another's, or a document's and then its
+// approval request's - is in no one order with the move: each could hold a row of one pass while
+// it waited for a row the other holds, a deadlock. So a writer of an issue's asks holds the
+// issue's owner lock and, where the asks fall through to the project's default (the issue is one
+// nobody holds, or the document is a project's, whose own owner lock it holds), the project's
+// owner lock shared (inboxwrite.HoldDefault, inboxwrite.HoldAskDefault) before it calls this: a
+// move of the default either committed before the writer locked any asks row or waits for it to
+// commit. Where its writes are queued, a hold taken anywhere in its read phase comes before every
+// row this locks. The writers that take it: api's close (prepareWithdrawal), reopen
+// (prepareRestoration) and the close's sweep and the repair's withdrawal (sweepIssueAskBlocksTx),
+// each over every document of its issue (WriteIssueAskStates); the decisions step's restore
+// (restoreIssueDecisions), before any asks row; a settlement that may open or restore an ask
+// (reconcileAskBlocks); and a version write that moves an approval request falling through to the
+// default (moveApprovalAsk) or a carry that answers one (answerApprovalAsk). A writer that locks
+// this one pass of one document and no other asks row needs no hold, and takes none: a settlement
+// that opens, restores and moves nothing, and a version's read of its blocks (askBlocksWithAnAsk)
+// or a carry's (asksAgreeWithTheirNodes) that moves and answers no request.
+func lockAskBlocksForWrite(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return writeExec(ctx, tx, "lock the ask blocks of document "+artifactID, `
+		select 1 from asks a where a.block_artifact_id = $1 and a.block_id is not null
+		order by a.id
+		for no key update
+	`, artifactID)
+}
+
+// loadAskBlocks reads the document's ask rows without locking them. It also includes writes
+// queued by the current document transaction (recordAskBlock).
 func loadAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`
@@ -1543,7 +1827,10 @@ func recordAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, ask model
 // graph_edges' old arm dates the row (graphstore.AskFacts), by the database's clock, never a
 // host's. The ask.opened that records this ask is appended with the settlement's other events,
 // after this, so the ask's node and the author's node are made at the sentinel and learn it then
-// (causedByEvent).
+// (causedByEvent), and the one writer of the ask's thread records its create right after it
+// (openedFollow.inbox), reaching the person the ask waits on as this create reads them here, under
+// the owner lock and the project's where the ask falls through to its default (reconcileAskBlocks,
+// inboxwrite.HoldDefault): no read of the queued row could answer them.
 func createAskBlock(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1590,14 +1877,24 @@ func createAskBlock(
 	// queued before the follow's own statement below, and its follower row is new
 	// (asks.PlanFollowNewAsk), dated by the ask's created_at.
 	follow := asks.PlanFollowNewAsk(id, author, createdAt)
-	opening := openedFollow{ask: id, followed: new(graphstore.Uncaused)}
+	waiting, err := newAskWaitingOn(ctx, tx, owner.IssueKey, ownerArtifactID)
+	if err != nil {
+		return model.Ask{}, openedFollow{}, err
+	}
+	opening := openedFollow{
+		ask: id, followed: new(graphstore.Uncaused),
+		inbox: inboxwrite.Opened(id, author, createdAt, owner.IssueKey, ownerArtifactID, project).WaitingOn(waiting),
+		scope: refs.WrittenItem(nodes[0]),
+	}
 	node := graphstore.PlanUncaused(nodes, facts)
 	opening.node = &node
+	// The row says in its own insert that the store holds what the settlement states of the ask
+	// (asks.tuples_stored_at, migration 20261116140001), at its created_at.
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, node)
 		b.Queue("create ask block row", `
-			insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, created_at, node_kind, node_address)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11, $12, $13)
+			insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, created_at, node_kind, node_address, tuples_stored_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11, $12, $13, $11)
 		`, id, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency, createdAt, nodeKind, nodeAddress)
 		var err error
 		*opening.followed, err = follow.Queue(b, graphstore.NoEvent)
@@ -1620,27 +1917,96 @@ func createAskBlock(
 	return ask, opening, nil
 }
 
+// newAskWaitingOn is the person a new ask on the owner issueKey or artifactID waits on while it is
+// open and handed to nobody, read through the rule every read of that person shares
+// (asks.AskedOfPersonExpression) over the owner alone, since the ask's own row is only queued: its
+// issue's assignee, else its project's default assignee; "" for nobody. The caller holds the owner
+// lock, and the project's where the ask falls through to its default (inboxwrite.HoldDefault), so
+// nothing it reads moves before the create commits.
+func newAskWaitingOn(ctx context.Context, tx pgx.Tx, issueKey, artifactID *string) (string, error) {
+	var waiting string
+	if err := tx.QueryRow(ctx, `
+		select coalesce(`+asks.AskedOfPersonExpression+`, '')
+		from (select null::text as asked_of, $1::text as issue_key, $2::uuid as artifact_id) a`+asks.AskedOfPersonJoins,
+		issueKey, artifactID).Scan(&waiting); err != nil {
+		return "", fmt.Errorf("read the person a new ask block waits on: %w", err)
+	}
+	return waiting, nil
+}
+
 // restoreRetractedAsk gives an ask settlement retracted, whose block came back, the state and the
 // answer it held before the retraction (stateBeforeRetraction) and takes the retraction off,
 // through the one writer of an ask's answer state in who's name: planned where it is called
 // (asks.PlanSettle) and queued through write. What that write states on the ask's node waits in
-// held for the event the settlement appends for the restoration (causedByEvent).
-func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
+// held for the event the settlement appends for the restoration (causedByEvent). It answers, for
+// a restoration that writes an answer the ask did not hold, that answer's write in the ask's
+// thread, which the settlement records under the same event (threadWrite), and nil for any other.
+func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, *inboxwrite.Write, error) {
 	prior, err := stateBeforeRetraction(ctx, tx, ask.ID)
 	if err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, nil, err
+	}
+	// An answer the restoration writes is a reply in the ask's thread where the ask does not hold
+	// it already, as the trigger user_threads_ask reads an update of asks.answer (new.answer is
+	// distinct from old.answer): a retraction keeps the answer it closes (asks.Resolved), so a
+	// restoration mostly writes back the answer the row still holds, which is no new write in the
+	// thread, and only a retraction of a release before that rule left none. Such an answer reads
+	// what the ask still owed the store before the update marks it (inboxwrite.ReadAsk), in this
+	// read phase, and that update moves the marker to the answer's moment.
+	returns, err := answerReturns(ask.Answer, prior.Answer)
+	if err != nil {
+		return model.Ask{}, nil, fmt.Errorf("restore retracted ask: %w", err)
+	}
+	var before inboxwrite.Ask
+	if returns {
+		if before, err = inboxwrite.ReadAsk(ctx, tx, ask.ID); err != nil {
+			return model.Ask{}, nil, err
+		}
 	}
 	change := asks.Restored(prior.State, prior.Answer)
-	change.Who, change.At, change.Held = who, time.Now().UTC(), held
+	change.Who, change.At, change.Held, change.TuplesStored = who, time.Now().UTC(), held, returns
 	settled, err := planSettle(ctx, tx, ask.ID, change)
 	if err != nil {
-		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
+		return model.Ask{}, nil, fmt.Errorf("restore retracted ask: %w", err)
 	}
 	if err := write(ctx, tx, settled.Queue); err != nil {
-		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
+		return model.Ask{}, nil, fmt.Errorf("restore retracted ask: %w", err)
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
-	return ask, nil
+	if !returns || settled.Ask.Answer == nil {
+		return ask, nil, nil
+	}
+	answered := inboxwrite.Answered(before, *settled.Ask.Answer, who)
+	return ask, &answered, nil
+}
+
+// answerReturns is whether a restoration that writes restored over held, the answer the ask's row
+// holds, writes an answer the row does not hold: none where it restores no answer, and otherwise
+// where the two differ as stored, each encoded as the row stores an answer (asks.Settle), its
+// selection never null and its moment in UTC.
+func answerReturns(held, restored *model.AskAnswer) (bool, error) {
+	if restored == nil {
+		return false, nil
+	}
+	if held == nil {
+		return true, nil
+	}
+	encoded := func(answer model.AskAnswer) ([]byte, error) {
+		if answer.Selected == nil {
+			answer.Selected = []string{}
+		}
+		answer.At = answer.At.UTC()
+		return json.Marshal(answer)
+	}
+	was, err := encoded(*held)
+	if err != nil {
+		return false, err
+	}
+	now, err := encoded(*restored)
+	if err != nil {
+		return false, err
+	}
+	return !bytes.Equal(was, now), nil
 }
 
 // stateBeforeRetraction is the ask askID as it stood before settlement retracted it, read from
@@ -1715,13 +2081,17 @@ func documentAskEvent(owner artifactOwner, artifactID, eventType string, actor m
 // settlementEventLogins is the thread_logins an event settlement appends names: an ask.opened,
 // ask.answered or ask.resolved carrying its ask's row (a new ask block's, a restored one's, a
 // retracted one's) names its ask's thread's, which the event's insert reads after the ask's queued
-// writes and the user_threads triggers they fire (events.ThreadLoginsOf). Every other event names
+// writes and the user_threads triggers they fire (events.ThreadLoginsOf), and kept, the logins
+// whose rows the writes this event records keep in that thread once the one writer of it records
+// them right after the event (eventWrites.kept): the asker of an ask it opens, the answerer of an
+// answer it restores. So the event names the rows its writers are about to hold, as it named the
+// rows the trigger wrote before the event while the triggers kept them. Every other event names
 // none.
-func settlementEventLogins(event model.Event) *events.Logins {
+func settlementEventLogins(event model.Event, kept []string) *events.Logins {
 	switch event.Type {
 	case "ask.opened", "ask.answered", "ask.resolved":
 		if payload, ok := event.Payload.(model.AskEventPayload); ok {
-			return events.ThreadLoginsOf(payload.ID)
+			return events.ThreadLoginsOf(payload.ID, kept...)
 		}
 	}
 	return nil

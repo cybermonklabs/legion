@@ -12,6 +12,7 @@ import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
+import { answerOpenAsks } from "../features/inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { keyedAttempt } from "./keyed-attempt";
 
@@ -48,7 +49,7 @@ test("a human creates a project from Settings and it appears in the project pick
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
@@ -110,7 +111,7 @@ test("a human creates a project from Settings and it appears in the project pick
     queryClient.clear();
     whoAmI.mockRestore();
     listIssues.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
@@ -140,7 +141,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
   });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
@@ -177,7 +178,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     queryClient.clear();
     whoAmI.mockRestore();
     listIssues.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
@@ -236,7 +237,7 @@ function renderSettings(projects: string[]): {
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
     spyOn(api, "listAgentTokens").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),

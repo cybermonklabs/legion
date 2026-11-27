@@ -52,6 +52,40 @@
  *    switches the scheme are mid-ease. Two things cover it: the assertion waits until two
  *    consecutive screenshots are identical before it compares, and a finite transition is
  *    fast-forwarded to completion by the default above.
+ *  - The steps before the light shot. Four CI runs of this job failed the light shot of
+ *    `issue-activity` by 22 pixels against the bound of 20 (`maxDiffPixels` below): runs
+ *    45217963089, 45240350309 and 45279483024 ran the rows in the normal and in the reverse
+ *    order and failed in the reverse one, and run 45340018649, at 18928330, ran them once, in
+ *    the normal order. The failed renders of 45279483024 and 45340018649 are byte-identical
+ *    PNGs, and each of the 54 pixels that differ from the baseline is one 8-bit step: the
+ *    anti-aliasing of the issue card's four corners, and the glyph `i` of "Which" in the
+ *    activity row `asked “Which sign-in path?”`. In both failed traces the assertion took two
+ *    identical screenshots before it compared, so the page was not still changing: the render
+ *    it settled on differed only by how it was painted. Run 45276346586, at f548b89b, and the
+ *    runs at 16adf424, ad6106ff and 843fe1b9 passed on the same page tree, and the dark shot
+ *    matched its baseline in every run. The steps before the two shots differed. The dark shot
+ *    came after a load in light, a settle, the light shot (which takes screenshots, with
+ *    animations disabled, until two match), a switch to dark by `emulateMedia` and a second
+ *    settle. The light shot came after the load and one settle alone: the context starts in
+ *    light, so the loop's `emulateMedia({ colorScheme: "light" })` changes nothing.
+ *    So the light shot now follows the dark shot's steps: before the loop, each row switches
+ *    the page to dark, waits in `waitForRouteSettled` and takes one capture that is compared
+ *    with nothing. That capture is taken as `toHaveScreenshot` takes its own - full page, under
+ *    the same mask list and the same `<time>` paint (`style`, the text of the `stylePath` file),
+ *    with `animations: "disabled"`, `caret: "hide"` and `scale: "css"` - because
+ *    `page.screenshot` lets animations run and captures at the device's scale, which is 3 on the
+ *    phone rows, and because a mask is drawn into the page: for each capture
+ *    Playwright adds a pane over the masked boxes and removes it after (`_maskElements`,
+ *    `playwright-core/lib/coreBundle.js`). The loop then shoots light and dark as before, and
+ *    `SCHEMES` keeps its order, so the file names and the report order stay the same. The cost
+ *    is one more settle and one uncompared capture per row.
+ *    This reads CI's evidence; it proves nothing about what the renderer does inside. The
+ *    issue pod cannot judge it either way: its host Chromium is a noisier renderer than CI's,
+ *    and a normal and a reverse run of the rows there differed on 7 and on 6 of 42 shots with
+ *    the light shot first and on 9 with the dark shot first, and, one pair of runs each, on 6
+ *    with a switch to dark before the light shot and on 3 with these steps. A light baseline
+ *    that moves under these steps is taken again from CI's render, as the header of
+ *    `e2e/visual-run.sh` says.
  *  - The caret and the focus ring. No row clicks, types or focuses anything: it signs in,
  *    navigates and waits. A page that focuses an element of its own on load draws the same ring
  *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,
@@ -184,7 +218,113 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     // Pinned from the corpus rather than from a fixed literal, because what the label reads
     // is the gap between the two: a literal would drift against a corpus written now.
     await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
+    // What every capture below paints over: the uncompared one and the two shots alike.
+    //
+    // The one thing on these pages that is not the same twice and cannot be waited for:
+    // the moment the page answered. A `<time>` carries the relative labels of the Inbox
+    // and the Agents page, and the page's own clock is pinned above so each reads the
+    // same; the Delivery and Pipeline pages write that moment as plain text instead
+    // ("Generated 11/8/2026, 2:27:03 AM · window 11/1/2026-11/8/2026",
+    // DeliveryPage.tsx and PipelinePage.tsx), and a measures card dates its claim the
+    // same way, in a 2-digit hour and minute whose width does not move.
+    //
+    // That stamp is masked by the `header` that HOLDS it rather than by its own box,
+    // which is the one thing a reader of this list has to know. A mask paints the
+    // element's own rectangle: the hour's digit count and the window's two dates move
+    // with the run and with the day, so the rectangle's right edge moved with them -
+    // 112 pixels on `delivery` and 128 on `pipeline`, in each of two clean container
+    // runs of one unchanged tree (runs 42476315586 and 42476318547). The header is a
+    // full-width row, so its box holds still. The cost is on those two pages alone:
+    // their heading, and Delivery's window control, are inside that rectangle and in no
+    // baseline. Every other page's heading is compared as before. Neither phone page
+    // draws that stamp, so on those two rows the header mask matches nothing.
+    //
+    // The rail's Inbox entry is masked too. The mask covers the whole link and not only
+    // the number's pill, for the reason the header above is: the pill's width can move
+    // with the digit, and the link is a full-width row of the rail whose box holds still.
+    // The cost is the rail's "Inbox" label, which is in no baseline. The phone rows draw
+    // no rail; they draw the same number in the compact top bar's badge, which is masked
+    // for the same reason. That badge is a pill in a row, so its own box is what the mask
+    // paints: a one-digit count holds that box still, and a count of 10 or more would
+    // widen it and move the badge beside it. CI run 44308307388 read 6 on `issue-spec`'s
+    // phone row against the baseline's 5, with nothing else moved in that badge. The
+    // number itself is proven by its own tests, not by these pixels.
+    //
+    // Why it is not waited for instead: the number CI drew after the broadcast page's
+    // read mark was not the number this seed gave anywhere else. These were measured while
+    // that mark was still the page's own, before the seed wrote it first: the baselines
+    // read 7 on rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in
+    // dark on `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
+    // file's own path (`e2e/visual-seed.ts` on a `e2e/harness-up.ts` stack, the rows in
+    // host Chromium, alice's counts read every 3 s for six minutes) read 7 on rows 1-4
+    // and 6 on every row after the read mark, for three passes over the rows. After the
+    // read mark the server did not change for the rest of those six minutes. The guess
+    // was the delivery sweep (`delivery_sweep.go`): it resends an owed attempt about once
+    // a minute, and that resend would take a thread out of the unread total. That is
+    // ruled out. In the host run every delivery attempt of the seed stayed `sent`, and
+    // none was accepted as `user_turn`, so the sweep owed nothing. CI run 43517763817
+    // logs no resend from the sweep. Its count went from 7 to 5 about 16 s after its
+    // seed, and the read mark was the only write the page made. The seed now writes that
+    // mark before any row (`e2e/review-seed.ts`), so no row's page moves the number; the
+    // drop CI drew past it was never explained, no seed state can pin a step that was never
+    // found, and so this mask stands in for one.
+    //
+    // A `<time>` is painted over by the page itself and not masked: the stylesheet the
+    // shot is taken under (`stylePath`, `e2e/visual-time.css`) gives every `<time>` and
+    // everything inside one a background in Playwright's own mask colour and transparent
+    // text, so its box is in the baseline and its words are not, as under the mask. What
+    // the mask did that this does not is paint where the page shows nothing. Playwright
+    // paints a mask's rectangle over the finished shot at the element's box wherever that
+    // box is, and an element its box has scrolled out of view still has one: a priorities
+    // row the table's box had scrolled away painted its time over the pager's "50 per
+    // page" under the box, at 1280 and on a phone, and a row the Active tab's box had
+    // scrolled away painted its time over that tab's pager. A background is drawn by the
+    // page, so it is clipped wherever the element is: by the box it scrolls in, under a
+    // sticky header drawn over it, and not drawn at all where the element is hidden. A
+    // time a box cuts part of is painted up to the box's edge and no further, which is all
+    // of it the page shows. The painted rectangles are the time's own line boxes, which is
+    // the rectangle the mask painted for a time on one line; a time that wraps is painted
+    // line by line, where the mask painted one rectangle round both lines. They hold still
+    // for the reason a mask's did: the clock is pinned, so the words, and the box they
+    // make, are the same on every run.
+    //
+    // Every mask in the list below stands where the page shows the whole of it - a page's
+    // own header row, the rail's link, the top bar's badge, a measures card's line - and
+    // none in a box that scrolls, so a mask paints nothing there the page does not show. A
+    // `<time>` stands in rows a box scrolls, which is why it is painted instead.
+    //
+    // Nothing else is masked or painted, and the Decisions panel is why that matters. It
+    // prints the id of the spec block a decision shaped until the reference graph answers,
+    // and a mask over that id did NOT settle it: a uuid is a fixed count of characters and
+    // not a fixed width, so the painted rectangle moved with the glyphs. That page is
+    // scanned and not shot now, since one block it draws has no words to wait for
+    // (`e2e/review-routes.ts`). A mask is the last resort here and not the first, because
+    // it hides only a difference whose box holds still.
+    //
+    // Each of these was found by reading a diff image of a container run against the run
+    // before it, not by widening the bound until the rows passed.
+    const mask = [
+      page
+        .locator("header")
+        .filter({ has: page.getByText(/^Generated /) })
+        .last(),
+      page.getByText(/, as of /),
+      railInboxLink(page),
+      topBarInboxBadge(page),
+    ];
     await page.goto(route.path(seed));
+    // The light shot's steps match the dark shot's ("The steps before the light shot", above).
+    await page.emulateMedia({ colorScheme: "dark" });
+    await waitForRouteSettled(page, route, listedRequests(page));
+    await page.screenshot({
+      fullPage: true,
+      animations: "disabled",
+      caret: "hide",
+      mask,
+      // `page.screenshot` takes the stylesheet's text where `toHaveScreenshot` takes its path.
+      style: readFileSync(TIME_PAINT, "utf8"),
+      scale: "css",
+    });
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
       // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page
@@ -198,98 +338,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
       // It also costs one screenshot on a failing row only, which a failing row can afford.
       await expect.soft(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
         fullPage: true,
-        // The one thing on these pages that is not the same twice and cannot be waited for:
-        // the moment the page answered. A `<time>` carries the relative labels of the Inbox
-        // and the Agents page, and the page's own clock is pinned above so each reads the
-        // same; the Delivery and Pipeline pages write that moment as plain text instead
-        // ("Generated 11/8/2026, 2:27:03 AM · window 11/1/2026-11/8/2026",
-        // DeliveryPage.tsx and PipelinePage.tsx), and a measures card dates its claim the
-        // same way, in a 2-digit hour and minute whose width does not move.
-        //
-        // That stamp is masked by the `header` that HOLDS it rather than by its own box,
-        // which is the one thing a reader of this list has to know. A mask paints the
-        // element's own rectangle: the hour's digit count and the window's two dates move
-        // with the run and with the day, so the rectangle's right edge moved with them -
-        // 112 pixels on `delivery` and 128 on `pipeline`, in each of two clean container
-        // runs of one unchanged tree (runs 42476315586 and 42476318547). The header is a
-        // full-width row, so its box holds still. The cost is on those two pages alone:
-        // their heading, and Delivery's window control, are inside that rectangle and in no
-        // baseline. Every other page's heading is compared as before. Neither phone page
-        // draws that stamp, so on those two rows the header mask matches nothing.
-        //
-        // The rail's Inbox entry is masked too. The mask covers the whole link and not only
-        // the number's pill, for the reason the header above is: the pill's width can move
-        // with the digit, and the link is a full-width row of the rail whose box holds still.
-        // The cost is the rail's "Inbox" label, which is in no baseline. The phone rows draw
-        // no rail; they draw the same number in the compact top bar's badge, which is masked
-        // for the same reason. That badge is a pill in a row, so its own box is what the mask
-        // paints: a one-digit count holds that box still, and a count of 10 or more would
-        // widen it and move the badge beside it. CI run 44308307388 read 6 on `issue-spec`'s
-        // phone row against the baseline's 5, with nothing else moved in that badge. The
-        // number itself is proven by its own tests, not by these pixels.
-        //
-        // Why it is not waited for instead: the number CI drew after the broadcast page's
-        // read mark was not the number this seed gave anywhere else. These were measured while
-        // that mark was still the page's own, before the seed wrote it first: the baselines
-        // read 7 on rows 1-4 and 5 from row 5 on. CI run 43517763817 read 6 in light and 5 in
-        // dark on `broadcast`, and an earlier run read 6 on `issue-activity`. A host run of this
-        // file's own path (`e2e/visual-seed.ts` on a `e2e/harness-up.ts` stack, the rows in
-        // host Chromium, alice's counts read every 3 s for six minutes) read 7 on rows 1-4
-        // and 6 on every row after the read mark, for three passes over the rows. After the
-        // read mark the server did not change for the rest of those six minutes. The guess
-        // was the delivery sweep (`delivery_sweep.go`): it resends an owed attempt about once
-        // a minute, and that resend would take a thread out of the unread total. That is
-        // ruled out. In the host run every delivery attempt of the seed stayed `sent`, and
-        // none was accepted as `user_turn`, so the sweep owed nothing. CI run 43517763817
-        // logs no resend from the sweep. Its count went from 7 to 5 about 16 s after its
-        // seed, and the read mark was the only write the page made. The seed now writes that
-        // mark before any row (`e2e/review-seed.ts`), so no row's page moves the number; the
-        // drop CI drew past it was never explained, no seed state can pin a step that was never
-        // found, and so this mask stands in for one.
-        //
-        // A `<time>` is painted over by the page itself and not masked: the stylesheet the
-        // shot is taken under (`stylePath`, `e2e/visual-time.css`) gives every `<time>` and
-        // everything inside one a background in Playwright's own mask colour and transparent
-        // text, so its box is in the baseline and its words are not, as under the mask. What
-        // the mask did that this does not is paint where the page shows nothing. Playwright
-        // paints a mask's rectangle over the finished shot at the element's box wherever that
-        // box is, and an element its box has scrolled out of view still has one: a priorities
-        // row the table's box had scrolled away painted its time over the pager's "50 per
-        // page" under the box, at 1280 and on a phone, and a row the Active tab's box had
-        // scrolled away painted its time over that tab's pager. A background is drawn by the
-        // page, so it is clipped wherever the element is: by the box it scrolls in, under a
-        // sticky header drawn over it, and not drawn at all where the element is hidden. A
-        // time a box cuts part of is painted up to the box's edge and no further, which is all
-        // of it the page shows. The painted rectangles are the time's own line boxes, which is
-        // the rectangle the mask painted for a time on one line; a time that wraps is painted
-        // line by line, where the mask painted one rectangle round both lines. They hold still
-        // for the reason a mask's did: the clock is pinned, so the words, and the box they
-        // make, are the same on every run.
-        //
-        // Every mask in the list below stands where the page shows the whole of it - a page's
-        // own header row, the rail's link, the top bar's badge, a measures card's line - and
-        // none in a box that scrolls, so a mask paints nothing there the page does not show. A
-        // `<time>` stands in rows a box scrolls, which is why it is painted instead.
-        //
-        // Nothing else is masked or painted, and the Decisions panel is why that matters. It
-        // prints the id of the spec block a decision shaped until the reference graph answers,
-        // and a mask over that id did NOT settle it: a uuid is a fixed count of characters and
-        // not a fixed width, so the painted rectangle moved with the glyphs. That page is
-        // scanned and not shot now, since one block it draws has no words to wait for
-        // (`e2e/review-routes.ts`). A mask is the last resort here and not the first, because
-        // it hides only a difference whose box holds still.
-        //
-        // Each of these was found by reading a diff image of a container run against the run
-        // before it, not by widening the bound until the rows passed.
-        mask: [
-          page
-            .locator("header")
-            .filter({ has: page.getByText(/^Generated /) })
-            .last(),
-          page.getByText(/, as of /),
-          railInboxLink(page),
-          topBarInboxBadge(page),
-        ],
+        mask,
         // Every `<time>`, painted in the mask's colour by the page, which clips it where it
         // clips the time (the list above says why). No layout property, so nothing moves.
         stylePath: TIME_PAINT,

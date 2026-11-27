@@ -9,17 +9,18 @@ import { dwellOn, installIntersectionObserver } from "../../__tests__/intersecti
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
-import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
-import { replyRow as row } from "./replies-fixture";
+import { meInboxOwnerQuery, whoAmIQuery } from "../../api/queries";
+import type { MeInboxResponse, MyReplyRow } from "../../api/types";
+import { replyRow as row, unreadSetAnswer } from "./replies-fixture";
 import { useMarkThreadRead } from "./useMarkThreadRead";
 
 afterEach(() => {
   jest.useRealTimers();
 });
 
-function unreadSet(rows: MyReplyRow[], total = rows.length): MyRepliesResponse {
-  return { as_of: "2026-10-12T00:00:00Z", limit: 200, offset: 0, rows, total };
+/** The one read's unread set of CORE-1 holding `rows`, of `total` unread threads in all. */
+function unreadSet(rows: MyReplyRow[], total = rows.length): MeInboxResponse {
+  return { ...unreadSetAnswer(rows), total };
 }
 
 function Thread({ at, threadId }: { at: string | undefined; threadId: string }): ReactNode {
@@ -37,11 +38,11 @@ function Thread({ at, threadId }: { at: string | undefined; threadId: string }):
 }
 
 /** The unread set and the viewer are already cached, so the hook decides at once. */
-function renderThread(set: MyRepliesResponse, props: { at: string | undefined; threadId: string }) {
+function renderThread(set: MeInboxResponse, props: { at: string | undefined; threadId: string }) {
   // A mark that lands invalidates the owner's unread set, so the hook reads it again over HTTP;
   // the shell's answer is an empty page, which would retire a thread this test still holds
   // unread. The set under test is what that read answers, as the server's would.
-  answerRequests(http.get("/api/v1/me/replies", () => Response.json(set)));
+  answerRequests(http.get("/api/v1/me/inbox", () => Response.json(set)));
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -53,7 +54,7 @@ function renderThread(set: MyRepliesResponse, props: { at: string | undefined; t
     kind: "user",
     login: "alice",
   });
-  queryClient.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, set);
+  queryClient.setQueryData(meInboxOwnerQuery({ issue: "CORE-1" }).queryKey, set);
   const wrap = (node: ReactNode) => (
     <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
   );

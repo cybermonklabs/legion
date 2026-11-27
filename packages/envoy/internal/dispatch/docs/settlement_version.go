@@ -218,7 +218,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only once the event's insert has
 		// run, so it is stated right after it (appendEvents).
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int]eventWrites{0: {stated: []*graphstore.Uncaused{&result.blocks}}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		// The copies and the readability, once the version's blocks are planned, under that same
@@ -235,9 +235,12 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// The nodes and the follows of the asks this settlement opened, their blocks' ties, and what
-	// each answer state it wrote states on its ask's node wait for the events that record them,
-	// each stated right after its own (causedByEvent).
+	// The nodes and the follows of the asks this settlement opened, what the index of each ask it
+	// opened, restored or reworded stated, their blocks' ties, and what each answer state it wrote
+	// states on its ask's node wait for the events that record them, each stated right after its
+	// own; and after those, under the same event, the writes it made in its asks' threads - each
+	// ask it opened, each answer it restored - are recorded by the one writer of those threads, and
+	// each ask it restored open reaches the person it waits on now (causedByEvent).
 	caused, err := st.reconciliation.causedByEvent(st.reconciliation.events)
 	if err != nil {
 		return settleDone, st.abandon(err)

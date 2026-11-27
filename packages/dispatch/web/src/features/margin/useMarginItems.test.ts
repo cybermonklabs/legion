@@ -12,6 +12,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { openAsksQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Artifact,
@@ -22,6 +23,7 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import type { DecisionsRead } from "../issue/decision-entries";
 import type { DecisionDocuments } from "../issue-page/decision-review";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -203,7 +205,7 @@ test("useMarginItems orders found and missing document anchors", () => {
       comment("C", "m-c", "2026-09-09T00:02:00Z", true),
     ]
   );
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
 
   const view = render(
@@ -258,7 +260,7 @@ test("useMarginItems groups replies flat under their root and separates resolved
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(
     ["artifact", artifact.id, "comments"],
@@ -289,7 +291,7 @@ function renderDocumentMargin(comments: Comment[]) {
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   queryClient.setQueryData(["artifact", artifact.id, "comments"], comments);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   return renderHook(
     () =>
@@ -445,7 +447,7 @@ test("a document owner loads asks and comments from the artifact routes, hides p
   const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([
     documentComment,
   ]);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -469,7 +471,7 @@ test("a document owner loads asks and comments from the artifact routes, hides p
     expect(getMyState).not.toHaveBeenCalled();
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listArtifactAsks.mockRestore();
     listArtifactComments.mockRestore();
@@ -525,7 +527,7 @@ function renderActionButtons() {
   });
   queryClient.setQueryData(["asks", "CORE-1"], []);
   queryClient.setQueryData(["comments", "CORE-1"], []);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   // Each write refetches the issue's comments, which the seeded cache holds none of: the
   // refetch answers the same empty set, so no optimistic update is dropped.
@@ -803,7 +805,7 @@ test("a read of the comments asked while a resolve is out waits for its answer, 
   });
   queryClient.setQueryData(["asks", "CORE-1"], []);
   queryClient.setQueryData(commentsKey, [open]);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   // Each read of the comments, listed as it calls its function: a read the resolve holds is
   // listed before it waits, and one that is not held has asked by then.
@@ -907,7 +909,7 @@ test("a comment somebody else writes while a resolve is out shows once the resol
   });
   queryClient.setQueryData(["asks", "CORE-1"], []);
   queryClient.setQueryData(commentsKey, [open]);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   // Each read of the comments, listed as it calls its function: a read the resolve holds is
   // listed before it waits, and one that is not held has asked by then.
@@ -1175,7 +1177,7 @@ function renderDecisionItems(document: Artifact, issue?: DecisionDocuments) {
   });
   queryClient.setQueryData(["comments", "CORE-1"], []);
   queryClient.setQueryData(["asks", "CORE-1"], []);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   return render(
     createElement(

@@ -1124,10 +1124,7 @@ test(
 );
 test("API client reaches every remaining documented endpoint", async () => {
   const stub = stubFetch((request) => {
-    if (
-      request.path.startsWith("/api/v1/inbox") ||
-      request.path.startsWith("/api/v1/issues/CORE-1/asks?")
-    ) {
+    if (request.path.startsWith("/api/v1/issues/CORE-1/asks?")) {
       return Response.json([]);
     }
     if (request.path === "/api/v1/asks/ask-1") {
@@ -1159,15 +1156,15 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.search("astrolabe");
   await api.createIssue({ project: "CORE", title: "Ship it" }, keyed("write-1"));
   await api.getIssue("CORE-1");
-  await api.getInbox("CORE");
+  await api.listOpenAsks({ project: "CORE" });
   await api.createAsk("CORE-1", { question: "Ship?" }, keyed("write-2"));
   await api.listIssueAsks("CORE-1");
   await api.listIssueAskThreads("CORE-1");
   await api.getAsk("ask-1");
   await api.listMyAnswers({ limit: 50, offset: 100 });
-  await api.listMyReplies({ limit: 50 });
-  await api.listMyReplies({ issue: "CORE-1", limit: 200 });
-  await api.listMyReplies({ artifact: "artifact-1", limit: 200 });
+  await api.getMeInbox({ limit: 50 });
+  await api.getMeInbox({ issue: "CORE-1", limit: 200, state: "unread" });
+  await api.getMeInbox({ artifact: "artifact-1", limit: 200, state: "unread" });
   await api.markThreadRead("comment-1", "2026-10-12T00:00:00.000Z", keyed("put-1"));
   await api.createComment("CORE-1", { body: "Looks good" }, keyed("write-3"));
   await api.resolveComment("comment-1", keyed("write-4"));
@@ -1185,7 +1182,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     { body: "Ready?", delivery: "btw" },
     keyed("send-1")
   );
-  await api.listAgentMessages("planner-session");
+  await api.getAgentConversation("planner-session");
   await api.listArtifacts("CORE-1");
   await api.listAgents();
   await api.uploadArtifact(
@@ -1232,15 +1229,15 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["GET", "/api/v1/search?q=astrolabe"],
     ["POST", "/api/v1/issues"],
     ["GET", "/api/v1/issues/CORE-1"],
-    ["GET", "/api/v1/inbox?project=CORE"],
+    ["GET", "/api/v1/asks/open?project=CORE"],
     ["POST", "/api/v1/issues/CORE-1/asks"],
     ["GET", "/api/v1/issues/CORE-1/asks?state=all"],
     ["GET", "/api/v1/issues/CORE-1/asks?state=all&thread=1"],
     ["GET", "/api/v1/asks/ask-1"],
     ["GET", "/api/v1/me/answers?limit=50&offset=100"],
-    ["GET", "/api/v1/me/replies?limit=50"],
-    ["GET", "/api/v1/me/replies?issue=CORE-1&limit=200"],
-    ["GET", "/api/v1/me/replies?artifact=artifact-1&limit=200"],
+    ["GET", "/api/v1/me/inbox?limit=50"],
+    ["GET", "/api/v1/me/inbox?issue=CORE-1&limit=200&state=unread"],
+    ["GET", "/api/v1/me/inbox?artifact=artifact-1&limit=200&state=unread"],
     ["PUT", "/api/v1/me/threads/comment-1/read"],
     ["POST", "/api/v1/issues/CORE-1/comments"],
     ["POST", "/api/v1/comments/comment-1/resolve"],
@@ -1249,7 +1246,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["POST", "/api/v1/comments/comment-1/deliveries"],
     ["POST", "/api/v1/issues/CORE-1/messages"],
     ["POST", "/api/v1/agents/planner-session/messages"],
-    ["GET", "/api/v1/agents/planner-session/messages"],
+    ["GET", "/api/v1/agents/planner-session/conversation"],
     ["GET", "/api/v1/issues/CORE-1/artifacts"],
     ["GET", "/api/v1/agents"],
     ["POST", "/api/v1/issues/CORE-1/artifacts"],

@@ -212,7 +212,15 @@ var RevisionFenceStatement = `
 // code ships, so a build of rule 1 already honours the marks of every later rule. It is declared
 // here, where docs and graphcensus both read it: docs' own tests import graphcensus, so graphcensus
 // cannot import docs.
-const BlockIndexMarkingRule = 1
+//
+// Rule 2 adds one mark (graphcensus.BlockIdentitiesMarkStatement): a document whose blocks a build
+// of rule 1 stated without the mentions of the people, agents' sessions and roles they name, which
+// such a build states none of (migration 20261122100124), is owed this build's pass at the version
+// it stands at. A build of rule 1 lists that mark only where the store last stated the document
+// below its version (OwedMarkListed) and clears none of it (RevisionFenceStatement), so the pass
+// that drains it is this build's, which states the mentions. A build of rule 2 reads no cursor or
+// horizon of rule 1, so the events before its first tick's horizon are its backfill's.
+const BlockIndexMarkingRule = 2
 
 // OwedMarkListed is the condition under which a pass of the marking rule rule, a SQL expression,
 // lists as owed the document whose document_block_versions row row holds a mark of this build's

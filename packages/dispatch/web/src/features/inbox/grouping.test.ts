@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { InboxRow, MyReplyThreadRow } from "../../api/types";
+import type { MyReplyThreadRow, OpenAskRow } from "../../api/types";
 import { agentRow, replyRow } from "../threads/replies-fixture";
 import { dimensionValue, filterCounts, group, inFieldFilter, sortRows } from "./grouping";
 import { issueAsk } from "./inbox-fixture";
@@ -11,7 +11,7 @@ const titles = { agent: "Waiting on agents", human: "Waiting on you", later: "La
 /** Every test here reads the clock once, so a snooze is either ahead of it or behind it. */
 const now = Date.parse("2026-10-12T12:00:00Z");
 
-function ask(overrides: Partial<InboxRow>): InboxListRow {
+function ask(overrides: Partial<OpenAskRow>): InboxListRow {
   return { ask: issueAsk(overrides), kind: "ask" };
 }
 

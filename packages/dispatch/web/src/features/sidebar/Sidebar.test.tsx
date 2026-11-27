@@ -72,7 +72,6 @@ function renderRail({
 } = {}): { putAgentState: Mock<typeof api.putAgentState>; queryClient: QueryClient } {
   spies.push(
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
-    spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
     // The rail reads the two fault counts on every page; this deployment has written no
     // priority, so its entry carries no number and these rows are about the agents alone.

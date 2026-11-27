@@ -468,9 +468,62 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/agents/{session_id}/conversation": {
+      "get": {
+        "description": "One session's conversation, newest activity first: each root message that reaches the session - targeted at it, or named by a delivery attempt to it whatever that attempt's state - with every reply under it and each message's delivery attempts, read for the person the credential acts for. It lists the 50 conversations that moved last and, past them, every conversation holding a reply of the session's that the caller has not read, each such root marked unread. It needs the person scope; session is the session the request acts for, as on every route. GET /api/v1/agents/{session_id}/messages answers the same rows.",
+        "operationId": "getApiV1AgentsBySessionIdConversation",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MessageRead"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/agents/{session_id}/messages": {
       "get": {
-        "description": "A session's targeted messages, newest first.",
+        "description": "A session's targeted messages, newest first: the rows GET /api/v1/agents/{session_id}/conversation answers, kept for the clients of the release before it.",
         "operationId": "getApiV1AgentsBySessionIdMessages",
         "parameters": [
           {
@@ -2637,7 +2690,7 @@
     },
     "/api/v1/asks/open": {
       "get": {
-        "description": "Open asks in one scope, with counts: ?author_session= for one session's own, or ?project= for every open ask on a project's issues and documents; exactly one is required.",
+        "description": "Open asks on open issues and project documents, with counts, by priority and then oldest first: ?author_session= for one session's own, ?project= for every open ask on a project's issues and documents, or neither for every project; at most one of the two (both is 400 AUTHOR_SESSION_OR_PROJECT_CONFLICT, and a blank one is 400 INVALID_QUERY naming it). ?waiting_on= narrows to the asks that wait on one person - a login of a person who has signed in, compared with the waiting_on_person each row names: the person the ask was handed to, else its issue's assignee, else its project's default assignee; a blank value, a repeated key or a login nobody has signed in as is 400 INVALID_QUERY. ?since= (RFC3339) sets opened_since to whether an ask of the scope, in any state, opened at or after it. No row is an ask the caller may not see. Each row is the open-ask row an ask card draws - the ask, its issue (with that issue's own assignee) or project document, the issue's priority, its newest reply, the caller's own snooze and the thread: replies, rewordings, followers, claimant, route and route_holder - with ref (the ask's page), age_seconds, owner (its issue or document again) and human_replied beside it; {session_id, as_of, opened_since, count, waiting_on_human, waiting_on_agent, asks}.",
         "operationId": "getApiV1AsksOpen",
         "parameters": [
           {
@@ -2649,6 +2702,13 @@
           },
           {
             "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "waiting_on",
             "in": "query",
             "schema": {
               "type": "string"
@@ -5533,7 +5593,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/InboxRow"
+                    "$ref": "#/components/schemas/OpenAskRow"
                   },
                   "type": "array"
                 }
@@ -9418,6 +9478,101 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/inbox": {
+      "get": {
+        "description": "Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry, but under state=dismissed one page of 200; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Under state=dismissed that page is read to offset + limit + 1, which must fit in a 64-bit integer, so an offset above 9223372036854775806 less the limit is 400 INVALID_QUERY. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (the page's size: 0 when none was named, but 200 under state=dismissed), offset, next_cursor (while entries follow the page), entries}.",
+        "operationId": "getApiV1MeInbox",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "unread",
+                "inbox",
+                "dismissed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "artifact",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeInboxResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/me/inbox/dismiss": {
       "post": {
         "description": "Take threads out of the caller's Inbox, or put them back: {threads} (the row ids reply:\u003cthread id\u003e and agent:\u003croot message id\u003e) with {seen_replies}, or the Inbox's own narrowing - kind, priority, urgency, project, and issue or artifact, as POST /api/v1/me/inbox/read reads them - with {dismiss_through} (RFC3339, required with the narrowing; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), never both (400 INVALID_QUERY). seen_replies is what the page drew in each row threads names, keyed by that same row id, and a dismissal naming threads without it is 400 INVALID_QUERY: a reply: row's entry is {version}, that row's version as GET /api/v1/me/replies answered it, and an agent: row's is {newest_reply, unread_replies}, that row's reply.id and the ids it drew as unread. The mark is written only while the row still holds what the page drew, so a dismissal buries no write nobody has read. A restore takes no seen_replies, and neither does the narrowing, where the server draws the rows itself (each 400 INVALID_QUERY). With the narrowing it changes exactly the threads GET /api/v1/me/replies answers under it whose newest reply, or whose dismissal, is at or before dismiss_through. {restore: true} clears the marks instead of writing them, so the threads are in the Inbox again. Dismissing marks a thread read as well, so a dismissed thread never counts as unread, and a later write by somebody else clears the mark and brings the thread back unread, while the caller's own reply leaves it dismissed. An Ask row's id, a row id of neither shape and an id that is not a uuid are 400 INVALID_QUERY. Answers {dismissed}, the number of threads it changed; a request that changes nothing answers 0 and appends no event. It takes the lock order and appends the events POST /api/v1/me/inbox/read does: one user_thread_state.updated per project and one user_agent_state.updated per session it touched.",
@@ -10422,7 +10577,7 @@
     },
     "/api/v1/people/{login}/nodes": {
       "get": {
-        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. A comment its author edited carries edited_at, and one its author deleted keeps its row with deleted_at and deleted_by and an empty title. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none.",
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text (first_line, and title, the same line under the name a page of the release before reads, kept for one release) and the dashboard path it opens at. A comment its author edited carries edited_at, and one its author deleted keeps its row with deleted_at and deleted_by and an empty first_line and title. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none.",
         "operationId": "getApiV1PeopleByLoginNodes",
         "parameters": [
           {
@@ -13657,6 +13812,55 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/writes/_test/fail-between/{writer}": {
+      "put": {
+        "description": "Test hook: arm one failure for the next write of that writer, injected between its store write and its projection write, so both roll back.",
+        "operationId": "putApiV1WritesTestFailBetweenByWriter",
+        "parameters": [
+          {
+            "name": "writer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestHookOK"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/writes/_test/slow": {
       "post": {
         "description": "Test hook: {method, path, delay_ms} delays every keyed run of that method and path by delay_ms after its key is claimed, on the handler's own context; 0 disarms.",
@@ -16264,6 +16468,47 @@
         },
         "required": [
           "label"
+        ],
+        "type": "object"
+      },
+      "AskOwnerDocument": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "slug",
+          "name"
+        ],
+        "type": "object"
+      },
+      "AskOwnerIssue": {
+        "properties": {
+          "assignee": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "assignee"
         ],
         "type": "object"
       },
@@ -19794,6 +20039,22 @@
               "null"
             ]
           },
+          "selected_trees": {
+            "items": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "shaped": {
             "items": {
               "$ref": "#/components/schemas/DecisionLink"
@@ -23203,47 +23464,6 @@
         ],
         "type": "object"
       },
-      "InboxDocument": {
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "project": {
-            "type": "string"
-          },
-          "slug": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "project",
-          "slug",
-          "name"
-        ],
-        "type": "object"
-      },
-      "InboxIssue": {
-        "properties": {
-          "assignee": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "key": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "title",
-          "assignee"
-        ],
-        "type": "object"
-      },
       "InboxReadRequest": {
         "properties": {
           "artifact": {
@@ -23305,212 +23525,6 @@
         },
         "required": [
           "marked"
-        ],
-        "type": "object"
-      },
-      "InboxRow": {
-        "properties": {
-          "anchor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Anchor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "anchor_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "anchor_block": {
-            "$ref": "#/components/schemas/BlockPath"
-          },
-          "anchor_block_error": {
-            "type": "string"
-          },
-          "answer": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AskAnswerWithTrees"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "approval": {
-            "$ref": "#/components/schemas/AskApproval"
-          },
-          "approval_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "artifact_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of_at": {
-            "format": "date-time",
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of_by": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "block_artifact": {
-            "$ref": "#/components/schemas/AskBlockArtifact"
-          },
-          "block_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "document": {
-            "$ref": "#/components/schemas/InboxDocument"
-          },
-          "edited_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "issue": {
-            "$ref": "#/components/schemas/InboxIssue"
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "last_reply": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AskLastReply"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "multiple": {
-            "type": "boolean"
-          },
-          "opened_event_id": {
-            "type": "integer"
-          },
-          "options": {
-            "items": {
-              "$ref": "#/components/schemas/AskOptionWithTrees"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "priority": {
-            "type": [
-              "null",
-              "integer"
-            ]
-          },
-          "question": {
-            "type": "string"
-          },
-          "question_tree": {
-            "additionalProperties": true,
-            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
-            "properties": {
-              "type": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          "referenced_by_count": {
-            "type": "integer"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/AskResolutionWithTrees"
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "snoozed_until": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "state": {
-            "type": "string"
-          },
-          "thread": {
-            "$ref": "#/components/schemas/AskThread"
-          },
-          "urgency": {
-            "type": "string"
-          },
-          "waiting_on": {
-            "type": "string"
-          },
-          "waiting_on_person": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "issue_key",
-          "artifact_id",
-          "block_id",
-          "author",
-          "kind",
-          "question",
-          "options",
-          "multiple",
-          "urgency",
-          "anchor",
-          "state",
-          "answer",
-          "created_at",
-          "edited_at",
-          "asked_of",
-          "asked_of_by",
-          "asked_of_at",
-          "priority",
-          "last_reply",
-          "snoozed_until",
-          "thread"
         ],
         "type": "object"
       },
@@ -26249,6 +26263,224 @@
         ],
         "type": "object"
       },
+      "MeInboxAgent": {
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/Anchor"
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/MessageRead"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "dismissed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "document": {
+            "$ref": "#/components/schemas/OpenAskDocument"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "issue": {
+            "$ref": "#/components/schemas/OpenAskIssue"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "read_through": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "reply": {
+            "$ref": "#/components/schemas/MyReplyReply"
+          },
+          "session": {
+            "$ref": "#/components/schemas/MyReplySession"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "subject_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "unread": {
+            "type": "boolean"
+          },
+          "unread_count": {
+            "type": "integer"
+          },
+          "unread_reply_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "thread_id",
+          "kind",
+          "ref",
+          "subject",
+          "reply",
+          "unread",
+          "unread_count",
+          "conversation"
+        ],
+        "type": "object"
+      },
+      "MeInboxEntry": {
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/MeInboxAgent"
+          },
+          "ask": {
+            "$ref": "#/components/schemas/OpenAskRow"
+          },
+          "moment": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/MeInboxNode"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/MeInboxRelation"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "thread": {
+            "$ref": "#/components/schemas/MyReplyRow"
+          }
+        },
+        "required": [
+          "node",
+          "relations",
+          "moment"
+        ],
+        "type": "object"
+      },
+      "MeInboxNode": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "MeInboxRelation": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "inbound",
+              "outbound"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "direction",
+          "at"
+        ],
+        "type": "object"
+      },
+      "MeInboxResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/MeInboxEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "horizon": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person",
+          "as_of",
+          "horizon",
+          "total",
+          "limit",
+          "offset",
+          "entries"
+        ],
+        "type": "object"
+      },
       "Message": {
         "properties": {
           "author": {
@@ -27329,15 +27561,105 @@
             "format": "int64",
             "type": "integer"
           },
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "document": {
+            "$ref": "#/components/schemas/AskOwnerDocument"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "human_replied": {
             "type": "boolean"
           },
           "id": {
             "type": "string"
+          },
+          "issue": {
+            "$ref": "#/components/schemas/AskOwnerIssue"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "kind": {
             "type": "string"
@@ -27352,6 +27674,21 @@
               }
             ]
           },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "owner": {
             "$ref": "#/components/schemas/OpenAskItemOwner"
           },
@@ -27364,8 +27701,42 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "ref": {
             "type": "string"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "snoozed_until": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "thread": {
+            "$ref": "#/components/schemas/AskThread"
           },
           "urgency": {
             "type": "string"
@@ -27379,16 +27750,31 @@
         },
         "required": [
           "id",
-          "ref",
-          "question",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
           "kind",
+          "question",
+          "options",
+          "multiple",
           "urgency",
+          "anchor",
+          "state",
+          "answer",
           "created_at",
-          "age_seconds",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
           "priority",
+          "last_reply",
+          "snoozed_until",
+          "thread",
+          "ref",
+          "age_seconds",
           "owner",
           "human_replied",
-          "last_reply",
           "waiting_on",
           "waiting_on_person"
         ],
@@ -27431,10 +27817,10 @@
       "OpenAskItemOwner": {
         "properties": {
           "document": {
-            "$ref": "#/components/schemas/InboxDocument"
+            "$ref": "#/components/schemas/AskOwnerDocument"
           },
           "issue": {
-            "$ref": "#/components/schemas/InboxIssue"
+            "$ref": "#/components/schemas/AskOwnerIssue"
           }
         },
         "type": "object"
@@ -27448,6 +27834,212 @@
             "$ref": "#/components/schemas/OpenAskIssue"
           }
         },
+        "type": "object"
+      },
+      "OpenAskRow": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "document": {
+            "$ref": "#/components/schemas/AskOwnerDocument"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "$ref": "#/components/schemas/AskOwnerIssue"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_reply": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskLastReply"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "snoozed_until": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "thread": {
+            "$ref": "#/components/schemas/AskThread"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
+          "priority",
+          "last_reply",
+          "snoozed_until",
+          "thread"
+        ],
         "type": "object"
       },
       "OpenAsksResponse": {
@@ -27811,6 +28403,22 @@
             "format": "date-time",
             "type": "string"
           },
+          "first_line": {
+            "type": "string"
+          },
+          "first_line_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "href": {
             "type": "string"
           },
@@ -27837,6 +28445,7 @@
           "kind",
           "id",
           "relations",
+          "first_line",
           "title",
           "created_at",
           "href"

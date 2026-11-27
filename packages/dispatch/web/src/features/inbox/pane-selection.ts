@@ -84,12 +84,14 @@ export interface PaneSelectionOptions {
    *  The list keeps this record for its own motion hold, and the selection is answered against
    *  exactly the rows in it. */
   presented: RefObject<readonly PlacedRow[]>;
-  /** Whether the list holds every row it will draw from this read: the asks' read has landed and
-   *  the thread side has answered too, or has none to read (`useInboxThreadRows`'s `ready`). The
-   *  thread rows come from a read of their own, which can land after the asks', so until then
-   *  the selection is not settled at all: a `?item=` naming a thread row would read as a row
-   *  this list does not hold, which closes the reading view below the column's width and has the
-   *  column pick its top row beside the list. */
+  /** Whether the list holds every row it will draw from this read: the one read has landed and
+   *  the motion hold has handed its thread rows on, or the list reads none (`useInboxThreadRows`'s
+   *  `ready`). The asks (`Inbox`'s `adoptedInbox`) and the thread rows (the hold
+   *  `useInboxThreadRows` keeps) each go through a motion hold over the list, so both wait for a
+   *  pointer moving over the list to settle, and until the thread rows are handed on the selection
+   *  is not settled at all: a `?item=` naming a thread row would read as a row this list does not
+   *  hold, which closes the reading view below the column's width and has the column pick its top
+   *  row beside the list. */
   rowsReady: boolean;
   /** Ask ids whose own snooze write is out. */
   snoozing: ReadonlySet<string>;

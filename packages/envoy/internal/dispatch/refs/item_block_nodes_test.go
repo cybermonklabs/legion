@@ -257,7 +257,7 @@ func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
 	mark("comments", comment, `body = '', deleted_at = $2, deleted_by = '{"kind":"user","id":"alice"}'`, deletedAt)
 	// The delete's own writes, as api's clearDeletedPostBody makes them: the index of the empty
 	// body, then the tombstone of what the index leaves of the old one.
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, "", "", deletedAt, nil, nil); err != nil {
+	if _, _, err := IndexItem(ctx, tx, ItemComment, comment, "", "", deletedAt, nil, nil); err != nil {
 		t.Fatalf("index the comment's cleared body: %v", err)
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {

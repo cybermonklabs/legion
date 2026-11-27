@@ -22,6 +22,7 @@ import { AuthGate } from "./app";
 // the test file, and no row starts or waits for that load.
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
+import { answerOpenAsks } from "./features/inbox/inbox-fixture";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
 import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
@@ -63,7 +64,7 @@ test("signing out shows the sign-in page without a reload and ends the event fee
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
 
   const sockets = installFakeLiveSockets();
 
@@ -102,7 +103,7 @@ test("signing out shows the sign-in page without a reload and ends the event fee
     listIssues.mockRestore();
     listProjects.mockRestore();
     getMyState.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     liveSocketFor(queryClient).close();
     sockets.restore();
   }
@@ -165,7 +166,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
@@ -243,7 +244,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
@@ -360,7 +361,7 @@ test("signing out asks first, then drops every write here and tells every other 
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
@@ -462,7 +463,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   // A write this tab keeps is resumed from its stored request through `api.send`, which no spy
   // above covers: it is answered here as `aliceWrite`'s own attempts answer, failing at the
@@ -598,7 +599,7 @@ test("project routes render the project page and a project document route", asyn
     kind: "user",
     login: "alice",
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
@@ -695,7 +696,7 @@ test("project routes render the project page and a project document route", asyn
   } finally {
     for (const read of documentReads) read.mockRestore();
     listProjectArchitectureSources.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getProjectArtifact.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
@@ -724,7 +725,7 @@ test("the Inbox page links to the answers page, which renders at /answers", asyn
     kind: "user",
     login: "alice",
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
@@ -759,7 +760,7 @@ test("the Inbox page links to the answers page, which renders at /answers", asyn
     expect(await screen.findByText("You have not answered or replied on an ask yet.")).toBeTruthy();
     answers.unmount();
   } finally {
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
     listMyAnswers.mockRestore();
@@ -788,7 +789,7 @@ test("a failed identity refetch keeps the cached user's sidebar preference", asy
     }) as MediaQueryList) as typeof window.matchMedia;
   window.localStorage.setItem(sidebarStorageKey, "hidden");
   const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(new Error("temporary outage"));
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
@@ -807,7 +808,7 @@ test("a failed identity refetch keeps the cached user's sidebar preference", asy
     expect(screen.getByRole("button", { name: "Show sidebar" })).toBeTruthy();
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
@@ -843,7 +844,7 @@ test("a whoami 401 drops every other read the page holds", async () => {
       removeListener: () => {},
     }) as MediaQueryList) as typeof window.matchMedia;
   const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(new ApiError(401, { error: "no session" }));
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
@@ -865,7 +866,7 @@ test("a whoami 401 drops every other read the page holds", async () => {
     expect(queryClient.getQueryState(["whoami"])?.status).toBe("error");
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
@@ -902,7 +903,7 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
     kind: "user",
     login: "alice",
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
@@ -981,7 +982,7 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
     // A failure under the first render must not leave these to the rows after it: a spy left in
     // place keeps the calls it recorded here, and `spyOn` on it again hands back the same mock.
     for (const read of issueReads) read.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();
     listProjects.mockRestore();
@@ -1021,7 +1022,7 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(

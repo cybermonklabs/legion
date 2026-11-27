@@ -79,10 +79,10 @@ const movedParents = "block_parent_moved"
 //   - a comment's node and its visibility, state and project or parties (graphstore.Write), the
 //     authored_by and the aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts
 //     it is anchored to and owned by (api's commentStored);
-//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph), and the same
-//     one tuple for each session or role the bus reached with a comment event
-//     (outbox.deliveredGraph) and for each fallback copy the outbox published
-//     (outbox.fallbackDelivered);
+//   - a delivery to a comment's mention, two delivered_to tuples, the comment's
+//     (outbox.deliveredGraph) and its attempt's, and one tuple for each session or role the bus
+//     reached with a comment event (outbox.deliveredGraph) and for each fallback copy the outbox
+//     published (outbox.fallbackDelivered);
 //   - a version's blocks as refs.IndexBlocks states them: a block it inserts afresh, its node, its
 //     three base attributes (its project being its document's), its in_document and its part_of;
 //     a block it restores, its state and its in_document, with at most the retraction and the
@@ -94,19 +94,21 @@ const movedParents = "block_parent_moved"
 //     gone state a document's removal states of its node, each written by this build's own create
 //     or removal;
 //   - the blocks child's text value and rank value of each block whose text a version wrote;
-//   - the inbox child's delivered_to of a message, and one tuple for each read mark, clear,
-//     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
-//     a key and no earlier one, so its term counts every key marked inside the window once;
+//   - the inbox child's delivered_to of a message; one tuple for each read mark, clear and snooze;
+//     and a dismissal's dismissed, with at most the retraction that ends it. Each of the tables
+//     those marks are written to keeps the newest mark of a key and no earlier one, so its term
+//     counts every key marked inside the window once;
 //   - the person, session, role and page nodes the first write that records each makes
 //     (graphstore.AuthorFacts, graphstore.QueueReached, outbox.deliveredGraph), each with its two
 //     base attributes: a page's part_of its role, and a session's part_of the role it claimed,
 //     with that role's held_by and the retraction that ends it, or else a page of its own with
 //     that page's base attributes and its part_of the session (R14);
 //   - the inbox child's message's author and parent, and the tuples its target and its
-//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
-//     person's part in a thread, the delivered_to of each write to every other participant and of
-//     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
-//     message and an ask with their links, and a delivery attempt's node (its spec's
+//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, the
+//     citations of a comment, a message and an ask (their refs rows, refs.IndexItem), a person's
+//     or a session's part in a thread, the delivered_to of each write to every other participant
+//     and of an ask to the person it waits on, the move of that person, the body blocks of a
+//     comment, a message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
 //   - the blocks child's document version node, an artifact's part_of its issue, an issue's
 //     child_of and needs, a result's node with its values and tuples, its screenshots and its
@@ -125,7 +127,12 @@ const movedParents = "block_parent_moved"
 // or its parties beside its visibility and state, written by the create that makes it: each of
 // those kinds' terms counts that tuple, and none has a second term for its node, which its own
 // term counts already.
-func storeKinds() []StoreKind {
+//
+// storeKinds is every term the sizing counts. messagesNamed is the predicate that says a messages
+// row names its node, which the session term reads through recordedSessions: `false` on a database
+// this branch's migrations have not reached, whose messages table holds no such column and whose
+// rows name no node (readStoreKinds).
+func storeKinds(messagesNamed string) []StoreKind {
 	return []StoreKind{{
 		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 3,
 		Driver: "comments.created_at: the comment's node and its visibility, state and project or parties",
@@ -147,8 +154,15 @@ func storeKinds() []StoreKind {
 		Driver: "comments.created_at: each alias_of and recorded_as the credential that wrote one proved",
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
-		Name: "delivery", MovedBy: movedHere, Tuples: 1,
-		Driver: "comment_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its destination",
+		// Every attempt the listener took is two delivered_to facts of one delivery: the attempt's
+		// own, out of its node, which its settle states (graphstore.QueueAttempted), and the
+		// comment's, out of the comment's node, which the outbox states under the attempt's
+		// comment.delivery receipt (outbox's mentionReached) - or, for an attempt a session's reply
+		// flipped to sent, which no receipt follows, the reply's write states (api's
+		// queueAnsweredDelivery).
+		Name: "delivery", MovedBy: movedHere, Tuples: 2,
+		Driver: "comment_deliveries.created_at, taken by the listener: the attempt's delivered_to and the comment's" +
+			" for each attempt that reached its destination",
 		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
 			` and created_at > ` + sizingWindow + `)`,
 	}, {
@@ -211,8 +225,14 @@ func storeKinds() []StoreKind {
 		Driver: "user_agent_state.cleared_before in the window: a cleared",
 		count:  `(select count(*) from user_agent_state where cleared_before > ` + sizingWindow + `)`,
 	}, {
-		Name: "dismissal", MovedBy: movedWithInbox, Tuples: 1,
-		Driver: "user_agent_thread_dismissed.dismissed_at and user_threads.dismissed_at in the window: a dismissed",
+		// A dismissal ends when a later write brings its thread back: a write to a Reply thread
+		// retracts the dismissed of its participants (inboxwrite's Recording.Queue), and a session's
+		// reply to a direct conversation retracts the Agent dismissals of its root and deletes
+		// their rows (queueAgentDismissalsClear). So each dismissal is its dismissed and at most the
+		// retraction that ends it, which no row records once the clear has deleted it.
+		Name: "dismissal", MovedBy: movedWithInbox, Tuples: 2,
+		Driver: "user_agent_thread_dismissed.dismissed_at and user_threads.dismissed_at in the window: a dismissed," +
+			" and at most the retraction that ends it",
 		count: `((select count(*) from user_agent_thread_dismissed where dismissed_at > ` + sizingWindow + `)
 			+ (select count(*) from user_threads where dismissed_at > ` + sizingWindow + `))`,
 	}, {
@@ -230,7 +250,7 @@ func storeKinds() []StoreKind {
 			" state, and either its part_of the role it claimed with that role's held_by and the retraction that ends it," +
 			" or a page of its own with that page's visibility, state and part_of - three tuples either way, and two" +
 			" nodes at most, since which one a session took is the role bucket's and no table's",
-		count: `(select count(*) from (` + recordedSessions(sizingAuthors) + `) recorded
+		count: `(select count(*) from (` + recordedSessions(sizingAuthors, messagesNamed) + `) recorded
 			where recorded.at > ` + sizingWindow + ` and octet_length(recorded.id) <= ` + addressBound + `)`,
 	}, {
 		Name: graphstore.KindRole, MovedBy: movedHere, Nodes: 1, Tuples: 2,
@@ -263,19 +283,36 @@ func storeKinds() []StoreKind {
 		count: `((select count(*) from sized_comments where replies) + (select count(*) from sized_messages where replies))`,
 	}, {
 		Name: "mention", MovedBy: movedWithInbox, Tuples: 1,
-		Driver: "comment_mentions of the comments written in the window: a mentions tuple for each target, and a" +
-			" second for each role target that resolved to a session",
-		count: `(select count(*) + count(m.resolved_session_id)
+		Driver: "comment_mentions of the comments written in the window: a mentions tuple for each target, a" +
+			" second for each role target that resolved to a session, and the delivery value of each comment" +
+			" that names a target",
+		count: `(select count(*) + count(m.resolved_session_id) + count(distinct m.comment_id)
 			from comment_mentions m join sized_comments c on c.id = m.comment_id)`,
 	}, {
+		// A person's part in a thread, read off user_threads, which holds one row for each person and
+		// thread, and a session's, which this branch's thread record states too
+		// (inboxwrite.Recording.Queue) with every write the session records there and no row of
+		// it, so each comment, message and ask a session wrote in the window counts one.
 		Name: "participation", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "user_threads rows whose thread's root ask, comment or message was written in the window: a" +
-			" participates_in from the person to that root",
-		count: `(select count(*) from user_threads u
+			" participates_in from the person to that root; and each comment, message and ask a session wrote in the" +
+			" window: a participates_in from the session to its thread's root",
+		count: `((select count(*) from user_threads u
 			left join asks a on u.kind = 'ask' and a.id = u.thread_id
 			left join comments c on u.kind = 'comment' and c.id = u.thread_id
 			left join messages m on u.kind = 'message' and m.id = u.thread_id
-			where coalesce(a.created_at, c.created_at, m.created_at) > ` + sizingWindow + `)`,
+			where coalesce(a.created_at, c.created_at, m.created_at) > ` + sizingWindow + `)
+			+ (select count(*) from sized_comments where author_kind = '` + graphstore.KindSession + `')
+			+ (select count(*) from sized_messages where author_kind = '` + graphstore.KindSession + `')
+			+ (select count(*) from sized_ask_events where type = 'ask.opened' and actor_kind = '` + graphstore.KindSession + `'))`,
+	}, {
+		// An item's citations: each refs row of a comment, a message or an ask, which this branch's
+		// item index states as a mentions tuple out of the item's node (refs.IndexItem, and the
+		// refs grammar's re-index and rebuild-refs, which restate them).
+		Name: "citation", MovedBy: movedWithInbox, Tuples: 2,
+		Driver: "refs rows of the comments, messages and asks written or edited in the window: the item's mentions" +
+			" tuple for each, and at most the retraction that ends it",
+		count: `(select count(*) from refs where from_kind in ('comment', 'message', 'ask') and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "person_delivery", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "each comment, issue message and answer written in the window, to every other participant user_threads" +
@@ -538,6 +575,7 @@ var sizingWritesWith = `
 	with recursive sized_comments as (
 		select c.id, coalesce(c.ask_id, c.reply_to, c.id) as thread,
 		       case when c.author->>'kind' = 'user' then user_threads_login(c.author->>'id') end as writer,
+		       c.author->>'kind' as author_kind,
 		       (c.reply_to is not null or c.ask_id is not null or c.answers is not null
 		        or c.replies_to_block is not null) as replies,
 		       (case when c.author->>'kind' <> '` + graphstore.KindSession + `'
@@ -573,6 +611,7 @@ var sizingWritesWith = `
 	sized_messages as (
 		select m.id, m.in_reply_to, m.target, m.broadcast_id, m.issue_key is not null as threaded,
 		       (m.in_reply_to is not null or m.replies_to_block is not null) as replies,
+		       m.author->>'kind' as author_kind,
 		       case when m.author->>'kind' = 'user' then user_threads_login(m.author->>'id') end as writer
 		from messages m
 		where m.created_at > ` + sizingWindow + `
@@ -585,7 +624,7 @@ var sizingWritesWith = `
 		where r.depth < 64
 	),
 	sized_ask_events as (
-		select e.type, e.payload,
+		select e.type, e.payload, e.actor->>'kind' as actor_kind,
 		       case when e.actor->>'kind' = 'user' then user_threads_login(e.actor->>'id') end as writer
 		from events e
 		where e.type like 'ask.%' and e.created_at > ` + sizingWindow + `
@@ -621,7 +660,17 @@ var sizingWritesWith = `
 // counts in one statement over sizingWritesWith, so each set of rows it names is read once, the
 // moved parents by replayParents, and an assumed term from the writes it is assumed at.
 func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
-	kinds := storeKinds()
+	// The sizing is taken on a database this branch's migrations have not reached as well (R4),
+	// where messages holds no node column pair and no statement may name one.
+	named, err := readMessagesNamed(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	messagesNamed := "false"
+	if named {
+		messagesNamed = MessagesNameTheirNode
+	}
+	kinds := storeKinds(messagesNamed)
 	counts := make([]string, 0, len(kinds))
 	targets := make([]any, 0, len(kinds))
 	for index := range kinds {

@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 
-import type { InboxRow, MyReplyRow } from "../../api/types";
+import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import { searchWords } from "../agents/agent-search";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { issueAsk } from "./inbox-fixture";
 import { matchesInboxSearch } from "./inbox-search";
 
 /** Whether the ask row matches the query a reader typed, split the way the box splits it. */
-function matches(ask: InboxRow, query: string): boolean {
+function matches(ask: OpenAskRow, query: string): boolean {
   return matchesInboxSearch({ ask, kind: "ask" }, searchWords(query));
 }
 

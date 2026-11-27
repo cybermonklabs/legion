@@ -23,12 +23,30 @@ import (
 // id sequence's currval), never read back in Go between them. A value the caller needs once the
 // batch has run - an event's id, a returned timestamp - is read by the statement's callback (Exec,
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
+//
+// A batch is sent in a transaction (Send), where a callback's error abandons the transaction and
+// so undoes every statement of the batch, or on the pool as a transaction of its own that commits
+// at the batch's end (SendCommitting), where nothing can undo it: such a batch may read an answer
+// only through Observe, and every other callback is refused before anything is sent.
 type WriteBatch struct {
 	batch pgx.Batch
+	// reads is the read each statement queued so far makes of its result, in statement order.
+	reads []*queuedRead
 	// builds holds, beside each statement queued, the function that builds its arguments when
 	// Send reaches it (QueueBuilt), and nil for a statement queued with its arguments.
 	builds []func() ([]any, error)
 }
+
+// queuedRead is how a statement's result is read: dropped, handed to an Exec callback, handed to
+// a QueryRow or Query callback, whose error refuses the write, or observed (Observe).
+type queuedRead int
+
+const (
+	readDropped queuedRead = iota
+	readExec
+	readRefusing
+	readObserved
+)
 
 // LatestEventID is the SQL expression for the id of the event this session appended last: the
 // events id sequence's currval, which the event's insert set (events.Broker.QueueAppend). A
@@ -52,16 +70,15 @@ const LatestEventID = `(select currval(pg_get_serial_sequence('events', 'id')))`
 type Queued struct {
 	query *pgx.QueuedQuery
 	what  string
+	read  *queuedRead
 }
 
 // Queue adds sql with args after every statement queued so far. A failure of the statement itself
 // comes back from Send wrapped as what failed ("what: err"); an empty what returns it unchanged,
 // as a statement run on its own would.
 func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
-	queued := Queued{query: b.batch.Queue(sql, args...), what: what}
 	b.builds = append(b.builds, nil)
-	queued.Exec(nil)
-	return queued
+	return b.queue(what, sql, args)
 }
 
 // QueueBuilt is Queue for a statement whose arguments build returns when Send reaches it, rather
@@ -72,11 +89,20 @@ func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
 // ends Send as a statement's own failure would: after the statements queued before it, whose
 // own failure comes first.
 func (b *WriteBatch) QueueBuilt(what, sql string, build func() ([]any, error)) Queued {
-	queued := Queued{query: b.batch.Queue(sql), what: what}
+	queued := b.queue(what, sql, nil)
 	b.builds = append(b.builds, func() ([]any, error) {
 		arguments, err := build()
 		return arguments, queued.failed(err)
 	})
+	return queued
+}
+
+// queue adds sql with args after every statement queued so far, with the read it makes of its
+// result (reads), which starts as an Exec's that drops it. Its caller adds its build (builds).
+func (b *WriteBatch) queue(what, sql string, args []any) Queued {
+	read := new(queuedRead)
+	b.reads = append(b.reads, read)
+	queued := Queued{query: b.batch.Queue(sql, args...), what: what, read: read}
 	queued.Exec(nil)
 	return queued
 }
@@ -90,8 +116,13 @@ func (q Queued) failed(err error) error {
 }
 
 // Exec hands the statement's command tag to fn once it has run; nil drops it. fn's error stops the
-// batch's reading and is what Send returns, unchanged.
+// batch's reading and is what Send returns, unchanged. A batch that commits at its end
+// (SendCommitting) takes no fn.
 func (q Queued) Exec(fn func(pgconn.CommandTag) error) {
+	*q.read = readDropped
+	if fn != nil {
+		*q.read = readExec
+	}
 	q.query.Fn = func(results pgx.BatchResults) error {
 		tag, err := results.Exec()
 		if err != nil {
@@ -115,8 +146,26 @@ func (q Queued) QueryRow(scan func(pgx.Row) error) {
 
 // Query hands the statement's rows to read once it has run. read's error stops the batch's reading
 // and is what Send returns, unchanged; a failure the rows report once read returned is wrapped as
-// what failed.
+// what failed. A batch that commits at its end (SendCommitting) takes no Query or QueryRow: their
+// error refuses the write, which there nothing can undo.
 func (q Queued) Query(read func(pgx.Rows) error) {
+	q.readRows(readRefusing, read)
+}
+
+// Observe hands the rows of a statement of a batch that commits at its end (SendCommitting) to
+// read once it has run: the answer of a statement that has committed, or will once the batch
+// ends. read's error, and a failure the rows report, mean only that this answer was lost, never
+// that the write must not stand: the batch's statements commit together all the same, and the
+// caller answers the error as it answers an answer the network lost after the commit. A batch
+// sent in a transaction (Send) takes no Observe, so a read whose error must undo the write is
+// never written as one.
+func (q Queued) Observe(read func(pgx.Rows) error) {
+	q.readRows(readObserved, read)
+}
+
+// readRows hands the statement's rows to read once it has run, read as kind.
+func (q Queued) readRows(kind queuedRead, read func(pgx.Rows) error) {
+	*q.read = kind
 	q.query.Fn = func(results pgx.BatchResults) error {
 		rows, err := results.Query()
 		if err != nil {
@@ -156,8 +205,10 @@ func (r batchRow) Scan(dest ...any) error {
 // statement's callback as it reads its result. It returns the first failure: the first statement
 // that failed (the server runs none after it) or the first callback that returned an error (whose
 // later statements ran or were never sent, and are rolled back with the transaction the caller now
-// abandons), whichever comes first in the batch. The batch is empty again afterwards. An empty
-// batch sends nothing.
+// abandons), whichever comes first in the batch. An empty batch sends nothing. A batch that
+// queued an Observe is refused before anything is sent, and keeps its statements: an observed read
+// is one whose error undoes nothing, which in a transaction it would. Any other batch is empty
+// again afterwards.
 //
 // The statements go as one pipelined batch while their arguments come to sendBound or less, which
 // is every write phase but the few that carry thousands of rows. A larger one goes as several
@@ -175,8 +226,11 @@ func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
+	if err := b.refuse(readObserved, "observes a statement's answer, which only a batch that commits at its end may (SendCommitting)"); err != nil {
+		return err
+	}
 	queued, builds := b.batch.QueuedQueries, b.builds
-	b.batch, b.builds = pgx.Batch{}, nil
+	b.batch, b.builds, b.reads = pgx.Batch{}, nil, nil
 	// measured is each statement's argument bytes once its arguments are built, -1 before: partEnd
 	// asks the size of the statement that starts the next part as well.
 	measured := make([]int, len(queued))
@@ -286,6 +340,55 @@ func valueBytes(value reflect.Value) int {
 	}
 }
 
+// SendCommitting sends every queued statement to pool in one batch, outside any transaction: the
+// server runs the batch as one implicit transaction, which commits at the batch's end (its Sync)
+// whatever the client reads of it afterwards. So every statement commits or none does, and no
+// callback can undo the batch once it is sent: before anything is sent, it refuses a batch that
+// queued a QueryRow, a Query or an Exec callback, whose error would read as a refusal of a write
+// that has already committed. A statement's answer is read through Observe alone. It returns the
+// first failure: a statement that failed, which leaves nothing of the batch committed, or an
+// observed read that failed, which leaves all of it committed. It sends the batch whole, never in
+// Send's parts, since each part would commit on its own, and builds the arguments of every
+// statement queued with QueueBuilt before it sends any: a build that fails sends nothing. A
+// refused batch keeps its statements, any other is empty again afterwards, and an empty batch
+// sends nothing.
+func (b *WriteBatch) SendCommitting(ctx context.Context, pool *Pool) error {
+	if b.batch.Len() == 0 {
+		return nil
+	}
+	if err := b.refuse(readRefusing, "reads a statement's answer with QueryRow or Query, whose error would refuse a write that commits at the batch's end"); err != nil {
+		return err
+	}
+	if err := b.refuse(readExec, "hands a statement's command tag to an Exec callback, whose error would refuse a write that commits at the batch's end"); err != nil {
+		return err
+	}
+	queued, builds := b.batch.QueuedQueries, b.builds
+	b.batch, b.builds, b.reads = pgx.Batch{}, nil, nil
+	for index, build := range builds {
+		if build == nil {
+			continue
+		}
+		arguments, err := build()
+		if err != nil {
+			return err
+		}
+		queued[index].Arguments = arguments
+	}
+	batch := pgx.Batch{QueuedQueries: queued}
+	return pool.SendBatch(ctx, &batch).Close()
+}
+
+// refuse answers an error naming the first statement queued so far whose result is read as kind,
+// and nil where none is.
+func (b *WriteBatch) refuse(kind queuedRead, why string) error {
+	for index, read := range b.reads {
+		if *read == kind {
+			return fmt.Errorf("store: statement %d of the batch %s", index+1, why)
+		}
+	}
+	return nil
+}
+
 // RunWrite runs write's statements in tx at once, as a batch of their own (Send): what a write
 // step does in a transaction that queues no write phase.
 func RunWrite(ctx context.Context, tx pgx.Tx, write func(*WriteBatch) error) error {
@@ -294,6 +397,18 @@ func RunWrite(ctx context.Context, tx pgx.Tx, write func(*WriteBatch) error) err
 		return batch.SendFailed(ctx, tx, err)
 	}
 	return batch.Send(ctx, tx)
+}
+
+// RunCommitting runs write's statements on pool as one batch that commits at its end
+// (SendCommitting): a write of its own transaction whose statements are all known before any of
+// them runs. A write that fails while it queues sends nothing, since whatever it queued before
+// would commit.
+func RunCommitting(ctx context.Context, pool *Pool, write func(*WriteBatch) error) error {
+	var batch WriteBatch
+	if err := write(&batch); err != nil {
+		return err
+	}
+	return batch.SendCommitting(ctx, pool)
 }
 
 // SendFailed ends a batch whose building failed with err partway: it sends what was queued before

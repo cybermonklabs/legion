@@ -103,7 +103,7 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `CreateArtifactInput` (it carries a `Blob`), `AuthenticatedUser`
   (`GET /auth/whoami` is outside `/api/v1`).
 - **The Inbox row's two narrowings** — `MyReplyThreadRow`, `MyReplyAgentRow` and the
-  `inboxThreadRow` that tells them apart. `GET /api/v1/me/replies` answers both kinds of row
+  `inboxThreadRow` that tells them apart. The one read's Reply and Agent rows answer both kinds
   under one Go struct, so the generated `MyReplyRow` carries each kind's fields as optional and
   `kind` as the open string the Go field holds; these two say what a row of each kind always
   carries, as `IssueAskThreadRow` does for an ask read with its thread. Neither declares a field

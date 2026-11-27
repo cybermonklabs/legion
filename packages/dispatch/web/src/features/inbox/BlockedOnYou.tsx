@@ -1,10 +1,11 @@
-import { awaitsDecision } from "@legion/contracts";
+import { awaitsDecision, meInboxAsks } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
-import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import { meInboxQuery, whoAmIQuery } from "../../api/queries";
+import type { CredentialPendingRow, OpenAskRow } from "../../api/types";
+import { useIsHuman } from "../../hooks/useIsHuman";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -27,7 +28,7 @@ import { isSnoozed } from "./snooze";
  *  saying it does not need them now. A row that carries no snooze at all (an issue header's
  *  `open_asks`) is never deferred. */
 export function waitingOnHuman<
-  T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "snoozed_until">>,
+  T extends Pick<OpenAskRow, "waiting_on"> & Partial<Pick<OpenAskRow, "snoozed_until">>,
 >(asks: readonly T[]): T[] {
   return asks.filter((ask) => ask.waiting_on === "human" && !isSnoozed(ask));
 }
@@ -44,7 +45,10 @@ export function waitingOnHuman<
  *  nothing: a list taken over the whole inbox while the shell loads would not be theirs.
  *  Every count of such work - the badges, the banner, the Agents page's first card number -
  *  reads this, so they all mean the same thing. */
-export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefined): InboxRow[] {
+export function waitingOnYou(
+  asks: readonly OpenAskRow[],
+  viewer: string | undefined
+): OpenAskRow[] {
   if (viewer === undefined) return [];
   return waitingOnHuman(asks).filter((ask) => isMine({ ask, kind: "ask" }, viewer));
 }
@@ -69,7 +73,7 @@ export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefin
  *  verbatim, and the badges render in the app shell, outside every page's error boundary, so a
  *  throw here would take down every page. */
 function needsYou(
-  asks: readonly InboxRow[],
+  asks: readonly OpenAskRow[],
   credentialRequests: readonly CredentialPendingRow[],
   viewer: string | undefined
 ): { count: number; oldest: string | undefined } {
@@ -86,13 +90,16 @@ function needsYou(
   return { count: since.length, oldest };
 }
 
-/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. */
+/** The rail's and the compact top bar's `Needs you N`: the reader's own, from the one read's
+ *  asks, which are the asks that wait on the reader and no other. They are selected once for each
+ *  answer, not once a render: the shell and the rail each draw this. */
 export function useNeedsYouCount(): number {
-  const inbox = useQuery(inboxQuery());
+  const human = useIsHuman();
+  const own = useQuery({ ...meInboxQuery(), enabled: human, select: meInboxAsks });
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const { requests } = useCredentialRequests();
-  return needsYou(inbox.data ?? [], requests, viewer).count;
+  return needsYou(own.data ?? [], requests, viewer).count;
 }
 
 export function BlockedOnYou({
@@ -102,7 +109,7 @@ export function BlockedOnYou({
   variant = "banner",
   viewer,
 }: {
-  asks: readonly InboxRow[];
+  asks: readonly OpenAskRow[];
   className?: string;
   /** The credential requests the Inbox lists above its asks; the project pill has none. */
   credentialRequests?: readonly CredentialPendingRow[];

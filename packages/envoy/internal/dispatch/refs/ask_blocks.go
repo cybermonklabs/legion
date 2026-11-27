@@ -111,22 +111,19 @@ func askAnswerText(answer model.AskAnswer) string {
 	}
 }
 
-// askPartMakers is the maker each part records in ask_blocks.made_by, in AskParts' order: null
+// askPartMakers is the maker each part records in ask_blocks.made_by, in AskParts' order: nil
 // for the question and every option, which the ask's author made, and the answerer for the answer
 // part, who is not the ask's author (askAnswerer). A part keeps the maker it was written with
-// while its text stands, as it keeps its text.
-func askPartMakers(ask model.Ask, parts []itemblocks.Block) ([]*string, error) {
+// while its text stands, as it keeps its text, and its node and every tuple it states name that
+// maker (planItemBlocks).
+func askPartMakers(ask model.Ask, parts []itemblocks.Block) []*model.Actor {
 	if ask.Answer == nil || len(parts) == 0 {
-		return nil, nil
+		return nil
 	}
-	encoded, err := json.Marshal(askAnswerer(*ask.Answer))
-	if err != nil {
-		return nil, fmt.Errorf("encode the answerer of ask %s: %w", ask.ID, err)
-	}
-	maker := string(encoded)
-	makers := make([]*string, len(parts))
-	makers[len(parts)-1] = &maker
-	return makers, nil
+	makers := make([]*model.Actor, len(parts))
+	answerer := askAnswerer(*ask.Answer)
+	makers[len(parts)-1] = &answerer
+	return makers
 }
 
 // askAnswerer is who wrote answer, the person its row names: the maker its answer part records
@@ -223,11 +220,7 @@ func planAskParts(
 	r *Reader,
 	at time.Time,
 ) (ItemIndexing, error) {
-	source, err := askPartsSource(ask, parts, sum, r)
-	if err != nil {
-		return ItemIndexing{}, err
-	}
-	indexing, err := planItemBlocks(index, ItemAsk, ask.ID, at, source)
+	indexing, err := planItemBlocks(index, ItemAsk, ask.ID, at, askPartsSource(ask, parts, sum, r))
 	if err != nil {
 		return ItemIndexing{}, fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 	}
@@ -241,11 +234,7 @@ func planAskParts(
 // answer, through r for the answerer (askPartPairs). It is the one reading of an ask's blocks:
 // every plan of them takes it, the owed repair's (planAskIfOwed) and a write's own
 // (PlanAskParts) alike.
-func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Reader) (itemBlockSource, error) {
-	makers, err := askPartMakers(ask, parts)
-	if err != nil {
-		return itemBlockSource{}, err
-	}
+func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Reader) itemBlockSource {
 	answered := r
 	if ask.Answer != nil {
 		answered = r.writtenBy(askAnswerer(*ask.Answer))
@@ -254,7 +243,7 @@ func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Read
 		blocks:    parts,
 		bodySum:   sum,
 		serverURL: r.serverURL,
-		madeBy:    makers,
+		madeBy:    askPartMakers(ask, parts),
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, _, counter int) ([]string, int, error) {
 			ids, counter := itemblocks.Align(stored, next, counter, []string{AskAnswerPart})
 			return ids, counter, nil
@@ -262,7 +251,7 @@ func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Read
 		pairs: func(next []itemblocks.Block, ids []string) []blockPair {
 			return askPartPairs(next, ids, r, answered)
 		},
-	}, nil
+	}
 }
 
 // askPartColumns selects the three columns an ask's parts are read from, aliased a, in the order
@@ -347,13 +336,16 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	if repair.indexing, err = planAskParts(index, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return ItemRepair{}, err
 	}
-	// The question's edges were read beside the parts' links when the ask's index was read
-	// (ItemIndex.HeldRefs), so its reconciliation is planned against them with no read of its own.
+	// The question's edges were read beside the parts' links when the ask's index was read, each
+	// with its kind and tuples_stored (ItemIndex.PlanOwnRefs), so its reconciliation is planned
+	// against them, with the citations they stand for under the ask's scope, with no read of its
+	// own; an ask no block-aware build indexed reads them here.
 	found := text.Refs(resolve.Mentions(ask.Question))
-	if held, read := index.HeldRefs(); read {
-		repair.refs = PlanReplaceFrom(held, string(ItemAsk), askID, found, &writtenAt)
-	} else if repair.refs, err = PlanReplace(ctx, q, string(ItemAsk), askID, found, &writtenAt); err != nil {
-		return ItemRepair{}, fmt.Errorf("index ask %s: %w", askID, err)
+	var planned bool
+	if repair.refs, planned = index.PlanOwnRefs(found, writtenAt); !planned {
+		if repair.refs, err = PlanItemReplace(ctx, q, index.scope, ItemAsk, askID, found, writtenAt); err != nil {
+			return ItemRepair{}, fmt.Errorf("index ask %s: %w", askID, err)
+		}
 	}
 	repair.refs, repair.mentions = repair.refs.SettlingForms(), true
 	return repair, nil
@@ -427,9 +419,7 @@ func AskPartIDs(ctx context.Context, q Queryer, asks []*model.Ask) ([]AskIDs, er
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]AskIDs, len(asks))
-	askPartIDsOf(asks, stored, ids)
-	return ids, nil
+	return stored.IDs(asks), nil
 }
 
 // QueueAskPartIDs is the batched half: it queues AskPartIDs' statement in b and reads its rows
@@ -441,12 +431,12 @@ func QueueAskPartIDs(b *pgx.Batch, asks []*model.Ask, ids []AskIDs) {
 	if len(asks) == 0 {
 		return
 	}
-	b.Queue(askPartRowsStatement, askRowIDs(asks)).Query(func(rows pgx.Rows) error {
+	b.Queue(AskPartRowsStatement, askRowIDs(asks)).Query(func(rows pgx.Rows) error {
 		stored, err := scanAskPartRows(rows, len(asks))
 		if err != nil {
 			return err
 		}
-		askPartIDsOf(asks, stored, ids)
+		copy(ids, stored.IDs(asks))
 		return nil
 	})
 }
@@ -462,10 +452,11 @@ func askRowIDs(asks []*model.Ask) []string {
 	return askIDs
 }
 
-// askPartIDsOf fills ids with the part ids of each ask from the parts stored for it, matching
-// them as AskPartIDs describes: an ask with no stored parts carries no id and revision 0, and
-// every ask carries one entry per option whatever the index holds.
-func askPartIDsOf(asks []*model.Ask, stored map[string]storedAskParts, ids []AskIDs) {
+// IDs is the part ids of each of asks, in the order they were given, from the parts stored for
+// them, matched as AskPartIDs describes: an ask with no stored parts carries no id and revision 0,
+// and every ask carries one entry per option whatever the index holds.
+func (stored AskPartRows) IDs(asks []*model.Ask) []AskIDs {
+	ids := make([]AskIDs, len(asks))
 	for index, ask := range asks {
 		ids[index] = AskIDs{Options: make([]string, len(ask.Options))}
 		indexed, found := stored[ask.ID]
@@ -481,6 +472,25 @@ func askPartIDsOf(asks []*model.Ask, stored map[string]storedAskParts, ids []Ask
 			ids[index].Answer = parts[len(parts)-1]
 		}
 	}
+	return ids
+}
+
+// AskPartRows is the indexed parts of asks as AskPartRowsStatement reads them, keyed by ask id;
+// an ask with no state row, which no build with the part index has written, is absent. AskPartIDs
+// and QueueAskPartIDs read it through their own statement, and a reader that splices that
+// statement into one of its own reads each row it answers through Scan (api's GET
+// /api/v1/me/inbox).
+type AskPartRows map[string]storedAskParts
+
+// Scan reads one row of AskPartRowsStatement into stored.
+func (stored AskPartRows) Scan(row pgx.Row) error {
+	var askID string
+	var parts storedAskParts
+	if err := row.Scan(&askID, &parts.revision, &parts.ids, &parts.types, &parts.sums); err != nil {
+		return fmt.Errorf("scan ask parts: %w", err)
+	}
+	stored[askID] = parts
+	return nil
 }
 
 // storedAskParts is one ask's indexed parts as askPartRows reads them: the revision its parts
@@ -512,11 +522,12 @@ func (stored storedAskParts) idsOf(parts []itemblocks.Block) []string {
 	return ids
 }
 
-// askPartRowsStatement reads the indexed parts of each ask, one row per ask with a state row,
+// AskPartRowsStatement reads the indexed parts of each ask, one row per ask with a state row,
 // with the parts of each as arrays in position order, as a comment's blocks are read; an ask
 // whose state row holds no part yet reads as an empty list. One statement for the whole list,
-// run by both halves of the read (AskPartIDs, QueueAskPartIDs).
-const askPartRowsStatement = `
+// run by both halves of the read (AskPartIDs, QueueAskPartIDs), $1 the ask ids (uuid[]), each
+// row read by AskPartRows.Scan.
+const AskPartRowsStatement = `
 		select s.ask_id::text, s.revision,
 		       coalesce(array_agg(b.block_id order by b.position) filter (where b.block_id is not null), '{}') as ids,
 		       coalesce(array_agg(b.type order by b.position) filter (where b.block_id is not null), '{}') as types,
@@ -527,10 +538,9 @@ const askPartRowsStatement = `
 		group by s.ask_id, s.revision
 	`
 
-// askPartRows runs askPartRowsStatement on q, keyed by ask id; an ask with no state row, which
-// no build with the part index has written, is absent.
-func askPartRows(ctx context.Context, q Queryer, askIDs []string) (map[string]storedAskParts, error) {
-	rows, err := q.Query(ctx, askPartRowsStatement, askIDs)
+// askPartRows runs AskPartRowsStatement on q, keyed by ask id.
+func askPartRows(ctx context.Context, q Queryer, askIDs []string) (AskPartRows, error) {
+	rows, err := q.Query(ctx, AskPartRowsStatement, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read ask parts: %w", err)
 	}
@@ -538,21 +548,18 @@ func askPartRows(ctx context.Context, q Queryer, askIDs []string) (map[string]st
 	return scanAskPartRows(rows, len(askIDs))
 }
 
-// scanAskPartRows reads the rows askPartRowsStatement returns, keyed by ask id. A batch can hand
+// scanAskPartRows reads the rows AskPartRowsStatement returns, keyed by ask id. A batch can hand
 // it rows that already hold an error - one the sequential Query would have returned itself - and
 // that error is wrapped here as askPartRows wraps its Query's.
-func scanAskPartRows(rows pgx.Rows, expected int) (map[string]storedAskParts, error) {
+func scanAskPartRows(rows pgx.Rows, expected int) (AskPartRows, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read ask parts: %w", err)
 	}
-	parts := make(map[string]storedAskParts, expected)
+	parts := make(AskPartRows, expected)
 	for rows.Next() {
-		var askID string
-		var stored storedAskParts
-		if err := rows.Scan(&askID, &stored.revision, &stored.ids, &stored.types, &stored.sums); err != nil {
-			return nil, fmt.Errorf("scan ask parts: %w", err)
+		if err := parts.Scan(rows); err != nil {
+			return nil, err
 		}
-		parts[askID] = stored
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read ask parts: %w", err)

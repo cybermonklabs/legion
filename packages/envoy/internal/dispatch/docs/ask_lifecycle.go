@@ -260,10 +260,10 @@ func (s *Service) writeDocumentAskStates(
 // has run ($6, the documents whose authors the reopen's own writes queued); one that is the block
 // document (asks.block_artifact_id) of an open ask, the asks the reopen restores among them ($5,
 // whose rows the table still reads withdrawn); and one that is the block document of an ask a
-// settlement retracted. The retraction is settlementRetraction's rule in SQL, read off the stored
-// resolution: kind "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens with $4
-// (SettlementActor, SettlementRetractionReason), so the two change together.
-const reopenOwedAskDocuments = `
+// settlement retracted, by settlementRetracted's rule in SQL (settlementRetractedSQL), its actor
+// $2 (kind) and $3 (id) and its reason's opening $4 (SettlementActor, SettlementRetractionReason),
+// so the two change together.
+var reopenOwedAskDocuments = `
 	select a.id::text from artifacts a
 	where a.issue_key = $1 and a.kind = 'doc'
 		and (exists (select from doc_ask_block_authors b where b.artifact_id = a.id)
@@ -274,10 +274,8 @@ const reopenOwedAskDocuments = `
 					and (k.state = 'open' or k.id = any($5::uuid[])))
 			or exists (
 				select from asks k
-				where k.block_artifact_id = a.id and k.block_id is not null and k.state = 'resolved'
-					and k.resolution->>'kind' = 'retracted'
-					and ((k.resolution->'actor'->>'kind' = $2 and k.resolution->'actor'->>'id' = $3)
-						or starts_with(k.resolution->>'reason', $4))))
+				where k.block_artifact_id = a.id and k.block_id is not null
+					and ` + settlementRetractedSQL("k", "$2", "$3", "$4") + `))
 	order by a.id`
 
 // MarkReopenOwedAskDocuments marks owing a settlement each document of issueKey whose ask blocks a
@@ -582,6 +580,9 @@ func readIssueAskStateWrites(
 	}
 	if len(blocks) == 0 {
 		return found, nil
+	}
+	if err := lockAskBlocksForWrite(ctx, tx, artifactID); err != nil {
+		return nil, err
 	}
 	// An issue's documents take no copy lock (lockProjectCopies): the caller holds the issue's
 	// owner lock, as every transaction reading or marking the copies among its documents does.

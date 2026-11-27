@@ -17,8 +17,8 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { projectDefaultAssigneesQuery } from "../../api/queries";
-import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { openAsksQuery, projectDefaultAssigneesQuery } from "../../api/queries";
+import type { Issue, IssueDetails, IssueSummary, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AssigneeControl } from "./AssigneeControl";
@@ -103,7 +103,7 @@ const summary: IssueSummary = {
   created_by: issue.created_by,
   created_at: issue.created_at,
 };
-const inboxRow: InboxRow = {
+const inboxRow: OpenAskRow = {
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -142,7 +142,7 @@ const inboxRow: InboxRow = {
 
 const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
-const inboxKey = ["inbox"] as const;
+const inboxKey = openAsksQuery().queryKey;
 
 /** The control with the assignee its host reads from the cache, each commit of it recorded with
  *  that assignee. */
@@ -235,7 +235,7 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
     await waitFor(() => expect(select().value).toBe("bob"));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
+    expect(queryClient.getQueryData<OpenAskRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
 
     act(() => {
       save.resolve({ ...issue, assignee: "bob", last_seq: 2 });
@@ -320,7 +320,7 @@ test.each([
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const { queryClient, unmount, user } = renderControl();
-  const handedOn: InboxRow = {
+  const handedOn: OpenAskRow = {
     ...inboxRow,
     asked_of: "bob",
     asked_of_at: "2026-09-09T01:00:00Z",
@@ -345,7 +345,7 @@ test.each([
     );
 
     // The save is still in flight: what the rows hold is the optimistic write alone.
-    const rows = queryClient.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    const rows = queryClient.getQueryData<OpenAskRow[]>(inboxKey) ?? [];
     expect(rows.map((row) => [row.id, row.issue?.assignee, row.waiting_on_person])).toEqual([
       ["ask-1", null, person],
       ["ask-2", null, "bob"],
@@ -381,7 +381,7 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
     expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
     expect(select().value).toBe("alice");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+    expect(queryClient.getQueryData<OpenAskRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
     unmount();
     patchIssue.mockRestore();

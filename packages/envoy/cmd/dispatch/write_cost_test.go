@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -241,15 +242,22 @@ func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks
 // The tick is a loop of the server's own and no request, so it is measured where it commits: the
 // pass indexes each owed document in a transaction of its own, so the owed count falls once for
 // each document it finishes. The run holds the pass's own lease while it writes the batch's new
-// versions (costHoldBlockIndex), so no tick runs over a half-written batch; gives the lease
-// back; and reads the owed count every 5 ms. The reading is from the first document that tick
-// committed to the last, which is the tick's own indexing work with the wait before it left out.
-// Both arms are measured that way, each on its own server's own loop, so the one quantity is
-// compared with itself.
+// versions, so no tick runs over a half-written batch; gives the lease back; and reads the owed
+// count every 5 ms. The reading is from the first document that tick committed to the last, which
+// is the tick's own indexing work with the wait before it left out. Both arms are measured that
+// way, each on its own server's own loop, so the one quantity is compared with itself.
+//
+// The reference forms drain is the other loop that indexes these documents (costHoldBlockIndex),
+// so the run holds its lease from the first write of the batch until the tick has indexed the
+// last document: given back with the block index's, it would index part of the batch before the
+// tick or inside the reading, which would then be neither the tick's alone nor the batch it was
+// given. The tick's index of a document settles that document's row of the drain's queue
+// (refs.Replacement.SettlingForms), so the drain finds nothing of the batch once it runs again.
 func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 	t.Helper()
 	arm := corpus.arm
-	release := costHoldBlockIndex(t, arm)
+	defer costHoldLease(t, arm, docs.RefsFormsLease)()
+	release := costHoldLease(t, arm, docs.BlockIndexLease)
 	for index := range corpus.tick {
 		body := arm.server.documentUpload(t, corpus.issue, writeCostTickName(index),
 			costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),

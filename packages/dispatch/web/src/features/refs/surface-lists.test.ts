@@ -281,14 +281,6 @@ const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
     },
   },
   {
-    field: "first_line",
-    what: "A candidate's first line, on the page that tells two items with one short id apart: the head of the stored text the candidate is, cut by the server, whose tree is `first_line_tree` in the refusal's hand-written shape (`IDCandidate`), for every candidate but a document's, whose first line is its file's name. The my-replies read sends a reply's `first_line` with no tree, and no page of the dashboard draws it.",
-    tree: {
-      file: "packages/dispatch/web/src/features/issue/ItemMatchList.tsx",
-      written: "first_line_tree",
-    },
-  },
-  {
     field: "heading",
     what: "A decision's heading: an ask's question, else the words of the first block of the decision's own content that holds any. The server sends no tree beside it; its tree is that block of the decision's `text_tree`, or the `text_tree` of an ask's entry, which holds the question (`decisionHeadingTree`).",
     tree: {
@@ -2370,10 +2362,6 @@ const UNTREED_ROWS: readonly UntreedRow[] = [
   {
     surface: "margin-suggestion-diff",
     why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
-  },
-  {
-    surface: "person-node-title",
-    why: "A node's line on a person's page reaches the page with no tree: the person nodes read (`api/person_nodes.go`) sends the first line of the node's text, cut to 240 runes, and no reading of it, so the preview parses that line on the page. A tree for it is carried to cybermonklabs/legion#4105.",
   },
 ];
 

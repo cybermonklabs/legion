@@ -67,6 +67,26 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 	}
 }
 
+// A row of a person's page carries, beside its first line, that line read as the tree a reader is
+// shown (first_line_tree), under `Dispatch-Trees: 1` and only there: the tree
+// pmdoc.ReadForDisplay makes of exactly the line the row answers, the first line of the node's
+// text and not the rest. The route table's 200 schema declares it.
+func TestAPersonPageRowCarriesTheTreeOfItsFirstLine(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "LINE", "A person's page lines", "Spec.\n")
+	createThreadComment(t, handler, issue.Key,
+		map[string]any{"body": "A **bold** first line.\n\nA second paragraph the line leaves out."}, "alice")
+	const page = "/api/v1/people/alice/nodes"
+	if line, _ := valueAt(t, treesRequest(t, handler, page, false), "rows.0.first_line"); string(line) != `"A **bold** first line."` {
+		t.Fatalf("GET %s: the newest row's first line is %s, want the comment's", page, line)
+	}
+	requireDisplayTree(t, handler, page, "rows.0.first_line", "rows.0.first_line_tree")
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	requireTreeInAnswerSchema(t, document, "/api/v1/people/{login}/nodes", "rows.0.first_line_tree")
+}
+
 // seedLaterAuthorOnlyComment writes, by SQL, a comment on issue reserved for its author login, as
 // a later release writes one: the comment's node at visibility author and the author's person
 // node, each with the two base attributes the store states of a node its insert makes

@@ -4,9 +4,9 @@
  * row one of them takes.
  *
  * Both routes read the same four fields, each absent list meaning every value, and both act on
- * exactly the threads `GET /api/v1/me/replies` answers under them. So the body's fields are built
- * here once and that rule is read here once: a value the list spells one way is written by that
- * same spelling, and the rows the page takes off the screen are the rows the request takes.
+ * exactly the threads the one read's `inbox` state answers under them. So the body's fields are
+ * built here once and that rule is read here once: a value the list spells one way is written by
+ * that same spelling, and the rows the page takes off the screen are the rows the request takes.
  */
 
 import { INBOX_THREAD_KINDS, type InboxThreadKind } from "@legion/contracts";

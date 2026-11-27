@@ -444,7 +444,13 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //     that honoured one would answer something else, so the answer must be the answer it gives
 //     without them, status and rows alike, as the base build answered it.
 func threeBadRequests(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	// A listener that holds s1 live, the session every {session_id} of the probe names
+	// (routeProbePath), so a person's direct message to it is delivered and the reads of what a
+	// session was sent, and of a person's conversations with it, answer that delivery.
+	live, delivered := true, []map[string]any{}
+	listener := sessionListener(t, &live, &delivered)
+	t.Cleanup(listener.Close)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	// The production table: a test hook is mounted only where Deps.TestHooksEnabled is set, and
 	// a route the server does not serve answers 404 to every caller rather than refusing one.
 	rows := routesBeforeThisChild(t, false)
@@ -464,6 +470,7 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
+	seedTheInboxReads(t, handler, owned)
 	var probed []string
 	for _, route := range rows {
 		target, addressable := crossProjectPath(t, route, owned)
@@ -536,19 +543,27 @@ func threeBadRequests(t *testing.T) {
 	// The traversal probe reads each route at the objects seedTwoProjects wrote, with the query
 	// a route requires (routeProbeQueries), so a route with a row to answer answers it, and a
 	// route that honoured a traversal word would answer different rows. A route that answers no
-	// row at all - a 404 for a placeholder id - answers the same 404 whatever the query holds,
-	// and proves nothing; so every route reads a row here, but the few listed in
-	// routesNoSeedAnswers, each of which needs something no seed of this test holds.
+	// row at all - a 404 for a placeholder id, or an empty list - answers the same whatever the
+	// query holds, and proves nothing; so every route must answer a row here (answersARow), but
+	// the ones listed in routesNoSeedAnswers, each of which needs something no seed of this test
+	// holds, and each of which must then answer no row.
 	//
-	// Each route is sent the traversal words it does not declare. No route refuses an
-	// undeclared query parameter, and the base build answered each of them as it answers the
-	// plain read, so the walked read must answer exactly that: a refusal is an answer
-	// production never gave, and fails as any other. A word a route does declare - `kind` on
-	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
-	// rule, and is no traversal the caller handed it. A read whose rows can grow between the
-	// two reads (growingReads) is walked under a parameter it declares that holds it to the
-	// rows its plain read answered, so the two answers differ only where the walk did.
+	// Each route is sent the traversal words it does not declare. GET /api/v1/me/inbox declares
+	// RefusesUndeclared: decision 7 has it refuse every key it does not declare with 400
+	// INVALID_QUERY naming the key (requireTheUndeclaredKeyRefused). The other routes must answer
+	// as they answered the plain read. A read that requires its query (routesRefusingTheBareRead)
+	// is sent the bare read too, which must be refused naming the parameter it lacks.
 	//
+	// A word a route does declare - `kind` on GET /api/v1/me/replies - is that route's
+	// own parameter, which it answers by its own rule, and is no traversal the caller handed
+	// it. A read whose rows can grow between the two reads (growingReads) is walked under a
+	// parameter it declares that holds it to the rows its plain read answered, so the two
+	// answers differ only where the walk did.
+
+	// Give each history probe a row to read: a post nobody edited has no history.
+	editThreadComment(t, handler, owned.comment, "The edited comment of this project.", "alice")
+	editIssueMessage(t, handler, owned.message, "The edited message of this project.", "alice")
+
 	// The event log answers only the events at or below the server's safe horizon, which an
 	// event write of the server's database holds back while it is open (events.Horizon): under
 	// load its first read can answer none of the seeded events and its next read every one of
@@ -559,6 +574,11 @@ func threeBadRequests(t *testing.T) {
 		t.Fatalf("await an event horizon above the seeded events: %v", err)
 	}
 	queries := routeProbeQueries(owned)
+	for _, name := range slices.Sorted(maps.Keys(rowFields)) {
+		if _, known := declaredRoute(name); !known {
+			t.Errorf("rowFields names %s, which is no route of the table: take it off", name)
+		}
+	}
 	answered := 0
 	for _, route := range rows {
 		if route.Method != http.MethodGet {
@@ -566,6 +586,9 @@ func threeBadRequests(t *testing.T) {
 		}
 		name := route.Method + " " + route.Pattern
 		target := seededProbePath(route.Pattern, owned)
+		if parameter, required := routesRefusingTheBareRead[name]; required {
+			requireTheBareReadRefused(t, name, parameter, target, dispatchRequest(t, handler, route.Method, target, nil, "alice"))
+		}
 		if query, held := queries[name]; held {
 			target += "?" + query
 		}
@@ -586,15 +609,22 @@ func threeBadRequests(t *testing.T) {
 		}
 		walked := dispatchRequest(t, handler, route.Method, walkedTarget, nil, "alice")
 		if reason, exempt := routesNoSeedAnswers[name]; exempt {
-			if plain.Code < 400 {
-				t.Errorf("%s answers %d at %s, and routesNoSeedAnswers holds it as a route no seed answers (%s): take it off that list",
-					name, plain.Code, target, reason)
+			if plain.Code < 400 && answersARow(name, plain.Body.Bytes()) {
+				t.Errorf("%s answers a row at %s, and routesNoSeedAnswers holds it as a route no seed answers (%s): take it off that list",
+					name, target, reason)
 			}
 		} else if plain.Code >= 400 {
 			t.Errorf("%s answers %d at %s on its own, so its traversal probe reads no row: %s",
 				name, plain.Code, target, firstLine(plain.Body.String()))
+		} else if !answersARow(name, plain.Body.Bytes()) {
+			t.Errorf("%s answers %s at %s on its own, which holds no row, so its traversal probe reads none: "+
+				"seed a row it reads, or list it in routesNoSeedAnswers with what it needs", name, firstLine(plain.Body.String()), target)
 		} else {
 			answered++
+		}
+		if route.Shape.RefusesUndeclared {
+			requireTheUndeclaredKeyRefused(t, name, route.Shape.Params, walk, walked)
+			continue
 		}
 		if plain.Code != walked.Code {
 			t.Errorf("%s answers %d at %s on its own and %d with a traversal parameter: %s",
@@ -612,18 +642,68 @@ func threeBadRequests(t *testing.T) {
 	t.Logf("%d reads answered a row with and without a traversal parameter alike", answered)
 }
 
+// requireTheUndeclaredKeyRefused fails unless walked, the read of a route that refuses every key
+// it does not declare (RefusesUndeclared, the plan's decision 7), answers 400
+// INVALID_QUERY naming the first of walk's keys it does not declare, and nothing else. params is
+// the route's query struct, whose tags are the keys it declares.
+func requireTheUndeclaredKeyRefused(t *testing.T, name string, params any, walk string, walked *httptest.ResponseRecorder) {
+	t.Helper()
+	query, err := url.ParseQuery(walk)
+	if err != nil {
+		t.Fatalf("read the traversal query %q: %v", walk, err)
+	}
+	declared := queryTagsOf(params)
+	var undeclared []string
+	for _, key := range slices.Sorted(maps.Keys(query)) {
+		if !slices.Contains(declared, key) {
+			undeclared = append(undeclared, key)
+		}
+	}
+	if len(undeclared) == 0 {
+		t.Fatalf("%s was walked with %q, which holds no key it does not declare, so its refusal proves nothing", name, walk)
+	}
+	var refusal struct{ Code, Error string }
+	if walked.Code != http.StatusBadRequest || json.Unmarshal(walked.Body.Bytes(), &refusal) != nil ||
+		refusal.Code != "INVALID_QUERY" || !strings.HasPrefix(refusal.Error, undeclared[0]+" is not a query parameter of ") {
+		t.Errorf("%s answers %d %s with a traversal parameter, want 400 INVALID_QUERY naming %s, the key it does not declare (plan decision 7)",
+			name, walked.Code, firstLine(walked.Body.String()), undeclared[0])
+	}
+}
+
 // routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each
 // with what it would need. Their traversal probe still runs, and still has to answer as the
-// plain read answers, but reads nothing.
+// plain read answers, but reads nothing: each is refused or answers no row (answersARow), and
+// one that answers a row is taken off the list.
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
+	"GET /api/v1/settings/repo-projects":                                 "a repository mapped to a project",
+	"GET /api/v1/settings/new-issue":                                     "the new-issue settings a person set",
+	"GET /api/v1/projects/{key}/plans":                                   "an issue in one of the project's plans",
+	"GET /api/v1/settings/delivery":                                      "delivery settings",
+	"GET /api/v1/ci-reconcile/passes":                                    "a CI reconcile pass",
+	"GET /api/v1/me/agent-tokens":                                        "a personal agent token",
+	"GET /api/v1/dashboard/builds":                                       "a dashboard build a live server process serves",
+	"GET /api/v1/issues/{key}/references":                                "a document the issue's content references",
+	"GET /api/v1/references/questions":                                   "a question block in the comment's document",
+	"GET /api/v1/block-links":                                            "a block link between two of the spec's blocks",
+	"GET /api/v1/issues/{key}/results":                                   "a verification document's checks",
+	"GET /api/v1/issues/{key}/coverage":                                  "a requirement the spec marks",
+	"GET /api/v1/issues/{key}/role-holders":                              "a holder of one of the issue's roles",
+	"GET /api/v1/issues/{key}/handoffs":                                  "a handoff",
+	"GET /api/v1/me/documents/{id}/read":                                 "the person's read of the project document",
+	"GET /api/v1/agents/{session_id}/artifacts":                          "a file of a session's conversation",
+	"GET /api/v1/broadcasts":                                             "a broadcast",
+	"GET /api/v1/artifacts/{id}/asks":                                    "an ask on the project document",
+	"GET /api/v1/artifacts/{id}/comments":                                "a comment on the project document",
+	"GET /api/v1/artifacts/{id}/reviews":                                 "a review of the project document",
+	"GET /api/v1/artifacts/{id}/references":                              "a reference in or to the project document",
+	"GET /api/v1/credential-requests":                                    "a credential request the person may decide",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
 	"GET /api/v1/delivery/runs/{id}":                                     "a delivery run",
-	"GET /api/v1/issues/{key}/subscribers":                               "an Envoy listener (ENVOY_URL)",
-	"GET /api/v1/artifacts/{id}/subscribers":                             "an Envoy listener (ENVOY_URL)",
-	"GET /api/v1/agents":                                                 "an Envoy listener (ENVOY_URL)",
+	"GET /api/v1/issues/{key}/subscribers":                               "a listener that answers its interests (the probe's answers sessions alone)",
+	"GET /api/v1/artifacts/{id}/subscribers":                             "a listener that answers its interests (the probe's answers sessions alone)",
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest":                   "a handoff",
 	"GET /api/v1/handoffs/{id}":                                          "a handoff",
 	"GET /api/v1/going/requests/{id}/stream":                             "a going request's answer run",
@@ -635,9 +715,114 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 }
 
+// rowFields are the reads that answer an object holding their rows in fields of its own - a
+// page's list, or the one value a read answers about the object it names - each with those
+// fields. Such a read answers a row when one of them holds something (answersARow); the rest of
+// its object, a page's count or the id it was asked about, is no row.
+var rowFields = map[string][]string{
+	"GET /api/v1":                             {"routes"},
+	"GET /api/v1/users":                       {"users"},
+	"GET /api/v1/priorities":                  {"priorities"},
+	"GET /api/v1/projects/{key}/related":      {"related"},
+	"GET /api/v1/projects/{key}/plans":        {"issues"},
+	"GET /api/v1/dashboard/builds":            {"live"},
+	"GET /api/v1/issues/{key}/references":     {"members"},
+	"GET /api/v1/issues/{key}/collaborators":  {"people", "agents"},
+	"GET /api/v1/references":                  {"edges"},
+	"GET /api/v1/references/questions":        {"questions"},
+	"GET /api/v1/reference-targets":           {"targets"},
+	"GET /api/v1/block-links":                 {"links"},
+	"GET /api/v1/issues/{key}/results":        {"checks"},
+	"GET /api/v1/issues/{key}/coverage":       {"requirements"},
+	"GET /api/v1/issues/{key}/steps":          {"tasks"},
+	"GET /api/v1/issues/{key}/role-holders":   {"holders"},
+	"GET /api/v1/issues/{key}/decisions":      {"entries"},
+	"GET /api/v1/messages/{id}/blocks":        {"blocks"},
+	"GET /api/v1/comments/{id}/blocks":        {"blocks"},
+	"GET /api/v1/me/answers":                  {"rows"},
+	"GET /api/v1/me/replies":                  {"rows"},
+	"GET /api/v1/me/inbox":                    {"entries"},
+	"GET /api/v1/me/documents/{id}/read":      {"read_at"},
+	"GET /api/v1/search":                      {"results"},
+	"GET /api/v1/search/results":              {"results"},
+	"GET /api/v1/going/catalogue":             {"actions"},
+	"GET /api/v1/near-copy-checks":            {"checks"},
+	"GET /api/v1/agents/known":                {"sessions"},
+	"GET /api/v1/agents/{session_id}/answers": {"items"},
+	"GET /api/v1/asks/open":                   {"asks"},
+	"GET /api/v1/asks/{id}/followers":         {"followers"},
+	"GET /api/v1/artifacts/{id}/references":   {"outgoing", "referenced_by"},
+}
+
+// answersARow reports whether a read's answer holds a row of what route reads: an array one
+// element at least; an object rowFields names the fields of, something in one of them; any other
+// object - the one object the read names - something in one of its values; and an answer that is
+// no JSON, any byte. Null, an empty string, an empty array and an empty object hold nothing, so
+// an empty list, an object of nulls and a page of no rows answer no row.
+func answersARow(route string, body []byte) bool {
+	var answer any
+	if json.Unmarshal(body, &answer) != nil {
+		return len(bytes.TrimSpace(body)) > 0
+	}
+	object, isObject := answer.(map[string]any)
+	if !isObject {
+		return holdsSomething(answer)
+	}
+	fields, named := rowFields[route]
+	if !named {
+		fields = slices.Collect(maps.Keys(object))
+	}
+	for _, field := range fields {
+		if holdsSomething(object[field]) {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsSomething reports whether a decoded JSON value holds anything: every value but null, an
+// empty string, an empty array and an empty object.
+func holdsSomething(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return false
+	case string:
+		return value != ""
+	case []any:
+		return len(value) > 0
+	case map[string]any:
+		return len(value) > 0
+	default:
+		return true
+	}
+}
+
+// routesRefusingTheBareRead are the reads routeProbeQueries sends a query that refuse the read
+// without it, each with the parameter the refusal names. The probe sends each the bare read too,
+// which must answer 400 INVALID_QUERY naming that parameter (requireTheBareReadRefused): the
+// query routeProbeQueries adds is what lets the read answer a row, and a read that answered
+// without it would be caught.
+var routesRefusingTheBareRead = map[string]string{
+	"GET /api/v1/agents/known": "id",
+}
+
+// requireTheBareReadRefused fails unless bare, the read of route name at target without the query
+// it requires, answers 400 INVALID_QUERY whose words lead with the parameter it lacks.
+func requireTheBareReadRefused(t *testing.T, name, parameter, target string, bare *httptest.ResponseRecorder) {
+	t.Helper()
+	var refusal struct{ Code, Error string }
+	if bare.Code != http.StatusBadRequest || json.Unmarshal(bare.Body.Bytes(), &refusal) != nil ||
+		refusal.Code != "INVALID_QUERY" || !strings.HasPrefix(refusal.Error, parameter+" ") {
+		t.Errorf("%s answers %d %s at %s, without the %s it requires, want 400 INVALID_QUERY naming %s",
+			name, bare.Code, firstLine(bare.Body.String()), target, parameter, parameter)
+	}
+}
+
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
 // objects seedTwoProjects wrote, so the read answers a row rather than refusing the request
-// that names nothing.
+// that names nothing or answering it no row. The open-asks read needs no query to answer a row,
+// and is sent the key this child adds to it, the person the project's asks wait on,
+// so the read that key narrows is the one walked.
 func routeProbeQueries(owned crossProject) map[string]string {
 	spec := "dispatch://" + owned.issue + "/spec"
 	return map[string]string{
@@ -647,15 +832,14 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/references/questions":   url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
 		"GET /api/v1/block-links":            url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":         url.Values{"ref": {owned.issue}}.Encode(),
-		"GET /api/v1/asks/open":              url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/asks/open":              url.Values{"waiting_on": {"alice"}}.Encode(),
 		"GET /api/v1/credential-requests":    url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":       url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/deploys":                url.Values{"repo": {owned.deployRepo}}.Encode(),
 		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/agents/known":           url.Values{"id": {owned.session}}.Encode(),
+		"GET /api/v1/projects/{key}/related": url.Values{"title": {"A project's own issue"}}.Encode(),
 		"GET /api/v1/artifacts/{id}/changes": url.Values{"from": {"1"}, "to": {"2"}}.Encode(),
-		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
-		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
-		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
 	}
 }
 
@@ -804,22 +988,25 @@ type crossProject struct {
 	architectureSource string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
+	// session is a session the store holds a record of: it follows the project's ask, so GET
+	// /api/v1/agents/known, asked about it, answers it rather than no session at all.
+	session string
 	// deployRepo is the repository, owner/repo, of the one deploy seedTwoProjects records: the
 	// repository the read of deploys is sent, so that read answers a row.
 	deployRepo string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
-// comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
-// document at two versions and a block of each document, an architecture source, and the Legion
-// daemon it names with a read of it; a second project with an issue, which the cross-project
-// probe addresses them under; one priority, which belongs to neither project and is read at its
-// own id; and one deploy of a repository, which belongs to no project and is read by its
-// repository. Under the second project's key the probe sends each route the object of the first
-// its path names (crossProjectPath): design.md to a route of an issue document, the project
-// document to a route of a project document, the message to the message read, the run of a step
-// to the step write, the retro's run to the rating write and the architecture source's repository
-// to the source's removal and its sync.
+// comment, an ask a session follows, a message, a run of a step of the issue and a run of its
+// retro, a project document at two versions and a block of each document, an architecture
+// source, and the Legion daemon it names with a read of it; a second project with an issue, which
+// the cross-project probe addresses them under; one priority, which belongs to neither project
+// and is read at its own id; and one deploy of a repository, which belongs to no project and is
+// read by its repository. Under the second project's key the probe sends each route the object of
+// the first its path names (crossProjectPath): design.md to a route of an issue document, the
+// project document to a route of a project document, the message to the message read, the run of
+// a step to the step write, the retro's run to the rating write and the architecture source's
+// repository to the source's removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -846,6 +1033,15 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 		map[string]any{"body": "A comment of this project."}, "alice"))
 	owned.comment = comment.ID
 	owned.ask = createIssueAsk(t, handler, issue.Key, "A question of this project?")
+	// A session follows the ask through the route a session follows one by, so the store holds a
+	// record of that session (agents_known.go reads ask_followers among its records) and GET
+	// /api/v1/agents/known, asked about it, answers a row: asked about an id nobody ever held, it
+	// answers none, and its traversal probe would compare two empty lists.
+	owned.session = "019a1c0c-3333-7000-8000-000000000001"
+	if followed := sessionRequest(t, handler, http.MethodPut, "/api/v1/asks/"+owned.ask+"/followers/"+owned.session,
+		map[string]any{"actor": map[string]any{"kind": "session", "id": owned.session}}); followed.Code != http.StatusNoContent {
+		t.Fatalf("seed a session's follow of the ask: status=%d body=%s", followed.Code, followed.Body.String())
+	}
 	owned.block = firstBlockOf(t, handler, issue.PrimaryArtifactID)
 	message := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 		map[string]any{"body": "A message of this project."}, "alice")
@@ -918,6 +1114,38 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	seedLegionObservation(t, database, "TEST", issue.Key, legion.FieldPhase, `"implementing"`, sampled)
 	seedLegionRead(t, database, "TEST", sampled, "")
 	return owned
+}
+
+// seedTheInboxReads writes, through the routes a person and a session write them by, what the
+// reads of a person's Inbox and of a session's conversation answer a row of: alice's direct
+// message to s1, which the probe's listener delivers, and s1's reply to it (the session's
+// conversation, which GET /api/v1/agents/{session_id}/conversation and .../messages both answer,
+// and what it was sent); alice's pin of that conversation and of the project's issue (her state
+// of each); an ask s1 opens on the issue and alice's reply in its thread (her answers); s1's reply
+// to alice's comment, a thread she wrote in that somebody else wrote in since, so unread: the
+// state the read of her threads answers by default.
+func seedTheInboxReads(t *testing.T, handler http.Handler, owned crossProject) {
+	t.Helper()
+	sent := postAgentMessage(t, handler, "s1", map[string]any{
+		"body": "Is the probe's conversation here?", "delivery": "aside",
+	}, "alice")
+	root := decodeBody[model.Message](t, created(t, "seed alice's direct message to s1", sent))
+	created(t, "seed s1's reply to alice's direct message", replyTo(t, handler, root.ID, "It is."))
+	putAgentState(t, handler, "alice", "s1", map[string]any{"pinned": true})
+	if pinned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/issues/"+owned.issue+"/state",
+		map[string]any{"pinned": true}, "alice"); pinned.Code != http.StatusOK {
+		t.Fatalf("seed alice's pin of %s: status=%d body=%s", owned.issue, pinned.Code, pinned.Body.String())
+	}
+	ask := decodeBody[model.Ask](t, created(t, "seed s1's ask", sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+owned.issue+"/asks", map[string]any{
+			"question": "Which read does the probe walk first?", "actor": map[string]any{"kind": "session", "id": "s1"},
+		})))
+	created(t, "seed alice's reply in s1's ask", dispatchRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+owned.issue+"/comments", map[string]any{"body": "The person read.", "ask_id": ask.ID}, "alice"))
+	created(t, "seed s1's reply to alice's comment", sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+owned.issue+"/comments", map[string]any{
+			"body": "Seen.", "reply_to": owned.comment, "actor": map[string]any{"kind": "session", "id": "s1"},
+		}))
 }
 
 // firstBlockOf is the id of the first block GET /api/v1/artifacts/{id}/blocks lists.

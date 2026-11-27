@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,15 +23,21 @@ import (
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
-//     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
-//     node; with the store-only lines of copied_from and moved_to, which no table projects,
-//     refusing a far end of either that does not resolve; with the dangling-citation counter's
-//     line and the collision census over the restore's work (graphcensus.StoreReport's Dangling,
-//     CollisionsOf); and with what the decisions step's third phase still owes
-//     (graphcensus.DecisionsCensus:
-//     the decisions documents, their unconverted sections and the specs whose answered asks left
-//     them), none of which refuses. `--verbose` adds one line for each citation the counter
-//     counted.
+//     checked no row of but a tie kind of decisions, readings and asks or a kind of the one inbox
+//     that holds no row and no node; with the store-only lines of copied_from and moved_to, which
+//     no table projects, refusing a far end of either that does not resolve; with the
+//     dangling-citation counter's line and the collision census over the restore's work
+//     (graphcensus.StoreReport's Dangling, CollisionsOf); and with what the decisions step's third
+//     phase still owes (graphcensus.DecisionsCensus: the decisions documents, their unconverted
+//     sections and the specs whose answered asks left them), none of which refuses. `--verbose`
+//     adds one line for each citation the counter counted. It reads the store's read-only
+//     repeatable-read snapshot bounded by `--deadline` (graphcensus.DefaultStoreCensusDeadline
+//     unless given), on its context and as the snapshot's statement_timeout, and the decisions
+//     census's snapshot on the same context. `--both-releases` says the database holds rows a
+//     build of the release before wrote as well as rows this one wrote, as c-census's corpus
+//     does, so a kind of the one inbox whose rows of either release number none refuses: a
+//     deployment this release was first deployed on holds none of the release before, and a gate
+//     that refused it for that would refuse it for good, so the flag is the caller's to give.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
@@ -56,11 +63,15 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		"with --store, add the growth pass: the write rate, each table's size, and a year's projection against the census limit")
 	verbose := flags.Bool("verbose", false,
 		"with --store, print one line for each citation the dangling-citation counter counted")
+	deadline := flags.Duration("deadline", graphcensus.DefaultStoreCensusDeadline,
+		"with --store, how long the census's snapshot may run, on its context and as its statement_timeout")
+	bothReleases := flags.Bool("both-releases", false,
+		"with --store, refuse a kind of the one inbox whose rows the release before wrote, or whose rows this release wrote, number none")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store, --sizing and --verbose\n", flags.Arg(0))
+		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store, --sizing, --verbose, --deadline and --both-releases\n", flags.Arg(0))
 		return 2
 	}
 	if *sizing && !*storeSide {
@@ -71,12 +82,22 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		fmt.Fprintln(errOut, "census: --verbose lists the citations the store census counts; run it as `census --store --verbose`")
 		return 2
 	}
+	deadlineGiven := false
+	flags.Visit(func(f *flag.Flag) { deadlineGiven = deadlineGiven || f.Name == "deadline" })
+	if (*bothReleases || deadlineGiven) && !*storeSide {
+		fmt.Fprintln(errOut, "census: --deadline and --both-releases are the store census's; run them as `census --store --deadline 10m --both-releases`")
+		return 2
+	}
+	if *deadline <= 0 {
+		fmt.Fprintf(errOut, "census: --deadline %s is no bound; give a positive duration\n", *deadline)
+		return 2
+	}
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(errOut, "census: DATABASE_URL is required")
 		return 2
 	}
 	if *storeSide {
-		return storeCensus(ctx, databaseURL, *sizing, *verbose, out, errOut)
+		return storeCensus(ctx, databaseURL, storeCensusOptions{sizing: *sizing, verbose: *verbose, deadline: *deadline, bothReleases: *bothReleases}, out, errOut)
 	}
 	report, err := store.Census(ctx, databaseURL)
 	if err != nil {
@@ -90,16 +111,27 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 	return 0
 }
 
+// storeCensusOptions are `census --store`'s flags: the growth pass, the citation lines, the
+// snapshot's deadline and whether the corpus holds both releases (graphcensus's
+// StoreReport.RequireBothReleases).
+type storeCensusOptions struct {
+	sizing, verbose, bothReleases bool
+	deadline                      time.Duration
+}
+
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one
-// read-only snapshot of its own, so a deployment can take it before it rolls, exactly as it
-// takes the migration census. verbose prints each citation the dangling-citation counter counted,
-// whose returning set holds the returns the restore makes, judged by the restore's own test of a
-// person's removal (docs.ReturnDeclined), which graphcensus cannot read itself.
-// Beside the store's lines it prints what the decisions step's third phase still owes
-// (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its own, since only
-// docs reads a decisions document's sections; it refuses nothing.
-func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, out, errOut io.Writer) int {
-	report, err := graphcensus.StoreCensus(ctx, databaseURL, sizing, docs.ReturnDeclined)
+// read-only snapshot of its own within options.deadline, so a deployment can take it before it
+// rolls, exactly as it takes the migration census. options.verbose prints each citation the
+// dangling-citation counter counted, whose returning set holds the returns the restore makes,
+// judged by the restore's own test of a person's removal (docs.ReturnDeclined), which graphcensus
+// cannot read itself. Beside the store's lines it prints what the decisions step's third phase
+// still owes (graphcensus.DecisionsCensus), which docs reads in a read-only snapshot of its own
+// within the same deadline, since only docs reads a decisions document's sections; it refuses
+// nothing.
+func storeCensus(ctx context.Context, databaseURL string, options storeCensusOptions, out, errOut io.Writer) int {
+	ctx, cancel := context.WithTimeout(ctx, options.deadline)
+	defer cancel()
+	report, err := graphcensus.StoreCensus(ctx, databaseURL, options.sizing, docs.ReturnDeclined)
 	if err != nil {
 		writeCensusFailure(errOut, err)
 		return 2
@@ -113,7 +145,8 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 		}
 		report.Decisions = &decisions
 	}
-	if verbose {
+	report.RequireBothReleases = options.bothReleases
+	if options.verbose {
 		report.WriteVerbose(out)
 	} else {
 		report.Write(out)

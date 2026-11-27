@@ -236,8 +236,9 @@ func Pin(ctx context.Context, tx pgx.Tx) error {
 // PinSession gives conn's session the settings that Pin gives a transaction, for a runner that
 // applies a migration outside a transaction (ExecNonTransactional) and records it on the same
 // connection. Nothing gives the session its earlier values back: a caller that keeps using conn
-// reads them first, as ExecNonTransactional does, or closes conn when it is done, as Dispatch's
-// runner does.
+// reads them first, as ExecNonTransactional does, or ends them when it is done, as Dispatch's
+// runner does - it closes the connection a build ran on, and gives one whose migration it found
+// recorded back to its pool through ResetSession.
 func PinSession(ctx context.Context, conn *pgx.Conn) error {
 	return pin(ctx, conn, false)
 }

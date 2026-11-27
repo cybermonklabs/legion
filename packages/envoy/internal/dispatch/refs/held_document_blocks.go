@@ -96,10 +96,15 @@ func heldBlockParentDifferences(
 
 // heldLink is one link a block node states beside its membership of its document and its
 // placement: a mention's or a pointer's, under the kind its pair names, to its far end.
-// A reading's authored_by (PlanDecisionNodes) and an ask block copy's copied_from (docs'
-// claimCopies) are no link: no block_refs row projects either, so no pair of a version writes
-// them and the reconcile of the links retracts neither. A copy's copied_from is retracted where
-// its block goes instead, by the pass that states the block gone (heldCopiedFrom).
+// A reading's authored_by (PlanDecisionNodes), an ask block copy's copied_from (docs'
+// claimCopies) and a block's mention of a person, an agent's session or a role (IdentityKinds,
+// blockIdentityMentions) are no link: no block_refs row projects any of them, so no pair of a
+// version writes them and the reconcile of the links retracts none of them. A copy's copied_from
+// is retracted where its block goes instead, by the pass that states the block gone
+// (heldCopiedFrom). The block index retracts an identity mention only where the version's text of
+// its block no longer names it (unnamedMentions), and the next index whose text names it again
+// states it again (identityMentions). A person's goes through graphstore.ToPerson alone, which
+// refuses it in any other write.
 type heldLink struct{ kind, toKind, toID string }
 
 // heldCopiedFrom is, for each of ids, blocks of the document refKey names that a version no longer
@@ -191,7 +196,9 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
 				  and t.to_kind <> '`+graphstore.KindValue+`'
 				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`',
-				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')`)+`
+				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')
+				  and not (t.kind = '`+graphstore.TupleMentions+`'
+				           and t.to_kind in ('`+strings.Join(IdentityKinds, `', '`)+`'))`)+`
 			) current
 			where current.asserted
 		) held on true

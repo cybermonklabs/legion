@@ -2,13 +2,8 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
 // TestAPersonPageDecidesAndListsInOneSnapshot holds the person page to deciding 200 or 404 and
@@ -40,17 +35,7 @@ func TestAPersonPageDecidesAndListsInOneSnapshot(t *testing.T) {
 	reserved := 0
 	served.betweenPersonPageReads = func() {
 		reserved++
-		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-			node, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindComment, comment)
-			if err != nil {
-				return err
-			}
-			if !found {
-				return fmt.Errorf("the store holds no node of the comment")
-			}
-			node.Visibility = graphstore.VisibilityAuthor
-			return graphstore.Write(ctx, tx, []graphstore.Node{node}, nil)
-		}); err != nil {
+		if err := reserveForItsAuthor(ctx, database, comment); err != nil {
 			t.Errorf("reserve %s's comment %s for her between the route's two reads: %v", person, comment, err)
 		}
 	}

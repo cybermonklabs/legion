@@ -495,6 +495,26 @@ func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id s
 	s.writeRefreshed(w, status, stored, reply)
 }
 
+// commentMentionsQuery is every mention the comments $1 names (uuid[]) hold, each comment's in
+// target order, one row per mention (scanCommentMention). GET /api/v1/me/inbox splices it into its
+// one statement over the replies of its page.
+const commentMentionsQuery = `
+		select comment_id::text, target, delivery, resolved_session_id
+		from comment_mentions
+		where comment_id = any($1::uuid[])
+		order by comment_id, target
+	`
+
+// scanCommentMention reads one row of commentMentionsQuery: the comment's id and the mention.
+func scanCommentMention(row pgx.Row) (string, model.Mention, error) {
+	var commentID string
+	var mention model.Mention
+	if err := row.Scan(&commentID, &mention.Target, &mention.Delivery, &mention.SessionID); err != nil {
+		return "", model.Mention{}, err
+	}
+	return commentID, mention, nil
+}
+
 func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {
 	mentions := make(map[string][]model.Mention, len(commentIDs))
 	for _, id := range commentIDs {
@@ -503,26 +523,30 @@ func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs 
 	if len(commentIDs) == 0 {
 		return mentions, nil
 	}
-	rows, err := q.Query(ctx, `
-		select comment_id::text, target, delivery, resolved_session_id
-		from comment_mentions
-		where comment_id = any($1::uuid[])
-		order by comment_id, target
-	`, commentIDs)
+	rows, err := q.Query(ctx, commentMentionsQuery, commentIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var commentID string
-		var mention model.Mention
-		if err := rows.Scan(&commentID, &mention.Target, &mention.Delivery, &mention.SessionID); err != nil {
+		commentID, mention, err := scanCommentMention(rows)
+		if err != nil {
 			return nil, err
 		}
 		mentions[commentID] = append(mentions[commentID], mention)
 	}
 	return mentions, rows.Err()
 }
+
+// commentDeliveriesQuery is every delivery attempt of the comments $1 names (uuid[]), each
+// comment's by target and attempt, one row per attempt (scanCommentDelivery). GET /api/v1/me/inbox
+// splices it into its one statement over the replies of its page.
+const commentDeliveriesQuery = `
+		select ` + commentDeliveryColumns + `
+		from comment_deliveries
+		where comment_id = any($1::uuid[])
+		order by comment_id, target, attempt
+	`
 
 func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.CommentDelivery, error) {
 	deliveries := make(map[string][]model.CommentDelivery, len(commentIDs))
@@ -532,12 +556,7 @@ func (s *server) loadCommentDeliveries(ctx context.Context, q queryer, commentID
 	if len(commentIDs) == 0 {
 		return deliveries, nil
 	}
-	rows, err := q.Query(ctx, `
-		select `+commentDeliveryColumns+`
-		from comment_deliveries
-		where comment_id = any($1::uuid[])
-		order by comment_id, target, attempt
-	`, commentIDs)
+	rows, err := q.Query(ctx, commentDeliveriesQuery, commentIDs)
 	if err != nil {
 		return nil, err
 	}

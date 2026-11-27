@@ -1,5 +1,5 @@
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
-import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
+import { getAgentConversation, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
 import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -128,7 +128,7 @@ async function storedSwitch(
   let found: { id: string; author: { kind: string; id: string } } | undefined;
   await expect
     .poll(async () => {
-      const read = (await listAgentMessages(sessionID)).find((row) => row.message.body === body);
+      const read = (await getAgentConversation(sessionID)).find((row) => row.message.body === body);
       found =
         read === undefined || (read.message.deliveries ?? []).length === 0
           ? undefined

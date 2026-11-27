@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fallbackClaim is how long one fallback pass's claim keeps a comment_fallback_copies row out of
@@ -68,7 +69,8 @@ var unnamedForwardBoundInterval = fmt.Sprintf("interval '%d seconds'", int64(unn
 const mentionAbandonedError = "the outbox published the comment's own copy instead; the send was abandoned"
 
 // mentionDeliveries is what a new comment's mentions did, read from comment_deliveries when the
-// event is published (loadMentionDeliveries). A mention resolved at write time names only a
+// event is published (loadMentionDeliveries), and, for a callback reply, which records no attempt,
+// the sessions its text names alone (mentioned). A mention resolved at write time names only a
 // candidate: its send runs after the comment commits and can fail - the listener does not know the
 // session, the receipt times out, the handler is cancelled, the session lacks the delivery mode -
 // and a session whose mention failed has no copy but the outbox's.
@@ -144,6 +146,15 @@ type mentionDeliveries struct {
 	// the fallback pass publishes or settles it, and the event's own publish skips it
 	// (destinations.addDestination).
 	held map[string]struct{}
+	// mentioned holds each session the comment's mentions name, read off the store's mentions
+	// tuples out of the comment's node: for a new comment, a session:<id> it names as a route or
+	// in its body, and the session a role it names resolved to (api's commentMentionFacts); for a
+	// callback reply, each session its text names (api's replyComment, which states what its
+	// index finds). Each is a destination of the comment's own event left to the mention
+	// (eventDestinations, addWorkingSession): skipped once a mention of it delivered the comment,
+	// held while one is still being sent, and added where each failed or where no attempt names
+	// it, as none of a callback reply's does.
+	mentioned map[string]struct{}
 	// unpinned is what the attempts of the comment that name no session yet and whose send is
 	// still coming decide (unpinnedRoleMentions): the roles they target and the state each of
 	// those attempts is in, read here, and the holders those roles resolve to, which the batch
@@ -162,6 +173,7 @@ func newMentionDeliveries() mentionDeliveries {
 		deliveredMentions:  map[string]struct{}{},
 		targetFallbackKeys: map[string]string{},
 		held:               map[string]struct{}{},
+		mentioned:          map[string]struct{}{},
 		unpinned:           newUnpinnedRoleMentions(),
 	}
 }
@@ -1090,7 +1102,7 @@ func payloadSuppressedRouteTarget(payload any) string {
 // payloadHasMentions reports whether a comment payload names a mention at all (mentions[]), as
 // the batch decodes the payload from JSON. It is the one reading of the payload the destinations
 // make of a comment's mentions: it says whether the comment can have a comment_deliveries row at
-// all, so a comment with none is read for none (eventDestinations). Which session each mention
+// all, so a new comment with none is read for none (readsMentions). Which session each mention
 // counts under the payload does not say - an unanswered @role: mention names none there, and its
 // sender pins one on the attempt row after the commit - so the attempts decide every copy left to
 // a mention (destinations.leftToMention).
@@ -1098,6 +1110,17 @@ func payloadHasMentions(payload any) bool {
 	values, _ := payload.(map[string]any)
 	mentions, _ := values["mentions"].([]any)
 	return len(mentions) > 0
+}
+
+// readsMentions reports whether event's destinations read what its comment's mentions did
+// (eventDestinations, lookup.mentionDeliveries): a new comment that names a mention at all
+// (payloadHasMentions), and every callback reply (comment.answered). A reply's payload names no
+// mention - it opens no attempt and writes no comment_mentions row - but its text's mentions of
+// sessions are the store's mentions tuples out of its node, which its write states
+// (api's replyComment), and R5 delivers it to each of those sessions once, as it does a new
+// comment (mentionDeliveries.mentioned).
+func readsMentions(event model.Event) bool {
+	return (event.Type == "comment.created" && payloadHasMentions(event.Payload)) || event.Type == "comment.answered"
 }
 
 // holdFallbackCopy records the fallback row of the copy of the comment at destination, decided by
@@ -1183,15 +1206,23 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 		if err != nil {
 			return err
 		}
+		// What each settled attempt now holds, stated under that attempt's own receipt as the
+		// receipt's actor writes it: each receipt and its attempt's facts right after it, in one
+		// batch (graphstore.QueueAttempted under graphstore.LatestEvent).
 		receipts = make([]model.Event, 0, len(settled))
-		for _, payload := range settled {
-			receipt := owner
-			receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
-			appended, err := deps.Broker.Append(ctx, tx, receipt)
-			if err != nil {
-				return err
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			for _, payload := range settled {
+				receipt := owner
+				receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
+				if err := deps.Broker.QueueAppend(b, receipt, func(appended model.Event) { receipts = append(receipts, appended) }); err != nil {
+					return err
+				}
+				graphstore.QueueAttempted(b, event.Actor, graphstore.LatestEvent,
+					graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt))
 			}
-			receipts = append(receipts, appended)
+			return nil
+		}); err != nil {
+			return err
 		}
 		var sent, resending, pending bool
 		if err := tx.QueryRow(ctx, `

@@ -92,7 +92,7 @@ func TestEveryQuestionReachesAPerson(t *testing.T) {
 			"POST /api/v1/artifacts/{id}/approval-requests")
 	}
 
-	rows := map[string]inboxAsk{}
+	rows := map[string]openAskRow{}
 	for _, row := range inboxFor(t, handler, "alice", "") {
 		rows[row.ID] = row
 	}

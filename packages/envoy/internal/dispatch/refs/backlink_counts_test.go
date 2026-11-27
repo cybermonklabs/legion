@@ -352,12 +352,13 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message", rootMessage},
 		{"component", "CORE/core"},
 		{"session", "session-backlink"},
-		// The three kinds the store holds that no structural arm points at, as the view's
-		// mention arm reaches them: a person by their canonical login, a role by its topic,
-		// and the page of that role.
+		// The four kinds the store holds that no structural arm points at, as the view's
+		// mention arm reaches them: a person by their canonical login, a role by its topic, the
+		// page of that role, and a delivery attempt by its row's key.
 		{"person", "person-backlink@example.com"},
 		{"role", "role-backlink"},
 		{"page", "role/role-backlink"},
+		{"delivery_attempt", "comment/00000000-0000-0000-0000-000000000001/session:session-backlink/1"},
 		{"block", notesBlock},
 		{"comment_block", commentBlock},
 		{"comment_block", removedCommentBlock},
@@ -552,7 +553,10 @@ var planSettings = []string{
 // values) and under a generic plan alike. The generic plan is the one at risk: it cannot assume
 // what an address parameter holds, so an arm whose index depends on the bound value loses it
 // there, and a fixture this small never reaches a generic plan on its own
-// (api.TestListIssueAsksOpenQueryUsesAsksOpenIndex says why), so the mode is forced.
+// (api.TestListIssueAsksOpenQueryUsesAsksOpenIndex says why), so the mode is forced. The one scan
+// carrying no index condition it takes is the partial index of the comments whose pointers the
+// store does not hold, ANDed beside the key index of an arm over a comment's pointers
+// (scansNoIndexServes, migration 20261122100121).
 func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 	t.Parallel()
 	fixture := newBacklinkFixture(t)
@@ -596,7 +600,7 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 					"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
 						types, literals, planSettings...),
 				} {
-					if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+					if unkeyed := scansNoIndexServes(t, plan); len(unkeyed) > 0 {
 						t.Errorf("the %s backlink count over %s excluding %v reads %s under its %s plan, which no index serves:\n%s",
 							toKind, shape.name, exclusions, strings.Join(unkeyed, ", "), mode, plan)
 					}
@@ -615,6 +619,46 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 			}
 		}
 	}
+}
+
+// unstoredCommentsIndex is the partial index of the comments whose pointers the store does not
+// hold, comments (id) where not tuples_stored (migration 20261122100121_comments_tuples_unstored),
+// which the block-index tick's catch-up passes walk. Its predicate is the test each arm over a
+// comment's pointers makes of its row (pointersNotStored), so the planner may AND the whole of it
+// into the bitmap that arm's own index builds: a Bitmap Index Scan with no index condition, whose
+// rows are exactly those the arm's test admits, and which the migration keeps near empty. The
+// arm's own index still serves the read, by the arm's key, beside it.
+const unstoredCommentsIndex = "comments_tuples_unstored"
+
+// scansNoIndexServes is every scan of plan ScansWithoutIndexCond names but one kind: a Bitmap Index
+// Scan of unstoredCommentsIndex that a BitmapAnd of a Bitmap Heap Scan on comments ANDs with a
+// scan carrying an index condition, which RequireIndexKeyed holds to its index's first key. That
+// is the one read without an index condition this test takes: the same index read alone, under a
+// BitmapAnd with no keyed scan, or under any other node, is still named, as is any other index.
+func scansNoIndexServes(t *testing.T, plan json.RawMessage) []string {
+	t.Helper()
+	unkeyed := explaintest.ScansWithoutIndexCond(t, plan)
+	beside := "Bitmap Index Scan using " + unstoredCommentsIndex
+	for _, scan := range explaintest.BitmapHeapScans(t, plan, "comments") {
+		if scan.Bitmap.Type != "BitmapAnd" {
+			continue
+		}
+		narrowing, keyed := 0, false
+		for _, member := range scan.BitmapIndexScans {
+			switch {
+			case member.Index == unstoredCommentsIndex && member.IndexCond == "":
+				narrowing++
+			case member.IndexCond != "":
+				keyed = true
+			}
+		}
+		for ; keyed && narrowing > 0; narrowing-- {
+			if at := slices.Index(unkeyed, beside); at >= 0 {
+				unkeyed = slices.Delete(unkeyed, at, at+1)
+			}
+		}
+	}
+	return unkeyed
 }
 
 // backlinkAddressShape is one way the count binds the addresses it counts for, as
@@ -712,6 +756,10 @@ var graphViewArms = []graphViewArm{
 	// reads true: every select item of it is a column, so it is a mention arm to this test, and
 	// mentionBacklinkArms reads graph_tuples for exactly that reason.
 	{table: "graph_tuples"},
+	// The store's arm of a mention of a person, a session or a role (migration 20261126045004),
+	// its kind the literal mentions, so a read of any other kind drops it from its plan, and its
+	// far end a column of its sub-select: the count reads it as identityMentionArms' tupleSQL.
+	{table: "graph_tuples", kind: "mentions"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -722,6 +770,23 @@ var graphViewArms = []graphViewArm{
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "comment_block"},
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "ask_block"},
 	{table: "messages", fromKind: "message", kind: "replies_to", toKind: "message_block"},
+	// The store's arm of a message's reply to a message's block (migration 20261126045001,
+	// re-stated by 20261126045004), which renders that one relation under its address form: its
+	// kind and its to_kind are the literals replies_to and message_block, so a read of any other
+	// kind drops it from its plan, and the count reads it as the message_block arm's tupleSQL.
+	{table: "graph_tuples", kind: "replies_to", toKind: "message_block"},
+	// The store's arms of a comment's reply to a comment's block and to an ask's part (migration
+	// 20261126045002, re-stated by 20261126045004), each rendering that one relation under its
+	// address form and its kind and its to_kind as literals, which read as the arm over a
+	// message's block does, and the count reads each as its block kind's tupleSQL.
+	{table: "graph_tuples", kind: "replies_to", toKind: "comment_block"},
+	{table: "graph_tuples", kind: "replies_to", toKind: "ask_block"},
+	// The store's arm of every item's blocks (migration 20261126045003), rendering a comment's, a
+	// message's and an ask's blocks' part_of and links under the item's block address form, chosen
+	// by the address's prefix: every select item is a column of its sub-select, so it reads as the
+	// tuple arm does, and the count reads it as each item kind's part_of arm's tupleSQL and the one
+	// mention arm over the item blocks' links in the store.
+	{table: "graph_tuples"},
 }
 
 // The view cannot gain an arm the count does not know. graph_edges' own text is parsed back into
@@ -751,11 +816,17 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	// An arm whose to_kind is a literal is a structural arm, and backlinkArms must declare it
 	// under that kind with that edge kind. They are compared as multisets because one kind can
 	// hold the same edge kind twice: an artifact is anchored_to and owned_by from both asks and
-	// comments.
+	// comments. An arm over graph_tuples whose to_kind is a literal is the store's side of such an
+	// arm, which the count reads through that arm's own tupleSQL: backlinkArms declares it once,
+	// reading the store (its tupleKind), so it is held to that rather than counted twice.
+	stores := map[string]bool{}
 	var declared, viewed []string
 	for kind, arms := range backlinkArms {
 		for _, arm := range arms {
 			declared = append(declared, kind+"/"+arm.kind)
+			if arm.tupleKind != "" {
+				stores[kind+"/"+arm.kind] = true
+			}
 		}
 	}
 	mentionTables := map[string]bool{}
@@ -767,11 +838,17 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 		mentionTables[match[1]] = false
 	}
 	for _, arm := range got {
-		if arm.toKind != "" {
+		switch _, mention := mentionTables[arm.table]; {
+		case arm.toKind != "" && arm.table == "graph_tuples":
+			if !stores[arm.toKind+"/"+arm.kind] {
+				t.Errorf("the view's store arm renders %s/%s as literals, but backlinkArms declares no arm of that kind reading the store",
+					arm.toKind, arm.kind)
+			}
+		case arm.toKind != "":
 			viewed = append(viewed, arm.toKind+"/"+arm.kind)
-		} else if _, ok := mentionTables[arm.table]; !ok {
+		case !mention:
 			t.Errorf("the view's arm over %s selects its to_kind as a column, but mentionBacklinkArms does not read %s", arm.table, arm.table)
-		} else {
+		default:
 			mentionTables[arm.table] = true
 		}
 		if arm.fromKind != "" && !slices.Contains(nodeKinds, arm.fromKind) {

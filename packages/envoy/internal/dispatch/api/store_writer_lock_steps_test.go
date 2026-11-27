@@ -2,16 +2,19 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -27,8 +30,8 @@ const storeStepWait = 20 * time.Second
 
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
-// and tuple store's writers, beside the test that drives each site's lock steps. Twelve of them
-// live here, and this test drives them all:
+// and tuple store's writers, beside the test that drives each site's lock steps. Twenty-three of
+// them name this test, and it drives them all:
 //
 //   - the comment path (createCommentFor, through queueCommentRow, which queues the node through
 //     graphstore.QueueNodes before the row, and queueCommentCreated, which queues the tuples
@@ -58,7 +61,31 @@ const storeStepWait = 20 * time.Second
 //     of a project document (editArtifact, through commitArtifactVersionEvent), and an issue's
 //     create with its spec (createIssue). The upload and the create also write the node of what
 //     they create - the document's, and the issue's and its spec's - before the row that names
-//     it, and so before the version whose insert writes the fence row, which names that row.
+//     it, and so before the version whose insert writes the fence row, which names that row;
+//   - an author's correction of a post (main's #3512), each through its route: an edit of an
+//     issue message that names a person (editMessage), which queues what its index states under
+//     its event (graphstore.QueueCaused), whose mention of that person goes to
+//     graphstore.QueueToPerson, and then the person's part in the message's thread
+//     (graphstore.QueueToPerson, inboxwrite.MentionParticipation); and a delete of a comment and of
+//     an issue message, each while the send its post makes to a session is still pending
+//     (deleteComment, deleteMessage), which settles that send, appends its receipt and what the
+//     settle left on the attempt's row under it (graphstore.QueueAttempted), then its own event and
+//     what the cleared body takes out of the store under that (graphstore.QueueCaused). The delete's
+//     own event and that append come after the receipt and the attempt's facts, whose steps took
+//     the owner's row and graph_tuples already, and the edit's participation after the mention's
+//     statement, which wrote the person's node: each takes no lock its path's earlier steps do
+//     not, and none is a step of its own.
+//
+// The comment path and the reply then run the one writer of a thread (inboxwrite.PlanRecord and
+// Recording.Queue, a site of graphstore.QueueToPerson) right after their event, whose user_threads
+// steps each lists after it: every row of the thread in one pass, before the delivered_to of
+// anybody holding one, then the rows of the people the write reached, then the writer's own row.
+// The ask's create here is a session's, which keeps no row, and lists no such step; a person's
+// ask, which keeps its asker's row, is objectCreate's (object_node_lock_steps_test.go). A
+// correction writes no user_threads row: the person an edit names takes part in the thread through
+// a tuple alone. A comment's or a reply's body is indexed as blocks of their own (bodyBlockSteps),
+// between the item's row and its event, and a correction's index of the body it writes, or clears,
+// between the post's row and its event (correctionBlockSteps).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -95,6 +122,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
+		rig.messageEdit(), rig.commentDelete(), rig.messageDelete(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -115,6 +143,18 @@ const (
 	projectionStep
 	eventStep
 	tupleStep
+	// threadStep is a user_threads row of the thread the write is in, which the one writer of a
+	// thread (inboxwrite.Recording.Queue) takes after the write's event: every row of the thread
+	// in one pass, then the rows of the people the write reached, then the writer's own.
+	threadStep
+	// projectStep is the owner lock of the project whose default assignee a write reads to deliver
+	// an ask, taken shared (inboxwrite.HoldProjectDefault): after the owner's lock, before every
+	// node, event, tuple, asks row and thread row of the write.
+	projectStep
+	// askStep is an asks row a write that decides who an ask waits on locks `for no key update`
+	// (inboxwrite.QueueMoveWaiting): after the owner's lock and the project's, before every node,
+	// tuple and thread row of the write.
+	askStep
 )
 
 // The lock modes a step shows in pg_locks: `for update`, `for no key update` and a foreign key's
@@ -190,12 +230,16 @@ type storeWriter struct {
 // storeWriterRun is one run of a write path.
 type storeWriterRun struct {
 	// made is the one session or person node the run writes: the author's, the session the
-	// delivery reached, or the session a follow records. No write before the run has recorded it,
-	// so its row is new, and a new row is what an upsert waits on another transaction for. It is
-	// the zero node for a path whose nodes are a document's blocks, which are held by their table.
+	// delivery reached, the session a follow records, or the person an edit names. No write before
+	// the run has recorded it, so its row is new, and a new row is what an upsert waits on another
+	// transaction for. It is the zero node for a path whose nodes are a document's blocks, or a
+	// delete's, which are held by their table.
 	made graphstore.Node
 	// answered is the comment a reply answers, and empty for every other path.
 	answered string
+	// ask is the ask a write deciding who it waits on takes the row of, and empty for every
+	// other path.
+	ask string
 	// write runs the path on the rig's one connection, to its commit, and answers how it ended.
 	write func() error
 }
@@ -230,38 +274,59 @@ const (
 	// blockRowStatement is the block index's write of the document_blocks rows of the blocks a
 	// version changed, each naming its block's node.
 	blockRowStatement = "insert into document_blocks ("
+	// threadRowsStatement is the one writer of a thread's pass over every user_threads row of the
+	// write's thread, `for no key update` in ascending login order (inboxwrite's queueThreadLock).
+	threadRowsStatement = "select 1 from user_threads u where u.thread_id = $1::uuid"
+	// reachedRowsStatement is that writer's move of the rows of the people the write reached
+	// (queueMoveRows), after their delivered_to tuples.
+	reachedRowsStatement = "update user_threads set replied_at"
+	// ownRowStatement is that writer's upsert of the writer's own row (queueKeepRow).
+	ownRowStatement = "with kept as ( insert into user_threads ("
+	// messageEditStatement is an edit's update of the message's row (editMessage), and
+	// commentClearStatement and messageClearStatement a delete's clear of the comment's row and of
+	// the message's (clearDeletedPostBody, for deleteComment and deleteMessage). Each updates the
+	// post's body, whose trigger owes its block state row (item_blocks_owe).
+	messageEditStatement  = "update messages set body = $2, edited_at = $3"
+	commentClearStatement = "update comments set body = '', suggestion = null, deleted_at = $3"
+	messageClearStatement = "update messages set body = '', deleted_at = $3"
+	// attemptsStatement is graphstore.QueueAttempted, the statement of what a write left on the
+	// delivery attempts' rows, appended as a plain insert into graph_tuples.
+	attemptsStatement = "with attempt_rows ("
 )
 
 // --- the paths ----------------------------------------------------------------------------
 
 // commentCreate is the comment path, through route. It takes its owner's lock, the issue's or the
 // project document's (lockCommentOwner), and in its write phase writes the comment's node
-// (graphstore.QueueNodes) before the comments row that names it, appends comment.created, then
-// appends the tuples that event caused (graphstore.QueueCaused) and, in one statement, the
-// author's node and the authored_by tuple under that event (graphstore.QueueAuthored). The
-// comment's id is drawn inside its own transaction, so no other transaction can hold its node, its
-// row or its tuples before they exist: those steps are held as the tables they are written to.
-// Each run's author is a person no write has recorded, so the author's node is new and is held as
-// its row.
+// (graphstore.QueueNodes) before the comments row that names it, takes the comment's block state
+// row, writes the block nodes of its body before the block rows that name them (bodyBlockSteps),
+// appends comment.created, then appends the tuples that event caused (graphstore.QueueCaused)
+// and, in one statement, the author's node and the authored_by tuple under that event
+// (graphstore.QueueAuthored). Last it records the comment in its thread: every user_threads row
+// of the thread in one pass, then its writer's own row, a comment that opens its own thread
+// reaching nobody else. The comment's id is drawn inside its own transaction, so no other
+// transaction can hold its node, its row or its tuples before they exist: those steps are held as
+// the tables they are written to, and its block's node by the key its row's insert names
+// (holdFirstBlockNode). Each run's author is a person no write has recorded, so the author's node
+// is new and is held as its row.
 func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) storeWriter {
-	return storeWriter{
-		name: name,
-		steps: []storeStep{
-			owner,
-			{
-				name: "the comment's node", order: nodeStep,
-				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
-				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-			},
-			{
-				name: "the comment's row", order: projectionStep, names: "the comment's node",
-				hold: holdTableWrites("comments"), at: commentInsertStatement,
-				takes: []tableLock{{"comments", rowExclusiveMode}},
-			},
-			eventAppendStep(),
-			tupleAppendStep(),
-			authorNodeStep(),
+	steps := []storeStep{
+		owner,
+		{
+			name: "the comment's node", order: nodeStep,
+			hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
 		},
+		{
+			name: "the comment's row", order: projectionStep, names: "the comment's node",
+			hold: holdTableWrites("comments"), at: commentInsertStatement,
+			takes: []tableLock{{"comments", rowExclusiveMode}},
+		},
+	}
+	steps = append(steps, r.bodyBlockSteps("the comment", refs.ItemComment, commentInsertStatement)...)
+	return storeWriter{
+		name:  name,
+		steps: append(steps, eventAppendStep(), tupleAppendStep(), authorNodeStep(), threadRowsStep(), ownRowStep()),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			login := r.fresh("lockwriter")
 			author := model.Actor{Kind: "user", ID: login}
@@ -278,27 +343,29 @@ func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) stor
 
 // mentionReply is a session's reply to a mention, through its route. It takes its owner's lock
 // (lockedCommentForDelivery), and from there takes the comment path's steps for the reply: its
-// node, its row, the event, the tuples and its author. The comment it answers is read under that
-// lock and locked by nothing but the foreign key of the reply's row.
+// node, its row, its block state row, its block nodes and rows, the event, the tuples and its
+// author. The comment it answers is read under that lock and locked by nothing but the foreign key
+// of the reply's row. Last it records the reply in its thread: every user_threads row of the
+// thread in one pass, which holds the row of alice, who wrote the comment it answers, before her
+// delivered_to is appended, then the move of her row; a session keeps no row of its own.
 func (r *storeWriterRig) mentionReply() storeWriter {
-	return storeWriter{
-		name: "replyComment",
-		steps: []storeStep{
-			ownerLockStep(store.IssueOwner(r.issue)),
-			{
-				name: "the reply's node", order: nodeStep,
-				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
-				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-			},
-			{
-				name: "the reply's row", order: projectionStep, names: "the reply's node",
-				hold: holdTableWrites("comments"), at: commentInsertStatement,
-				takes: []tableLock{{"comments", rowExclusiveMode}},
-			},
-			eventAppendStep(),
-			tupleAppendStep(),
-			authorNodeStep(),
+	steps := []storeStep{
+		ownerLockStep(store.IssueOwner(r.issue)),
+		{
+			name: "the reply's node", order: nodeStep,
+			hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
 		},
+		{
+			name: "the reply's row", order: projectionStep, names: "the reply's node",
+			hold: holdTableWrites("comments"), at: commentInsertStatement,
+			takes: []tableLock{{"comments", rowExclusiveMode}},
+		},
+	}
+	steps = append(steps, r.bodyBlockSteps("the reply", refs.ItemComment, commentInsertStatement)...)
+	return storeWriter{
+		name:  "replyComment",
+		steps: append(steps, eventAppendStep(), tupleAppendStep(), authorNodeStep(), threadRowsStep(), reachedRowsStep()),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			answered := decodeMentionedComment(t, postMentionedComment(t, r.handler, r.issue, map[string]any{
 				"body": "Does this ship, @s1?", "mentions": []map[string]any{{"target": "session:s1"}},
@@ -618,7 +685,7 @@ func (r *storeWriterRig) documentUpload() storeWriter {
 	return storeWriter{
 		name: "storeArtifact creating a document", projectKeyShare: true,
 		steps: append(append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
-			objectNodeSteps("the document", "artifacts", "insert into artifacts (")[:2]...),
+			objectNodeSteps("the document", "artifacts", "insert into artifacts (", nil)[:2]...),
 			newFenceStep(),
 			heldBlockNodesStep(),
 			blockRowsStep(),
@@ -732,6 +799,155 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 	}
 }
 
+// messageEdit is an edit of an issue message by its author (editMessage), through its route, that
+// adds a paragraph naming a person by their address (dispatch://person/<login>). It takes the
+// issue's owner lock (lockedMessageForCorrection, lockIssue), and its write phase, one batch, keeps
+// the body it replaces in post_body_history, updates the message's row, writes the index of the
+// new body (correctionBlockSteps: the message's block state row, the new paragraph's block node,
+// then the block row that names it), appends message.edited, then appends what the index stated
+// under it (graphstore.QueueCaused), which hands the mention of the person to
+// graphstore.QueueToPerson: the person's node `do nothing` and the mentions tuple, in one statement
+// after the append. Last it appends the person's participates_in the message's thread
+// (inboxwrite.MentionParticipation, graphstore.QueueToPerson), whose node row the mention's
+// statement already holds, so it takes no lock of its own. The message's row and its block state
+// row are there before the run, and neither is held but as its table, as the new block's node and
+// row are. Each run edits a message of its own, written for it by an author no write has
+// recorded, and names a person no write has recorded, so the person's node is new and is held as
+// its row.
+func (r *storeWriterRig) messageEdit() storeWriter {
+	steps := append([]storeStep{
+		ownerLockStep(store.IssueOwner(r.issue)),
+		{
+			name: "the message's row", order: projectionStep,
+			hold: holdTableWrites("messages"), at: messageEditStatement,
+			takes: []tableLock{{"messages", rowExclusiveMode}},
+		},
+	}, correctionBlockSteps("the message", refs.ItemMessage, messageEditStatement, "insert into message_blocks (")...)
+	return storeWriter{
+		name: "editMessage naming a person",
+		steps: append(steps, eventAppendStep(), tupleAppendStep(), storeStep{
+			name: "the mentioned person's node", order: nodeStep, caused: true,
+			hold: holdNewNode, at: armsStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}, {"graph_tuples", rowExclusiveMode}},
+		}),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			const words = "A message whose words the lock steps edit."
+			login := r.fresh("lockeditor")
+			message := createIssueMessage(t, r.handler, r.issue, map[string]any{"body": words}, login)
+			person := r.fresh("lock-steps-mentioned") + "@example.com"
+			return storeWriterRun{
+				made: graphstore.PersonNode(person, model.Actor{Kind: "user", ID: login}, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error {
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/messages/"+message.ID, map[string]any{
+						"body": words + "\n\nOver to dispatch://person/" + person + ".",
+					}, login), http.StatusOK)
+				},
+			}
+		},
+	}
+}
+
+// commentDelete is a delete of a comment by its author (deleteComment), through its route, while
+// the send to the session its mention names is still pending. It takes the issue's owner lock
+// (lockedCommentForCorrection, lockOwnerOfComment), and its write phase, Commit's one batch, keeps
+// the body in post_body_history and takes deleteSteps: the comment's clear, the index of the empty
+// body it leaves, the settle of the pending send, its receipt and what the settle left on the
+// attempt's row under it (graphstore.QueueAttempted). It then settles the comment's fallback
+// copies, of which it has none, so that update locks no row, appends comment.deleted, and appends
+// what the cleared body takes out of the store under it (graphstore.QueueCaused). The comment
+// carries no anchor and no suggestion, so the delete makes no document write. Each run deletes a
+// comment of its own, written by an author no write has recorded and mentioning s1, whose send the
+// rig's listener took (leaveSendPending).
+func (r *storeWriterRig) commentDelete() storeWriter {
+	return storeWriter{
+		name: "deleteComment settling a pending send",
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
+			deleteSteps("the comment", refs.ItemComment, commentClearStatement)...),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			login := r.fresh("lockdeleter")
+			comment := decodeMentionedComment(t, dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "Can this go, @s1?", "mentions": []map[string]any{{"target": "session:s1"}}}, login)).ID
+			settledCommentDeliveries(t, r.database, comment)
+			r.leaveSendPending(t, ctx, refs.ItemComment, comment)
+			return storeWriterRun{write: func() error {
+				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/comments/"+comment, map[string]any{}, login), http.StatusOK)
+			}}
+		},
+	}
+}
+
+// messageDelete is a delete of an issue message by its author (deleteMessage), through its route,
+// while its send to the session it targets is still pending. It takes the issue's owner lock
+// (lockedMessageForCorrection, lockIssue), and its write phase, one batch, keeps the body in
+// post_body_history and takes deleteSteps, as a comment's delete does, then appends
+// message.deleted and what the cleared body takes out of the store under it
+// (graphstore.QueueCaused). Each run deletes a message of its own, written by an author no write
+// has recorded and targeted at s1, whose send the rig's listener took within the create
+// (leaveSendPending).
+func (r *storeWriterRig) messageDelete() storeWriter {
+	return storeWriter{
+		name: "deleteMessage settling a pending send",
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
+			deleteSteps("the message", refs.ItemMessage, messageClearStatement)...),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			login := r.fresh("lockunsender")
+			message := createIssueMessage(t, r.handler, r.issue, map[string]any{
+				"body": "Can this go?", "target": "session:s1", "delivery": "steer",
+			}, login)
+			r.leaveSendPending(t, ctx, refs.ItemMessage, message.ID)
+			return storeWriterRun{write: func() error {
+				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/messages/"+message.ID, map[string]any{}, login), http.StatusOK)
+			}}
+		},
+	}
+}
+
+// leaveSendPending puts the first attempt of the post id, of kind, back to pending under a fresh
+// claim, its envelope and its error cleared, as a sender leaves it while its send is in flight:
+// the attempt a delete settles (queueDeletedPostSettlement). The claim is the moment of this
+// write, so no sweep takes the attempt for one a sender gave up on before the run ends.
+func (r *storeWriterRig) leaveSendPending(t *testing.T, ctx context.Context, kind refs.ItemKind, id string) {
+	t.Helper()
+	table := string(kind) + "_deliveries"
+	tag, err := r.database.Pool.Exec(ctx, `
+		update `+table+` set state = 'pending', envelope_id = null, error = null, claimed_at = now()
+		where `+string(kind)+`_id = $1 and attempt = 1
+	`, id)
+	if err != nil {
+		t.Fatalf("leave the first attempt of %s pending: %v", id, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("leave the first attempt of %s pending: it moved %d rows of %s, want one", id, tag.RowsAffected(), table)
+	}
+}
+
+// deleteSteps are the steps a delete of item, a post of kind, takes after its owner lock while one
+// send of the post is pending: the clear of its row (clear, the head of its statement), the index
+// of the empty body the clear leaves (correctionBlockSteps), the settle of the send, failed, on
+// its row of attempts (queueDeletedPostSettlement), the send's receipt, and what the settle left
+// on the attempt's row, under that receipt (graphstore.QueueAttempted). The attempt's node is
+// there from the attempt's open, and its row names it. Every row the steps take is there before
+// the run, and each step is held as its table.
+func deleteSteps(item string, kind refs.ItemKind, clear string) []storeStep {
+	table, attempts := string(kind)+"s", string(kind)+"_deliveries"
+	steps := append([]storeStep{{
+		name: item + "'s clear", order: projectionStep,
+		hold: holdTableWrites(table), at: clear,
+		takes: []tableLock{{table, rowExclusiveMode}},
+	}}, correctionBlockSteps(item, kind, clear, "update "+string(kind)+"_blocks set position = null, removed_at = $2")...)
+	receipt := eventAppendStep()
+	receipt.name = "the receipt"
+	return append(steps, storeStep{
+		name: "the pending send's row", order: projectionStep,
+		hold: holdTableWrites(attempts), at: "update " + attempts + " d set state = 'failed'",
+		takes: []tableLock{{attempts, rowExclusiveMode}},
+	}, receipt, storeStep{
+		name: "the attempt's facts", order: tupleStep, caused: true,
+		hold: holdTableWrites("graph_tuples"), at: attemptsStatement,
+		takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+	})
+}
+
 // settleSteps are the steps of a delivery's settle: the owner's lock, then the receipt, and the
 // reached session's node with its two base attributes under it, in one statement right after the
 // receipt in the same batch (graphstore.QueueReached over graphstore.LatestEvent), which is what
@@ -796,6 +1012,94 @@ func authorNodeStep() storeStep {
 		name: "the author's node", order: nodeStep, caused: true,
 		hold: holdNewNode, at: armsStatement,
 		takes: []tableLock{{"graph_nodes", rowExclusiveMode}, {"graph_tuples", rowExclusiveMode}},
+	}
+}
+
+// threadRowsStep is the one writer of a thread's pass over every user_threads row of the write's
+// thread, `for no key update` in ascending login order (inboxwrite's queueThreadLock), after the
+// write's event and before the delivered_to of anybody holding one of those rows. A row of the
+// thread may not exist yet - a write that opens its own thread finds none - so the table is held
+// against row locks (holdTableRowLocks), which stops the write at its locking read whatever rows
+// it reaches.
+func threadRowsStep() storeStep {
+	return storeStep{
+		name: "the thread's user_threads rows", order: threadStep,
+		hold: holdTableRowLocks("user_threads"), at: threadRowsStatement,
+		takes: []tableLock{{"user_threads", rowShareMode}},
+	}
+}
+
+// reachedRowsStep is that writer's move of the user_threads rows of the people the write reached
+// (queueMoveRows), which the pass above took, after their delivered_to tuples.
+func reachedRowsStep() storeStep {
+	return storeStep{
+		name: "the rows of the people the write reached", order: threadStep,
+		hold: holdTableWrites("user_threads"), at: reachedRowsStatement,
+		takes: []tableLock{{"user_threads", rowExclusiveMode}},
+	}
+}
+
+// ownRowStep is that writer's upsert of its writer's own user_threads row (queueKeepRow), the
+// write's last.
+func ownRowStep() storeStep {
+	return storeStep{
+		name: "the writer's own user_threads row", order: threadStep,
+		hold: holdTableWrites("user_threads"), at: ownRowStatement,
+		takes: []tableLock{{"user_threads", rowExclusiveMode}},
+	}
+}
+
+// bodyBlockSteps are the three steps an item's write takes for the blocks of its body, between
+// the item's row and its event (refs' item index; blockSteps), the block rows being the head of
+// their insert. The first is the item's block state row, which the trigger on the item row's
+// insert writes (item_blocks_owe, migrations 0143, 0144 and 20261101143212), so the write waits
+// for it inside insert, the item row's own statement. The block nodes are held by the key of the
+// first of them (holdFirstBlockNode): their table is the item node's step's, and a hold of that
+// table stops the write at its first node write.
+func (r *storeWriterRig) bodyBlockSteps(item string, kind refs.ItemKind, insert string) []storeStep {
+	return blockSteps(item, kind, insert, r.holdFirstBlockNode(kind, insert), "insert into "+string(kind)+"_blocks (")
+}
+
+// correctionBlockSteps are the three steps a correction of a post takes for the index of the body
+// it writes, or clears, between the post's row and its event (refs' ItemIndexing.Queue;
+// blockSteps). The first is the post's block state row, which the trigger on the update of the
+// post's body writes (item_blocks_owe, migrations 0143 and 20261110224508), so the write waits for
+// it inside update, the row's own statement. The block nodes the index states are an edit's new
+// block, stated live, and the blocks a delete takes out, stated gone; their node write is the
+// write's first of graph_nodes, so it is held as the table. The block rows are the head of the
+// first statement that writes them (rows): the insert of an edit's new block, and the update that
+// takes a delete's blocks out of the post's current revision.
+func correctionBlockSteps(item string, kind refs.ItemKind, update, rows string) []storeStep {
+	return blockSteps(item, kind, update, holdTableWrites("graph_nodes"), rows)
+}
+
+// blockSteps are the three steps a write of item, a post of kind, takes for the blocks of the body
+// it writes: the item's block state row, which a trigger on the item row's statement (row) writes,
+// so the write waits for it inside that statement; the block nodes of the body, in one node write,
+// held by nodes; and the block rows that name those nodes, whose foreign key needs the nodes
+// first, waited for at rows.
+func blockSteps(
+	item string, kind refs.ItemKind, row string,
+	nodes func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun), rows string,
+) []storeStep {
+	state, blocks := string(kind)+"_block_state", string(kind)+"_blocks"
+	named := item + "'s block nodes"
+	return []storeStep{
+		{
+			name: item + "'s block state row", order: projectionStep,
+			hold: holdTableWrites(state), at: row,
+			takes: []tableLock{{state, rowExclusiveMode}},
+		},
+		{
+			name: named, order: nodeStep,
+			hold: nodes, at: nodeWriteStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+		},
+		{
+			name: item + "'s block rows", order: projectionStep, names: named,
+			hold: holdTableWrites(blocks), at: rows,
+			takes: []tableLock{{blocks, rowExclusiveMode}},
+		},
 	}
 }
 
@@ -908,6 +1212,19 @@ func holdTableWrites(table string) func(t *testing.T, ctx context.Context, holde
 	}
 }
 
+// holdTableRowLocks holds a table in exclusive mode. That mode conflicts with the row share lock
+// a `for no key update` takes on its table and with the row exclusive lock of every write, and with
+// no plain read, so the write stops at its first locking read or write of the table and nowhere
+// before it. It is how a pass over rows is held that may find none to lock.
+func holdTableRowLocks(table string) func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+	return func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+		t.Helper()
+		if _, err := holder.Exec(ctx, "lock table "+table+" in exclusive mode"); err != nil {
+			t.Fatalf("hold the row locks of %s: %v", table, err)
+		}
+	}
+}
+
 // holdNewNode writes the run's new node in holder, through the store's own writer, and leaves it
 // uncommitted: the write's upsert of the same key waits to learn whether this row commits.
 func holdNewNode(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
@@ -917,6 +1234,89 @@ func holdNewNode(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWrit
 	}
 }
 
+// holdFirstBlockNode holds the node of the first block of the body of the item the write makes,
+// whose id the write draws inside its own transaction. The rig's connection hands the item row's
+// insert, the statement starting insert, to the hook this arms before it sends it
+// (statementStarts), and its first argument is the item's id: the hook writes that item's first
+// block's node in holder there, through the store's own writer, and leaves it uncommitted, so the
+// write's node write of its body's blocks waits to learn whether this row commits. A new item's
+// first block is b1 (refs.IndexItem mints its ids from next_block, 1 for an item with none).
+func (r *storeWriterRig) holdFirstBlockNode(kind refs.ItemKind, insert string) func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+	return func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+		t.Helper()
+		t.Cleanup(func() { r.starts.arm(nil) })
+		r.starts.arm(func(sql string, args []any) {
+			id, named := "", len(args) > 0
+			if named {
+				id, named = args[0].(string)
+			}
+			if !named || !strings.HasPrefix(normalizedStatement(sql), normalizedStatement(insert)) {
+				return
+			}
+			r.starts.arm(nil)
+			r.holding.Lock()
+			defer r.holding.Unlock()
+			node := graphstore.Node{
+				Kind: refs.BlockNodeKind, ID: string(kind) + "/" + id + "#b1", Supertag: refs.BlockSupertag,
+				Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+				MadeAt: time.Now().UTC(), MadeBy: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent,
+			}
+			if err := graphstore.Write(ctx, holder, []graphstore.Node{node}, nil); err != nil {
+				select {
+				case r.holdFailed <- fmt.Errorf("hold the row of node %s/%s: %w", node.Kind, node.ID, err):
+				default:
+				}
+			}
+		})
+	}
+}
+
+// statementStarts is the tracer of the rig's one connection (storetest.Reopened): it hands every
+// statement the write under test sends, with its arguments, to the hook a step armed, before the
+// statement is sent - a statement of its own as pgx starts it, and every statement of a write
+// phase's batch as pgx starts the batch, so a hold the hook takes is in place before the batch's
+// first statement runs - and runs nothing while no step has armed one.
+type statementStarts struct {
+	mu   sync.Mutex
+	hook func(sql string, args []any)
+}
+
+func (s *statementStarts) arm(hook func(sql string, args []any)) {
+	s.mu.Lock()
+	s.hook = hook
+	s.mu.Unlock()
+}
+
+func (s *statementStarts) armed() func(sql string, args []any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hook
+}
+
+func (s *statementStarts) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if hook := s.armed(); hook != nil {
+		hook(data.SQL, data.Args)
+	}
+	return ctx
+}
+
+func (s *statementStarts) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (s *statementStarts) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	for _, queued := range data.Batch.QueuedQueries {
+		hook := s.armed()
+		if hook == nil {
+			break
+		}
+		hook(queued.SQL, queued.Arguments)
+	}
+	return ctx
+}
+
+func (s *statementStarts) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (s *statementStarts) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
 // --- the written order --------------------------------------------------------------------
 
 // requireTheWrittenOrderAdmits checks a path's steps, in the order the path takes them, against
@@ -925,7 +1325,12 @@ func holdNewNode(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWrit
 // row before every step of the block statement it guards. A path skips the steps it does not take,
 // and is checked on the order of those it does. The fourth invariant, several nodes of one write
 // in ascending (kind, id), is graphstore's own (queueNodes, WriteArms): every node step here is
-// one statement, which writes one node, or a version's block nodes in that order.
+// one statement, which writes one node, or a version's block nodes in that order. A user_threads
+// row of the write's thread comes after the event, as the one writer of a thread runs right after
+// it (inboxwrite.Recording.Queue). The project's owner lock a write takes shared to read the
+// default assignee comes after its owner's lock, and before every node, event, tuple, asks row and
+// thread row; and an asks row a write deciding who an ask waits on locks comes before every node
+// and tuple (inboxwrite.HoldDefault, inboxwrite.QueueMoveWaiting).
 func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
@@ -958,6 +1363,17 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 		if step.fenced && (fence < 0 || fence > index) {
 			t.Errorf("%s takes %s, which the revision fence guards, before it takes the fence's document_block_versions row", writer.name, step.name)
 		}
+		if step.order == threadStep && (event < 0 || event > index) {
+			t.Errorf("%s takes %s, a row of its thread, before it appends its event: the one writer of a thread runs after the event", writer.name, step.name)
+		}
+		for _, earlier := range writer.steps[:index] {
+			switch {
+			case step.order == projectStep && earlier.order != ownerStep && earlier.order != projectionStep:
+				t.Errorf("%s takes %s, the project lock it reads the default under, after %s: that lock comes after the owner's and before every node, event, tuple, asks row and thread row", writer.name, step.name, earlier.name)
+			case step.order == askStep && (earlier.order == nodeStep || earlier.order == tupleStep || earlier.order == threadStep):
+				t.Errorf("%s takes %s, an asks row, after %s: an asks row comes before every node, tuple and thread row", writer.name, step.name, earlier.name)
+			}
+		}
 	}
 }
 
@@ -967,11 +1383,23 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 // that takes it: the second node write of a path shows graph_nodes again and says nothing about
 // where the write is, which the statement the write waits at says. A later step is read by its
 // rows (rowsLocked) and by its table locks of every mode but the two a batch's preparation takes
-// (parseTimeMode).
+// (parseTimeMode). A table whose rows a step before the held one locks - a row lock shows the row
+// share mode - holds those rows locked whatever a later step of it has done, so its rows say
+// nothing of the later step, which is read by its other locks and by where the write waits: a
+// session's reply takes its thread's root before the attempt it answers and then writes its own
+// row of messages (sessionReply).
 func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *storeWriterRig, writer storeWriter) {
 	t.Helper()
 	first := firstTakers(writer.steps)
 	for index, step := range writer.steps {
+		rowLocked := map[string]bool{}
+		for _, earlier := range writer.steps[:index] {
+			for _, lock := range earlier.takes {
+				if lock.mode == rowShareMode {
+					rowLocked[lock.table] = true
+				}
+			}
+		}
 		run := writer.ready(t, ctx)
 		holder, release := rig.beginHolder(t, ctx)
 		step.hold(t, ctx, holder, run)
@@ -1001,6 +1429,9 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 					if !parseTimeMode(lock.mode) && slices.Contains(held, lock) {
 						t.Errorf("%s held at %s already holds %s, which %s takes, a later step: it took %s before %s (it holds %v)",
 							writer.name, step.name, lock, other.name, other.name, step.name, held)
+					}
+					if rowLocked[lock.table] {
+						continue
 					}
 					if locked := rig.rowsLocked(t, ctx, backend, lock.table); len(locked) > 0 {
 						t.Errorf("%s held at %s has locked rows %v of %s, which %s takes, a later step: it took %s before %s",
@@ -1069,21 +1500,30 @@ func firstTakers(steps []storeStep) map[tableLock]int {
 
 // storeWriterRig is the database the paths write: an issue with its spec and a project document
 // on one project, a comment on the issue mentioning the session s1 and a message to s1, each
-// delivered, an ask alice opened on the issue, and an approval request of the spec, waiting on
-// the person. Every write under test runs on a second server over the same dependencies whose
-// store is one connection of its own, so the backend a write runs on is known before it starts
-// and any other session queued behind the same hold is never taken for it.
+// delivered, an ask alice opened on the issue, an approval request of the spec, waiting on the
+// person, and the sessions s1 and s2 a broadcast reaches. Every write under test runs on a second
+// server over the same dependencies whose store is one connection of its own, so the backend a
+// write runs on is known before it starts and any other session queued behind the same hold is
+// never taken for it.
 type storeWriterRig struct {
 	handler  http.Handler
 	database *store.Store
-	// call serves the routes, and direct calls the delivery steps, on callStore's one connection.
+	// call serves the routes, and direct calls the delivery steps, on callStore's one connection,
+	// whose every statement starts hands to the hook a step armed (holdFirstBlockNode).
 	call      http.Handler
 	direct    *server
 	callStore *store.Store
-	project   string
-	issue     string
-	spec      string
-	document  string
+	starts    *statementStarts
+	// holding is held by whatever uses a step's holder off the test's own goroutine - the hook of
+	// a step a write's own statement arms - and by the test's every use of it while a write runs,
+	// so the two never share the holder's connection; holdFailed carries what that hook could not
+	// hold.
+	holding    sync.Mutex
+	holdFailed chan error
+	project    string
+	issue      string
+	spec       string
+	document   string
 	// mentioned is the comment whose mention attempt the comment delivery's settle settles, and
 	// message the message whose attempt the message delivery's settle settles.
 	mentioned string
@@ -1096,15 +1536,22 @@ type storeWriterRig struct {
 
 func newStoreWriterRig(t *testing.T) *storeWriterRig {
 	t.Helper()
-	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
+	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]},` +
+		`{"session_id":"s2","title":"tester","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
-			writeSessionRecord(t, w, sessions, "s1")
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
+			writeSessionRecord(t, w, sessions, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			_, _ = w.Write([]byte(sessions))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
-			_, _ = w.Write([]byte(`{"event_id":"lock-steps-envelope","recipient":"s1"}`))
+			var request struct {
+				TargetSession string `json:"target_session"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.TargetSession == "" {
+				request.TargetSession = "s1"
+			}
+			_, _ = w.Write([]byte(`{"event_id":"lock-steps-envelope","recipient":"` + request.TargetSession + `"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -1119,9 +1566,15 @@ func newStoreWriterRig(t *testing.T) *storeWriterRig {
 	rig := &storeWriterRig{
 		handler: handler, database: database,
 		project: "LOCK", issue: issue.Key, spec: issue.PrimaryArtifactID, document: document.ID,
+		starts: &statementStarts{}, holdFailed: make(chan error, 1),
 	}
 
-	rig.callStore = storetest.SingleConnection(t, database)
+	rig.callStore = storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.MaxConns = 1
+		config.MinConns = 0
+		config.MinIdleConns = 0
+		config.ConnConfig.Tracer = rig.starts
+	})
 	callDeps := deps
 	callDeps.Store = rig.callStore
 	call := http.NewServeMux()
@@ -1175,6 +1628,8 @@ func (r *storeWriterRig) beginHolder(t *testing.T, ctx context.Context) (pgx.Tx,
 	}
 	released := false
 	release := func() {
+		r.holding.Lock()
+		defer r.holding.Unlock()
 		if released {
 			return
 		}
@@ -1187,7 +1642,8 @@ func (r *storeWriterRig) beginHolder(t *testing.T, ctx context.Context) (pgx.Tx,
 
 // waitQueued waits for the write's backend to queue behind holder, polling through holder's own
 // connection (storetest.QueuedBehind). A write that answers first never waited at the step, and
-// one that never queues is waiting somewhere the step is not; each fails naming the step.
+// one that never queues is waiting somewhere the step is not; each fails naming the step, as does
+// a hold the write's own statement armed that could not be taken.
 func (r *storeWriterRig) waitQueued(t *testing.T, ctx context.Context, holder pgx.Tx, backend uint32, done <-chan error, what string) {
 	t.Helper()
 	deadline := time.Now().Add(storeStepWait)
@@ -1195,9 +1651,13 @@ func (r *storeWriterRig) waitQueued(t *testing.T, ctx context.Context, holder pg
 		select {
 		case err := <-done:
 			t.Fatalf("%s finished without waiting there: %v", what, err)
+		case err := <-r.holdFailed:
+			t.Fatalf("%s: %v", what, err)
 		default:
 		}
+		r.holding.Lock()
 		queued, err := storetest.QueuedBehind(ctx, holder, backend)
+		r.holding.Unlock()
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}

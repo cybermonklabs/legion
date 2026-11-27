@@ -27,10 +27,11 @@ import (
 
 // The blocks the ask drives write, each named so a drive's check can find it.
 const (
-	choiceBlock  = "sized-choice"
-	longBlock    = "sized-long-choice"
-	invalidBlock = "sized-invalid"
-	removedBlock = "sized-removed"
+	choiceBlock   = "sized-choice"
+	longBlock     = "sized-long-choice"
+	invalidBlock  = "sized-invalid"
+	removedBlock  = "sized-removed"
+	restoredBlock = "sized-restored"
 )
 
 // askDrives are the drives of the sites of the register of the store's writers that write an ask's
@@ -56,8 +57,9 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// reopen take, the document the Keep keeps a decision of and the decision's sum, the copy, the
 	// document whose ask block is emptied and that ask, the document the carry settles and its
 	// approval request, the document whose answered ask a person removes and that ask, the document
-	// an upload leaves as it was, and the project the decisions step converts.
-	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, removedAsk, unchanged string
+	// an upload leaves as it was, the project the decisions step converts, and the answered ask an
+	// earlier release rewords.
+	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, removedAsk, unchanged, restoredAsk string
 	// The token of the version same.md's replacement replaces, read before its drive.
 	var unchangedBase map[string]string
 	const decided = "DECIDE"
@@ -65,16 +67,23 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	const removalText = "# Removal\n\nContext.\n\n:::ask{#" + removedBlock + "}\nWhich block does a person remove?\n:::\n"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
-		// answer state (asks.Settled.Queue).
+		// answer state (asks.Settled.Queue), at the edited_at the asker's edit of it left
+		// (api/asks.go#editAsk), which she reviewed.
 		Name: "api/ask_transitions.go#closeAskTx, answering", Database: r.database,
 		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue"},
 		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/asks/"+r.ask+"/answer",
-				map[string]any{"text": "The node store.", "expected_edited_at": nil}, "alice", http.StatusOK)
+			var edited time.Time
+			if err := r.database.Pool.QueryRow(ctx, `select edited_at from asks where id = $1::uuid`, r.ask).Scan(&edited); err != nil {
+				t.Fatalf("read the edited_at of ask %s: %v", r.ask, err)
+			}
+			r.request(t, http.MethodPost, "/api/v1/asks/"+r.ask+"/answer", map[string]any{
+				"text": "The node store.", "expected_edited_at": edited.UTC().Format(time.RFC3339Nano),
+			}, "alice", http.StatusOK)
 		},
 		// The answer's text, selection, time, answerer as answered_by and as decided_by, and the
-		// ask's answer_state. alice's node stands from her first comment.
-		Counts: answerCounted,
+		// ask's answer_state. alice's node stands from her first comment. The answer's body
+		// block, and alice's part in the ask's thread with the read mark the answer moves.
+		Counts: merged(answerCounted, bodyBlockCounted, ownThreadCounted),
 	}, {
 		// The close of an issue of its own holding an open ask, which withdraws the ask.
 		Name: "api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", Database: r.database,
@@ -98,7 +107,7 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	}, {
 		// The reopen of that issue, which restores the ask its close withdrew.
 		Name: "api/issue_ask_lifecycle.go#recordRestoredAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue", "inboxwrite/waiting.go#QueueMoveWaiting"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "todo"}, "alice", http.StatusOK)
 		},
@@ -271,8 +280,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from asks where id = $1::uuid and state = 'answered')
 			`, request)
 		},
-		// The carry's answer of the request, and the node of pat, the person who approved.
-		Counts: merged(answerCounted, map[graphcensus.StoredKind][]string{
+		// The carry's answer of the request, and the node of pat, the person who approved; the
+		// answer's body block, the request reaching the person it now waits on, and pat's part in
+		// its thread with the read mark the answer moves.
+		Counts: merged(answerCounted, bodyBlockCounted, askDeliveredCounted, ownThreadCounted, map[graphcensus.StoredKind][]string{
 			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
 		}),
@@ -474,6 +485,58 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
 			{graphstore.KindArtifact, graphstore.AttributeState}:    {"artifact_removed"},
 		}),
+	}, {
+		// The boot step that writes back the wording an answered ask was decided on, which an
+		// earlier release's edit of its row changed after the answer (docs.RestoreDecidedWordings).
+		Name: "docs/decided_wording.go#restoreWordings", Database: r.database,
+		Sites: []string{"docs/decided_wording.go#restoreWordings"},
+		Ready: func(t *testing.T) {
+			restoredDocument := decoded[struct {
+				Artifact model.Artifact `json:"artifact"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
+				"name": "restored.md", "actor": sessionActor("ses_restored"),
+				"content": "# Restored\n\nContext.\n\n:::ask{#" + restoredBlock + "}\nWhich wording was decided?\n:::\n",
+			}, "", http.StatusCreated)).Artifact.ID
+			restoredAsk = r.settledAsk(t, restoredDocument, restoredBlock)
+			r.request(t, http.MethodPost, "/api/v1/asks/"+restoredAsk+"/answer",
+				map[string]any{"text": "This one.", "expected_edited_at": nil}, "alice", http.StatusOK)
+			// An earlier release's edit of the answered ask: its row reworded, and the ask.edited
+			// recording the wording the answer was given on as the edit's previous, which the
+			// restoration reads back.
+			answered := decoded[struct {
+				Ask model.Ask `json:"ask"`
+			}](t, r.request(t, http.MethodGet, "/api/v1/asks/"+restoredAsk, nil, "alice", http.StatusOK)).Ask
+			previous := model.NewAskEditPrevious(answered)
+			answered.Question = "Which wording did an earlier release write?"
+			tx, err := r.database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the earlier release's edit: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			if err := store.LockOwner(ctx, tx, store.IssueOwner(r.issue)); err != nil {
+				t.Fatalf("take %s's owner lock: %v", r.issue, err)
+			}
+			if _, err := tx.Exec(ctx, `update asks set question = $2, edited_at = now() where id = $1::uuid`,
+				restoredAsk, answered.Question); err != nil {
+				t.Fatalf("reword the answered ask as an earlier release's edit does: %v", err)
+			}
+			if _, err := events.NewBroker().Append(ctx, tx, model.Event{
+				IssueKey: &r.issue, Type: "ask.edited", Actor: docs.SettlementActor,
+				Payload: model.NewAskEditEventPayload(answered, previous, docs.SettlementActor, model.ReferenceChanges{}),
+			}); err != nil {
+				t.Fatalf("append the earlier release's ask.edited: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit the earlier release's edit: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			restored, _, err := r.documents.RestoreDecidedWordings(ctx)
+			if err != nil || restored != 1 {
+				t.Fatalf("restore the decided wording (%d asks): %v", restored, err)
+			}
+		},
+		Counts: map[graphcensus.StoredKind][]string{},
 	}}
 }
 

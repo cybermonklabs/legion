@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -567,12 +569,29 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// rather than nobody (movedAssignees below). Without it, an issue nobody held gaining an
 	// assignee would name only the new one, and the default's open Inbox would keep a row the
 	// server no longer gives them. It is read here, under the issue's owner lock and before the
-	// patch's first write, so it holds no transaction id; a patch that names no assignee, or one
-	// whose both sides name a person or both nobody, reads no project.
+	// patch's first write, so it holds no transaction id; a patch that names no assignee reads
+	// nothing here, and one whose both sides name a person or both nobody reads no project.
+	//
+	// An issue left to nobody hands its asks to that default, which the move below delivers them
+	// to, so the project's owner lock is taken shared first (inboxwrite.HoldProjectDefault), after
+	// the issue's own and before the read: a move of the default either committed before this
+	// read or waits for this write. The transaction's now(), the moment the assignee's event is
+	// appended at, which the move's tuples are dated at, is answered by the issue's update below
+	// (movedAt), which every assignee move runs, so no statement of its own reads it.
 	var projectDefault string
-	if assigneeProvided && (before.Assignee == nil) != (assignee == nil) {
-		if err := tx.QueryRow(ctx, `select default_assignee from projects where key = $1`, before.Project).Scan(&projectDefault); err != nil {
-			return issueWriteResult{}, err
+	var movedAt time.Time
+	if assigneeProvided {
+		if assignee == nil {
+			if err := inboxwrite.HoldProjectDefault(ctx, tx, before.Project); err != nil {
+				return issueWriteResult{}, err
+			}
+		}
+		if (before.Assignee == nil) != (assignee == nil) {
+			if err := tx.QueryRow(ctx, `
+				select coalesce((select default_assignee from projects where key = $1), '')
+			`, before.Project).Scan(&projectDefault); err != nil {
+				return issueWriteResult{}, err
+			}
 		}
 	}
 	// Closing an issue releases whatever claim it held: the work is finished, so nobody is
@@ -686,10 +705,12 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		excluded: askIDs(closingAsks.asks),
 		opened:   askIDs(reopened.asks),
 	})
-	// The write phase: the statements from here on run back to back.
+	// The write phase: the statements from here on run back to back. The update answers the
+	// transaction's now(), the moment an assignee move's tuples are dated at (movedAt).
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
-		if _, err := tx.Exec(ctx, `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
+		err := tx.QueryRow(ctx, `update issues set `+strings.Join(sets, ", ")+` where key = $1 returning now()`, args...).Scan(&movedAt)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return issueWriteResult{}, err
 		}
 	}
@@ -866,6 +887,20 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{}, err
 	}
 	appended = append(appended, event)
+	// The issue's open asks handed to nobody follow its assignee, so each now reaches the new
+	// assignee, who takes part in its thread, and whoever its delivery stood to loses it - and
+	// their part in the thread, where nothing of their own holds them there - under the issue's
+	// own event, queued right after it (inboxwrite.QueueMoveWaiting). A write that closes the
+	// issue moves nothing: its asks are withdrawn earlier in the batch, and a closed issue's asks
+	// retract nothing until its reopen restores them.
+	if movedAssignees != nil {
+		move := inboxwrite.Reassigned(key, movedAt, actor)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			return inboxwrite.QueueMoveWaiting(b, move, graphstore.LatestEvent)
+		}); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	if previousClaim != nil {
 		released, err := s.queueEvent(ledger, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {

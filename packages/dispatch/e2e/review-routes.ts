@@ -680,16 +680,16 @@ export async function waitForRouteSettled(
 const INBOX_COUNT_QUIET_MS = 500;
 
 /** Whether a request to `url` feeds the shell's one Inbox number
- *  (`web/src/features/inbox/useInboxCount.ts`) or moves it. The reads are the asks
- *  (`GET /api/v1/inbox`) counted for the viewer `/auth/whoami` names, the pending credential
- *  requests, and the unread total of `GET /api/v1/me/replies`. The writes are the viewer's own read
- *  state under `/api/v1/me/`: the broadcast page's read mark (`PUT /api/v1/me/agents/{session}/state`,
- *  `useMarkShownRepliesRead` in `web/src/features/agents/unread.ts`) is one, and the reads under
- *  that prefix answer the number too. */
+ *  (`web/src/features/inbox/useInboxCount.ts`) or moves it. The reads are the one read's
+ *  (`GET /api/v1/me/inbox`: the reader's own asks, and the unread total on a one-entry page) for
+ *  the viewer `/auth/whoami` names, and the pending credential requests. The writes are the
+ *  viewer's own read state under `/api/v1/me/`: the broadcast page's read mark
+ *  (`PUT /api/v1/me/agents/{session}/state`, `useMarkShownRepliesRead` in
+ *  `web/src/features/agents/unread.ts`) is one, and the reads under that prefix answer the number
+ *  too. */
 function feedsInboxCount(url: string): boolean {
   const { pathname } = new URL(url);
   return (
-    pathname === "/api/v1/inbox" ||
     pathname === "/api/v1/credential-requests" ||
     pathname === "/auth/whoami" ||
     pathname.startsWith("/api/v1/me/")

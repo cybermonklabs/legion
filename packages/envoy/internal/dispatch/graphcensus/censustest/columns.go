@@ -54,6 +54,15 @@ var ProjectedColumns = map[string]map[string]string{
 		// the backfill takes as the cause of every tuple it states for the comment
 		// (graphcensus's readCommentRows).
 		"issue_key": "the comment's tuples, as the event that is their cause",
+		// A comment's pointers are tuples out of its node (graphstore.CommentPointerFacts): reply_to
+		// states replies_to the comment, ask_id replies_to the ask, answers states answers, and
+		// replies_to_block states replies_to the block's node, with one part_of under what the
+		// comment answers. tuples_stored marks the rows whose pointers the store states.
+		"reply_to":         "the comment's replies_to tuple, and its part_of",
+		"ask_id":           "the comment's replies_to tuple, and its part_of",
+		"answers":          "the comment's answers tuple, and its part_of",
+		"replies_to_block": "the comment's replies_to tuple",
+		"tuples_stored":    "the comment's pointer tuples, as whether the store states them",
 	},
 	"document_blocks": {
 		"node_kind":    "the row's node",
@@ -95,5 +104,27 @@ var ProjectedColumns = map[string]map[string]string{
 		// backfillBlockRefs), and which a pass's own tuple takes from its cause where the row is
 		// stamped in the same transaction (graphstore.UncausedTuple's LegacyFromCause).
 		"source_seq": "the link's tuple, as its legacy_source_seq",
+	},
+	"messages": {
+		// A message's node is addressed by the row's own id (graphstore.MessageNode), and every
+		// tuple of the message is a tuple out of that address.
+		"id":           "the message's node, as its address",
+		"node_kind":    "the row's node",
+		"node_address": "the row's node",
+		// The node is made at the row's created_at by the actor its author column holds, and each
+		// tuple of the message is dated from that time (graphstore.MessageFacts).
+		"created_at": "the message's node, as its made_at, and its tuples, as their time",
+		// The author is the far end of the message's authored_by tuple (graphstore.AuthorFacts),
+		// and the node's made_by.
+		"author": "the message's authored_by tuple, and its node, as its made_by",
+		// What the message answers is its replies_to and part_of tuples (graphstore.MessageFacts).
+		"in_reply_to":      "the message's replies_to and part_of tuples",
+		"replies_to_block": "the message's replies_to tuple, and its part_of where it answers no message",
+		// A message that answers nothing sits on the issue it was posted on, or on the page of the
+		// agent its target routes to, which is its addressed_to as well.
+		"issue_key": "the message's part_of tuple",
+		"target":    "the message's addressed_to tuple, and its part_of the agent's page",
+		// A broadcast copy states its broadcast_id as a value.
+		"broadcast_id": "the message's broadcast_id value",
 	},
 }

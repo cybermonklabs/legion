@@ -353,7 +353,7 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 // same pass. Whoever indexes it between the two leaves indexOwedDocument finding it no longer
 // owed: an older build's block index leaves the row owed until this build's own index of the
 // document commits, in a later pass, and a process of this build settles the row with its own
-// index (refs.replaceRefs). A document whose live text is ahead of its latest version is left
+// index (refs.Replacement.Queue). A document whose live text is ahead of its latest version is left
 // owed as the block index leaves it, for the settlement that writes its next version, and
 // remembered in liveAhead as the block index remembers one; a version an older build writes then
 // owes the row again (migration 20261117025904, and the relay of migration 20261126040100 once

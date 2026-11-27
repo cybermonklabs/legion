@@ -75,9 +75,9 @@ jq -e '.anchor.quote == "brown" and (.anchor.mark_id | type == "string") and .st
   exit 1
 }
 
-inbox="$(request "${dispatch_url}/api/v1/inbox?project=${project_key}")"
-jq -e --arg id "$ask_id" 'length == 1 and .[0].id == $id and .[0].issue.key != "" and .[0].issue.title == "Dispatch API E2E"' <<<"$inbox" >/dev/null || {
-  printf 'inbox response was unexpected: %s\n' "$inbox" >&2
+open_asks="$(request "${dispatch_url}/api/v1/asks/open?project=${project_key}")"
+jq -e --arg id "$ask_id" --arg key "$issue_key" '(.asks | length) == 1 and .asks[0].id == $id and .asks[0].issue.key == $key and .asks[0].issue.title == "Dispatch API E2E"' <<<"$open_asks" >/dev/null || {
+  printf 'open asks response was unexpected: %s\n' "$open_asks" >&2
   exit 1
 }
 
@@ -91,7 +91,7 @@ for _ in $(seq 1 40); do
   if grep -Fq '"state":"answered"' "$events_file"; then
     if wait "$events_pid"; then
       events_pid=
-      printf 'PASS: project %s, anchored ask, inbox, answer, and live ask.answered event\n' "$project_key"
+      printf 'PASS: project %s, anchored ask, open asks, answer, and live ask.answered event\n' "$project_key"
       exit 0
     fi
     break

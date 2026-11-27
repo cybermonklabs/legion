@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -320,11 +321,18 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, indexed, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
 	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Each person the edit newly mentions takes part in the comment's thread from it
+	// (editMentionParticipation).
+	mentionedIn, err := editMentionParticipation(r.Context(), tx, graphstore.KindComment, comment.ID, indexed, actor, editedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -349,6 +357,18 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the edit states in the store - the nodes of the blocks it wrote, their part_of, the
+	// links they gained or lost, the citations the comment did and its new mentions - under the
+	// comment.edited that records it, queued right after that event, and then the participation of
+	// each person it newly mentions.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		graphstore.QueueToPerson(b, mentionedIn)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

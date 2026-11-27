@@ -13,12 +13,15 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -152,8 +155,15 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	// excerpt kept of a block this edit removed still hold parts of it. The update is queued
 	// below, so the index is planned from the body it writes, as the comment edit's is
 	// (planEditedItem).
-	referenceChanges, index, err := s.planEditedItem(
+	referenceChanges, index, indexed, err := s.planEditedItem(
 		r.Context(), tx, message.Author, refs.ItemMessage, message.ID, previousBody, message.Body, editedAt, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Each person the edit newly mentions takes part in the message's thread from it, as the
+	// comment edit's does (editMentionParticipation).
+	mentionedIn, err := editMentionParticipation(r.Context(), tx, graphstore.KindMessage, message.ID, indexed, actor, editedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -170,7 +180,9 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The history row, the update, the index, the event and its stamp go in one batch: the
-	// event's id is the one the stamp names as the id sequence left it (refs.QueueStamp).
+	// event's id is the one the stamp names as the id sequence left it (refs.QueueStamp). What the
+	// edit states in the store follows that event, under it, and then the participation of each
+	// person it newly mentions, as the comment edit queues them.
 	var event model.Event
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		if err := history(b); err != nil {
@@ -184,7 +196,12 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		if err := index(b); err != nil {
 			return err
 		}
-		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, func(appended model.Event) { event = appended })
+		if err := s.queueLoggedEventOn(b, correction, logins, "message", message.ID, func(appended model.Event) { event = appended }); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		graphstore.QueueToPerson(b, mentionedIn)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -195,6 +212,34 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, message)
+}
+
+// editMentionParticipation is the participation of each person an edit of the post kind/id newly
+// mentions (indexed, what the edit's index states) in the post's thread, from the edit's moment
+// (R4's mention arm), with no delivery, since an edit delivers nothing; nil for an edit that names
+// nobody new. The thread's root is read in tx, in the read phase, only for an edit that names
+// somebody new: a mention the edit retracts, of a person its text no longer names, ends no
+// participation it caused. Where that root is an open ask that falls through to its project's
+// default assignee, that project's owner lock is taken shared there too (inboxwrite.HoldAskDefault):
+// a move of the default reads who else holds a person in the ask's thread before it ends their
+// part, so it either committed before this edit, or waits for it and then finds the participation
+// this edit states. editComment and editMessage queue it last in their write.
+func editMentionParticipation(
+	ctx context.Context, tx pgx.Tx, kind, id string, indexed graphstore.Uncaused, actor model.Actor, at time.Time,
+) ([]graphstore.Tuple, error) {
+	if !slices.ContainsFunc(indexed.People, func(tuple graphstore.Tuple) bool { return tuple.Asserted }) {
+		return nil, nil
+	}
+	rootKind, rootID, err := inboxwrite.ThreadRoot(ctx, tx, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	if rootKind == graphstore.KindAsk {
+		if err := inboxwrite.HoldAskDefault(ctx, tx, rootID); err != nil {
+			return nil, err
+		}
+	}
+	return inboxwrite.MentionParticipation(rootKind, rootID, indexed, actor, at, graphstore.LatestEvent), nil
 }
 
 // deleteMessage answers DELETE /api/v1/messages/{id}: the author withdraws its own message. The
@@ -228,7 +273,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	referenceChanges, clear, err := s.clearDeletedPostBody(
+	referenceChanges, clear, cleared, err := s.clearDeletedPostBody(
 		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, false, message.Author, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -262,7 +307,9 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		receipts = append(receipts, messageDeliveryReceipt(message, message.Author, *attempt, ""))
 	}
 	// The clear, the settle, its receipts, the event and its stamp go in one batch, in the order
-	// the delete makes them.
+	// the delete makes them: each receipt with what the settle left on its attempt's row under it
+	// (graphstore.QueueAttempted), and the event with what the empty body's index takes out of the
+	// store under it.
 	appended := make([]model.Event, 0, len(receipts)+1)
 	collect := func(event model.Event) { appended = append(appended, event) }
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
@@ -270,12 +317,17 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		queueDeletedPostSettlement(b, message.ID, messageAttemptsRead(pending))
-		for _, receipt := range receipts {
+		for index, receipt := range receipts {
 			if err := s.deps.Events.QueueAppend(b, receipt, collect); err != nil {
 				return err
 			}
+			graphstore.QueueAttempted(b, message.Author, graphstore.LatestEvent, graphstore.MessageAttempt(message.ID, pending[index].Attempt))
 		}
-		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, collect)
+		if err := s.queueLoggedEventOn(b, correction, logins, "message", message.ID, collect); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, cleared, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

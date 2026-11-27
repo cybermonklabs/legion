@@ -34,8 +34,10 @@ const heldSession = "ses_held0a1b2c3d4"
 // A pending attempt is no delivery ("a pending or failed one is not"), so it earns nothing: the
 // test first mentions a session whose send the listener holds, and while that attempt stands
 // pending, opened, claimed and pinned to the session as its sender leaves it before the settle,
-// it reads no node of the session, no tuple naming it and no receipt the outbox could state one
-// from.
+// it reads no node of the session, no tuple naming it but the two the one inbox's R5 states of a
+// mention before any send ("the mentions tuple runs from the comment ... to the identity it
+// points at"; the attempt's tuples "are owed_to while the send is undecided"), and no receipt the
+// outbox could state one from.
 func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 	t.Parallel()
 	hold := newSendHold()
@@ -95,8 +97,9 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 
 // requireAPendingAttemptEarnsNothing reads the one attempt of comment while its send is held: it
 // stands pending and pinned to session, and the store holds no node of that session, no tuple
-// naming it and no comment.delivery receipt of the comment, which is what the outbox states a
-// delivered_to tuple from.
+// naming it but the comment's mentions and the attempt's owed_to (R5), so no delivered_to, and no
+// comment.delivery receipt of the comment, which is what the outbox states a delivered_to tuple
+// from.
 func requireAPendingAttemptEarnsNothing(t *testing.T, database *store.Store, comment, session string) {
 	t.Helper()
 	ctx := context.Background()
@@ -109,16 +112,27 @@ func requireAPendingAttemptEarnsNothing(t *testing.T, database *store.Store, com
 	if _, found, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, session); err != nil || found {
 		t.Errorf("the store holds the pending attempt's session %s as a node: %t (err %v), want none", session, found, err)
 	}
-	var naming, receipts int
-	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from graph_tuples
+	naming, err := readStrings(ctx, database.Pool, `
+		select kind || ' ' || from_kind || ':' || from_id || ' > ' || to_kind || ':' || to_id ||
+		       case when asserted then '' else ' retracted' end
+		from graph_tuples
 		where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2)
-	`, graphstore.KindSession, session).Scan(&naming); err != nil {
-		t.Fatalf("count the tuples naming %s: %v", session, err)
+	`, graphstore.KindSession, session)
+	if err != nil {
+		t.Fatalf("read the tuples naming %s: %v", session, err)
 	}
-	if naming != 0 {
-		t.Errorf("the store holds %d tuple(s) naming the pending attempt's session %s, want none: a pending attempt is no delivery", naming, session)
+	slices.Sort(naming)
+	owed := []string{
+		graphstore.TupleMentions + " " + graphstore.KindComment + ":" + comment + " > " + graphstore.KindSession + ":" + session,
+		graphstore.TupleOwedTo + " " + graphstore.KindDeliveryAttempt + ":" +
+			graphstore.CommentAttempt(comment, attempts[0].Target, attempts[0].Attempt).ID() + " > " + graphstore.KindSession + ":" + session,
 	}
+	slices.Sort(owed)
+	if !slices.Equal(naming, owed) {
+		t.Errorf("the store holds %v naming the pending attempt's session %s, want only the mention and the owed attempt %v: a pending attempt is no delivery",
+			naming, session, owed)
+	}
+	var receipts int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from events where type = 'comment.delivery' and payload->>'comment_id' = $1
 	`, comment).Scan(&receipts); err != nil {
@@ -127,7 +141,7 @@ func requireAPendingAttemptEarnsNothing(t *testing.T, database *store.Store, com
 	if receipts != 0 {
 		t.Errorf("the log holds %d comment.delivery receipt(s) of the pending attempt, want none to state a delivered_to from", receipts)
 	}
-	t.Logf("the attempt of %s stands pending and pinned to %s, which the store holds no node and no tuple of", comment, session)
+	t.Logf("the attempt of %s stands pending and pinned to %s, which the store holds no node of and no tuple but its mention and owed_to", comment, session)
 }
 
 // A message queued for a stopped session and answered by that session when it runs again leaves

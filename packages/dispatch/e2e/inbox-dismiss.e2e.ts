@@ -7,7 +7,7 @@ import {
   createComment,
   createIssue,
   createProject,
-  listMyReplies,
+  meInboxThreads,
   patchIssue,
 } from "./api";
 import { typeFilterCount } from "./inbox-filter";
@@ -135,36 +135,34 @@ function nextDismiss(page: Page): Promise<Request> {
   );
 }
 
-/** What the reader has dismissed out of their Inbox, read back from the route a page at a time.
- *  Under `state=dismissed` the answer's `total` is the page it holds rather than the whole pile -
- *  nothing counts that view, and counting it is the most expensive read the Inbox has (a14) - so
- *  the count is the rows, followed through `next_cursor` to the last page. */
+/** What the reader has dismissed out of their Inbox, read back from the one read's `dismissed`
+ *  state: its thread rows, followed through `next_cursor` to the last page. */
 async function dismissedThreads(): Promise<number> {
   let counted = 0;
   let cursor: string | undefined;
   do {
-    const page = await listMyReplies({ cursor, kind: ["reply", "agent"], state: "dismissed" });
-    counted += (page.rows ?? []).length;
+    const page = await meInboxThreads({ cursor, state: "dismissed" });
+    counted += page.rows.length;
     cursor =
       page.next_cursor === undefined || page.next_cursor === "" ? undefined : page.next_cursor;
   } while (cursor !== undefined);
   return counted;
 }
 
-/** What the reader's Inbox holds, read or not, read back from the route. */
+/** What the reader's Inbox holds, read or not, read back from the one read: its thread rows. */
 async function inboxThreads(): Promise<number> {
-  return (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).total;
+  return (await meInboxThreads({ state: "inbox" })).rows.length;
 }
 
-/** What the page drew in each Inbox row, read out of the same list route the page reads and
+/** What the page drew in each Inbox row, read out of the one read the page reads and
  *  keyed by that row's own id, which is exactly what a dismissal of it carries in
  *  `seen_replies`: a Reply row's own `version`, and an Agent row's newest session reply with the
  *  ids it answered as unread. Read before the press, since the rows it takes out are gone from
  *  this state afterwards. */
 async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
-  const { rows } = await listMyReplies({ kind: ["reply", "agent"], state: "inbox" });
+  const { rows } = await meInboxThreads({ state: "inbox" });
   return Object.fromEntries(
-    (rows ?? [])
+    rows
       .map(inboxThreadRow)
       .map((row) => [
         row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id),
@@ -251,7 +249,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
     await expect(rows).toHaveCount(3);
     await expectSidebarInboxCount(page, 3);
     expect(await bandHeadings(page)).toEqual(["P2 (2)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(1);
+    expect(await typeFilterCount(page, bar, "Threads")).toBe(1);
     expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
 
     // The selected row draws its Dismiss twice - on the short row and in the column's head -
@@ -279,7 +277,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
 
     // And out of the Filter control's count and the band's.
     expect(await bandHeadings(page)).toEqual(["P2 (1)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(0);
+    expect(await typeFilterCount(page, bar, "Threads")).toBe(0);
     expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
 
     // The server holds the same: one thread dismissed, one left in the Inbox.

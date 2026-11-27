@@ -816,7 +816,7 @@ describe("awaitSeededInbox", () => {
 
   test("reads that fail first and then answer the whole set return", async () => {
     const inbox = reader((call) =>
-      call <= 3 ? new Error("GET /api/v1/inbox failed: 502 bad gateway") : wholeSet
+      call <= 3 ? new Error("GET /api/v1/asks/open failed: 502 bad gateway") : wholeSet
     );
     const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: 10_000, intervalMs: 20 });
     // Reads at 0, 20, 40 and 60 ms.
@@ -828,7 +828,7 @@ describe("awaitSeededInbox", () => {
   });
 
   test("reads that always fail say that no read answered, and the last error", async () => {
-    const inbox = reader((call) => new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`));
+    const inbox = reader((call) => new Error(`GET /api/v1/asks/open failed: 500 attempt ${call}`));
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
     await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
@@ -837,7 +837,7 @@ describe("awaitSeededInbox", () => {
       new RegExp(`^${fact}: no read answered in \\d+\\.\\d s over ${inbox.calls} reads\\.$`)
     );
     expect(lines.slice(1)).toEqual([
-      `  the last read failed: GET /api/v1/inbox failed: 500 attempt ${inbox.calls}`,
+      `  the last read failed: GET /api/v1/asks/open failed: 500 attempt ${inbox.calls}`,
       declares,
       owner,
     ]);
@@ -862,7 +862,7 @@ describe("awaitSeededInbox", () => {
 
   test("a short set and then failed reads name the missing row and the last error", async () => {
     const inbox = reader((call) =>
-      call === 1 ? shortSet : new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`)
+      call === 1 ? shortSet : new Error(`GET /api/v1/asks/open failed: 500 attempt ${call}`)
     );
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
     await settledAfter(quick.boundMs, waiting);
@@ -875,7 +875,7 @@ describe("awaitSeededInbox", () => {
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - none",
-        `  the last read failed: GET /api/v1/inbox failed: 500 attempt ${inbox.calls}`,
+        `  the last read failed: GET /api/v1/asks/open failed: 500 attempt ${inbox.calls}`,
         declares,
         owner,
       ].join("\n")

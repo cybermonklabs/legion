@@ -5,22 +5,24 @@ import "maps"
 // StoreWriteCallSites is the register of the store's writers (storeWriteCallSites), a fresh map
 // for each caller. It is held here, in a package no writer of the store imports, so the two tests
 // that read it read one list: graphstore's TestEveryStoreWriteCallSiteIsListed, which holds it to
-// the module's source and each site's driver to a test of that site's package, and graphcensus's
-// TestTheSizingCountsEveryTupleTheWritersAppend, which drives every site it lists and reads off
-// graph_tuples what each one appended.
+// the module's source and each site's driver to a test the package it names declares, and
+// graphcensus's TestTheSizingCountsEveryTupleTheWritersAppend, which drives every site it lists
+// and reads off graph_tuples what each one appended.
 func StoreWriteCallSites() map[string]string { return maps.Clone(storeWriteCallSites) }
 
 // storeWriteCallSites is every function outside the tests that calls one of graphstore's writers
 // (graphstoretest.WriteFunctions), named as docs' register names a pass: the file, from
 // internal/dispatch where it lives under it, and the function, without its receiver. Beside each
-// site is the test that drives its lock steps against the order written on api/inbox_read.go's
-// markInboxReadThreads, as "<package dir>#<Test>": the package's directory, named as a site's
-// file is (graphstore's siteKey), and the test's name. Such a test runs the site's real code,
-// holds each step it takes in another transaction, and reads where the write waits and which
-// table locks it holds by then. graphstore's TestEveryStoreWriteTakesOneLockOrder proves the order
-// on that package's own writers. A site that is not listed has had nobody prove its steps, and a
-// site whose driver is missing or names no test of that package is one c-lock-order's run drives
-// no test of, so each fails graphstore's TestEveryStoreWriteCallSiteIsListed until it is put right.
+// site is a test that runs the site's real code, as "<package dir>#<Test>": the directory of the
+// package that declares it, named as a site's file is (graphstore's siteKey), and the test's name.
+// For most sites it is the test that drives the site's lock steps against the order written on
+// api/inbox_read.go's markInboxReadThreads: it holds each step the site takes in another
+// transaction, and reads where the write waits and which table locks it holds by then.
+// graphstore's TestEveryStoreWriteTakesOneLockOrder proves the order on that package's own
+// writers. A site no lock-step test drives says so in its comment, and the test beside it runs its
+// real code. A site that is not listed has had nobody look at its steps, and a site whose test is
+// missing or names no test of that package is one c-lock-order's run drives no test of, so each
+// fails graphstore's TestEveryStoreWriteCallSiteIsListed until it is put right.
 var storeWriteCallSites = map[string]string{
 	// The follow of an ask, which records the following session's node in the caller's
 	// transaction or write phase, and each site that moves that node onto the event it appends
@@ -51,7 +53,11 @@ var storeWriteCallSites = map[string]string{
 	// The comment path, which the comment route and the comment an issue write leaves share: the
 	// comment's node before the comments row that names it (queueCommentRow, through
 	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
-	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored).
+	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored). The comment
+	// route writes the node of each delivery attempt its mentions open before the attempt's row
+	// itself (createCommentFor, through QueueNodes), which the comment's event causes
+	// (queueCommentCreated).
+	"api/comment_create.go#createCommentFor":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
@@ -62,6 +68,34 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// Every other write of a delivery attempt's row. Each states in the same write phase what the
+	// row now holds (graphstore.QueueAttempted), and the two that open an attempt queue its node
+	// before the row (graphstore.AttemptOpened's plan, through QueueNodes), as the creates listed
+	// with their own nodes do (createCommentFor, createStoredMessage, queueBroadcastCopy).
+	// QueueAttempted appends tuples alone, which lock no row, so it adds no step to its caller's
+	// order; an opened attempt's node is one no other write can name yet, written before the row
+	// whose foreign key names it. No lock-step test drives these sites: api's
+	// TestMentionsAreTuplesAndEveryAttemptIsANode runs each one's real code and reads what it
+	// states of its attempt.
+	"api/comment_delivery.go#holdCommentDeliveryClaim":        "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_delivery.go#openCommentDeliveryAttempt":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_delivery.go#recordCommentDeliveryResolution": "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_delivery.go#standDown":                       "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_delivery.go#supersedeCommentDelivery":        "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_delivery.go#take":                            "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_mention_claims.go#claimQueuedMention":        "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_mention_claims.go#refreshMentionClaims":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/comment_mention_claims.go#releaseMentionClaims":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/delivery_sweep.go#settleUndeliverableMention":        "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/message_delivery.go#acceptDelivery":                  "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/message_delivery.go#insertMessageDeliveryAttempt":    "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/message_delivery.go#claimAttempt":                    "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/message_delivery.go#recordPendingMessageDelivery":    "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	"api/message_delivery.go#replyMessage":                    "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
+	// The mention rule's settle of an abandoned attempt before it publishes that session's copy,
+	// which states it through QueueAttempted as the attempt writes above do. No lock-step test
+	// drives it: the outbox's credit filter test runs its real code.
+	"outbox/mentions.go#settleAbandoned": "outbox#TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to: written before its row, and caused by the event the
 	// create appends after it. createIssue, storeArtifact with queueNewArtifact, and createAskFor
@@ -71,11 +105,16 @@ var storeWriteCallSites = map[string]string{
 	// QueueCaused; a route that appends its event at once queues the cause in the event's own
 	// batch, appendCausingEvent), and api's TestEveryObjectNodeWriterTakesTheStoreLockOrder drives
 	// each of them through it.
-	"api/broadcasts.go#writeBroadcast":           "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/broadcasts.go#queueBroadcastCopy":       "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#insertSessionReply": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/messages.go#createStoredMessage":        "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/reviews.go#openApprovalAsk":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"docs/ask_blocks.go#createAskBlock":          "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	// A broadcast's pages, the page each recipient's copy hangs from, queued before the first
+	// copy's node and caused by each copy's event, which the broadcast's driver to two recipients
+	// holds at the recipients' pages.
+	"api/broadcasts.go#queue":      "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/broadcasts.go#queueCause": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
 	// create would have written, for a document an earlier build made with none, then
@@ -142,12 +181,20 @@ var storeWriteCallSites = map[string]string{
 	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
 	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
 	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and
-	// TestEveryStoreWriteTakesOneLockOrder proves the order on them.
+	// TestEveryStoreWriteTakesOneLockOrder proves the order on them. QueueCaused hands the facts of
+	// a write that name a person (Uncaused.People, a mention of one) to QueueToPerson after the
+	// write's own append, which writes the person nodes `do nothing` and their tuples.
 	"graphstore/people.go#QueueAuthored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueReached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueSessionRecorded": "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/write.go#Caused":                "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"graphstore/write.go#QueueCaused":           "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// ToPerson and FromPerson run their queued forms (QueueToPerson, QueueFromPerson) as a batch of
+	// their own, for a writer that queues no write phase, and their callers' drivers hold their
+	// steps.
+	"graphstore/from_person.go#FromPerson": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphstore/to_person.go#ToPerson":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The one writer of an ask's answer state: asks.Settled.Queue states the answer on the ask's
 	// node, appended under the event it is given or held for the caller's, and then writes the
 	// row; the catch-up of a follow another build recorded states it on the node. Each site that
@@ -173,6 +220,23 @@ var storeWriteCallSites = map[string]string{
 	"docs/ask_blocks.go#planRemovalRetractions":          "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"graphcensus/backfill_asks.go#writeAskBatch":         "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
 	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
+	// The backfill of every kind the one inbox moves (graphcensus.backfillInbox), each batch in the
+	// order the live writers take - owner rows, then an ask's project rows, then the item rows and
+	// an item's block state, then the item's nodes and tuples, then a thread's user_threads rows in
+	// ascending login and the deliveries to them, then the markers: the messages, the comment
+	// pointers, an item's blocks, their links (writeLinks), the item's citations, a comment's
+	// delivery routes and what an older build's outbox published (writeRelations), the attempt rows,
+	// the user_threads rows and the five other read-state tables. What each comment, message, ask,
+	// answer and decline an older build wrote owed its thread is inboxwrite.RecordOlder's, listed
+	// with the one writer below.
+	"graphcensus/backfill_inbox.go#writeMessages":            "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox.go#writeCommentPointers":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox.go#writeBlocks":              "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox.go#writeLinks":               "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox.go#writeRelations":           "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox.go#writeAttempts":            "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox_threads.go#writeUserThreads": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox_threads.go#writeMarks":       "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies": "outbox#TestAFallbackCopyThePassPublishedIsADelivery",
@@ -186,4 +250,90 @@ var storeWriteCallSites = map[string]string{
 	// and cause waiting for the same event.
 	"refs/blocks.go#Queue":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	"refs/decision_nodes.go#Queue": "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
+	// The index of an item's body: the block nodes of a comment, a message or an ask, queued
+	// before the block rows that name them (refs.ItemIndexing.Queue), whose part_of, links and the
+	// item's citations wait for the event of the write that indexed them (QueueCaused at the item
+	// writers' sites above, an edit's among them), and each owed pass, which appends them at the
+	// sentinel in its own transaction: the owed index of a reply's parent (refs.ItemRepair.Queue),
+	// the re-index of old text and the rebuild (refs' reindexPlan.queue and replaceInTx), a
+	// restored wording, an approval ask's rewrite and the seed. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths and an author's
+	// corrections of a post (listed below) to the block steps, and
+	// TestEveryObjectNodeWriterTakesTheStoreLockOrder the ask and message paths. No lock-step test
+	// drives the rebuild, an edit of a comment or an ask, or a restored wording: the test beside each
+	// runs its real code.
+	"refs/item_blocks.go#Queue":                        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"refs/reply_blocks.go#Queue":                       "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"refs/rebuild.go#queue":                            "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
+	"refs/rebuild.go#replaceInTx":                      "refs#TestARebuildBesideAnEditKeepsTheEditsReferences",
+	"api/asks.go#editAsk":                              "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
+	"api/comment_actions.go#editComment":               "api#TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations",
+	"docs/approval_ask.go#rewriteApprovalAsk":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"docs/decided_wording.go#restoreWordings":          "docs#TestARestorationRefusesAnAskAnsweredSinceItsPlan",
+	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
+	// An author's correction of a post (main's #3512), each under its issue's owner lock: the edit
+	// of an issue message and the delete of a comment or an issue message. Each updates the post's
+	// row, whose body's trigger writes its block state row, then writes the index of the body it
+	// leaves: the block nodes it states, an edit's new block live and a delete's removed blocks gone,
+	// before the block rows that name them. A delete then settles each send of the post still
+	// pending, failed on its attempt's row, and appends each one's receipt and what the settle left on
+	// that row under it (graphstore.QueueAttempted), then its own event and what the cleared body
+	// takes out of the store under that (graphstore.QueueCaused). An edit appends its event, then what
+	// its index states under it (graphstore.QueueCaused), whose mention of a person writes that
+	// person's node `do nothing` with the mentions tuple (graphstore.QueueToPerson), and last the
+	// participation of each person it newly mentions in the post's thread
+	// (inboxwrite.MentionParticipation, graphstore.QueueToPerson). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder drives each through its route, the deletes
+	// while a send is pending and the edit naming a person no write has recorded.
+	"api/comment_delete.go#deleteComment":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#deleteMessage": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/message_corrections.go#editMessage":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The one writer of the threads a person takes part in (inboxwrite.Recording.Queue), which every
+	// comment, message, ask and answer write queues after its event: what an answer's ask still owes
+	// the store, its writer's participates_in, every user_threads row of the thread in one pass,
+	// then the delivered_to of each other participant through QueueToPerson and the move of their
+	// rows, its writer's own row (queueKeepRow), and last, for a comment or a message, the
+	// participation of each person its text newly mentions (R4's mention arm), through
+	// QueueToPerson. It takes the owner lock its caller took first and no other node row than the
+	// person nodes QueueToPerson upserts `do nothing`. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths to its
+	// user_threads steps.
+	"inboxwrite/record.go#Queue":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"inboxwrite/thread.go#queueKeepRow": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The same writer's clear of the Agent dismissals a session's reply ends
+	// (queueAgentDismissalsClear), under the root message `for no key update`, which the reply's
+	// writer took first (inboxwrite.Recording.QueueRootLock): the retraction of each dismissed
+	// mark of that root through QueueMarksEnded, then the delete of the
+	// user_agent_thread_dismissed rows. No lock-step test follows these steps; api's
+	// TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply runs them, holding the root as the
+	// dismiss route takes it `for update`.
+	"inboxwrite/thread.go#queueAgentDismissalsClear": "api#TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply",
+	// The same writer's record of a write an older build made (inboxwrite.RecordOlder), which the
+	// backfill runs for each such comment, message, ask, answer and decline in the batch that marks
+	// it, after its owner and item rows: participates_in, the user_threads rows of the people it
+	// reached locked in ascending login, then their delivered_to through ToPerson and the
+	// retractions of the dismissals it ended through FromPerson.
+	"inboxwrite/older.go#RecordOlder": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The move of the person open asks wait on (inboxwrite.QueueMoveWaiting), which patchIssue's
+	// assignee, putAskAskedOf, putProjectDefaultAssignee, the reopen's restore of withdrawn asks and
+	// a settlement's restore of an ask it retracted queue after their event: the asks rows it moves
+	// locked `for no key update` in ascending id, after the owner lock and the project's lock its
+	// caller took, then the person tuples, which write the person nodes `do nothing` before the
+	// tuples, in ascending (kind, id).
+	"inboxwrite/waiting.go#QueueMoveWaiting": "api#TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder",
+	// The writes of a person's read state: each route that writes one of the read-state tables
+	// queues, through QueueFromPerson and under the event it appends after its statement, the mark
+	// that statement stored - a thread read, Mark all read and the dismissal (whose transactions
+	// end in commitInboxMarks), a conversation's Clear, read mark and replies read by id, and a
+	// snooze and an unsnooze (the removal of an untouched document, listed above, retracts the marks
+	// of the Inbox rows it deletes). Each takes the lock order written on api/inbox_read.go's
+	// markInboxReadThreads as it did, and the one statement QueueFromPerson adds comes after its
+	// event and every row it locks: it writes the person's node `do nothing` and appends tuples,
+	// which lock no row of another table. No lock-step test drives these sites: api's
+	// TestEveryReadStateWriteIsATupleFromThePerson runs each one's real code and reads what it
+	// states.
+	"api/ask_snooze.go#announceAskSnooze": "api#TestEveryReadStateWriteIsATupleFromThePerson",
+	"api/inbox_read.go#commitInboxMarks":  "api#TestEveryReadStateWriteIsATupleFromThePerson",
+	"api/replies.go#putThreadRead":        "api#TestEveryReadStateWriteIsATupleFromThePerson",
+	"api/state.go#putUserAgentState":      "api#TestEveryReadStateWriteIsATupleFromThePerson",
 }

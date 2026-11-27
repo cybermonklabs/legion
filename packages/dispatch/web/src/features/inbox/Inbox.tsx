@@ -13,8 +13,8 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
-import type { InboxRow, MyReplyRow } from "../../api/types";
+import { whoAmIQuery } from "../../api/queries";
+import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, pillClassName } from "../../components/Pill";
@@ -81,6 +81,7 @@ import {
 import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
 import { useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
+import { useInboxAsks } from "./one-read";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { inboxEntryState, type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
@@ -116,7 +117,7 @@ import { useInboxThreadRows } from "./useInboxThreadRows";
  *  may be narrower than its words: it takes at most two fifths of the card head's first line,
  *  so the issue's key and title keep the rest, and a long agent name ends in an ellipsis
  *  inside it, the whole of it in the title. */
-function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
+function InboxRowChip({ ask }: { ask: OpenAskRow }): ReactNode {
   const agentText = useAgentText();
   if (ask.waiting_on === "human" && ask.last_reply?.author.kind === "session") {
     return (
@@ -347,7 +348,7 @@ function AskShortRow({
   row,
   section,
   selected,
-}: InboxRowProps & ShortRowProps & { ask: InboxRow }): ReactNode {
+}: InboxRowProps & ShortRowProps & { ask: OpenAskRow }): ReactNode {
   const control = useControlName(ask, ordinal);
   return (
     <ShortRowFrame
@@ -475,7 +476,7 @@ function InboxCardRow({
   threadUpdatedAt,
   viewer,
 }: InboxRowProps & {
-  ask: InboxRow;
+  ask: OpenAskRow;
   /** True while this row's "Assign to me" write is in flight or failed, whatever band the
    *  optimistic update put the row in. */
   assignLive: boolean;
@@ -484,7 +485,8 @@ function InboxCardRow({
   /** The same registration for this row's snooze write; the Inbox keeps a live row rendered
    *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
   onSnoozeLive: (askId: string, live: boolean) => void;
-  /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
+  /** When the read that supplied this row's initial thread answered: the one read for the
+   *  reader's own asks, the open asks for every other (`useInboxAsks`'s `updatedAtOf`). */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
@@ -707,10 +709,17 @@ export function Inbox({
   // place of the list; the drawer is the list of cards at every width.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
   const columns = pane && wideEnoughForPane;
-  // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
-  // list below is a client-side partition of it, so an answered row leaves every surface at once.
-  const inbox = useQuery(inboxQuery());
   const whoAmI = useQuery(whoAmIQuery());
+  const viewer = whoAmI.data?.login;
+  // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
+  // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
+  // behind their back.
+  const selection = filter.assignees ?? (viewer === undefined ? [] : [viewer]);
+  // The asks this list holds: the reader's own from the one read, and every other person's from
+  // the open asks while the selection shows them (`useInboxAsks`, `one-read.ts`, which
+  // `useInboxThreadRows` below follows for the threads). The list is a client-side partition of
+  // those reads, so an answered row leaves every surface that reads them at once.
+  const inboxAsks = useInboxAsks(selection, viewer);
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
    *  it. A thread stays in the Inbox, read or not, until it is dismissed. */
   const show: InboxShow = filter.show ?? "inbox";
@@ -726,16 +735,12 @@ export function Inbox({
   const columnsRef = useRef<HTMLDivElement>(null);
   /** How much of that grid the reading column takes, kept for the reader's browser. */
   const [paneWidth, setPaneWidth] = usePaneWidth();
-  // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
-  const adoptedInbox = useMotionHold(inbox.data, listRef);
+  // A refetch can land while a pointer travels between rows, so it is adopted once that pointer
+  // settles.
+  const adoptedInbox = useMotionHold(inboxAsks.asks, listRef);
   // The credential requests the Inbox lists above its asks: the section, the banner and the empty
   // state all read this one answer.
   const credentials = useCredentialRequests();
-  const viewer = whoAmI.data?.login;
-  // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
-  // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
-  // behind their back.
-  const selection = filter.assignees ?? (viewer === undefined ? [] : [viewer]);
   const sort = filter.sort ?? "newest";
   const groupBy = filter.group ?? "priority";
   const filters: InboxFilters = filter.filters ?? {};
@@ -1693,10 +1698,12 @@ export function Inbox({
     },
   ]);
 
-  if (inbox.isPending || whoAmI.isPending) {
+  // The list waits for every read its asks come from, and says it could not load where one
+  // failed, rather than drawing a list without the rows that read answers for.
+  if (whoAmI.isPending || inboxAsks.pending) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
-  if (inbox.isError || viewer === undefined || place === undefined) {
+  if (inboxAsks.failed || viewer === undefined || place === undefined) {
     return <p className={dangerText}>Could not load your inbox.</p>;
   }
 
@@ -1777,7 +1784,11 @@ export function Inbox({
                 ? { inboxDefaultPick: true }
                 : undefined
             }
-            to={buildInboxPath({ assignees: filter.assignees, item: filter.item, q: filter.q })}
+            to={buildInboxPath({
+              assignees: filter.assignees,
+              item: filter.item,
+              q: filter.q,
+            })}
           >
             <LabelPill selected>
               Asks from {name}
@@ -2107,7 +2118,7 @@ export function Inbox({
         onAnswered={recordAnswered}
         onAssignLive={onAssignLive}
         onSnoozeLive={onSnoozeLive}
-        threadUpdatedAt={inbox.dataUpdatedAt}
+        threadUpdatedAt={inboxAsks.updatedAtOf(row.ask.id)}
         viewer={viewer}
       />
     ) : (

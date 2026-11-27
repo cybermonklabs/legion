@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
+import { openAsksQuery } from "../api/queries";
 import type {
   AnswerAskInput,
   Ask,
@@ -14,12 +15,13 @@ import type {
   AskRead,
   Comment,
   CreateCommentInput,
-  InboxRow,
+  OpenAskRow,
 } from "../api/types";
 import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { answerOpenAsks } from "../features/inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
@@ -1391,7 +1393,7 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
   const { queryClient, view } = renderCard(
     <AskCard ask={input} answerAsk={() => pendingAnswer} getAskThread={emptyThread(input)} />
   );
-  const inboxInput: InboxRow = {
+  const inboxInput: OpenAskRow = {
     ...input,
     last_reply: null,
     priority: null,
@@ -1408,16 +1410,18 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
       route_status_reason: null,
     },
   };
-  queryClient.setQueryData<InboxRow[]>(["inbox"], [inboxInput]);
+  queryClient.setQueryData<OpenAskRow[]>(openAsksQuery().queryKey, [inboxInput]);
 
   try {
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     await user.click(view.getByRole("button", { name: "Answer" }));
 
-    await waitFor(() => expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([]));
+    await waitFor(() =>
+      expect(queryClient.getQueryData<OpenAskRow[]>(openAsksQuery().queryKey)).toEqual([])
+    );
     rejectAnswer(new Error("offline"));
     await waitFor(() =>
-      expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([inboxInput])
+      expect(queryClient.getQueryData<OpenAskRow[]>(openAsksQuery().queryKey)).toEqual([inboxInput])
     );
   } finally {
     view.unmount();
@@ -2293,7 +2297,7 @@ test("a document ask links its project and document page", async () => {
     document: { name: "Design notes", project: "CORE", slug: "design-notes" },
     issue_key: null,
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([
+  const listOpenAsks = answerOpenAsks([
     {
       ...input,
       last_reply: null,
@@ -2338,7 +2342,7 @@ test("a document ask links its project and document page", async () => {
     );
   } finally {
     view.unmount();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     whoAmI.mockRestore();
     getArtifactSubscribers.mockRestore();
   }

@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -155,6 +157,24 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // writes at most one version of the document (a settlement's) or none (the reopen's follow). The
 // rule compares with that version, the one the request names, whatever versions a closed issue's
 // settlements wrote since, which moved no request.
+//
+// Where the request falls through to its project's default assignee - it is handed to nobody, on
+// an issue nobody holds or on a project document (inboxwrite.AskDefaultProject) - the project's
+// owner lock is taken shared (inboxwrite.HoldAskDefault) before the rewording is queued. A move of
+// that default (api's putProjectDefaultAssignee) takes the lock exclusive and then locks, in
+// ascending id, every open asks row that falls through to it, this request among them. A
+// settlement's version write locks the asks rows of the document's ask blocks (reconcileAskBlocks,
+// lockAskBlocksForWrite) before this rewording writes the request's row, so where the request's id
+// is below a block ask's the move takes the request's row first: the write would hold the block
+// ask's row while it waited for the request's, and the move hold the request's while it waited for
+// the block ask's. Every write of a version but the decisions step's is queued, so the hold, taken
+// here in its read phase, comes before every asks row its write phase locks: a move of the default
+// either committed already or waits for the version. A settlement that may open or restore an ask
+// holds it already (reconcileAskBlocks), and so does the reopen whose follow moves a request
+// (api's prepareRestoration); the reopen's restored request still reads withdrawn in the store,
+// so this reads no default for it. The decisions step's restore, whose writes run at once, takes
+// this hold before any asks row (restoreIssueDecisions), so there it is one the transaction holds
+// already, which a second request of it is granted at once.
 func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, tree *pmdoc.Node, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) error {
 	ask, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
@@ -195,6 +215,9 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 		}
 	}
 	quiet := keepsTurn || ApprovalAwaitsHandBack(ask.Approval.Documents)
+	if err := inboxwrite.HoldAskDefault(ctx, tx, ask.ID); err != nil {
+		return fmt.Errorf("move approval ask: %w", err)
+	}
 	if err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL, quiet); err != nil {
 		return err
 	}
@@ -272,7 +295,7 @@ func rewriteApprovalAsk(
 		return err
 	}
 	reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL)
-	changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
+	changes, index, cited, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		return fmt.Errorf("index approval ask: %w", err)
 	}
@@ -288,10 +311,13 @@ func rewriteApprovalAsk(
 	// in that same step; the row carries the edited_at that update sets, so the plan marks the
 	// request edited without reading it back. The question's reconciliation is queued before the
 	// parts, so the parts' step settles the forms queue (questionReconciled).
-	changes, parts, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, true, changes)
+	changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, true, changes, nil)
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
+	// What the rewording states in the store - its parts' nodes and links and the request's
+	// citations - waits for the ask.edited that records it, right after which it is stated.
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
 	payload := model.NewAskEditEventPayload(row, previous, actor, changes)
 	payload.Quiet = quiet
 	return write(ctx, tx, func(b *store.WriteBatch) error {
@@ -313,6 +339,7 @@ func rewriteApprovalAsk(
 			return fmt.Errorf("append approval ask edit: %w", err)
 		}
 		refs.QueueStamp(b, "ask", ask.ID)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
 		return nil
 	})
 }

@@ -342,7 +342,8 @@ test("Conversation draws a message of 8,000 list items without holding the main 
 // one - the Inbox's ask card, drawing a body through `MarkdownBody` - and its reply is the
 // longest body it ever draws.
 // SLOW(>=2s): the reply's 8,000 items are drawn in the card before the hold is read, and the
-// Inbox pays for them where a reader does: the inbox GET brings the card and its reply together,
+// Inbox pays for them where a reader does: its read of the reader's own rows, the one read's
+// `inbox` state (`GET /api/v1/me/inbox?state=inbox`), brings the card and its reply together,
 // so the parse and the paint of 16,000 elements are what this row waits out.
 test("the Inbox's ask card draws a reply of 8,000 list items without holding the main thread for a second", async ({
   browser,
@@ -369,7 +370,7 @@ test("the Inbox's ask card draws a reply of 8,000 list items without holding the
         await page.goto("/");
         await expect(card).toBeVisible();
       },
-      reset: /\/api\/v1\/inbox(\?.*)?$/,
+      reset: /\/api\/v1\/me\/inbox\?(.*&)?state=inbox(&|$)/,
     });
     await expectSettled(card);
     record(measured);

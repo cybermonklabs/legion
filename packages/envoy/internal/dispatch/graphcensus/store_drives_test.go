@@ -5,6 +5,7 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os/exec"
 	"regexp"
@@ -59,6 +60,12 @@ type StoreDrive struct {
 // while it is nil, every site only those drives run is listed and not driven, and the test fails
 // naming it.
 var ImportedDrives func(*testing.T) []StoreDrive
+
+// PublishTheLog is publishTheLog for this package's external test, whose census of what the
+// server wrote reads the log published, as production's does: a role a comment routes to has its
+// node made by the outbox's publish of the event that names it (outbox.deliveredGraph), and the
+// server the external test drives runs no outbox of its own.
+var PublishTheLog = publishTheLog
 
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that
 // no drive runs, naming it, so a site added to the register is a site this test drives before it
@@ -194,7 +201,7 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: heldNodeDrive, Database: database,
-		Sites: []string{"graphstore/write.go#Caused"},
+		Sites: []string{"graphstore/write.go#Caused", "graphstore/write.go#QueueCaused"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "write a person's node held for its cause", func(tx pgx.Tx) error {
 				write := graphstore.PlanUncaused(
@@ -376,12 +383,21 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 			return waiters, waiters >= 1
 		})
-		var waited string
-		if err := database.Pool.QueryRow(ctx, `
-			select query from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waited); err != nil {
-			t.Fatalf("read the statement the seed waits at behind the hold on %s: %v", table, err)
-		}
+		// A backend enters a lock's queue, where LockWaiters counts it, before Postgres reports its
+		// wait event, so the statement it waits at is read until that event shows.
+		waited := testwait.UntilPolling(t, 10*time.Millisecond, "the seed's wait behind the hold on "+table+" to show in pg_stat_activity", func() (string, bool) {
+			var query string
+			err := database.Pool.QueryRow(ctx, `
+				select query from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
+			`).Scan(&query)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", false
+			}
+			if err != nil {
+				t.Fatalf("read the statement the seed waits at behind the hold on %s: %v", table, err)
+			}
+			return query, true
+		})
 		if folded := strings.TrimSpace(seedStatementSpace.ReplaceAllString(strings.ToLower(waited), " ")); !strings.HasPrefix(folded, statement) {
 			t.Fatalf("the seed waits behind the hold on %s at %q, not at its first %s: what it appended so far is not the sites before it alone",
 				table, folded, statement)
@@ -430,18 +446,31 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 			queuedAt(t, comments, "comments", "insert into comments")
 		},
-		// The asks' nodes, which their batch writes before its rows, and the session nodes of
-		// their followers.
+		// The asks' nodes, which their batch writes before its rows, and the session nodes of their
+		// followers; the questions' body blocks with their links and the asks' citations; and the
+		// part the person an ask reaches takes in it with the read mark it stands at, whose first
+		// tuple makes that person's node (graphstore.ToPerson).
 		Counts: map[StoredKind][]string{
 			{graphstore.KindAsk, graphstore.AttributeVisibility}:     {graphstore.KindAsk},
 			{graphstore.KindAsk, graphstore.AttributeState}:          {graphstore.KindAsk},
 			{graphstore.KindAsk, graphstore.AttributeProject}:        {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.TupleMentions}:           {"citation"},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
+			{graphstore.KindPerson, graphstore.TupleReadThrough}:     {"read_mark"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{refs.BlockNodeKind, graphstore.TupleMentions}:           {"body_block_ref"},
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeMessages",
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#stateAtSentinel",
+			"cmd/dispatch-seed/write_items.go#writeMessages",
 			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
@@ -457,8 +486,10 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
 		},
-		// The comments, as the comment path states one, in their project, their one author's
-		// node, and the messages' nodes, which the seed writes after its comments.
+		// The comments, as the comment path states one, in their project, their meaning tuples and
+		// citations, and the messages, which the seed writes after its comments, with their author,
+		// parent, meaning tuples and citations; the body blocks of both with their links, and each
+		// author's part in the thread written to with the read mark the write moves.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
@@ -466,11 +497,24 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
+			{graphstore.KindComment, graphstore.TupleAnswers}:        {"reply"},
+			{graphstore.KindComment, graphstore.TupleRepliesTo}:      {"reply"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:         {"reply"},
+			{graphstore.KindComment, graphstore.TupleMentions}:       {"citation"},
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeProject}:    {graphstore.KindMessage},
-			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindMessage, graphstore.TupleAuthoredBy}:     {"message_relation"},
+			{graphstore.KindMessage, graphstore.TuplePartOf}:         {"message_relation", "reply"},
+			{graphstore.KindMessage, graphstore.TupleRepliesTo}:      {"reply"},
+			{graphstore.KindMessage, graphstore.TupleMentions}:       {"citation"},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{refs.BlockNodeKind, graphstore.TupleMentions}:           {"body_block_ref"},
+			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
+			{graphstore.KindPerson, graphstore.TupleReadThrough}:     {"read_mark"},
 		},
 	}}
 }

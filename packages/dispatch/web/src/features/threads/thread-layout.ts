@@ -100,7 +100,7 @@ const NOTHING_UNREAD: ReadonlySet<string> = new Set();
 
 /**
  * Which writes of a thread the reader has not read: the one rule every surface reads it by, over
- * the thread's own row of `GET /api/v1/me/replies` (the Inbox's list, or the owner's unread set
+ * the thread's own row of the one read (the Inbox's list, or the owner's unread set
  * `useMarkThreadRead` watches). An Agent row names its unread replies by id. Every other row
  * carries the reader's mark on the thread, so a write somebody made after that mark is one they
  * have not read - and a row the server calls read holds nothing unread at all, whatever its

@@ -39,20 +39,23 @@ import (
 //     to the page before any thread is walked, so a page costs the page.
 //
 // Each read is one pass over its own roots with index probes per root: the walk of one root's
-// thread (messages_in_reply_to), the dismissal mark (user_agent_thread_dismissed's primary key, or
-// its login/dismissed_at index when the marks are what is read), the session's marks and the
-// replies read by id. The shape this replaces built one recursive CTE over every one-off message
-// the person had ever sent and then scanned that whole CTE once per root, which cost the Dismissed
-// view's page read 433 ms and its count 7.4 s at 10,000 dismissed Agent threads (INFRA-450's a14).
+// thread (messages_in_reply_to), the session's marks and the replies read by id. A dismissal is the
+// root's own column for the Inbox's two states (messages.agent_dismissed_at, whose index of the
+// live roots, messages_direct_roots_live, holds no dismissed root), and the marks themselves,
+// through user_agent_thread_dismissed's login/dismissed_at index, for the Dismissed view. The shape
+// this replaces built one recursive CTE over every one-off message the person had ever sent and
+// then scanned that whole CTE once per root, which cost the Dismissed view's page read 433 ms and
+// its count 7.4 s at 10,000 dismissed Agent threads (INFRA-450's a14).
 //
 // The definition of "a reply this login has not read in this session" is unread_replies.go's
 // (unreadDirectRepliesCTE), which the Agents page's New replies badge and the conversation window
 // read: a session's own reply under a root this person targeted at that session, newer than the
-// later of their read mark (user_agent_read, keyed on the canonical login $1) and their Clear
-// (user_agent_state, keyed on the raw actor id $2 - the asymmetry that file records), and not one
-// they have read by its id (user_agent_reply_read). The reads here ask that question of one root
-// at a time rather than of every root at once, and myAgentUnreadReplyTest is the one place this
-// file spells it, so the two can differ in what they cost and not in what they mean.
+// later of their read mark and their Clear, both read from their one person node ($1) whatever
+// spelling of their login wrote them (directMarks), and not one they have read by its id
+// (replyReadByID). The reads here ask that question of one root at a time rather than of every
+// root at once, through those same two readings of the marks, and myAgentUnreadReplyTest is the
+// one place this file spells it, so the two can differ in what they cost and not in what they
+// mean.
 //
 // Parameters are unreadDirectRepliesCTE's own (unreadDirectRepliesArgs), so the first free one is
 // $4, the number of rows a page read takes (null for every row), and a Dismissed page resumes from
@@ -82,44 +85,65 @@ func agentSessionOf(target string) string {
 }
 
 // myAgentMarks is every session this person has a read mark or a Clear for, which is
-// unreadDirectRepliesCTE's own direct_marks: the canonical login keys the read mark and the raw
-// actor id the Clear, the asymmetry that file records. It is materialized and read once per
-// statement rather than per root - a person has a row here per session they have ever read or
-// cleared, a handful, where the roots are every one-off message they ever sent.
-const myAgentMarks = `
+// unreadDirectRepliesCTE's own direct_marks read for every session (directMarks): the read
+// mark and the Clear from the person's one node, and a row no tuple states yet on the key the
+// release before read it by. It reads $1 and $2 alone, since a read here may bind $3 for a statement
+// of its own (inboxDismissCheckAgentRoots). It is materialized and read once per statement rather
+// than per root: it is one row a session they have ever read or cleared, each read off the index
+// in two probes a kind however many marks they stated there (newestMarks), where the roots are
+// every one-off message they ever sent.
+var myAgentMarks = `
 	with marks as materialized (
-		select coalesce(marked.session_id, cleared.session_id) as session_id,
-		       greatest(marked.read_through, cleared.cleared_before) as at
-		from (select session_id, read_through from user_agent_read where login = $1) marked
-		full join (select session_id, cleared_before from user_agent_state where login = $2) cleared
-		  on cleared.session_id = marked.session_id
+		select session_id, at from (` + directMarks(false) + `
+		) direct
 	),`
 
 // agentMarkOf is the later of the person's read mark and their Clear for one session, which a
 // reply is unread after. A session they have neither for reads as -infinity, so every reply in it
-// is unread, exactly as the full join above leaves it.
+// is unread, exactly as directMarks leaves it.
 func agentMarkOf(session string) string {
 	return `coalesce((select at from marks where marks.session_id = ` + session + `),
 			  '-infinity'::timestamptz)`
 }
 
 // myAgentUnreadReplyTest is this file's one spelling of "a reply the person has not read": newer
-// than the mark for its session, and not read by its id. reply names the reply and mark the mark,
-// both as expressions, since each read asks it of a row of its own walk - and each read takes the
-// mark once per root rather than once per reply, which is two index reads a reply saved.
-func myAgentUnreadReplyTest(reply, mark string) string {
-	return `created_at > ` + mark + `
-			  and not exists (
-				select 1 from user_agent_reply_read
-				where user_agent_reply_read.login = $1 and user_agent_reply_read.reply_id = ` + reply + `
-			  )`
+// than the mark for its session, and not read by its id (replyReadByID). row names the walk's row
+// the reply is read from and mark the mark, as expressions, since each read asks it of a row of
+// its own walk - and each read takes the mark once per root rather than once per reply, which is
+// two index reads a reply saved.
+//
+// The time test is asked first, and the read-by-id test only of a reply newer than the mark, by a
+// case rather than an `and`: Postgres orders a filter's conditions by what it estimates each
+// costs, and it costs replyReadByID's two probes at nothing while user_agent_reply_read holds no
+// row that no tuple states yet, which is every database the backfill has passed. So an `and` ran
+// both probes for every session reply of every root before it looked at the time, which answers
+// no for nearly all of them: c-p99's Mark all read of the heavy person spent 19.5 ms in its Agent
+// read, which walks 2,000 roots, where the base build, whose one probe Postgres runs as an
+// anti-join after the time test, spent 7.7 ms (pg_stat_statements, 201 presses, 2026-11-25), and
+// the same read with this case took 7.3 ms at its p50 against 18.4 to 24.5 as an `and`. The two
+// answer alike for every row: neither side of the `and` is ever null - a message's created_at is
+// never null, and mark is read through agentMarkOf, which is never null either.
+func myAgentUnreadReplyTest(row, mark string) string {
+	return `(case when ` + row + `.created_at > ` + mark + `
+			  then not ` + replyReadByID(row+".id") + ` else false end)`
 }
 
 // myAgentRootFilter is what makes a message one of the person's one-off messages to a session: an
 // issue-less message of theirs targeted at a session, which no session took as a turn of its live
 // conversation. row names the relation it reads the message from, since the Dismissed view reads
 // that message by its primary key (myAgentRootIsOneOff) and the Inbox's own states read it off
-// messages_direct_roots.
+// messages_direct_roots_live (myAgentLiveRoot).
+//
+// The acceptance test reads accepted_at alone, the predicate of migration 0054's partial unique
+// index message_deliveries_one_acceptance, so it is one probe of that index a root, answered from
+// the index. It means accepted_as = 'user_turn': that migration's checks set accepted_at and
+// accepted_as together (message_deliveries_accepted_check) and admit no accepted_as but user_turn
+// (message_deliveries_accepted_as_check), so an attempt carries an acceptance exactly when a session
+// took it as a user turn, and a second kind of acceptance added to that check is to be named here.
+// Naming accepted_as, alone or beside accepted_at, leaves the probe a filter to read off the heap,
+// and the plan, which takes the roots to be one, costs that above a scan of the whole table a root:
+// c-p99's heavy read scanned message_deliveries once for each of 2,000 roots, 34 ms of the read
+// (INFRA-4948).
 func myAgentRootFilter(row string) string {
 	return row + `.issue_key is null and ` + row + `.in_reply_to is null
 		  and ` + row + `.target like 'session:%'
@@ -127,7 +151,7 @@ func myAgentRootFilter(row string) string {
 		  and ($3::text is null or ` + row + `.target = 'session:' || $3::text)
 		  and not exists (
 			select 1 from message_deliveries delivered
-			where delivered.message_id = ` + row + `.id and delivered.accepted_as = 'user_turn'
+			where delivered.message_id = ` + row + `.id and delivered.accepted_at is not null
 		  )`
 }
 
@@ -149,27 +173,58 @@ var myAgentRootIsOneOff = `
 			offset 0
 		)`
 
-// myAgentDismissedRootSet is the person's own dismissal marks, read once per statement as the set
-// the Inbox's own two states test their roots against, and myAgentDismissedRoot is that test. What
-// "dismissed" means on the Agent half is a mark existing, with no comparison of two times: the
-// trigger of migration 20261105093507 clears the mark in the transaction the session's reply is
-// written in, as user_threads_record clears a Reply thread's (20261105093501), so a thread that
-// came back carries no mark to find.
+// myAgentLiveRoot is what leaves a dismissed root out of the Inbox's own two states: the root's own
+// mark of its author's dismissal (messages.agent_dismissed_at, migration 20261125052902), which the
+// trigger of 20261125053125 keeps from user_agent_thread_dismissed in the statement that writes a
+// mark, whichever build writes it. What "dismissed" means on the Agent half is a mark existing,
+// with no comparison of two times: a session's reply deletes its root's marks in the transaction
+// it is written in (inboxwrite's queueAgentDismissalsClear, and for an older build's reply the
+// trigger of migration 20261105093507), as user_threads_record clears a Reply thread's
+// (20261105093501), so a thread that came back carries no mark and its root no column to find.
 //
-// The set is read once and hashed rather than probed per root, which is the difference between
-// reading the person's marks and reading one index entry for every thread they have ever
-// dismissed: the probe was 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14), and
-// the set is one index-only scan of the same marks. `not in` over a materialized set is what asks
-// the planner for the hash; a correlated `not exists` leaves it free to loop, and with the roots
-// estimated at one row it does.
-const myAgentDismissedRootSet = `
-	dismissed_roots as materialized (
-		select message_id from user_agent_thread_dismissed where login = $1
-	),`
-
-func myAgentDismissedRoot(root string) string {
-	return root + ` in (select message_id from dismissed_roots)`
+// The test is the predicate of the partial index messages_direct_roots_live (20261125053341), so a
+// read takes the person's live roots off that index and reads no dismissed root and no mark. It
+// replaced the marks read as one set the roots were hashed against: one index-only scan of every
+// mark the person ever wrote, beside an index entry of messages_direct_roots for every root they
+// ever sent, each dismissed one read and thrown away - at 5,000 dismissed Agent threads 10,020 rows
+// for 20 roots in the Inbox, where 250 dismissed read 520
+// (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory).
+//
+// A root whose column outlived its author's mark is an owed one (myAgentOwedRoot), which each
+// state reads in a branch of its own beside this one.
+func myAgentLiveRoot(root string) string {
+	return root + `.agent_dismissed_at is null`
 }
+
+// myAgentOwedRoot is the other way a root is live: a root whose column stands set with no mark of
+// the person's behind it. A delete of a mark that found the root held by another transaction - a
+// restore of the release before, which takes the mark and no root, meeting a reply of either
+// build - leaves the column as it stood and appends the root to user_agent_thread_dismissed_owed
+// (migration 20261125053125's header) until the writer holding the root, or the maintenance sweep
+// (sweepAgentDismissalsOwed), settles it. Each of the Inbox's two states reads such roots in a
+// branch of their own, over the owed roots alone, rather than as an `or` beside myAgentLiveRoot:
+// the live branch keeps its plan off messages_direct_roots_live, and this one reads nothing while
+// the table is empty, which it is but for those moments: it reads the roots off the owed rows
+// (myAgentOwedRoots), never the person's roots off messages, which a filter on their column would
+// read whole - 5,120 Agent-arm rows at 5,000 dismissed threads where 620 read at 250
+// (TestTheOneReadsInboxStatesDoNotGrowWithTheDismissedHistory). A root its author's mark still
+// names is dismissed, whatever the table owes of it.
+// kept for one release: agent-dismissed-owed
+func myAgentOwedRoot(root string) string {
+	return root + `.agent_dismissed_at is not null
+		  and not exists (
+			select 1 from user_agent_thread_dismissed d
+			where d.message_id = ` + root + `.id and d.login = $1
+		  )`
+}
+
+// myAgentOwedRoots is the owed branch's source of roots: each root the owed table names, once,
+// and its message read by its key. The lateral's `offset 0` keeps the planner from pulling the
+// message read up into a join it could start from the person's roots, so the branch reads as many
+// messages as the table names roots.
+// kept for one release: agent-dismissed-owed
+const myAgentOwedRoots = `(select distinct owed.root_id from user_agent_thread_dismissed_owed owed) owed
+		cross join lateral (select * from messages m where m.id = owed.root_id offset 0) m`
 
 // myAgentRowFacts is what one root's own thread says about its row, read in one walk of it: the
 // session it is in and the root's text as the subject, the newest reply the session wrote there -
@@ -195,7 +250,7 @@ var myAgentRowFacts = `
 		),
 		replies as (
 			select t.id, t.author, t.created_at, t.body,
-			       t.` + myAgentUnreadReplyTest("t.id", "(select at from mark)") + ` as unread
+			       ` + myAgentUnreadReplyTest("t", "(select at from mark)") + ` as unread
 			from thread t where t.author->>'kind' = 'session'
 		)
 		select (select session_id from root) as session_id, (select body from root) as subject,
@@ -213,45 +268,73 @@ var myAgentRowFacts = `
 var myAgentRootsWithFacts = `
 	from roots r` + myAgentRowFacts
 
+// myAgentUnreadRootsOf is one branch of state=unread's roots: the person's one-off roots that pass
+// live, each holding a session reply the person has not read. myAgentInboxRootsOf is one branch of
+// state=inbox's: the person's one-off roots that pass live, read or not. Each reads its roots from
+// from, `messages m` for the live branch and myAgentOwedRoots for the owed one
+// (myAgentLiveAndOwedRoots).
+func myAgentUnreadRootsOf(from, live string) string {
+	return `
+		select m.id as root_id, null::timestamptz as dismissed_at
+		from ` + from + `
+		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
+		where ` + myAgentRootFilter("m") + `
+		  and ` + live + `
+		  and exists (` + agentThreadCTE("m.id") + `
+			select 1 from thread t
+			where t.author->>'kind' = 'session'
+			  and ` + myAgentUnreadReplyTest("t", "mark.at") + `
+		  )`
+}
+
+func myAgentInboxRootsOf(from, live string) string {
+	return `
+		select m.id as root_id, null::timestamptz as dismissed_at
+		from ` + from + `
+		where ` + myAgentRootFilter("m") + `
+		  and ` + live
+}
+
+// myAgentLiveAndOwedRoots is a state's roots with each branch built by branch: the live branch
+// over messages (myAgentLiveRoot), then, in one union, the owed branch over myAgentOwedRoots
+// (myAgentOwedRoot).
+// kept for one release: agent-dismissed-owed
+func myAgentLiveAndOwedRoots(branch func(from, live string) string) string {
+	return branch(`messages m`, myAgentLiveRoot("m")) + `
+		union all` + branch(myAgentOwedRoots, myAgentOwedRoot("m"))
+}
+
 // The roots each state reads, one `roots` set per state, each carrying the root and the dismissal
 // mark, which only the Dismissed view's rows have.
 var (
 	// The Inbox's own two states leave a dismissed root out before they read anything of its
-	// thread: the mark alone says it is dismissed (myAgentDismissedRoot), so the test is one
-	// anti-join against the person's own marks rather than a walk of every thread they ever
-	// dismissed. The unread state leaves them out too, and may: a dismissal marks every reply in
-	// the thread read by id, and a reply written since cleared the mark in its own transaction, so
-	// a root that still carries one holds nothing unread.
-	myAgentUnreadRoots = myAgentMarks + myAgentDismissedRootSet + `
-	roots as (
-		select m.id as root_id, null::timestamptz as dismissed_at
-		from messages m
-		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
-		where ` + myAgentRootFilter("m") + `
-		  and not ` + myAgentDismissedRoot("m.id") + `
-		  and exists (` + agentThreadCTE("m.id") + `
-			select 1 from thread t
-			where t.author->>'kind' = 'session'
-			  and t.` + myAgentUnreadReplyTest("t.id", "mark.at") + `
-		  )
+	// thread: the root's own column says it is dismissed (myAgentLiveRoot), so the test is the
+	// predicate of the index the roots are read off rather than a walk of every thread the person
+	// ever dismissed. The unread state leaves them out too, and may: a dismissal marks every reply
+	// in the thread read by id, and a reply written since cleared the mark in its own transaction,
+	// so a root that still carries one holds nothing unread. Each adds, in a branch of its own, the
+	// owed roots whose column outlived the person's mark (myAgentOwedRoot); a root is in at most
+	// one of the two branches, since one reads its column null and the other set.
+	myAgentUnreadRoots = myAgentMarks + `
+	roots as (` + myAgentLiveAndOwedRoots(myAgentUnreadRootsOf) + `
 	)`
-	myAgentInboxRoots = myAgentMarks + myAgentDismissedRootSet + `
-	roots as (
-		select m.id as root_id, null::timestamptz as dismissed_at
-		from messages m
-		where ` + myAgentRootFilter("m") + `
-		  and not ` + myAgentDismissedRoot("m.id") + `
+	myAgentInboxRoots = myAgentMarks + `
+	roots as (` + myAgentLiveAndOwedRoots(myAgentInboxRootsOf) + `
 	)`
 	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
 	// one index scan answers the narrowing, the order and the cursor
 	// (user_agent_thread_dismissed_login_dismissed_at). Every test a mark has to pass to be a row
 	// is above the cut, so the page the index cuts is the page the read answers.
-	myAgentDismissedRootsHead = myAgentMarks + `
-	roots as (
+	// myAgentDismissedRootsSelect is that read of the marks, which GET /api/v1/me/inbox cuts and
+	// merges with the Reply rows' own (meInboxDismissedKeys), and myAgentDismissedRootsHead opens
+	// the roots set with it.
+	myAgentDismissedRootsSelect = `
 		select d.message_id as root_id, d.dismissed_at
 		from user_agent_thread_dismissed d
 		where d.login = $1
 		  and ` + myAgentRootIsOneOff
+	myAgentDismissedRootsHead = myAgentMarks + `
+	roots as (` + myAgentDismissedRootsSelect
 	myAgentDismissedCursor = `
 		  and (d.dismissed_at, d.message_id) < ($5::text::timestamptz, $6::uuid)`
 	// The list's own cut. A write route over the same marks appends a narrowing of its own
@@ -346,36 +429,48 @@ func (s *server) readMyAgentRows(
 	defer rows.Close()
 	read := []model.MyReplyRow{}
 	total := 0
+	var extra []any
+	if counted {
+		extra = append(extra, &total)
+	}
 	for rows.Next() {
-		row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
-		var session, subject, body string
-		var author []byte
-		var repliedAt time.Time
-		scanned := []any{
-			&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
-			&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
-			&row.UnreadCount, &row.UnreadReplyIDs,
+		row, err := scanMyAgentRow(rows, s.deps.ServerURL, extra...)
+		if err != nil {
+			return nil, 0, err
 		}
-		if counted {
-			scanned = append(scanned, &total)
-		}
-		if err := rows.Scan(scanned...); err != nil {
-			return nil, 0, fmt.Errorf("scan my agent thread: %w", err)
-		}
-		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-			return nil, 0, fmt.Errorf("decode my agent reply author: %w", err)
-		}
-		row.Ref = "/agents/" + session + "/live"
-		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
-		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
-		row.Unread = row.UnreadCount > 0
-		row.Session = &model.MyReplySession{ID: session}
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("list my agent threads: %w", err)
 	}
 	return read, total, nil
+}
+
+// scanMyAgentRow decodes one Agent row myAgentRowColumns selects, extra receiving the columns
+// after them: the row listMyReplies answers, and the agent row of an entry GET /api/v1/me/inbox
+// answers. Its session is named by its id until nameAgentSessions names it, and its subject and
+// its reply's first line are cut against serverURL, this server's deployment (refs.FirstLine).
+func scanMyAgentRow(scanned pgx.Row, serverURL string, extra ...any) (model.MyReplyRow, error) {
+	row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
+	var session, subject, body string
+	var author []byte
+	var repliedAt time.Time
+	if err := scanned.Scan(append([]any{
+		&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
+		&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
+		&row.UnreadCount, &row.UnreadReplyIDs,
+	}, extra...)...); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("scan my agent thread: %w", err)
+	}
+	if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("decode my agent reply author: %w", err)
+	}
+	row.Ref = "/agents/" + session + "/live"
+	row.Subject = refs.FirstLine(subject, serverURL)
+	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
+	row.Unread = row.UnreadCount > 0
+	row.Session = &model.MyReplySession{ID: session}
+	return row, nil
 }
 
 // nameAgentSessions names the session of every Agent row on the page. A session's name is the

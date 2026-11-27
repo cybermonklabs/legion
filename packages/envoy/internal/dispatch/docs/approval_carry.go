@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -397,6 +398,9 @@ func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, 
 		if block, err := parseAskBlock(node); err == nil {
 			blocks = append(blocks, block)
 		}
+	}
+	if err := lockAskBlocksForWrite(ctx, tx, artifactID); err != nil {
+		return versionAsks{}, false, err
 	}
 	read, err := readBlockAsks(ctx, tx, artifactID, nil, blocks, readCopiedAskSources)
 	if err != nil {
@@ -798,16 +802,38 @@ func approvedVersion(ctx context.Context, q Queryer, artifactID string, number i
 // (planAskPartsCounted).
 // The update, the parts, the append, the stamp and the answer's facts are one step (write); the
 // event carries the row as the step leaves it, after the move this version write queued before
-// it, which set the request's edited_at (RewriteApprovalAsk).
+// it, which set the request's edited_at (RewriteApprovalAsk). The approver took part in the
+// request's thread and the answer reached everyone else in it, which the one writer of that
+// thread records in the same step right after the event (inboxwrite.Recording.Queue), planned
+// here with what the request still owed the store, read before the answer's update marks it, and
+// the members of its thread, read in the same statement (inboxwrite.ReadAskAndMembers): nothing
+// between that read and the record's plan writes, so the record reads no members of its own; the
+// event names the row the approver is about to hold. Where the request falls through to its
+// project's default assignee, that project's owner lock is taken shared before that read
+// (inboxwrite.HoldAskDefault, which reads that by the one rule every writer into an ask's thread
+// reads, inboxwrite.AskDefaultProject, and holds nothing for a request handed to somebody), as
+// every writer into an ask's thread takes it before it reads who takes part: a move of the default
+// either committed first, and the answer reaches the person it moved the request to, or waits for
+// the answer, and then finds the request answered and moves nothing of it. A carry whose writes
+// are queued has locked no asks row before the hold. The decisions step's restore, whose writes run
+// at once, takes this hold before any asks row (restoreIssueDecisions), so there it is one the
+// transaction holds already.
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
 		return err
 	}
 	answer := model.AskAnswer{User: actor.ID, Selected: []string{ApprovalOptionApprove}, Text: &reason, At: answeredAt.UTC()}
+	if err := inboxwrite.HoldAskDefault(ctx, tx, ask.ID); err != nil {
+		return fmt.Errorf("answer approval ask: %w", err)
+	}
+	before, err := inboxwrite.ReadAskAndMembers(ctx, tx, ask.ID)
+	if err != nil {
+		return fmt.Errorf("answer approval ask: %w", err)
+	}
 	var held graphstore.Uncaused
 	change := asks.Answered(answer)
-	change.From, change.Who, change.At, change.Held = asks.StateOpen, actor, answer.At, &held
+	change.From, change.Who, change.At, change.Held, change.TuplesStored = asks.StateOpen, actor, answer.At, &held, true
 	settled, err := planSettle(ctx, tx, ask.ID, change)
 	if err != nil {
 		return fmt.Errorf("answer approval ask: %w", err)
@@ -816,15 +842,21 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// later rewording of the same request in this transaction reaches neither.
 	answered := *ask
 	answered.State, answered.Answer, answered.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
+	inbox := inboxwrite.Answered(before, *settled.Ask.Answer, actor)
+	recording, err := inboxwrite.PlanRecord(ctx, tx, inbox)
+	if err != nil {
+		return fmt.Errorf("record approval ask %s's answer in its thread: %w", ask.ID, err)
+	}
 	// The answer is a part of the request, so its text reaches the graph with it, and the
 	// ask.answered below names what it moved. The parts are read through a reader of the ask's
 	// own (refs.NewReader), planned here and written in the step below, after the update whose
 	// row they describe. A version write that moved the request first has planned its parts
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
 	// of its own. The answer holds the parts alone, so the step reconciles the question's
-	// references after them too and settles the forms queue there (questionReconciled false).
-	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
-		answered, answer.At, false, model.ReferenceChanges{})
+	// references after them too, its citations stated beside the parts', and settles the forms
+	// queue there (questionReconciled false).
+	changes, parts, indexed, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
+		answered, answer.At, false, model.ReferenceChanges{}, nil)
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
@@ -841,20 +873,26 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		if err := parts(b); err != nil {
 			return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 		}
-		// The ask's thread_logins are read by the event's insert, after the answer's update.
+		// The ask's thread_logins are read by the event's insert, after the answer's update, with
+		// the approver's own row, which the record below keeps.
 		if err := broker.QueueAppendWithLogins(b, model.Event{
 			IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID,
 			Type: "ask.answered", Actor: actor,
 			Payload: model.AskAnsweredEventPayload{AskEventPayload: model.NewAskEventPayload(answered, changes)},
-		}, events.ThreadLoginsOf(ask.ID), sink); err != nil {
+		}, events.ThreadLoginsOf(ask.ID, inbox.KeptLogins()...), sink); err != nil {
 			return fmt.Errorf("append approval ask answer: %w", err)
 		}
 		// The answer's part edges are new rows of this transaction, so they take the id of the
 		// event queued just above and a ?since= read lists them.
 		refs.QueueStamp(b, "ask", ask.ID)
-		// What the answer states on the ask's node is appended under that same event, which no
-		// statement between them appends another of (graphstore.LatestEvent).
+		// What the answer states on the ask's node, what its part states in the store, and its
+		// record in the request's thread are appended under that same event, which no statement
+		// between them appends another of (graphstore.LatestEvent).
 		graphstore.QueueCaused(b, settled.Held, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
+			return fmt.Errorf("record approval ask %s's answer in its thread: %w", ask.ID, err)
+		}
 		ask.State, ask.Answer, ask.Resolution = answered.State, answered.Answer, answered.Resolution
 		return nil
 	})

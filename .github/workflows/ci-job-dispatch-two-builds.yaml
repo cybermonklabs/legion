@@ -264,8 +264,12 @@ jobs:
       - name: Build the Dispatch server
         # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
-        # and starts in seconds.
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        # and starts in seconds. It is stamped with this checkout's commit, as run-server.sh stamps
+        # its own build (whose comment says why a server must carry one), so that build finds it
+        # current rather than linking again.
+        run: |
+          commit=$(git rev-parse HEAD)
+          go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # No apt in this step: Playwright's `chromium` entry in its ubuntu24.04-x64 table adds no

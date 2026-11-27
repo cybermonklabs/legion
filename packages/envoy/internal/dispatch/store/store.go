@@ -51,18 +51,37 @@ var migrationFiles embed.FS
 // override them, deliberately and per pool (Pool.separate).
 const poolSizeParam = "pool_max_conns"
 
+// StoreMarkerWriterSetting is the session setting every connection of this build's pool carries,
+// `on`, as a startup parameter of the connection (Open), so it holds for the connection's whole
+// life and a RESET or a DISCARD returns it to `on`. It names the writer generation that keeps the
+// markers this build sets on its projection rows: a row whose node pair says its writer stated
+// the row's facts in the node and tuple store (comment_deliveries, message_deliveries, the block
+// rows of a comment, a message and an ask, and their link rows; migrations 20261116102800 and
+// 20261116140000), user_threads' marked_version and marked_seq (migration 20261116160000), and
+// the tuples_stored_at of user_agent_read, user_agent_state, user_agent_reply_read,
+// user_agent_thread_dismissed and user_ask_snooze (migration 20261116170000). An older build's
+// connections never carry it, and an update one of them makes to such a row is an update whose
+// facts that build did not state, so a trigger on each of those tables takes the marker off the
+// row it updates where the setting is not `on` (migrations 20261116150000, 20261116160000 and
+// 20261116170000): the row returns to its old arm and the backfill takes it again, as it takes a
+// row an older build inserts. user_threads' trigger also takes the marker off an update made
+// inside another trigger, whichever connection runs it. A process that updates those rows of this
+// build's on a connection of its own carries the setting too.
+// kept for one release: older-writer-unmark
+const StoreMarkerWriterSetting = "dispatch.store_marker_writer"
+
 // DSNSetting names the setting Dispatch's DSN comes from, as the store's refusals name it (pgdsn).
 const DSNSetting = "DATABASE_URL"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
-// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
-// holding an "@" after its user part, where a password holding an "@" or a "/" leaves part of
-// itself, is refused by DSNSetting alone before anything connects (pgdsn.Refusal), and every
-// failure to parse, open or reach the database is named without the URL's password
-// (pgdsn.ConnectError), since Dispatch logs it.
+// (scanTimestampsInUTC), carries StoreMarkerWriterSetting and gives back a large statement's
+// encoded arguments when it returns to its pool (argumentReleaser), as do the pools Pool.separate
+// copies from its configuration. A URL holding an "@" after its user part, where a password
+// holding an "@" or a "/" leaves part of itself, is refused by DSNSetting alone before anything
+// connects (pgdsn.Refusal), and every failure to parse, open or reach the database is named
+// without the URL's password (pgdsn.ConnectError), since Dispatch logs it.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
 		return nil, err
@@ -82,6 +101,8 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	// kept for one release: older-writer-unmark
+	config.ConnConfig.RuntimeParams[StoreMarkerWriterSetting] = "on"
 	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
@@ -219,10 +240,11 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 
 // migrationLockKey is the advisory key every Dispatch runner takes, session-level, on a
 // connection that serves nothing else while it is held: prepareVersionTable and
-// applyMigrationOnce through inMigrationLockTx, applyNonTransactionalMigration on its own
-// hijacked connection. The auto-deployer (deploy/scripts/autodeploy.sh, schema_applied) polls the
-// same key before reading schema_migrations and reads only once a try of its own is granted, so a
-// migration in flight when it starts is waited out only if it ends inside the deployer's
+// applyMigrationOnce through inMigrationLockTx, applyNonTransactionalMigration on a pooled
+// connection, which it takes out of the pool for a build it owes. The auto-deployer
+// (deploy/scripts/autodeploy.sh, schema_applied) polls the same key before reading
+// schema_migrations and reads only once a try of its own is granted, so a migration in flight
+// when it starts is waited out only if it ends inside the deployer's
 // 60-second deadline. That read ends within those 60 seconds, since each try's own timeout is
 // the smaller of 60 seconds and the time the deadline leaves; a migration still holding the key
 // then is not waited out at all - that read fails and the deployer refuses to deploy rather than
@@ -328,10 +350,12 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 // hold the key never serves another caller and holds every later boot's migrations behind it.
 //
 // It passes pgmigrate.ResetSession, which runs between the unlock and the release: a migration's
-// own text can run a SET without LOCAL, and its stored code can call set_config(…, false), either
-// of which would otherwise stay on this pooled connection for the pool's next caller. The reset
-// runs DISCARD ALL, which also releases the session's advisory locks, so it must run after the
-// unlock has answered true, not before, or pg_advisory_unlock would have nothing to free.
+// own text can run a SET without LOCAL, its stored code can call set_config(…, false), and
+// applyNonTransactionalMigration pins the session itself (pgmigrate.PinSession) before it finds
+// its migration recorded, any of which would otherwise stay on this pooled connection for the
+// pool's next caller. The reset runs DISCARD ALL, which also releases the session's advisory
+// locks, so it must run after the unlock has answered true, not before, or pg_advisory_unlock
+// would have nothing to free.
 //
 // duty.ErrSessionClosed is logged at INFO: a boot cancelled inside the transaction has already
 // closed the connection, over its in-flight statement's failure or over BeginFunc's rollback on
@@ -352,9 +376,10 @@ func unlockMigrations(conn *pgxpool.Conn) {
 }
 
 // closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like the rest of
-// this runner's waits (pgmigrate.LockTimeout). Its two callers are this runner's own: the failed
-// lock, which hands over the connection it hijacks out of the pool, and the concurrent build,
-// which owns its connection.
+// this runner's waits (pgmigrate.LockTimeout). Its callers are this runner's own: a failure while
+// the key may be held, which hands over the connection it hijacks out of the pool
+// (inMigrationLockTx's failed lock, applyNonTransactionalMigration's failed lock, pin or check),
+// and the concurrent build, which owns its connection.
 func closeBounded(ctx context.Context, conn *pgx.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()
@@ -499,50 +524,64 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migrations []pgmigrate.M
 	return nil
 }
 
-// applyNonTransactionalMigration owns its connection so a cancellation or failed cleanup cannot
-// return a session-level advisory lock to the pool. Session and transaction advisory locks on the
-// same key conflict, so this excludes older runners and schema-version readers too. Closing the
-// connection releases the lock only after the statement and its separate version record finish.
+// applyNonTransactionalMigration takes the runner's key on a pooled connection, by polling here too
+// (lockMigrations), and reads on it whether the migration is recorded. This is the site whose build
+// the polling exists for: it holds the key while CREATE INDEX CONCURRENTLY runs.
 //
-// This connection never goes back to the pool, so it needs no session reset: a migration's own SET
-// or its stored code's set_config(…, false) dies with the connection that closeBounded closes, and
-// reaches no later caller. A change that gave this connection back to the pool would have to reset
-// its session first, as inMigrationLockTx does through unlockMigrations (pgmigrate.ResetSession),
-// or that leftover would reach the pool's next caller.
+// A migration already recorded - every marked migration, on every boot after the one that built
+// it - gives the key and the connection back to the pool as inMigrationLockTx does
+// (unlockMigrations): the unlock, then the session reset that takes off what PinSession set, then
+// the release. The boot's next step takes that connection warm. Closed instead, it would leave the
+// pool empty, and the boot would dial a new connection for each marked migration in the set, one
+// after another, each at whatever a dial costs: through cmd/dispatch's
+// TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm's Postgres, three
+// seconds slow to accept, a set of thirty-seven marked migrations kept Migrate 112 s.
 //
-// The key is taken by polling here too (lockMigrations), and this is the site whose build the
-// polling exists for: it holds the key while CREATE INDEX CONCURRENTLY runs.
+// A migration still owed is applied on that connection taken out of the pool for good, so a
+// cancellation or failed cleanup cannot return a session-level advisory lock to the pool. Session
+// and transaction advisory locks on the same key conflict, so this excludes older runners and
+// schema-version readers too. Closing the connection releases the lock only after the statement
+// and its separate version record finish. That connection never goes back to the pool, so it needs
+// no session reset: a migration's own SET or its stored code's set_config(…, false) dies with the
+// connection that closeBounded closes, and reaches no later caller.
+//
+// A failure before the connection is given back or taken out closes it out of the pool too, as
+// inMigrationLockTx's failed lock does: the key may be held on it.
 func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations []pgmigrate.Migration, migration pgmigrate.Migration) error {
 	pooled, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
-	conn := pooled.Hijack()
-	defer closeBounded(ctx, conn)
+	conn := pooled.Conn()
 	if err := lockMigrations(ctx, conn); err != nil {
+		closeBounded(ctx, pooled.Hijack())
 		return err
 	}
 	// The check below and the version insert name schema_migrations without its schema.
 	// PinSession gives the session the values that RESET gives session_authorization, role and
-	// search_path, under which the census reads, whatever session the pooled connection this one
-	// was hijacked from brings, and bounds the check and the insert by LockTimeout, as Pin bounds
-	// the transactional runner's. No restore follows: closeBounded closes the connection once the
-	// migration is recorded, so no later caller meets the pinned session. ExecNonTransactional
-	// gives the session back the values it found on return, which are these, so the insert after
-	// it runs under them too, whatever the build's own code set.
+	// search_path, under which the census reads, whatever session the pooled connection brings,
+	// and bounds the check and the insert by LockTimeout, as Pin bounds the transactional
+	// runner's. Either the reset that gives the connection back or the close that ends it follows,
+	// so no later caller meets the pinned session. ExecNonTransactional gives the session back the
+	// values it found on return, which are these, so the insert after it runs under them too,
+	// whatever the build's own code set.
 	if err := pgmigrate.PinSession(ctx, conn); err != nil {
+		closeBounded(ctx, pooled.Hijack())
 		return fmt.Errorf("pin the runner's settings: %w", err)
 	}
 	// As in applyMigrationOnce. Each fill commits as its own statement here, so it is logged at
 	// once, whether or not the build then succeeds.
 	applied, fixes, err := pgmigrate.RecheckRecorded(ctx, conn, versionTable, migrations, migration)
 	if err != nil {
+		closeBounded(ctx, pooled.Hijack())
 		return fmt.Errorf("check migration: %w", err)
 	}
 	pgmigrate.LogFixes(versionTable, fixes)
 	if applied {
+		unlockMigrations(pooled)
 		return nil
 	}
+	defer closeBounded(ctx, pooled.Hijack())
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
 	}

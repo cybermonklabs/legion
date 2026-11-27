@@ -1,15 +1,29 @@
 /**
  * How a field of an issue that a pick changes - its priority, its assignee, its repository - shows
  * on each cache that draws the issue (`cacheOf`: its detail, its row of each list of issues, each
- * Inbox row of it), as a pick sets it (`pickLook`) or an answer of Dispatch's carries it
- * (`issueLook`, `answeredLooks`), and each such cache with a look put over it (`shownOn`). It
- * keeps nothing: what is live, what Dispatch last answered and when are `issue-field-writes.ts`'s.
+ * row of it each read of the open asks lists, each ask of it the one read's Inbox answer lists),
+ * as a pick sets it (`pickLook`) or an answer of Dispatch's carries it (`issueLook`,
+ * `answeredLooks`), and each such cache with a look put over it (`shownOn`). It keeps nothing:
+ * what is live, what Dispatch last answered and when are `issue-field-writes.ts`'s.
  */
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
-import { inboxQuery, projectDefaultAssigneesQuery } from "../../api/queries";
-import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import {
+  meInboxQuery,
+  openAsksKey,
+  projectDefaultAssigneesQuery,
+  whoAmIQuery,
+} from "../../api/queries";
+import type {
+  Issue,
+  IssueDetails,
+  IssueSummary,
+  MeInboxEntry,
+  MeInboxResponse,
+  OpenAskRow,
+} from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
+import { meInboxAskEntry } from "../inbox/one-read-cache";
 import type { IssueField, IssueFieldPick } from "./issue-field-writes";
 
 /** Every field of an issue a pick changes. */
@@ -20,8 +34,10 @@ export const everyField: readonly IssueField[] = ["assignee", "priority", "repo"
  *  (`["issues", "advances", …]`, `/priorities` and `/priorities/<id>`). */
 const issueLists: readonly unknown[] = ["project", "advances"];
 
-/** The key of the Inbox's read, every row of which a pick of its issue shows on. */
-export const inboxKey = inboxQuery().queryKey;
+/** The key of the one read's Inbox answer (`meInboxQuery`), which the Inbox draws the reader's own
+ *  asks from (`useInboxAsks`): each ask it lists a pick of its issue shows on, as on a row of the
+ *  open asks. The one read's other reads, the unread count and the dismissed pages, list no ask. */
+const oneReadKey = meInboxQuery().queryKey;
 
 /** The fields of an issue a pick changes, as its detail and its row of each list of issues carry
  *  them. */
@@ -71,10 +87,10 @@ export function issueLook(field: IssueField, issue: Partial<IssueFields>): Look 
   }
 }
 
-/** Every Inbox row the client holds. */
-function inboxRows(client: QueryClient): InboxRow[] {
+/** Every row of the open asks the client holds, of every read of them (`openAsksKey`). */
+function inboxRows(client: QueryClient): OpenAskRow[] {
   return client
-    .getQueriesData<InboxRow[]>({ queryKey: inboxKey })
+    .getQueriesData<OpenAskRow[]>({ queryKey: openAsksKey })
     .flatMap(([, rows]) => (Array.isArray(rows) ? rows : []));
 }
 
@@ -99,14 +115,14 @@ export function issueAnswer(answer: unknown): (IssueFields & Pick<Issue, "key">)
 }
 
 /** The person each of `rows`, the Inbox rows of one issue, waits on, by the row's id. */
-function waitingOf(rows: readonly InboxRow[]): ReadonlyMap<string, string | undefined> {
+function waitingOf(rows: readonly OpenAskRow[]): ReadonlyMap<string, string | undefined> {
   return new Map(rows.map((each) => [each.id, each.waiting_on_person]));
 }
 
 /** How `rows`, the Inbox rows of one issue, show the fields of the issue a pick changes: as the
  *  first of them carries them - its priority, and its issue's assignee where it names its issue -
  *  with the person each of them waits on. Undefined where there is no row. */
-function inboxLook(rows: readonly InboxRow[]): Look | undefined {
+function inboxLook(rows: readonly OpenAskRow[]): Look | undefined {
   const [row] = rows;
   if (row === undefined) return undefined;
   const { issue, priority } = row;
@@ -131,7 +147,7 @@ export function fieldLook(look: Look, field: IssueField): Look | undefined {
 function lookOf(
   field: IssueField,
   issue: IssueFields | undefined,
-  rows: readonly InboxRow[]
+  rows: readonly OpenAskRow[]
 ): Look | undefined {
   if (issue === undefined) {
     const look = inboxLook(rows);
@@ -189,9 +205,9 @@ export function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Lo
     }
     return looks;
   }
-  if (cache !== "inbox") return looks;
-  const rows = new Map<string, InboxRow[]>();
-  for (const row of data as InboxRow[]) {
+  if (cache !== "openAsks") return looks;
+  const rows = new Map<string, OpenAskRow[]>();
+  for (const row of data as OpenAskRow[]) {
     if (row.issue_key === null) continue;
     const ofIssue = rows.get(row.issue_key);
     if (ofIssue === undefined) rows.set(row.issue_key, [row]);
@@ -221,7 +237,11 @@ function withFields<T extends IssueFields>(issue: T, fields: Partial<IssueFields
  *  Dispatch answers does, and one written so would read as an ask no person waits on. A look that
  *  names the person a row waited on as Dispatch last answered it (`Look.waiting`) puts that person
  *  back. The Inbox draws no repository. */
-function showOnInboxRow(row: InboxRow, showing: Showing, fallback: string | undefined): InboxRow {
+function showOnInboxRow(
+  row: OpenAskRow,
+  showing: Showing,
+  fallback: string | undefined
+): OpenAskRow {
   if (row.issue_key !== showing.issueKey) return row;
   const { fields, waiting } = showing.look;
   if (showing.field === "priority") {
@@ -260,16 +280,101 @@ function defaultAssignee(client: QueryClient, issueKey: string): string | undefi
 }
 
 /** Which of the caches a pick shows on the query under `queryKey` is: an issue's detail, a list
- *  of issues (`issueLists`), or the Inbox; undefined for any other. */
-export function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | undefined {
+ *  of issues (`issueLists`), a read of the open asks (`openAsksKey`, which draws Inbox rows), or
+ *  the one read's Inbox answer (`oneReadKey`); undefined for any other. */
+export function cacheOf(
+  queryKey: QueryKey
+): "detail" | "list" | "oneRead" | "openAsks" | undefined {
   const [head, second] = queryKey;
   if (head === "issue" && queryKey.length === 2) return "detail";
   if (head === "issues" && issueLists.includes(second)) return "list";
-  return head === inboxKey[0] ? "inbox" : undefined;
+  if (head === openAsksKey[0]) return "openAsks";
+  const oneRead =
+    queryKey.length === oneReadKey.length &&
+    oneReadKey.every((part, index) => queryKey[index] === part);
+  return oneRead ? "oneRead" : undefined;
+}
+
+/** Shows every one of `showings` on an Inbox row (`showOnInboxRow`), with the default assignee
+ *  of each assignee shown looked up once, not once a row. */
+function onInboxRow(
+  client: QueryClient,
+  showings: readonly Showing[]
+): (row: OpenAskRow) => OpenAskRow {
+  const fallbacks = showings.map((showing) =>
+    showing.field === "assignee" ? defaultAssignee(client, showing.issueKey) : undefined
+  );
+  return (row) =>
+    showings.reduce(
+      (shown, showing, index) => showOnInboxRow(shown, showing, fallbacks[index]),
+      row
+    );
+}
+
+/**
+ * `answer`, the one read's Inbox answer, with every one of `showings` over each ask it lists, as
+ * on an Inbox row of it (`showOnInboxRow`). The one read lists the asks that wait on the reader,
+ * whoever is signed in (`whoAmIQuery`): an ask a showing moves off the reader leaves it, and each
+ * Inbox row an assignee shown makes wait on the reader joins it where it lists no entry of that
+ * ask. Without that, taking an unassigned ask would take its row out of the open asks' list and
+ * put it in no other (`useInboxAsks`, which draws the reader's own asks from the one read alone),
+ * and an assignee put back would leave in the answer a row that no longer waits on the reader.
+ * Each ask that leaves or joins moves `total` with it. `answer` itself where it shows them all
+ * already.
+ */
+function shownOnOneRead(
+  client: QueryClient,
+  answer: MeInboxResponse,
+  showings: readonly Showing[]
+): MeInboxResponse {
+  const show = onInboxRow(client, showings);
+  const viewer = client.getQueryData(whoAmIQuery().queryKey)?.login;
+  const entries = answer.entries ?? [];
+  const listed = new Set<string>();
+  let next: MeInboxEntry[] | undefined;
+  for (const [index, entry] of entries.entries()) {
+    const { ask } = entry;
+    if (ask === undefined) {
+      next?.push(entry);
+      continue;
+    }
+    listed.add(ask.id);
+    const shown = show(ask);
+    if (shown === ask) {
+      next?.push(entry);
+      continue;
+    }
+    next ??= entries.slice(0, index);
+    const left =
+      viewer !== undefined &&
+      ask.waiting_on_person === viewer &&
+      shown.waiting_on_person !== viewer;
+    if (!left) next.push({ ...entry, ask: shown });
+  }
+  const assigned = new Set(
+    showings.flatMap((showing) => (showing.field === "assignee" ? [showing.issueKey] : []))
+  );
+  const joined: MeInboxEntry[] = [];
+  if (viewer !== undefined && assigned.size > 0) {
+    for (const row of inboxRows(client)) {
+      if (row.issue_key === null || !assigned.has(row.issue_key) || listed.has(row.id)) continue;
+      const shown = show(row);
+      if (shown.waiting_on_person !== viewer) continue;
+      listed.add(row.id);
+      joined.push(meInboxAskEntry(shown));
+    }
+  }
+  if (next === undefined && joined.length === 0) return answer;
+  const kept = next ?? entries;
+  return {
+    ...answer,
+    entries: [...kept, ...joined],
+    total: Math.max(0, answer.total - (entries.length - kept.length) + joined.length),
+  };
 }
 
 /** `data`, which the query under `queryKey` holds, with every one of `showings` over it: the
- *  same value where it shows them all already, or where the query is none of the three a pick
+ *  same value where it shows them all already, or where the query is none of the four a pick
  *  shows on. */
 export function shownOn(
   client: QueryClient,
@@ -286,6 +391,10 @@ export function shownOn(
       data as IssueDetails
     );
   }
+  if (cache === "oneRead") {
+    if (typeof data !== "object" || data === null) return data;
+    return shownOnOneRead(client, data as MeInboxResponse, showings);
+  }
   if (!Array.isArray(data)) return data;
   if (cache === "list") {
     return mapRows(data as IssueSummary[], (row) =>
@@ -296,17 +405,6 @@ export function shownOn(
       )
     );
   }
-  if (cache === "inbox") {
-    // Looked up once for each assignee shown on this cache, not once a row.
-    const fallbacks = showings.map((showing) =>
-      showing.field === "assignee" ? defaultAssignee(client, showing.issueKey) : undefined
-    );
-    return mapRows(data as InboxRow[], (row) =>
-      showings.reduce(
-        (shown, showing, index) => showOnInboxRow(shown, showing, fallbacks[index]),
-        row
-      )
-    );
-  }
+  if (cache === "openAsks") return mapRows(data as OpenAskRow[], onInboxRow(client, showings));
   return data;
 }

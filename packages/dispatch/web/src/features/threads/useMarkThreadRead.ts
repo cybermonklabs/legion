@@ -1,16 +1,17 @@
+import { meInboxThreads } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { threadReadRequest } from "../../api/client";
-import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
+import { meInboxKey, meInboxOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { type EventFreshness, useIsHuman } from "../../hooks/useIsHuman";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
 
-/** The owner a thread lives on, as `GET /api/v1/me/replies` narrows to it: an issue, or a project
- *  document (an issue's documents are the issue's). */
+/** The owner a thread lives on, as the one read's `issue` and `artifact` keys narrow to it: an
+ *  issue, or a project document (an issue's documents are the issue's). */
 export type RepliesOwner = { readonly issue: string } | { readonly artifact: string };
 
 /** An ask's owner: its issue, else the project document it was asked on. */
@@ -84,16 +85,15 @@ export function useMarkThreadRead({
   // never asks, so never cycles on a 403.
   const human = useIsHuman(freshness);
   const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
-  const unreadSetQuery = { ...myRepliesOwnerQuery(owner ?? NO_OWNER), ...freshness };
+  const unreadSetQuery = { ...meInboxOwnerQuery(owner ?? NO_OWNER), ...freshness };
   const unreadSet = useQuery({ ...unreadSetQuery, enabled: watching });
-  const rows = unreadSet.data;
+  const answer = unreadSet.data;
+  const threads = useMemo(() => meInboxThreads(answer), [answer]);
   // This thread's own row of that set, which says both that it is unread and what in it is.
-  const row = watching
-    ? (rows?.rows ?? []).find((candidate) => candidate.thread_id === threadId)
-    : undefined;
+  const row = watching ? threads.find((candidate) => candidate.thread_id === threadId) : undefined;
   // Whether this thread is one the mark watches at all.
   const watched =
-    watching && rows !== undefined && (rows.total > (rows.rows ?? []).length || row !== undefined);
+    watching && answer !== undefined && (answer.total > threads.length || row !== undefined);
   // The newest reply this surface saw dwell, for the thread it saw it in.
   const [seen, setSeen] = useState<{ readonly at: string; readonly threadId: string }>();
   const ref = useDwell({
@@ -108,7 +108,7 @@ export function useMarkThreadRead({
       seen === undefined || seen.threadId !== threadId
         ? undefined
         : { key: `${threadId} ${seen.at}`, value: seen.at },
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: myRepliesKey }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: meInboxKey }),
     request: (readThrough: string) => threadReadRequest(threadId, readThrough),
     shouldSend: watched,
     target: `read:thread:${threadId}`,

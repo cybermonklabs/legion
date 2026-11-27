@@ -320,11 +320,15 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 // backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
 // tuples of every comment, document block and block reference written before the node and
 // tuple store existed, the node of every issue, document, ask and message written before its
-// kind's writer wrote one, and the project of every comment and block node written before a node
-// named its project, in batches, one transaction each (graphcensus.Backfill). It appends no
-// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
-// as its cause. It is safe to run again: a row that already names its node is left alone, so a
-// run interrupted anywhere carries on from where it stopped.
+// kind's writer wrote one, the project of every comment and block node written before a node
+// named its project, the asks and followers written before the store held them, and every kind
+// the one inbox moves but the mention tuples for the rows a build before it wrote - the
+// messages, the comment pointers, an item's blocks, links and citations, the delivery attempts,
+// what an ask, an answer and a decline owe, and the six read-state tables - in batches, one
+// transaction each (graphcensus.Backfill). It appends no event of its own: a fact whose row's own
+// event cannot be found carries the store's sentinel as its cause. It is safe to run again: a row
+// that already carries its marker is left alone, so a run interrupted anywhere carries on from
+// where it stopped, and the run exits 1 while any kind still owes a row.
 //
 // A block's parent is left to the block index: the run marks each document it touched owed
 // one, and `census --store` reads a difference on every backfilled block until that
@@ -624,7 +628,7 @@ func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writ
 		return 1
 	}
 	if strings.TrimSpace(serverURL) == "" {
-		fmt.Fprintln(out, "rebuild-refs: dispatch.server_url is required to recognise dashboard URLs; refusing to drop URL-form mentions")
+		fmt.Fprintln(out, "rebuild-refs: DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json) is required to recognise dashboard URLs; refusing to drop URL-form mentions")
 		return 1
 	}
 	database, ok := openMigrated(ctx, "rebuild-refs", databaseURL, out)

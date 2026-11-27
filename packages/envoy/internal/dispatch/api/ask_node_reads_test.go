@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -46,8 +47,9 @@ func describedAnswer(answer *model.AskAnswer) string {
 // /api/v1/asks/{id}, the same columns), the spec's open questions on the Decisions read
 // (specOpenQuestions) and a search hit's ask (attachAskStates). So does every read that picks asks
 // by their answer state: the issue's asks by state (listIssueAsksQueryOpen and
-// listIssueAsksQueryAnswered), the open asks of the issue's detail (the first of them) and the
-// Inbox (listInbox, asks.NodeStateOf). The node and the row differ only while a process of the
+// listIssueAsksQueryAnswered), the open asks of the issue's detail (the first of them), the Inbox
+// (listInbox, asks.NodeStateOf) and the Ask rows of the one read, for the person the ask waits on
+// (GET /api/v1/me/inbox, meInboxPageRows). The node and the row differ only while a process of the
 // release before has written the row and the decisions step's catch-up has not yet stated that
 // write on the node: here the catch-up stated alice's answer on both (asks.Settle with
 // asks.Recorded), and then the release before's reopen wrote the row open again, alone. Each
@@ -172,13 +174,22 @@ func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
 			t.Errorf("%s hold ask %s, %s, which its node holds answered by alice", inbox, askID, ask.State)
 		}
 	}
+
+	const oneRead = "the one read's Ask rows (GET /api/v1/me/inbox?state=inbox, meInboxPageRows)"
+	if one.WaitingOnPerson == "" {
+		t.Fatalf("%s: ask %s names no person it waits on, so no person's read would prove anything", oneRead, askID)
+	}
+	if entry, held := meInboxEntryOfNode(readMeInboxAs(t, handler, one.WaitingOnPerson, url.Values{"state": {"inbox"}}), graphstore.KindAsk, askID); held && entry.Ask != nil {
+		t.Errorf("%s of %s hold ask %s, which its node holds answered by alice", oneRead, one.WaitingOnPerson, askID)
+	}
 }
 
 // The rows a person's own pages draw an answer on read it off the ask's node too (R3): a person's
 // answers (GET /api/v1/me/answers, listMyAnswers: the ask's state, and whether the answer is the
 // one the ask holds now), the Reply row whose newest write is an ask's answer (GET
 // /api/v1/me/replies, answerReplyRows: the answerer and the answer's line, and the unread count
-// that counts the answer, myRepliesPageRest), and a document's asks by state (GET
+// that counts the answer, myRepliesPageRest), the same row as the one read draws it (GET
+// /api/v1/me/inbox?state=unread, answerReply), and a document's asks by state (GET
 // /api/v1/artifacts/{id}/asks?state=, listArtifactAsksQueryOpen and listArtifactAsksQueryAnswered).
 // So do the reads that pick asks by their state across owners: the open asks the Replies list
 // leaves out for the Inbox (myRepliesOwner), a project's open asks (GET /api/v1/asks/open,
@@ -264,6 +275,13 @@ func TestEveryAnswerAPersonsPagesShowReadsTheAsksNode(t *testing.T) {
 	row := replyRow(t, getMyReplies(t, handler, "bob", ""), issueAsk)
 	if row.Reply.Kind != "answer" || row.Reply.Author != (model.Actor{Kind: "user", ID: "alice"}) || row.Reply.FirstLine != "eu-west-1 - Closest to the users." {
 		t.Errorf("%s shows %#v on ask %s, want alice's answer as its node holds it, %q", reply, row.Reply, issueAsk, "eu-west-1 - Closest to the users.")
+	}
+	const oneRead = "the one read's Reply row whose newest write is the ask's answer (GET /api/v1/me/inbox?state=unread, answerReply)"
+	if entry, held := meInboxEntryOfNode(readMeInboxAs(t, handler, "bob", url.Values{"state": {"unread"}}), graphstore.KindAsk, issueAsk); !held || entry.Thread == nil {
+		t.Errorf("%s: bob's read holds no Reply row of ask %s", oneRead, issueAsk)
+	} else if entry.Thread.Reply.Kind != "answer" || entry.Thread.Reply.Author != (model.Actor{Kind: "user", ID: "alice"}) ||
+		entry.Thread.Reply.FirstLine != "eu-west-1 - Closest to the users." {
+		t.Errorf("%s shows %#v on ask %s, want alice's answer as its node holds it, %q", oneRead, entry.Thread.Reply, issueAsk, "eu-west-1 - Closest to the users.")
 	}
 	const unread = "the Reply row's unread count (GET /api/v1/me/replies unread_count, myRepliesPageRest)"
 	if row.UnreadCount != 1 {

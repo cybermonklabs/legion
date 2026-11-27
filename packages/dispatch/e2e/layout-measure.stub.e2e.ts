@@ -695,7 +695,7 @@ test("the settle wait waits on the shown document's Inbox reads and on no replac
 }) => {
   const origin = "http://layout-settle.test";
   const html = (read: string) =>
-    `<!doctype html><main>A page</main><script>fetch("/api/v1/inbox?${read}")</script>`;
+    `<!doctype html><main>A page</main><script>fetch("/api/v1/me/inbox?${read}")</script>`;
   // The first load is answered; the reload's document request is held, so the replaced document
   // is still there to send a read after its successor's navigation request.
   const successor = Promise.withResolvers<Route>();
@@ -706,7 +706,7 @@ test("the settle wait waits on the shown document's Inbox reads and on no replac
     else successor.resolve(route);
   });
   const reads: Route[] = [];
-  await page.route(`${origin}/api/v1/inbox?*`, (route) => {
+  await page.route(`${origin}/api/v1/me/inbox?*`, (route) => {
     reads.push(route);
   });
 
@@ -718,7 +718,7 @@ test("the settle wait waits on the shown document's Inbox reads and on no replac
   // navigation is pending.
   await page.evaluate(() => {
     window.location.reload();
-    setTimeout(() => void fetch("/api/v1/inbox?after"), 50);
+    setTimeout(() => void fetch("/api/v1/me/inbox?after"), 50);
   });
   const held = await successor.promise;
   await expect.poll(() => reads.length).toBe(2);

@@ -32,7 +32,7 @@ func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body,
 	t.Helper()
 	ctx := context.Background()
 	located := NewReader(ctx, tx, prefixAuthor, string(kind), itemID, serverURL).Mentions(body)
-	if _, err := IndexItem(ctx, tx, kind, itemID, body, serverURL, at, located, nil); err != nil {
+	if _, _, err := IndexItem(ctx, tx, kind, itemID, body, serverURL, at, located, nil); err != nil {
 		t.Fatalf("index the blocks of %s %s: %v", kind, itemID, err)
 	}
 	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil, true); err != nil {

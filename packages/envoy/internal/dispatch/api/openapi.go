@@ -671,7 +671,7 @@ func openAPICamel(segment string) string {
 
 // parameters are the row's path parameters, in the pattern's own order, then the keys the shape's
 // query struct declares, in the struct's own order, then the `session` parameter every operation
-// carries.
+// carries but one whose route refuses every key it does not declare (RefusesUndeclared).
 func (e *openAPIEmitter) parameters(
 	route apiRoute,
 	shape routeShape,
@@ -692,6 +692,9 @@ func (e *openAPIEmitter) parameters(
 			return nil, err
 		}
 		parameters = append(parameters, query...)
+	}
+	if shape.RefusesUndeclared {
+		return parameters, nil
 	}
 	session := openapi31.Parameter{
 		Name:   "session",

@@ -198,8 +198,14 @@ export function listRead(param: string, value: string): (url: URL) => boolean {
   return (url) => url.pathname === "/api/v1/issues" && url.searchParams.get(param) === value;
 }
 
-/** The Inbox's read, `GET /api/v1/inbox`. */
-export const inboxRead = (url: URL): boolean => url.pathname === "/api/v1/inbox";
+/** The Inbox's read of the reader's own rows, the one read's `inbox` state
+ *  (`GET /api/v1/me/inbox?state=inbox`). */
+export const inboxRead = (url: URL): boolean =>
+  url.pathname === "/api/v1/me/inbox" && url.searchParams.get("state") === "inbox";
+
+/** The Inbox's read of every other person's asks, `GET /api/v1/asks/open`, which the page makes
+ *  while its filter shows anyone's asks but the reader's own. */
+export const openAsksRead = (url: URL): boolean => url.pathname === "/api/v1/asks/open";
 
 /** Whether one of `reads` was sent at or after `since` and has been answered. */
 export function readAnsweredSince(reads: readonly LoggedRead[], since: number): boolean {

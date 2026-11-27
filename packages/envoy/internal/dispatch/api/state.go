@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -250,13 +252,14 @@ const agentStateCutoffSkew = time.Minute
 
 // userAgentStatesQuery reads a viewer's per-session state from three sources, so a session named
 // by any one of them is in the answer: the shared unreadDirectRepliesCTE gives `direct_marks`,
-// every session with a Clear (user_agent_state) or a read mark (user_agent_read), and
+// every session with a Clear or a read mark (directMarks: the viewer's cleared and read_through
+// tuples, and a row of user_agent_state or user_agent_read no tuple states yet), and
 // `unread_direct_replies` counted per session, every session holding a reply the viewer has not
 // read; `pinned` is every session the viewer pinned. A pinned session with neither a mark nor an
 // unread reply is named by `pinned` alone, which is why the join is three ways and not two.
 // Parameters are the fragment's own (unreadDirectRepliesArgs): the pin
 // is keyed on the canonical login, $1, as the read mark is.
-const userAgentStatesQuery = `
+var userAgentStatesQuery = `
 	with recursive` + unreadDirectRepliesCTE + `,
 	unread as (
 		select session_id, count(*)::int as unread from unread_direct_replies group by session_id
@@ -275,9 +278,10 @@ const userAgentStatesQuery = `
 `
 
 // loadUserAgentStates runs userAgentStatesQuery for login, narrowed to sessionID when it is
-// not nil. The read mark, the pin and the viewer's own direct messages are matched on the
-// canonical login, so one person is one viewer however their identity source spells them; the
-// Clear (user_agent_state, migration 0033) is keyed on the raw actor id.
+// not nil. The read mark and the Clear are read from the viewer's one person node, and the pin and
+// the viewer's own direct messages are matched on the canonical login, so one person is one viewer
+// however their identity source spells them; only a Clear no tuple states yet is read by the raw
+// actor id its row is keyed on (user_agent_state, migration 0033, directMarks).
 func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (userAgentStates, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, userAgentStatesQuery, unreadDirectRepliesArgs(login, sessionID)...)
 	if err != nil {
@@ -413,32 +417,61 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The transaction's now(), the moment the person node a mark makes is made at: every statement
+	// below that stores a mark answers it beside that mark, so no statement of its own reads it,
+	// and a write that stores no mark needs none.
+	var at time.Time
 	// A Clear, a read mark or a pin is announced whenever it is given; replies read by id only
 	// when one of them gets a row (below).
 	announce := clearedBefore != nil || readThrough != nil || input.Pinned != nil
+	// Each mark the write stores is a tuple from the caller's person node too (api/read_marks.go),
+	// appended under the event below once it is: what each statement stored, at the moment it
+	// stored. A row a statement writes is marked at that moment where the mark fits the store.
+	var marks []graphstore.Tuple
+	sessionFits := markFits(actor, sessionID)
 	// A cutoff up to agentStateCutoffSkew ahead of the server clock is accepted, so a browser a few
 	// seconds fast is not refused, but it is stored as no later than now: a reply that lands in
 	// the gap is still after the viewer's Clear and read mark, so it shows and it counts.
 	if clearedBefore != nil {
-		// The Clear is keyed on the raw actor id on purpose: user_agent_state is migration 0033's
-		// table and its rows predate the canonical convention 0048 and 0051 follow. This is not
-		// the missing model.CanonicalLogin a grep for one would take it for.
-		if _, err := tx.Exec(r.Context(), `
-			insert into user_agent_state (login, session_id, cleared_before)
-			values ($1, $2, least($3::timestamptz, now()))
-			on conflict (login, session_id) do update set cleared_before = excluded.cleared_before
-		`, actor.ID, sessionID, *clearedBefore); err != nil {
+		// The row is keyed on the raw actor id on purpose: user_agent_state is migration 0033's
+		// table and its rows predate the canonical convention 0048 and 0051 follow, and the
+		// projection keeps the spelling it stores. This is not the missing model.CanonicalLogin a
+		// grep for one would take it for: the Clear itself is the cleared tuple from the person's
+		// node, which graphstore.FromPerson keys on the canonical login, so it is one person's
+		// Clear whatever spelling the row holds (unreadDirectRepliesCTE reads it there).
+		var cleared time.Time
+		if err := tx.QueryRow(r.Context(), `
+			insert into user_agent_state (login, session_id, cleared_before, tuples_stored_at)
+			values ($1, $2, least($3::timestamptz, now()), case when $4::boolean then least($3::timestamptz, now()) end)
+			on conflict (login, session_id) do update
+				set cleared_before = excluded.cleared_before, tuples_stored_at = excluded.tuples_stored_at
+			returning cleared_before, now()
+		`, actor.ID, sessionID, *clearedBefore, sessionFits).Scan(&cleared, &at); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		marks = append(marks, personMark(actor, graphstore.TupleCleared, graphstore.KindSession, sessionID, cleared, true, graphstore.LatestEvent))
 	}
 	if readThrough != nil {
-		if _, err := tx.Exec(r.Context(), `
-			insert into user_agent_read (login, session_id, read_through)
-			values ($1, $2, least($3::timestamptz, now()))
+		// The mark only moves forward, and its tuple is stated only where the upsert moved it: a
+		// new row, a mark past the one the row held, or a row no tuple states yet (its marker is
+		// null), which the update marks and the tuple then states. A mark at or before the one a
+		// marked row holds leaves the row as it is and returns nothing, so a tab that sends the
+		// same mark again adds nothing to the person's history of it (directMarks reads its newest).
+		var read time.Time
+		err := tx.QueryRow(r.Context(), `
+			insert into user_agent_read (login, session_id, read_through, tuples_stored_at)
+			values ($1, $2, least($3::timestamptz, now()), case when $4::boolean then least($3::timestamptz, now()) end)
 			on conflict (login, session_id) do update set
-				read_through = greatest(user_agent_read.read_through, excluded.read_through)
-		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough); err != nil {
+				read_through = greatest(user_agent_read.read_through, excluded.read_through),
+				tuples_stored_at = case when $4::boolean then greatest(user_agent_read.read_through, excluded.read_through) end
+			where user_agent_read.read_through < excluded.read_through or user_agent_read.tuples_stored_at is null
+			returning read_through, now()
+		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read, &at)
+		switch {
+		case err == nil:
+			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.LatestEvent))
+		case !errors.Is(err, pgx.ErrNoRows):
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -490,10 +523,11 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		// A reply the session's read mark has already passed is read without a row, and the
 		// prune below would delete one again, so only the others are written; a revisit of
 		// replies the mark covers writes nothing and announces nothing. The rows go in the ids'
-		// sorted order (ordinality), so two writes lock new rows in one order.
-		inserted, err := tx.Exec(r.Context(), `
-			insert into user_agent_reply_read (login, session_id, reply_id)
-			select $1, $2, wanted.id
+		// sorted order (ordinality), so two writes lock new rows in one order. Each row written
+		// is marked at the moment of the reading, which its reply_read tuple states.
+		rows, err := tx.Query(r.Context(), `
+			insert into user_agent_reply_read (login, session_id, reply_id, tuples_stored_at)
+			select $1, $2, wanted.id, case when $4::boolean then now() end
 			from unnest($3::uuid[]) with ordinality as wanted(id, position)
 			where not exists (
 				select 1 from messages
@@ -502,12 +536,23 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			)
 			order by wanted.position
 			on conflict do nothing
-		`, model.CanonicalLogin(actor.ID), sessionID, readReplies)
+			returning reply_id::text, now()
+		`, model.CanonicalLogin(actor.ID), sessionID, readReplies, markFits(actor))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		announce = announce || inserted.RowsAffected() > 0
+		read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+			var reply string
+			err := row.Scan(&reply, &at)
+			return personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.LatestEvent), err
+		})
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		marks = append(marks, read...)
+		announce = announce || len(read) > 0
 	}
 	if readThrough != nil {
 		// A reply at or before the session's read mark is read whatever user_agent_reply_read
@@ -521,12 +566,17 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		// The dead rows are locked in one order before the delete reaches them, for the reason
 		// written on pruneAgentReplies below, which this route and the Inbox's mark-all share
 		// (markInboxReadThreads names the lock order every writer here takes).
-		if _, err := tx.Exec(r.Context(), pruneAgentReplies,
-			model.CanonicalLogin(actor.ID), []string{sessionID},
-		); err != nil {
+		pruned, err := prunedAgentReplies(r.Context(), tx, actor, model.CanonicalLogin(actor.ID), []string{sessionID})
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// Each retraction the prune answers is dated at the moment of its delete, the
+		// transaction's now(), which is the moment its person's node is made at too.
+		for _, retracted := range pruned[sessionID] {
+			at = retracted.At
+		}
+		marks = append(marks, pruned[sessionID]...)
 	}
 	// Replies read by id that all had a row or sat at or before the read mark change nothing, so
 	// nothing is announced: a broadcast page sends its replies again on every visit while the
@@ -539,7 +589,14 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		event, err := s.appendEvent(r.Context(), tx, userAgentStateEvent(actor, sessionID))
+		// The event, then the marks it causes under it, in one batch, with the failure point
+		// between the rows written above and the marks (failpoint.AgentState).
+		fails := failpoint.Planned(r.Context(), failpoint.AgentState)
+		event, err := s.appendEventThen(r.Context(), tx, userAgentStateEvent(actor, sessionID), func(b *store.WriteBatch) error {
+			failpoint.Queue(b, fails)
+			graphstore.QueueFromPerson(b, at, marks)
+			return nil
+		})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -561,7 +618,8 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 // pruneAgentReplies is the one prune of user_agent_reply_read, shared by the two writers that
 // make rows dead: this route, which moves one session's read mark, and the Inbox's mark-all,
 // which writes replies by id across several sessions at once. A reply at or before its session's
-// read mark is read whatever user_agent_reply_read holds, so its row is dead.
+// read mark is read whatever user_agent_reply_read holds, so its row is dead. It answers each row
+// it deleted, with the moment it did, which is when that reply's reply_read ends.
 //
 // The locked subquery takes exactly those rows, ascending by reply id, and the delete removes the
 // rows it locked and no others: a delete left to itself locks rows in whatever order its plan
@@ -583,4 +641,32 @@ const pruneAgentReplies = `
 	)
 	delete from user_agent_reply_read
 	using locked
-	where user_agent_reply_read.login = $1 and user_agent_reply_read.reply_id = locked.reply_id`
+	where user_agent_reply_read.login = $1 and user_agent_reply_read.reply_id = locked.reply_id
+	returning user_agent_reply_read.session_id, user_agent_reply_read.reply_id::text, now()`
+
+// prunedAgentReplies runs pruneAgentReplies for login's sessions and answers, by session, the
+// retraction of the reply_read of each row it deleted, made by actor at the moment of the delete,
+// which the caller appends under that session's event (graphstore.FromPerson). A row the store
+// never held a tuple of - one an older build wrote, or one written before the store - is retracted
+// all the same: its reply is read by the session's mark now, and the retraction says the reading by
+// id no longer stands, which is what the deleted row said.
+func prunedAgentReplies(
+	ctx context.Context, tx pgx.Tx, actor model.Actor, login string, sessions []string,
+) (map[string][]graphstore.Tuple, error) {
+	rows, err := tx.Query(ctx, pruneAgentReplies, login, sessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pruned := map[string][]graphstore.Tuple{}
+	for rows.Next() {
+		var session, reply string
+		var at time.Time
+		if err := rows.Scan(&session, &reply, &at); err != nil {
+			return nil, err
+		}
+		pruned[session] = append(pruned[session],
+			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.LatestEvent))
+	}
+	return pruned, rows.Err()
+}

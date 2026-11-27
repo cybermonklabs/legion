@@ -35,11 +35,34 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// projectedTables are the tables migration 20261109022248 made projections of the node and
-// tuple store: each row of them names the node it is the projection of, and that node is
-// written by the same transaction, before the row. They are the tables
-// censustest.ProjectedColumns lists, in order, so a table added there is one this test holds.
-var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
+// projectedTables are the tables whose every row names the node it is the projection of, written
+// by the same transaction, before the row: the three of migration 20261109022248, and the nine of
+// this child, whose node column pair its migrations add (20261116102800, 20261116114515
+// and 20261116140000). A row of one of them names a node the store holds, and the foreign key on
+// that pair is what refuses a row whose node was never written. They are the tables
+// projectedColumns names, censustest.ProjectedColumns' and inboxProjectedColumns', so a table
+// either list gains is one this test holds, and the columns of each the store states are
+// projectedColumns'.
+//
+// The six read-state tables of R6 are projections of tuples and of no node, so they name no node
+// and carry no such key; what holds them to the store is their marker (markedProjections) and the
+// census, and the one exemption's marker test below.
+var projectedTables = slices.Sorted(maps.Keys(projectedColumns))
+
+// tablesThisRunWrites are the projected tables the fixture's own requests write, which the rule
+// below is read over here. The other projected tables - a message's rows, the body blocks and
+// links of a message and an ask, and a comment's block links - are written by paths this fixture
+// does not drive (a direct message, a broadcast, an item whose body holds blocks); the source scan
+// above holds every writer of them to the store writer's path, and `census --store` holds their
+// rows to the store over a corpus that has them (graphcensus's inboxProjections).
+var tablesThisRunWrites = []string{"block_refs", "comments", "document_blocks", "comment_deliveries"}
+
+// rowsTheRunUpdates are the projected tables whose rows the run's own setup writes again after
+// inserting them, before requireEveryRowHasItsNodeAndTuples reads them: an attempt row is updated
+// by the send that settles it (completeCommentDelivery), in a transaction that states the
+// attempt's facts under its receipt (graphstore.QueueAttempted) and writes no node. Such a row's
+// xmin is that settle's, and its node is the insert's.
+var rowsTheRunUpdates = []string{"comment_deliveries"}
 
 // TestNoProjectionRowIsWrittenWithoutTheStore holds every writer of a projected table to the
 // one rule the projections rest on: a row of one of them is written only by a transaction that
@@ -55,6 +78,11 @@ var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 // written is refused inside the statement that writes it, the real write paths leave every row
 // they insert with its node and its tuples from the transaction that inserted the row, and an
 // update of a column a tuple projects carries the transaction of the tuple it appended.
+//
+// The catalogue half also holds the one exemption the one Go writer of a thread leaves
+// (inboxwrite.PlanRecord): user_threads_record and user_agent_thread_dismissed_clear are the only
+// stored functions that write user_threads or user_agent_thread_dismissed, and each of their
+// writes sits under the marker test that passes only a write an older build made (markerTests).
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -69,6 +97,9 @@ func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	run := newProjectionRun(t)
 	t.Run("no stored function or trigger writes a projected table", func(t *testing.T) {
 		requireNoStoredFunctionWritesAProjection(t, ctx, run)
+	})
+	t.Run("the two trigger functions of the one exemption write only under the marker test", func(t *testing.T) {
+		requireTheExemptionWritesUnderTheMarkerTest(t, ctx, run)
 	})
 	t.Run("no projected table carries a deferred check", func(t *testing.T) {
 		requireNoDeferredCheckOnAProjection(t, ctx, run)
@@ -118,8 +149,33 @@ func literalAlternation(words []string) string {
 // projectedColumns are the columns of each projected table that the store states, each with
 // what states it: censustest.ProjectedColumns, which says why each one stands there, and which
 // graphcensus's TestEveryColumnTheCensusComparesIsOneTheProjectionScanHolds holds to every
-// column of a projected table the census compares.
-var projectedColumns = censustest.ProjectedColumns
+// column of a projected table the census compares, and, for each projected table the census
+// compares by the store's own facts rather than column by column (inboxProjectedColumns), the
+// node pair the row names and a block link's source_seq.
+var projectedColumns = func() map[string]map[string]string {
+	columns := maps.Clone(censustest.ProjectedColumns)
+	for table, stated := range inboxProjectedColumns {
+		if _, listed := columns[table]; !listed {
+			columns[table] = stated
+		}
+	}
+	return columns
+}()
+
+// inboxProjectedColumns are the columns the store states of the projected tables of
+// the one inbox: every one names the node it is the projection of by its node pair, and a
+// block link's source_seq is the event that stamped it, which its tuple takes as its
+// legacy_source_seq (graphstore.UncausedTuple's LegacyFromCause), as a block_refs row's is.
+var inboxProjectedColumns = func() map[string]map[string]string {
+	node := map[string]string{"node_kind": "the row's node", "node_address": "the row's node"}
+	link := maps.Clone(node)
+	link["source_seq"] = "the link's tuple, as its legacy_source_seq"
+	return map[string]map[string]string{
+		"comment_deliveries": node, "message_deliveries": node,
+		"comment_blocks": node, "message_blocks": node, "ask_blocks": node,
+		"comment_block_refs": link, "message_block_refs": link, "ask_block_refs": link,
+	}
+}()
 
 // anchorKeysOutsideTheTuple are the keys of a comment's anchor that its anchored_to tuple does
 // not state: where in the artifact the anchor sits and whether it still finds its text. A
@@ -511,27 +567,66 @@ var runtimeTableSites = map[string]runtimeTableSite{
 		tables: []string{"comments"}, sets: []string{"the anchor's orphaned and quote keys"},
 	},
 	// The block index of a comment, a message and an ask, over the item's own tables (refs'
-	// itemTables): its block state, blocks, block texts and block links, none of them projected.
+	// itemTables): its block state and block texts, which are projected by no node, and its
+	// blocks and block links, which are (projectedTables), each row naming its block's node. The
+	// index's inserts and deletes of those rows are held to the store writer's path, where it
+	// writes the blocks' nodes in the same batch (refs.ItemIndexing.Queue). The two updates of its
+	// blocks share one site and set different columns - the removal's position and removed_at, and
+	// the move's position, type, excerpt and node columns - so the site is read as no projected
+	// table, and the census holds those rows to the store (graphcensus's inboxProjections).
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueRecordIndexed: update i.tables.state":  {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.clearItemWindowsOwed: update tables.state":               {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueStateLock: insert into i.tables.state": {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: update tables.blocks":          {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.blocks":     {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.texts":      {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs":    {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs":    {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state":                 {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.blocks": {
+		tables: []string{"comment_blocks", "message_blocks", "ask_blocks"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.texts": {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state": {},
 	// The tombstone of a deleted comment or message (refs.TombstoneItem): each block's stored
-	// excerpt and each text a revision recorded, over the item's own blocks and block texts
-	// tables, none of them projected.
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.blocks": {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.texts":  {},
+	// excerpt, over the item's blocks table, which is projected (projectedTables) but by no column
+	// the tombstone sets, and each text a revision recorded, over its block texts table, which is
+	// projected by no node.
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.blocks": {
+		tables: []string{"comment_blocks", "message_blocks"}, sets: []string{"excerpt"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.texts": {},
 	// A delete's settle of its post's pending send attempts (queueDeletedPostSettlement):
-	// comment_deliveries or message_deliveries, neither of them projected.
-	"packages/envoy/internal/dispatch/api/post_history.go#api.queueDeletedPostSettlement: update read.table": {},
+	// comment_deliveries or message_deliveries, projected by their node pair, which the settle does
+	// not set; what the settled row then holds is stated under each receipt (graphstore.QueueAttempted).
+	"packages/envoy/internal/dispatch/api/post_history.go#api.queueDeletedPostSettlement: update read.table": {
+		tables: []string{"comment_deliveries", "message_deliveries"}, sets: []string{"state", "error", "claimed_at"},
+	},
 	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
 	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
-	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},
+	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+		sets:   []string{"source_seq (the link's tuple, as its legacy_source_seq)"},
+	},
+	// The backfill of the inbox's projections, each beside the node write that states what the row
+	// projects (graphcensus's inboxItemKind and attemptTable): the node columns of an older build's
+	// item blocks, their links and delivery attempts.
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.inboxItemKind.writeBlocks: update kind.blocks": {
+		tables: []string{"comment_blocks", "message_blocks", "ask_blocks"},
+		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
+	},
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.inboxItemKind.writeLinks: update kind.links": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
+	},
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.attemptTable.writeAttempts: update table.table": {
+		tables: []string{"comment_deliveries", "message_deliveries"},
+		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
+	},
+	// The read-state tables, which are projections of tuples and of no node (markedProjections):
+	// the backfill's marker over them.
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox_threads.go#graphcensus.readStateTable.writeMarks: update table.table": {},
 	// The settle of one source an owed-index queue held: block_grammar_owed or refs_grammar_owed.
 	"packages/envoy/internal/dispatch/refs/rebuild.go#refs.OwedQueue.settleOwedStatement: delete from queue.table": {},
 	// The daemon's kept decisions and approvals, parked_decisions and readmitted_approvals, in a
@@ -917,13 +1012,16 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 // column of it a tuple projects, by the file each is in and the function that issues the
 // statement, as the scan names a write: the comment create's row, which the comment route and the
 // comment an issue write leaves both queue (queueCommentRow), the comment reply, the seed's
-// batches of comments, each beside the nodes the batch's rows project, and the comment write of
-// the backfill and of the block-index tick (c-projection-write, Verification v108).
+// batches of comments, each beside the nodes the batch's rows project, the comment write of the
+// backfill and of the block-index tick (c-projection-write, Verification v108), and the backfill
+// of the pointers of a comment an older build wrote, which states them beside the row's
+// tuples_stored (graphcensus's writeCommentPointers).
 var commentsRowWriters = []string{
 	"packages/envoy/internal/dispatch/api/comment_create.go#api.queueCommentRow",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.writeCommentPointers",
 }
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was
@@ -977,7 +1075,8 @@ func (s *projectionSources) path(from map[string]string, key string) []string {
 // requireNoMigrationWritesAProjection reads every migration of the schema: none of them makes
 // or unmakes a row of a projected table or sets a column a tuple projects, so no row of one and
 // no such column was ever written outside a writer. An update of another column, which restates
-// nothing the store holds, is listed.
+// nothing the store holds, is listed, and so is a migration that set a column before the store
+// stated it (migrationsBeforeTheirColumnWasStated).
 func requireNoMigrationWritesAProjection(t *testing.T) {
 	t.Helper()
 	entries, err := os.ReadDir("../store/migrations")
@@ -999,6 +1098,10 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 				t.Logf("migration %s: %s: no column it sets is one a tuple projects", entry.Name(), clause.text)
 				continue
 			}
+			if before, earlier := migrationsBeforeTheirColumnWasStated[entry.Name()]; earlier && clause.table == "comments" {
+				t.Logf("migration %s writes %s: %s, %s", entry.Name(), clause.table, clause.text, before)
+				continue
+			}
 			t.Errorf("migration %s writes %s: %s", entry.Name(), clause.table, clause.text)
 		}
 	}
@@ -1006,6 +1109,16 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 		t.Fatal("no migration was read, so nothing was checked")
 	}
 	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projects", read)
+}
+
+// migrationsBeforeTheirColumnWasStated are the migrations that set a comments column the store
+// states, each run before the store stated it: 0043 and 0044 moved a reply's reply_to and ask_id,
+// which are its replies_to and part_of tuples only from migration 20261116124447
+// (comments.tuples_stored) on. A row they set holds tuples_stored false, as every row an older
+// build wrote does, and the backfill states its pointers (graphcensus's writeCommentPointers).
+var migrationsBeforeTheirColumnWasStated = map[string]string{
+	"0043_comment_reply_ask_id.up.sql":      "before 20261116124447 made its pointers tuples, and the backfill states them",
+	"0044_comment_reply_ask_id_redo.up.sql": "before 20261116124447 made its pointers tuples, and the backfill states them",
 }
 
 // --- the fixture the Postgres halves run on ---------------------------------------------
@@ -1174,6 +1287,151 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 	return writes, read
 }
 
+// readStateWrite matches a statement that writes a projection the one Go writer of a thread keeps
+// (inboxwrite.Record, this child's D3): a user_threads row or a user_agent_thread_dismissed
+// row, made, moved or unmade. A row of either names no node, so an update of any column of it is a
+// write of the projection as much as its insert is.
+var readStateWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+from)\s+(user_threads|user_agent_thread_dismissed)\b`)
+
+// recordCall matches a call of user_threads_record, which a trigger function makes as
+// `perform user_threads_record(`.
+var recordCall = regexp.MustCompile(`(?i)\buser_threads_record\s*\(`)
+
+// markerTestedProjectionWriters are the one exemption of R9: the two stored functions that still
+// write those projections, each only for a write an older build made during a roll, which the
+// marker test finds (migration 20261116160001). The root's own pull request deletes both with their
+// triggers.
+var markerTestedProjectionWriters = []string{"user_agent_thread_dismissed_clear", "user_threads_record"}
+
+// markerTests are, for each trigger function that reaches the exemption, the marker test each of
+// its writes sits under, in the order its body holds them: a call of user_threads_record, or the
+// clear's own delete. Each is written as the body reads once its comments are dropped, its case
+// lowered and its white space folded (normalizedSQLBody). A test that ends `end if;` is a guard
+// that returns before the write; any other is the condition of the `if` the write sits inside.
+//
+// A comment names its writer's stated pointers (comments.tuples_stored) or that this release
+// recorded it in its thread (comments.threads_recorded), a message its node pair or the same
+// (messages.threads_recorded), and an ask the moment of the writes the store holds
+// (asks.tuples_stored_at): on its insert, any marker at all, and on an answer the answer's own
+// moment, so an older build's answer to an ask this release created is still projected.
+var markerTests = map[string][]string{
+	"user_threads_comment": {"if new.tuples_stored or new.threads_recorded then return null; end if;"},
+	"user_threads_message": {"if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then return null; end if;"},
+	"user_threads_ask": {
+		"if tg_op = 'insert' and new.tuples_stored_at is not null then return null; end if;",
+		"and new.tuples_stored_at is distinct from (new.answer->>'at')::timestamptz then",
+	},
+	"user_agent_thread_dismissed_clear": {"if (new.node_kind is not null and new.node_address is not null) or new.threads_recorded then return null; end if;"},
+}
+
+// normalizedSQLBody is a stored function's body as markerTests spells it: its comments dropped
+// (pgmigrate.WithoutComments), lower-cased, and every run of white space one space.
+func normalizedSQLBody(body string) string {
+	return strings.Join(strings.Fields(strings.ToLower(pgmigrate.WithoutComments(body))), " ")
+}
+
+// requireTheExemptionWritesUnderTheMarkerTest reads the catalogue for the one exemption the one
+// Go writer of a thread leaves (R9): the stored functions whose bodies write user_threads or
+// user_agent_thread_dismissed are user_threads_record and user_agent_thread_dismissed_clear and no
+// other; user_threads_record is called by the three trigger functions of 0095-0097 alone and by no
+// trigger directly; every write each trigger function makes, through user_threads_record or its
+// own delete, sits under that function's marker test (markerTests); and each of those functions
+// is run by a trigger of the schema. So a write hidden in plpgsql that projects a thread without
+// the store is found, and so is a marker test taken away from one of the four.
+func requireTheExemptionWritesUnderTheMarkerTest(t *testing.T, ctx context.Context, run *projectionRun) {
+	t.Helper()
+	rows, err := run.database.Pool.Query(ctx, `
+		select p.proname, p.prosrc
+		from pg_proc p
+		join pg_namespace n on n.oid = p.pronamespace
+		where n.nspname = current_schema()
+			and p.prolang <> (select l.oid from pg_language l where l.lanname = 'internal')
+	`)
+	if err != nil {
+		t.Fatalf("read the stored functions: %v", err)
+	}
+	defer rows.Close()
+	bodies := map[string]string{}
+	for rows.Next() {
+		var name, body string
+		if err := rows.Scan(&name, &body); err != nil {
+			t.Fatalf("read a stored function: %v", err)
+		}
+		bodies[name] = normalizedSQLBody(body)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the stored functions: %v", err)
+	}
+	var writers, callers []string
+	for name, body := range bodies {
+		if readStateWrite.MatchString(body) {
+			writers = append(writers, name)
+		}
+		if recordCall.MatchString(body) {
+			callers = append(callers, name)
+		}
+	}
+	slices.Sort(writers)
+	slices.Sort(callers)
+	if !slices.Equal(writers, markerTestedProjectionWriters) {
+		t.Errorf("the stored functions writing user_threads or user_agent_thread_dismissed are %v, want the one exemption %v: every other write of them is inboxwrite.Record's",
+			writers, markerTestedProjectionWriters)
+	}
+	if want := []string{"user_threads_ask", "user_threads_comment", "user_threads_message"}; !slices.Equal(callers, want) {
+		t.Errorf("user_threads_record is called by %v, want the three trigger functions %v, each under its marker test", callers, want)
+	}
+	for _, name := range slices.Sorted(maps.Keys(markerTests)) {
+		tests := markerTests[name]
+		body, held := bodies[name]
+		if !held {
+			t.Errorf("the schema holds no function %s, whose writes markerTests names", name)
+			continue
+		}
+		sites := recordCall.FindAllStringIndex(body, -1)
+		if name == "user_agent_thread_dismissed_clear" {
+			sites = readStateWrite.FindAllStringIndex(body, -1)
+		}
+		if len(sites) != len(tests) {
+			t.Errorf("%s writes %d time(s), and markerTests names the marker test of %d: %s", name, len(sites), len(tests), body)
+			continue
+		}
+		for index, site := range sites {
+			before := body[:site[0]]
+			at := strings.LastIndex(before, tests[index])
+			switch {
+			case at < 0:
+				t.Errorf("%s's write %d (%q) sits under no marker test %q: %s", name, index+1, body[site[0]:site[1]], tests[index], body)
+			case !strings.HasSuffix(tests[index], "end if;") && strings.Contains(before[at+len(tests[index]):], "end if"):
+				t.Errorf("%s's write %d (%q) follows the end of the if whose condition is the marker test %q: %s", name, index+1, body[site[0]:site[1]], tests[index], body)
+			}
+		}
+	}
+	names := append(slices.Sorted(maps.Keys(markerTests)), "user_threads_record")
+	fired, err := readStrings(ctx, run.database.Pool, `
+		select p.proname || ' on ' || c.relname || ' (' || t.tgname || ')'
+		from pg_trigger t
+		join pg_class c on c.oid = t.tgrelid
+		join pg_namespace n on n.oid = c.relnamespace
+		join pg_proc p on p.oid = t.tgfoid
+		where not t.tgisinternal and n.nspname = current_schema() and p.proname = any($1)
+		order by 1
+	`, names)
+	if err != nil {
+		t.Fatalf("read the triggers of the exemption: %v", err)
+	}
+	for _, trigger := range fired {
+		if strings.HasPrefix(trigger, "user_threads_record ") {
+			t.Errorf("a trigger runs user_threads_record directly (%s), with no marker test in front of it", trigger)
+		}
+	}
+	for name := range markerTests {
+		if !slices.ContainsFunc(fired, func(trigger string) bool { return strings.HasPrefix(trigger, name+" ") }) {
+			t.Errorf("no trigger runs %s (the triggers of the exemption are %v), so its marker test is no longer what stands in front of the projection", name, fired)
+		}
+	}
+	t.Logf("the exemption %v, reached from %v, under the triggers %v", writers, callers, fired)
+}
+
 // deferredCountersOfAProjection is the deferred work a projected table may carry: work that
 // checks nothing about the projection, so running it at COMMIT takes no check away from the
 // writer. comments_watermark raises the comment list's ETag counter for every write of a
@@ -1184,6 +1442,12 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 var deferredCountersOfAProjection = []string{
 	"comments constraint comments_watermark",
 	"comments trigger comments_watermark",
+	// The delivery list's own ETag counter, raised for every write of an attempt row
+	// (migration 20261106020619's shape), deferred for the reason the comments one is.
+	"comment_deliveries constraint comment_deliveries_watermark",
+	"comment_deliveries trigger comment_deliveries_watermark",
+	"message_deliveries constraint message_deliveries_watermark",
+	"message_deliveries trigger message_deliveries_watermark",
 }
 
 // requireNoDeferredCheckOnAProjection proves the foreign key is checked where the row is
@@ -1471,9 +1735,11 @@ type projectionWriter struct {
 	left func(ctx context.Context) ([]string, error)
 }
 
-// projectionWriters are the two writers a transaction of this tree runs: the comment write,
-// which writes a comment's node and then its row, and the block index, which writes a version's
-// block nodes and then the document_blocks rows that project them.
+// projectionWriters are the writers a transaction of this tree runs: the comment write, which
+// writes a comment's node and then its row; the block index, which writes a version's block nodes
+// and then the document_blocks rows that project them; and the message write, which writes a
+// message's node and the pointers it states and then the messages row that names it
+// (planMessageNode, api's createStoredMessage).
 func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 	t.Helper()
 	commentID := mustUUID(t, run)
@@ -1534,7 +1800,44 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'block' and n.id = $1
 			`, blockAddress, run.specID)
 		},
-	}}
+	}, messageProjectionWriter(t, run)}
+}
+
+// messageProjectionWriter is the message write as this test drives it: the node planMessageNode
+// plans, the insert that names it and the facts the node write holds, the three steps api's
+// createStoredMessage queues in that order on one batch.
+func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter {
+	t.Helper()
+	messageID := mustUUID(t, run)
+	return projectionWriter{
+		name:  "the message write",
+		table: "messages",
+		write: func(ctx context.Context, tx pgx.Tx) error {
+			at := time.Now().UTC()
+			stored, err := planMessageNode(ctx, tx, graphstore.MessageRow{ID: messageID, IssueKey: run.issue},
+				model.Actor{Kind: "user", ID: "alice"}, at, nil)
+			if err != nil {
+				return err
+			}
+			nodeKind, nodeAddress := stored.rowNode()
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, stored.written)
+				b.Queue("", `
+					insert into messages (id, issue_key, author, body, created_at, node_kind, node_address)
+					values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A watched message.', $3, $4, $5)
+				`, messageID, run.issue, at, nodeKind, nodeAddress)
+				graphstore.QueueCaused(b, stored.written, graphstore.NoEvent)
+				return nil
+			})
+		},
+		left: func(ctx context.Context) ([]string, error) {
+			return readStrings(ctx, run.database.Pool, `
+				select 'messages ' || row_to_json(m)::text from messages m where m.id::text = $1
+				union all
+				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'message' and n.id = $1
+			`, messageID)
+		},
+	}
 }
 
 func mustUUID(t *testing.T, run *projectionRun) string {
@@ -1699,9 +2002,17 @@ func requireNeitherSideSurvivesAFailure(t *testing.T, ctx context.Context, run *
 // naming the transactions it read. Every row is read before any step of the run updates one: a
 // later update moves the row's xmin to its own transaction, which its node need not share, and
 // requireAReparentCarriesItsTuplesTransaction holds such an update to the tuple it appended.
+// The tables of rowsTheRunUpdates are the exception: their rows are updated by the send that
+// settles them in a transaction of its own, so a row's xmin is its last write's, which has to
+// have stated facts of the row's node, and its node has to be one a transaction that stated its
+// facts wrote.
 func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	for _, table := range projectedTables {
+		nodeWrittenBy := `node.xmin::text <> row.xmin::text`
+		if slices.Contains(rowsTheRunUpdates, table) {
+			nodeWrittenBy = `not (node.xmin::text = any(facts.listed))`
+		}
 		orphans, err := readStrings(ctx, run.database.Pool, `
 			select coalesce(row.node_kind, '(none)') || ' ' || coalesce(row.node_address, '(none)')
 				|| ': the row at xmin ' || row.xmin::text
@@ -1711,12 +2022,13 @@ func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *
 			left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
 			left join lateral (
 				select string_agg(distinct fact.xmin::text, ', ') as xmins,
+					array_agg(distinct fact.xmin::text) as listed,
 					bool_or(fact.xmin::text = row.xmin::text) as same
 				from graph_tuples fact
 				where fact.from_kind = row.node_kind and fact.from_id = row.node_address
 			) facts on true
 			where node.kind is null
-			   or node.xmin::text <> row.xmin::text
+			   or `+nodeWrittenBy+`
 			   or facts.same is not true
 			order by 1
 		`)
@@ -1732,6 +2044,10 @@ func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *
 			t.Fatalf("count the rows of %s: %v", table, err)
 		}
 		if written == 0 {
+			if !slices.Contains(tablesThisRunWrites, table) {
+				t.Logf("%s: the run writes none, so its rule is read over the tables below and by the census", table)
+				continue
+			}
 			t.Errorf("the run wrote no row of %s, so nothing of it was read", table)
 		}
 		t.Logf("%s: %d rows, each with its node and the facts its own transaction stated", table, written)
@@ -1924,16 +2240,22 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 // requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
 // moves - the kinds the three projected tables of migration 20261109022248 name - less the
 // kinds the store holds of people and agents and the two its block schema writes, which no
-// projection backs, and the four kinds whose nodes name the project a read is limited by
-// - an issue, a document, an ask and a message, each written at its own
-// create site, beside the rows it writes, which carry no node columns.
+// projection backs, the four kinds whose nodes name the project a read is limited by - an
+// issue, a document, an ask and a message, each written at its own create site, beside the rows
+// it writes, which carry no node columns - and the delivery attempt, written at the site that
+// opens it, before the comment_deliveries or message_deliveries row that names it (migration
+// 20261116102800). A block of a comment's, a message's or an ask's body is a `block` node too,
+// written before the comment_blocks, message_blocks or ask_blocks row that names it (migration
+// 20261116140000), so no node of a comment_block, message_block or ask_block kind reaches the
+// store.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	moved := []string{"block", "block_ref", "comment"}
 	allowed := append(slices.Clone(moved),
 		graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole, graphstore.KindPage,
 		"supertag", "attribute",
-		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage)
+		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage,
+		graphstore.KindDeliveryAttempt)
 	for _, column := range []string{"select distinct kind from graph_nodes", "select distinct from_kind from graph_tuples"} {
 		kinds, err := readStrings(ctx, run.database.Pool, column+" order by 1")
 		if err != nil {

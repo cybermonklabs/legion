@@ -9,11 +9,12 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { advancesIssuesParams } from "../../api/queries";
+import { advancesIssuesParams, openAsksKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import { invalidateMeInbox } from "../inbox/one-read-cache";
 import {
   cardHasOpenChild,
   dryRunStatusChange,
@@ -301,7 +302,9 @@ export function useIssueTableActions({
       setBusy(false);
       void client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
-      void client.invalidateQueries({ queryKey: ["inbox"] });
+      void client.invalidateQueries({ queryKey: openAsksKey });
+      // The Inbox draws the reader's own asks, which carry their issue's fields, from the one read.
+      void invalidateMeInbox(client);
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;

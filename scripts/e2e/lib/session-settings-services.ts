@@ -52,7 +52,7 @@ export class Services {
   /** What `login` reads of the session's stored thread, as the page reads it. */
   async thread(session: string, login = PERSON): Promise<StoredRead[]> {
     const { body, status } = await this.#json(
-      `${this.#rig.dispatchUrl}/api/v1/agents/${encodeURIComponent(session)}/messages`,
+      `${this.#rig.dispatchUrl}/api/v1/agents/${encodeURIComponent(session)}/conversation`,
       { headers: { "X-Dispatch-User": login } }
     );
     expect(

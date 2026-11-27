@@ -92,16 +92,18 @@ const TYPE_GROUP_LABELS: Record<(typeof INBOX_ROW_TYPES)[number], string> = {
   approval: "Approvals",
   decision: "Decisions",
   question: "Questions",
-  reply: "Replies",
+  reply: "Threads",
 };
 
-/** The singular name of each row type, as the Filter control and a row's own icon name it. */
+/** The name of each row type, as the Filter control and a row's own icon name it: the singular,
+ *  but for the `reply` value, which reads `Threads` here and in its band alike - the one word the
+ *  owner chose for what that entry lists. The value itself, and so `?type=reply`, stays. */
 export const TYPE_LABELS: Record<(typeof INBOX_ROW_TYPES)[number], string> = {
   agent: "Agent message",
   approval: "Approval",
   decision: "Decision",
   question: "Question",
-  reply: "Reply",
+  reply: "Threads",
 };
 
 /** What a value of one dimension is called where the reader reads it: a Filter row, a filter

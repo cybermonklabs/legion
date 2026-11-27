@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -155,11 +156,12 @@ type Ledger struct {
 	// approval of that document already: a write path that starts recording a review here would
 	// refuse the carry of any later version of the same document in the same transaction.
 	reviews map[string]model.ArtifactReview
-	// referenced is, per source, the targets its references cite once this transaction's queued
-	// reconciliation of them is written, and blockIndexes, per document, what its block index holds
-	// once its queued indexing is written: what a later reconciliation of the same source in this
-	// transaction plans against (planReplaceCounted, planBlockIndex).
-	referenced   map[refs.Target][]refs.Target
+	// referenced is, per source, this transaction's last queued reconciliation of its references,
+	// whose rows - and, for an item, each row's tuples_stored - are what the source holds once it
+	// is written, and blockIndexes, per document, what its block index holds once its queued
+	// indexing is written: what a later reconciliation of the same source in this transaction
+	// plans against (planReplaceCounted, planBlockIndex).
+	referenced   map[refs.Target]refs.Replacement
 	blockIndexes map[string]refs.BlockIndex
 	// askParts holds, per ask this transaction has planned the parts of, what its part index
 	// holds once that plan is written: what a later plan of the same ask's parts in this
@@ -731,30 +733,40 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // whatever context the caller holds (ReadContext), as QueueVersion's write does, and it refuses
 // a ledger no caller joined and a sealed one (ErrQueueSealed).
 //
+// It returns, too, what the parts state in the node and tuple store - their block nodes, their
+// part_of and their links (refs.ItemIndexing.Stated) - held for the event of the write, which the
+// route queues with graphstore.QueueCaused under graphstore.LatestEvent right after the ask's
+// event, beside what the event's other writes stated.
+//
 // document is the one the parts' `#id`s resolve against for an ask whose insert the route has
 // queued, which no read of that row can answer yet (refs.PendingAskDocument); nil for an ask
 // already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
 // part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
-// one to both readers, so the two of them read it once.
+// one to both readers, so the two of them read it once. scope is, likewise, the ask's node as
+// the route queued it before that insert (refs.WrittenItem), which the parts are planned under
+// since no read of the index finds the ask yet; nil for an ask already stored, whose node the
+// index reads for itself (refs.ReadItemIndex).
 //
 // questionReconciled says the route queued the reconciliation of the ask's question before this
 // call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
 // parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
-// reconciles the question's references after them and settles it there (planAskPartsCounted).
+// reconciles the question's references after them and settles it there (planAskPartsCounted),
+// and what it returns as stated holds the question's citations beside the parts'.
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
 	document *refs.PendingDocument,
+	scope *refs.ItemScope,
 	at time.Time,
 	questionReconciled bool,
 	beside model.ReferenceChanges,
-) (model.ReferenceChanges, error) {
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if l.writer == nil {
-		return model.ReferenceChanges{}, errUnjoined
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, errUnjoined
 	}
 	if l.sealed {
-		return model.ReferenceChanges{}, ErrQueueSealed
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, ErrQueueSealed
 	}
 	// Every read below runs under this ledger's context, so a `#id` naming a question block
 	// this transaction has only queued resolves to the ask it will name (refs.Pending); the
@@ -765,14 +777,14 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside)
+	changes, parts, stated, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside, scope)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if err := l.Queue(parts); err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return changes, nil
+	return changes, stated, nil
 }
 
 // pendingArtifact is the address registered for artifactID on ctx's ledger
@@ -853,7 +865,7 @@ func (l *Ledger) PlanSettle(ctx context.Context, askID string, change asks.Chang
 	var settled asks.Settled
 	var err error
 	if earlier, planned := l.settledAsks[askID]; planned {
-		settled, err = asks.PlanSettleAfter(earlier, change)
+		settled, err = asks.PlanSettleAfter(l.ReadContext(ctx), earlier, change)
 	} else {
 		settled, err = asks.PlanSettle(l.ReadContext(ctx), l.writer, askID, change)
 	}

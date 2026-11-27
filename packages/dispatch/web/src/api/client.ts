@@ -11,7 +11,8 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
-  type InboxThreadKind,
+  INBOX_DISMISSED_PAGE,
+  INBOX_THREAD_KINDS,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
@@ -47,6 +48,8 @@ import type {
   IDCandidate,
   IssueAskThreadRow,
   IssueReferencesAnswer,
+  MeInboxEntry,
+  MeInboxResponse,
   NewIssueSettings,
   ParentStatusConflictIssue,
   StatusChangeEntry,
@@ -491,6 +494,57 @@ export function isNoRoute(error: unknown): boolean {
   );
 }
 
+// Whether `error` is a Dispatch process of the release before refusing `GET /api/v1/asks/open`
+// with neither `project` nor `author_session` (`400 AUTHOR_SESSION_OR_PROJECT_REQUIRED`), which
+// this release's process answers with every project's open asks. While a release rolls out, or
+// after a rollback, such a process can answer the page, which then reads those asks as the page of
+// that release read them (`openAsksOfTheReleaseBefore`).
+// kept for one release: open-asks-scopeless-fallback
+export function refusesOpenAsksWithNoNarrowing(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 400 &&
+    error.code === "AUTHOR_SESSION_OR_PROJECT_REQUIRED"
+  );
+}
+
+/** The Inbox page's unread count (`meInboxCountQuery`): the one read's `unread` state on a
+ *  one-entry page, which the page reads for its `total` alone, so that is all its answer holds
+ *  (`getMeInboxPage`).
+ *  kept for one release: inbox-page-fallback
+ */
+type InboxCountRead = { readonly limit: 1; readonly state: "unread" };
+
+/** One owner's unread threads (`meInboxOwnerQuery`): the one read's `unread` state narrowed to
+ *  that issue or document, `limit` at a time.
+ *  kept for one release: inbox-page-fallback
+ */
+type InboxOwnerRead =
+  | { readonly artifact: string; readonly limit: number; readonly state: "unread" }
+  | { readonly issue: string; readonly limit: number; readonly state: "unread" };
+
+/** The Inbox page's reads of the one read that it draws rows from (`queries.ts`), each the query
+ *  it sends: the reader's own rows (`inbox`), unpaged; one owner's unread threads
+ *  (`InboxOwnerRead`); and one page of what they dismissed (`dismissed`),
+ *  `INBOX_DISMISSED_PAGE` entries, read on from a page's `next_cursor` by `cursor`.
+ *  kept for one release: inbox-page-fallback
+ */
+type InboxRowsRead =
+  | { readonly state: "inbox" }
+  | InboxOwnerRead
+  | {
+      readonly cursor?: string;
+      readonly limit: typeof INBOX_DISMISSED_PAGE;
+      readonly state: "dismissed";
+    };
+
+/** One of the Inbox page's reads of the one read, `GET /api/v1/me/inbox`, as the query that makes
+ *  it names it (`getMeInboxPage`), each of which `inboxOfTheReleaseBefore` answers from the reads
+ *  of the release before.
+ *  kept for one release: inbox-page-fallback
+ */
+type InboxRead = InboxCountRead | InboxRowsRead;
+
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
 export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -879,13 +933,16 @@ export class DispatchApiClient {
    *  goes up (an upload's), as the response's headers arrive and as each piece of its body does,
    *  `read` included: a transfer that keeps moving goes on however slowly, either way, and one
    *  that stops fails as headers that never come do. A caller's `init.signal` still aborts the
-   *  request, as itself. */
+   *  request, as itself. A request sent `once` is sent once, and an answer of no route to it is
+   *  thrown as it came (`answered`). */
   private async exchange<T>(
     path: string,
     init: RequestInit,
     deadlineMs: number | null | undefined,
     read: (response: Response) => Promise<T>,
-    uploaded?: (loaded: number, total: number) => void
+    uploaded?: (loaded: number, total: number) => void,
+    // kept for one release: inbox-page-fallback
+    once = false
   ): Promise<T> {
     const limit =
       deadlineMs !== undefined
@@ -893,7 +950,7 @@ export class DispatchApiClient {
         : (init.method ?? "GET").toUpperCase() === "GET"
           ? REQUEST_DEADLINE_MS
           : null;
-    if (limit === null) return read(await this.answered(path, init, undefined, uploaded));
+    if (limit === null) return read(await this.answered(path, init, undefined, uploaded, once));
     const deadline = new AbortController();
     let timer = setTimeout(() => deadline.abort(), limit);
     const caller = init.signal ?? undefined;
@@ -904,7 +961,7 @@ export class DispatchApiClient {
     try {
       const signal =
         caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
-      return await read(await this.answered(path, { ...init, signal }, arrived, uploaded));
+      return await read(await this.answered(path, { ...init, signal }, arrived, uploaded, once));
     } catch (error) {
       // An answer Dispatch gave stays its answer and the caller's abort stays the caller's: only
       // what the deadline cut short is a timeout.
@@ -932,12 +989,16 @@ export class DispatchApiClient {
    *  `init`, so the same body: while a release rolls out, the next attempt may reach the build
    *  that serves the route. After the last attempt it throws
    *  `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. An abort of `init.signal` during a wait - the caller's,
-   *  or the deadline's - rejects at once with the abort's reason and sends nothing more. */
+   *  or the deadline's - rejects at once with the abort's reason and sends nothing more. A request
+   *  sent `once` is sent once, and an answer of no route to it is thrown as it came: its caller
+   *  has an answer of its own to a Dispatch without the route (`getMeInboxPage`). */
   private answered(
     path: string,
     init: RequestInit,
     arrived?: () => void,
-    uploaded?: (loaded: number, total: number) => void
+    uploaded?: (loaded: number, total: number) => void,
+    // kept for one release: inbox-page-fallback
+    once = false
   ): Promise<Response> {
     // Every read and write of the page funnels through here, so this one line asks Dispatch for
     // the display tree of every stored text it answers with (`Dispatch-Trees`); no other client
@@ -970,6 +1031,8 @@ export class DispatchApiClient {
       if (!response.ok) throw await errorFrom(response);
       return response;
     };
+    // kept for one release: inbox-page-fallback
+    if (once) return attempt();
     return retryNoRoute(attempt, isNoRoute, {
       exhausted: () =>
         new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE }),
@@ -1371,8 +1434,148 @@ export class DispatchApiClient {
     return this.read("/api/v1/priorities/{id}/history", { id });
   }
 
-  getInbox(project?: string) {
-    return this.read("/api/v1/inbox", {}, { project });
+  /** `GET /api/v1/asks/open`: the open asks the caller may see, by priority and then oldest
+   *  first, with their counts - every project's with no narrowing, one project's under `project`,
+   *  and only those that wait on one person under `waiting_on`. Each row carries the ask's thread
+   *  and the fields an Inbox row draws. */
+  listOpenAsks(query: Query<"/api/v1/asks/open", "get"> = {}) {
+    return this.read("/api/v1/asks/open", {}, query);
+  }
+
+  /**
+   * The open asks under `query`, read as the page of the release before read them, from
+   * `GET /api/v1/inbox` under the same `project`. `openAsksQuery` reads it only where a Dispatch
+   * process of the release before refused `listOpenAsks` (`refusesOpenAsksWithNoNarrowing`): such
+   * a process takes `GET /api/v1/asks/open` only with `project` or `author_session`. So every
+   * page that draws every project's open asks still loads while such a process serves, during a
+   * roll or after a rollback.
+   * kept for one release: open-asks-scopeless-fallback
+   */
+  openAsksOfTheReleaseBefore(query: { readonly project?: string }) {
+    return this.read("/api/v1/inbox", {}, query);
+  }
+
+  /** `GET /api/v1/me/inbox`, the one read: every node tied to the signed-in person, once, with
+   *  the relation kinds that tie it to them, newest first; where the node is a row the Inbox
+   *  draws, the entry carries that row (`inboxEntryRow`). `state` narrows it to the page's own
+   *  rows in that state - `unread`, `inbox` or `dismissed` - an absent `limit` answers every
+   *  entry, but under `dismissed` one page of 200, and `cursor` reads on from a page's
+   *  `next_cursor`. Any key the route does not declare is refused by name. Needs the `person`
+   *  scope. */
+  getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}) {
+    return this.read("/api/v1/me/inbox", {}, query);
+  }
+
+  /**
+   * One of the Inbox page's reads of the one read, `GET /api/v1/me/inbox`, which the query that
+   * makes it names as the read it is (`InboxRead`, `queries.ts`): the reader's own rows, their
+   * unread count, one page of what they dismissed, or one owner's unread threads. It is sent
+   * once, and a Dispatch process that answers it with no route (`isNoRoute`), as one of the
+   * release before does, is answered from the reads of that release, which every build serves
+   * (`inboxOfTheReleaseBefore`): asking again over a roll's waits would only delay a page that
+   * reaches only such processes, during a roll or after a rollback. Any other failure is the
+   * read's own, and nothing else is read. Every other read of the route is `getMeInbox`'s, asked
+   * as every read is. The count is read for its `total` alone, which is all it answers.
+   * kept for one release: inbox-page-fallback
+   */
+  getMeInboxPage(read: InboxCountRead): Promise<Pick<MeInboxResponse, "total">>;
+  getMeInboxPage(read: InboxRowsRead): Promise<MeInboxResponse>;
+  async getMeInboxPage(read: InboxRead): Promise<Pick<MeInboxResponse, "total">> {
+    try {
+      return await this.exchange(
+        routeUrl("/api/v1/me/inbox", {}, read satisfies Query<"/api/v1/me/inbox", "get">),
+        {},
+        undefined,
+        (response) => response.json() as Promise<MeInboxResponse>,
+        undefined,
+        true
+      );
+    } catch (error) {
+      if (!isNoRoute(error)) throw error;
+      return this.inboxOfTheReleaseBefore(read);
+    }
+  }
+
+  /**
+   * The one read's answer to `read`, one of the Inbox page's reads of it (`InboxRead`), made from
+   * the reads the page of the release before made. `getMeInboxPage` answers with it only where a
+   * Dispatch process of that release answered `GET /api/v1/me/inbox` with no route, so a page of
+   * this release that reaches only such processes, during a roll or after a rollback, still shows
+   * the Inbox. The reader's own rows (`inbox`) are the open asks that wait on them, from
+   * `GET /api/v1/inbox?assignee=me`, and their Reply and Agent rows, from
+   * `GET /api/v1/me/replies` under `state=inbox`. Their unread count (`InboxCountRead`) is the
+   * `total` of that route's one-row page of unread threads, which counts every one, and no entry
+   * is made of the row, which the page never reads. An owner's unread threads (`InboxOwnerRead`)
+   * are that route's under the same `limit` and owner. A page of what they dismissed
+   * (`dismissed`) is that route's under `state=dismissed` and the same `cursor`, with no `limit`,
+   * which that route refuses there: it answers `INBOX_DISMISSED_PAGE` rows a page, and its
+   * `next_cursor` is one only it reads back. Each read of that route names both kinds of row.
+   *
+   * Each entry carries its row under the node and the moment the one read gives that row, and an
+   * Agent row is the Agent entry the one read answers for it, with the conversation its reading
+   * pane draws (`agentConversation`), read from `GET /api/v1/messages/{id}` by its root message,
+   * which every build serves. No read of the release before answers an entry's relations, the
+   * reader's `person` or the `horizon`, and the page reads none of them: each entry's relations
+   * are none, and the other two are empty.
+   * kept for one release: inbox-page-fallback
+   */
+  private async inboxOfTheReleaseBefore(
+    read: InboxRead
+  ): Promise<MeInboxResponse | Pick<MeInboxResponse, "total">> {
+    const kind = INBOX_THREAD_KINDS.join(",");
+    const query = read.state === "dismissed" ? { state: read.state, cursor: read.cursor } : read;
+    const [asks, replies] = await Promise.all([
+      read.state === "inbox" ? this.read("/api/v1/inbox", {}, { assignee: "me" }) : [],
+      this.read("/api/v1/me/replies", {}, { kind, ...query }),
+    ]);
+    // The count is the one read of the unread state that names no owner.
+    if (read.state === "unread" && !("artifact" in read) && !("issue" in read)) {
+      return { total: replies.total };
+    }
+    const threads = await Promise.all(
+      (replies.rows ?? []).map(async (row): Promise<MeInboxEntry> => {
+        const moment =
+          read.state === "dismissed" && row.dismissed_at !== undefined
+            ? row.dismissed_at
+            : row.reply.created_at;
+        if (row.kind !== "agent") {
+          return {
+            moment,
+            node: { id: row.thread_id, kind: row.kind },
+            relations: [],
+            thread: row,
+          };
+        }
+        const conversation = await this.read("/api/v1/messages/{id}", { id: row.thread_id });
+        return {
+          agent: { ...row, conversation },
+          moment,
+          node: { id: row.thread_id, kind: "message" },
+          relations: [],
+        };
+      })
+    );
+    const entries = [
+      ...asks.map(
+        (ask): MeInboxEntry => ({
+          ask,
+          moment: ask.last_reply?.created_at ?? ask.created_at,
+          node: { id: ask.id, kind: "ask" },
+          relations: [],
+        })
+      ),
+      ...threads,
+    ];
+    return {
+      as_of: replies.as_of,
+      entries,
+      horizon: 0,
+      limit: replies.limit,
+      next_cursor: replies.next_cursor,
+      offset: replies.offset,
+      person: "",
+      total: asks.length + replies.total,
+    };
   }
 
   /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
@@ -1458,27 +1661,6 @@ export class DispatchApiClient {
    *  them, newest first, one page at a time. Needs the `person` scope. */
   listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
     return this.read("/api/v1/people/{login}/nodes", { login }, page);
-  }
-
-  /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
-   *  `kind` is the comma list the route takes (`reply` alone by default, `reply,agent` for the
-   *  Inbox's own rows), `state` is `unread` (the default), `inbox` - every row of their Inbox,
-   *  read or not - or `dismissed`, `issue` or `artifact` narrows to one owner, and an absent
-   *  `limit` asks for every matching row. `state=dismissed` answers `INBOX_DISMISSED_PAGE` rows
-   *  at a time, newest dismissal first, and `cursor` reads the next page from its `next_cursor`,
-   *  which is also what says whether another page follows, since that state's `total` is the page
-   *  it answers rather than the whole pile; `limit` or `offset` there, and `cursor` anywhere else,
-   *  are refused. Needs the `person` scope. */
-  listMyReplies(
-    page: Omit<Query<"/api/v1/me/replies", "get">, "kind"> & {
-      kind?: readonly InboxThreadKind[];
-    }
-  ) {
-    // The route reads `kind` as one comma list, not as the repeated parameter `routeUrl` writes
-    // an array as (`?label=`), so the one key the document types as that list is folded here.
-    // Spreading `page` keeps the caller's own key order, so the request reads as the route
-    // documents it.
-    return this.read("/api/v1/me/replies", {}, { ...page, kind: page.kind?.join(",") });
   }
 
   /** `PUT /api/v1/me/threads/{id}/read`: move the signed-in person's read mark on one thread
@@ -1571,8 +1753,11 @@ export class DispatchApiClient {
     return this.send(agentMessageRequest(sessionID, input), bounds);
   }
 
-  listAgentMessages(sessionID: string) {
-    return this.read("/api/v1/agents/{session_id}/messages", { session_id: sessionID });
+  /** `GET /api/v1/agents/{session_id}/conversation`: the session's conversation as the reader
+   *  reads it - each root message that reaches the session, by its own target or by a delivery
+   *  attempt that names the session, with its replies - newest activity first. */
+  getAgentConversation(sessionID: string) {
+    return this.read("/api/v1/agents/{session_id}/conversation", { session_id: sessionID });
   }
 
   /** A person's message to many sessions. */

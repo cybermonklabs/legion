@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import {
-  inboxQuery,
+  meInboxQuery,
   prioritySummaryQuery,
   projectsQuery,
   userAgentStateQuery,
@@ -12,6 +12,7 @@ import {
 import type { AuthenticatedUser } from "../../api/types";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { PinButton } from "../../components/PinButton";
+import { useIsHuman } from "../../hooks/useIsHuman";
 import {
   railAccentText,
   railActiveBg,
@@ -153,7 +154,10 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   const location = useLocation();
-  const inbox = useQuery(inboxQuery());
+  // The reader's own Inbox, the one read's, which the Needs-you count and the Inbox page share: a
+  // person's alone, so an agent's credential reads none.
+  const human = useIsHuman();
+  const inbox = useQuery({ ...meInboxQuery(), enabled: human });
   const pinned = useQuery({
     queryKey: ["issues", "pinned"],
     queryFn: () => api.listIssues({ pinned: true }),
@@ -200,7 +204,7 @@ export function Sidebar({
       </button>
     );
 
-  if (inbox.isPending || pinned.isPending || projects.isPending) {
+  if ((human && inbox.isPending) || pinned.isPending || projects.isPending) {
     return (
       <>
         {hideControl}
@@ -208,7 +212,7 @@ export function Sidebar({
       </>
     );
   }
-  if (inbox.isError || pinned.isError || projects.isError) {
+  if ((human && inbox.isError) || pinned.isError || projects.isError) {
     return (
       <>
         {hideControl}

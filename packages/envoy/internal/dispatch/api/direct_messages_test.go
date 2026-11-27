@@ -352,18 +352,20 @@ func TestAgentRepliesToADirectMessageAreUnreadForItsSenderUntilRead(t *testing.T
 }
 
 // Three things turn this red and nothing else does: the read-mark write's model.CanonicalLogin
-// (state.go:307), direct_marks' deliberate canonical/raw split, and the arguments the shared read
-// path builds (unreadDirectRepliesArgs). It never calls the conversation window, so it is not
-// window coverage; deleting it as redundant would take all three guards away with every other
-// test still green.
+// and the person node its tuple runs from (putUserAgentState, graphstore.FromPerson), direct_marks'
+// read of the marks from that one node (directMarks, api/unread_replies.go), and the arguments the
+// shared read path builds (unreadDirectRepliesArgs). It never calls the conversation window, so it
+// is not window coverage; deleting it as redundant would take all three guards away with every
+// other test still green.
 //
 // It exercises GET /me/agents/state and the read-mark write; it never reads the conversation
 // window.
 //
 // A viewer is one person however their identity source spells their login: the replies to the
 // direct messages they sent count unread under any casing of it, and a read mark written under
-// one casing clears them under another. The Clear is keyed the other way and is
-// TestClearIsKeyedOnTheRawActorID's.
+// one casing clears them under another. The Clear is read from the same person node and is
+// TestClearIsKeyedOnTheCanonicalPerson's; a Clear stored under a raw actor id that is not the
+// caller's spelling is TestEveryReadStateWriteIsATupleFromThePerson's (api/read_state_tuples_test.go).
 func TestAViewersRepliesCountAndClearWhateverTheCasingOfTheirLogin(t *testing.T) {
 	t.Parallel()
 	handler, _, _, reply, _ := directConversationFrom(t, "Alice")

@@ -2,7 +2,7 @@ package delivery
 
 import "context"
 
-// resolveSessionTitlesQuery answers, for each id it is given, that session's stored title: one
+// ResolveSessionTitlesQuery answers, for each id it is given, that session's stored title: one
 // read of session_titles_pkey (migration 20261117100008) for the whole list, and no row for a
 // session that has none. It reads no events. Each title used to be resolved out of events on
 // every page read: the read before cybermonklabs/legion#3517, a `distinct on` that sorted every
@@ -11,7 +11,11 @@ import "context"
 // events_session_actor_created_at_idx, which has no measurement at that size, still read events
 // on each one. The table is written where the title is stamped instead (20261117100015's
 // trigger). The plan test of this package holds the read there (session_titles_plan_test.go).
-const resolveSessionTitlesQuery = `select session_id, title from session_titles where session_id = any($1)`
+//
+// $1 is the session ids (text[]). It is exported for a reader that names its sessions inside a
+// statement of its own and splices this one in over them (api's GET /api/v1/me/inbox), reading
+// each row as ResolveSessionTitles does: the session's id, then its title.
+const ResolveSessionTitlesQuery = `select session_id, title from session_titles where session_id = any($1)`
 
 // ResolveSessionTitles answers the newest title each session stamped, which the Delivery page
 // shows a session by (LEGION-567): a subagent's own commit trailer carries no parent-session
@@ -36,7 +40,7 @@ func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string) (
 	}
 	// One statement for every id of the read, over the primary key, rather than one query per id:
 	// a Delivery timeline page can name hundreds of distinct sessions across its window.
-	rows, err := q.Query(ctx, resolveSessionTitlesQuery, sessionIDs)
+	rows, err := q.Query(ctx, ResolveSessionTitlesQuery, sessionIDs)
 	if err != nil {
 		return nil, err
 	}

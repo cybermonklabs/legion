@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -71,12 +72,16 @@ const apiTestParallelism = 8
 // databases and their templates, inside the broker harness's Run, which then drops the database
 // brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
 // testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
-// harness's may have reached that bound, still waits testdb's floor for its own drop.
+// harness's may have reached that bound, still waits testdb's floor for its own drop. Both harnesses
+// run inside cmdtest.Run: the tests tagged basebuild build the release before this one with cmdtest
+// (buildBaseline, one_inbox_basebuild_test.go), which refuses a build outside a test process that
+// cmdtest.Main or cmdtest.Run started, since Run makes the directory those binaries go into and
+// removes it.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
+	os.Exit(cmdtest.Run(func() int { return brokerstoretest.Run(func() int { return storetest.Main(m) }) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
@@ -222,6 +227,9 @@ type testServerOptions struct {
 	// clock.Real(), and a test whose sockets must not end on a late pong passes clocktest.Held(), or
 	// a fake it moves to each deadline.
 	liveSocketClock clock.Clock
+	// horizonDB is the server's Deps.HorizonDB: nil observes the event horizon through the store's
+	// horizon pool, as production does.
+	horizonDB events.HorizonDB
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -454,6 +462,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	}
 	deps.LiveSocketAge = options.liveSocketAge
 	deps.LiveSocketClock = options.liveSocketClock
+	deps.HorizonDB = options.horizonDB
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -56,6 +57,14 @@ type Change struct {
 	// once the event exists where nothing queues, in the same transaction.
 	Event int64
 	Held  *graphstore.Uncaused
+	// TuplesStored says the caller states the answer this change writes in the node and tuple
+	// store in the same transaction - who answered took part in the ask's thread, and the answer
+	// reached everyone else in it (inboxwrite.Record) - so the update that writes the answer sets
+	// asks.tuples_stored_at to the answer's own moment (migration 20261116140001). That is the
+	// marker the trigger user_threads_ask reads (20261116160001): an answer whose moment the marker
+	// holds is this release's and passes it by, and any other answer is an older build's, which
+	// that trigger projects and the backfill takes. Only a change that writes an answer moves it.
+	TuplesStored bool
 }
 
 // Answered is the change an answer makes: the ask is answered with answer, and keeps the
@@ -120,7 +129,7 @@ func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.
 	if change.From != "" && held.state != change.From {
 		return model.Ask{}, fmt.Errorf("settle ask %s from %s: it is %s: %w", askID, change.From, held.state, ErrStateMoved)
 	}
-	settled, err := planSettle(askID, change, held)
+	settled, err := planSettle(ctx, askID, change, held)
 	if err != nil {
 		return model.Ask{}, err
 	}
@@ -155,6 +164,15 @@ type Settled struct {
 	// leaves is the row and the node as the change leaves them once written, which a later change
 	// of the same ask in the same transaction is planned from (PlanSettleAfter).
 	leaves heldAnswer
+	// fails is whether the write is the one a test armed a failure for between the node write of
+	// the answer and the asks row (failpoint.AskAnswer), decided as it was planned.
+	fails bool
+}
+
+// storesAnswer is whether the change writes an answer this release's writer states in the store,
+// whose update sets asks.tuples_stored_at to the answer's own moment (Change.TuplesStored).
+func (c Change) storesAnswer() bool {
+	return c.TuplesStored && !c.KeepAnswer && c.Answer != nil
 }
 
 // PlanSettle plans change on the ask askID, as Settle writes it, for a transaction that queues
@@ -173,7 +191,14 @@ func PlanSettle(ctx context.Context, q RowQueryer, askID string, change Change) 
 	if err != nil {
 		return Settled{}, err
 	}
-	return planSettle(askID, change, held)
+	return planSettle(ctx, askID, change, held)
+}
+
+// failsBetween is whether a test armed a failure for this change between the node write of the
+// answer and the asks row (failpoint.AskAnswer): only a change that writes an answer this
+// release's writer states in the store has that point, so no other change disarms it.
+func failsBetween(ctx context.Context, change Change) bool {
+	return change.storesAnswer() && failpoint.Planned(ctx, failpoint.AskAnswer)
 }
 
 // PlanSettleAfter plans change on the ask earlier settled, as earlier leaves the row and the node
@@ -181,14 +206,17 @@ func PlanSettle(ctx context.Context, q RowQueryer, askID string, change Change) 
 // of an approval request its follow then answers, a settlement's retraction of an ask whose block
 // returns. It reads nothing: what the second change keeps of the answer and the resolution, and
 // what it retracts on the node, is what the first leaves, which no read of the tables answers
-// before the write phase has run.
-func PlanSettleAfter(earlier Settled, change Change) (Settled, error) {
-	return planSettle(earlier.askID, change, earlier.leaves)
+// before the write phase has run. It decides, as PlanSettle does, whether a test armed the failure
+// between the node write of the answer and the asks row for it (failpoint.AskAnswer), so every
+// answer path carries that point.
+func PlanSettleAfter(ctx context.Context, earlier Settled, change Change) (Settled, error) {
+	return planSettle(ctx, earlier.askID, change, earlier.leaves)
 }
 
 // planSettle is PlanSettle over held, the row and the node as they were read, or as an earlier
-// change of this transaction leaves them.
-func planSettle(askID string, change Change, held heldAnswer) (Settled, error) {
+// change of this transaction leaves them. Once the change is planned it decides whether a test
+// armed the failure for it (failsBetween), so a change whose plan fails disarms nothing.
+func planSettle(ctx context.Context, askID string, change Change, held heldAnswer) (Settled, error) {
 	settled := Settled{
 		Ask:    model.Ask{ID: askID, State: change.State, Answer: change.Answer, Resolution: change.Resolution},
 		askID:  askID,
@@ -224,6 +252,7 @@ func planSettle(askID string, change Change, held heldAnswer) (Settled, error) {
 		}
 		settled.resolution = encoded
 	}
+	settled.fails = failsBetween(ctx, change)
 	return settled, nil
 }
 
@@ -271,13 +300,19 @@ func (s Settled) Queue(b *store.WriteBatch) error {
 	if s.change.Held == nil {
 		graphstore.QueueCaused(b, s.Held, s.change.Event)
 	}
+	// The point a test injects a failure through between the node write of the answer and the
+	// asks row (failpoint.AskAnswer), for an answer this release's writer writes: every such
+	// writer holds the answer's tuples for its later event (Change.Held), so they come after it.
+	failpoint.Queue(b, s.fails)
 	b.Queue("write the answer state of ask "+s.askID, `
 		update asks
 		set state = $2,
 		    answer = case when $3 then answer else $4::jsonb end,
-		    resolution = case when $5 then resolution else $6::jsonb end
+		    resolution = case when $5 then resolution else $6::jsonb end,
+		    tuples_stored_at = case when $8 then ($4::jsonb->>'at')::timestamptz else tuples_stored_at end
 		where id = $1::uuid and ($7::text = '' or state = $7::text)
-	`, s.askID, s.change.State, s.change.KeepAnswer, s.answer, s.change.KeepResolution, s.resolution, s.change.From).Exec(func(tag pgconn.CommandTag) error {
+	`, s.askID, s.change.State, s.change.KeepAnswer, s.answer, s.change.KeepResolution, s.resolution, s.change.From,
+		s.change.storesAnswer()).Exec(func(tag pgconn.CommandTag) error {
 		if tag.RowsAffected() == 1 {
 			return nil
 		}

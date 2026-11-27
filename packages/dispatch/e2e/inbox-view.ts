@@ -8,7 +8,7 @@
  *  or project.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
-import type { InboxRow, IssuePriority } from "../web/src/api/types";
+import type { IssuePriority, OpenAskRow } from "../web/src/api/types";
 
 import { setLiveSessions } from "./agents";
 import {
@@ -16,9 +16,9 @@ import {
   createComment,
   createIssue,
   createProject,
-  getInbox,
-  listMyReplies,
+  listOpenAsks,
   markThreadRead,
+  meInboxThreads,
   patchIssue,
   requestApproval,
 } from "./api";
@@ -66,11 +66,16 @@ const decisionSpec = [
 ].join("\n");
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
-  await expect.poll(async () => (await getInbox()).some(match)).toBe(true);
-  const row = (await getInbox()).find(match);
-  if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
-  return row;
+async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
+  let found: OpenAskRow | undefined;
+  await expect
+    .poll(async () => {
+      found = (await listOpenAsks()).find(match);
+      return found !== undefined;
+    })
+    .toBe(true);
+  if (found === undefined) throw new Error("the seeded question was never listed");
+  return found;
 }
 
 /**
@@ -227,8 +232,8 @@ export async function seedEveryField(): Promise<{
     "Is the nightly mirror job still at 02:00?",
     "It moved to 03:00 last week."
   );
-  const listed = await listMyReplies({ state: "unread" });
-  const readRow = (listed.rows ?? []).find((row) => row.thread_id === read);
+  const listed = await meInboxThreads({ state: "unread" });
+  const readRow = listed.rows.find((row) => row.thread_id === read);
   if (readRow === undefined) throw new Error("the thread to mark read was never listed");
   await markThreadRead(read, readRow.reply.created_at);
   rows.push({
@@ -247,11 +252,10 @@ export async function seedEveryField(): Promise<{
 /** When each row was last written in, as the two reads answer it: what `newest` orders by. */
 export async function lastActivity(): Promise<ReadonlyMap<string, string>> {
   const at = new Map<string, string>();
-  for (const ask of await getInbox()) {
+  for (const ask of await listOpenAsks()) {
     at.set(ask.id, ask.last_reply?.created_at ?? ask.created_at);
   }
-  for (const thread of (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).rows ??
-    []) {
+  for (const thread of (await meInboxThreads({ state: "inbox" })).rows) {
     at.set(
       `${thread.kind === "agent" ? "agent" : "reply"}:${thread.thread_id}`,
       thread.reply.created_at
@@ -279,7 +283,7 @@ const VALUE_LABELS: Record<string, string> = {
   low: "Low",
   med: "Medium",
   question: "Question",
-  reply: "Reply",
+  reply: "Threads",
 };
 
 /** The plural each Type band is headed by. */
@@ -288,7 +292,7 @@ const TYPE_BANDS: Record<string, string> = {
   approval: "Approvals",
   decision: "Decisions",
   question: "Questions",
-  reply: "Replies",
+  reply: "Threads",
 };
 
 export function valueLabel(field: string, value: string): string {

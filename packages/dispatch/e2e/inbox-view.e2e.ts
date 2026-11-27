@@ -1,4 +1,4 @@
-import { createIssue, createProject, listMyReplies, patchIssue } from "./api";
+import { createIssue, createProject, meInboxThreads, patchIssue } from "./api";
 import { holdReadMarks, replyRowId, seedBulkReplyThreads, unreadThreadRows } from "./inbox-threads";
 import { drawnIds, openField } from "./inbox-view";
 import { expect, test } from "./test";
@@ -37,8 +37,8 @@ test("a hundred and twenty threads sort by priority, count up, and follow their 
     prefix: "Ledger",
   });
   expect(await unreadThreadRows()).toBe(120);
-  const listed = await listMyReplies({ state: "unread" });
-  const oldest = [...(listed.rows ?? [])].sort((left, right) =>
+  const listed = await meInboxThreads({ state: "unread" });
+  const oldest = [...listed.rows].sort((left, right) =>
     left.reply.created_at < right.reply.created_at ? -1 : 1
   )[0];
   expect(oldest?.subject).toBe("Ledger root 1");

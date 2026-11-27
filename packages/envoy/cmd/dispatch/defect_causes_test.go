@@ -469,6 +469,7 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 	// The text as this build's CLI reads it, under `Dispatch-Asks: 1` (asReaderOfAsks): no ask block
 	// of it holds a server-owned attribute, so the write below names the opener alone.
 	text := run.seed("reading the spec's text", http.MethodGet, "/api/v1/artifacts/"+run.specID+"/text", "", asReaderOfAsks(dispatchTestLogin), http.StatusOK)
+	// The read answers the spec's token too, which the write that replaces the spec names.
 	var spec struct {
 		Markdown string `json:"markdown"`
 		Token    string `json:"token"`

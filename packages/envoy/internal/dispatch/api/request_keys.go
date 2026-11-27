@@ -79,8 +79,8 @@ import (
 //     its key commits nothing more: its next commit is refused.
 //   - A write that also delivers to sessions keeps its own recovery point (Brandur Leach,
 //     "Implementing Stripe-like Idempotency Keys in Postgres"): it commits what it made into the
-//     row in its own transaction (bindRequestKeyRecovery, or queueRequestKeyRecovery where that
-//     transaction sends its writes as one batch), and a repeat that finds that point is
+//     row in its own transaction (queueRequestKeyRecovery, in the one batch that transaction
+//     sends its writes as), and a repeat that finds that point is
 //     answered by its route's keyedReplay - whatever delivery is still owed put on its way, then
 //     what it made read again - rather than from the stored bytes or KEY_COMMITTED, however its
 //     first request ended: the single-session send, the broadcast, an issue message and a comment,
@@ -160,7 +160,7 @@ var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKe
 	contracts.IdempotencyKeyHeader)
 
 // keyedReplay answers a repeat of a keyed write whose first run committed recovery
-// (bindRequestKeyRecovery): it puts on its way whatever the write still owes, then answers what the
+// (queueRequestKeyRecovery): it puts on its way whatever the write still owes, then answers what the
 // write made as it stands now, with the status the route's write answers - a stale success, in
 // Google AIP-155's words, never a second write. The status change's replay answers what its steps
 // stored instead, each issue as its step's write answered it (replayStatusChange). stored is the
@@ -329,7 +329,7 @@ type requestKeyClaim struct {
 }
 
 // requestKeyClaimKey carries a request's requestKeyClaim to its handler, for
-// bindRequestKeyRecovery.
+// queueRequestKeyRecovery.
 type requestKeyClaimKey struct{}
 
 // resolvedCallerKey carries a caller already decided to the layers behind it, so optionalActor
@@ -1591,7 +1591,7 @@ func outlivingTheClient(r *http.Request) context.Context {
 
 // recoveryPoint is every value a keyed write commits as its key's recovery point: the message a
 // send to one session or an issue message made, the broadcast, the comment whose mentions deliver
-// it, and the progress of a status change. A route binds one (bindRequestKeyRecovery) and its
+// it, and the progress of a status change. A route binds one (queueRequestKeyRecovery) and its
 // keyedReplay reads the same type back (replayRecovered), so the two cannot disagree about the
 // point's shape. A status change's point is a head on the key's row - the ids of the events and
 // the asks its steps made, then the mark and the answer's issue - and one row per step in
@@ -1621,10 +1621,10 @@ const recoveryPointRead = `recovery || coalesce((
 		where s.login = request_keys.login and s.idempotency_key = request_keys.idempotency_key
 		having count(*) > 0), '{}')`
 
-// requestKeyRecoveryUpdate is the one statement a recovery point is bound with, run at once
-// (bindRequestKeyRecovery) or queued in a write phase (queueRequestKeyRecovery). It writes the
-// point only while the key is still this request's: a row another attempt took over, answered or
-// bound already matches nothing, and no row affected is that refusal.
+// requestKeyRecoveryUpdate is the one statement a recovery point is bound with, queued in a write
+// phase (queueRequestKeyRecovery). It writes the point only while the key is still this
+// request's: a row another attempt took over, answered or bound already matches nothing, and no
+// row affected is that refusal.
 const requestKeyRecoveryUpdate = `
 	update request_keys set recovery = $4
 	where login = $1 and idempotency_key = $2 and attempt = $3 and status is null and recovery is null
@@ -1644,32 +1644,15 @@ func requestKeyRecoveryArgs[T recoveryPoint](ctx context.Context, point T) (args
 	return []any{claim.login, claim.key, claim.attempt, encoded}, true, nil
 }
 
-// bindRequestKeyRecovery commits point as the recovery point of the keyed request ctx carries, in
-// tx, the transaction that commits what the request made, so the two commit together or not at all.
-// A request without a key binds nothing. A request whose key a repeat has taken over is refused
-// (errRequestKeyTakenOver), and its transaction must roll back: the repeat makes the write instead.
-// A transaction that writes in two phases queues the same statement in its write phase instead
-// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase.
-func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, point T) error {
-	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
-	if err != nil || !keyed {
-		return err
-	}
-	tag, err := tx.Exec(ctx, requestKeyRecoveryUpdate, args...)
-	if err != nil {
-		return fmt.Errorf("commit a recovery point: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return errRequestKeyTakenOver
-	}
-	return nil
-}
-
-// queueRequestKeyRecovery is bindRequestKeyRecovery for a transaction whose writes go out as one
-// pipelined batch (INFRA-636): the same statement, queued at the place the write makes it, whose
-// refusal the batch reports as it reads that statement's result. The refusal comes back from the
-// write phase rather than before it, so the statements queued after it have run by then and the
-// transaction the caller abandons rolls them back with this one.
+// queueRequestKeyRecovery queues point as the recovery point of the keyed request ctx carries, in
+// the write phase of the transaction that commits what the request made, so the two commit
+// together or not at all: queued at the place the write makes it, in the one pipelined batch the
+// write phase sends, and never run in the read phase, where it would take a transaction id. A
+// request without a key binds nothing. A request whose key a repeat has taken over is refused
+// (errRequestKeyTakenOver), which the batch reports as it reads that statement's result: the
+// refusal comes back from the write phase rather than before it, so the statements queued after
+// it have run by then, and the transaction the caller abandons rolls them back with this one; the
+// repeat makes the write instead.
 func queueRequestKeyRecovery[T recoveryPoint](ctx context.Context, b *store.WriteBatch, point T) error {
 	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
 	if err != nil || !keyed {

@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The Dispatch API contract gains `GET /api/v1/me/inbox`, `GET /api/v1/agents/{session_id}/conversation` and the `waiting_on` key of `GET /api/v1/asks/open`. The open-ask row of `GET /api/v1/inbox`, which an entry of `GET /api/v1/me/inbox` carries too, is named `OpenAskRow`, with `AskOwnerIssue` and `AskOwnerDocument`: the exports `InboxRow`, `InboxIssue` and `InboxDocument` are removed, and the JSON on the wire is unchanged. `PersonNode`, a row of `GET /api/v1/people/{login}/nodes`, gains `first_line`, with `first_line_tree` for a caller that sends `Dispatch-Trees: 1`; `title` stays beside it for one release with the same value, for a page of the release before, which reads it. The `dispatch_message` tool says whom a message reaches: the other people in its thread and each person it names by address.'
+time: 2026-11-21T20:44:45.910574438Z
+custom:
+    Issue: pr4182

@@ -168,7 +168,10 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
   page.on("request", (request) => {
     if (request.method() !== "GET") return;
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/inbox") inboxReads += 1;
+    // The Inbox's reads: the one read, whichever state, and the open asks.
+    if (url.pathname === "/api/v1/me/inbox" || url.pathname === "/api/v1/asks/open") {
+      inboxReads += 1;
+    }
     if (url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true") {
       pinnedReads += 1;
     }
@@ -626,9 +629,10 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // unmounted until its tab is opened.
   const firstLoad = [
     "/auth/whoami",
-    // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
-    // fetching again.
-    "/api/v1/inbox",
+    // The project sidebar's Needs-you count, the reader's own asks from the one read.
+    "/api/v1/me/inbox?state=inbox",
+    // The margin's open asks, whose count of the issue's open asks it draws.
+    "/api/v1/asks/open",
     // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
     // there is no drawer-closed phone case to leave them out for. The header's repository control
     // shares the Projects query for the project's default repository rather than fetching again.
@@ -666,9 +670,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // The credential requests waiting on the viewer, which the Inbox count adds up on every
     // page.
     "/api/v1/credential-requests?approver=me",
-    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
-    // number (the sidebar's on desktop, the compact header's on phone).
-    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+    // The one read's `unread` count on a one-entry page, whose total is the other half of that
+    // one Inbox number (the sidebar's on desktop, the compact header's on phone).
+    "/api/v1/me/inbox?limit=1&state=unread",
     // The navigation rail's Priorities entry, whose badge is the two fault counts added
     // (`?summary=true` answers those two numbers and neither fault list).
     "/api/v1/priorities?summary=true",

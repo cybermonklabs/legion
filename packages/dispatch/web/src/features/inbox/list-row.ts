@@ -1,12 +1,11 @@
 /**
  * What a row of the Inbox is, now that the list holds two kinds of them.
  *
- * Every Inbox helper used to be typed on `InboxRow`, the open ask the server lists. The list
- * also holds the reader's own threads - a reply somebody wrote where they wrote, and an agent's
- * answer to a message they sent - which are `MyReplyRow`s from another route entirely. The two
- * share nothing but the fields the list sorts, groups, filters and draws by, so those fields are
- * read through the accessors below and nowhere else: the bar's counts, the grouping, the sort,
- * the selection and the row itself all ask the same seven questions of whichever row they hold.
+ * A row is an open ask (`OpenAskRow`) or one of the reader's own threads - a reply somebody wrote
+ * where they wrote, or an agent's answer to a message they sent - a `MyReplyRow`. The two share
+ * nothing but the fields the list sorts, groups, filters and draws by, so those fields are read
+ * through the accessors below and nowhere else: the bar's counts, the grouping, the sort, the
+ * selection and the row itself all ask the same seven questions of whichever row they hold.
  */
 
 import { inboxThreadRow } from "@legion/contracts";
@@ -14,10 +13,10 @@ import { inboxThreadRow } from "@legion/contracts";
 import type {
   Ask,
   AskUrgency,
-  InboxRow,
   IssuePriority,
   MyReplyRow,
   OpenAskOwner,
+  OpenAskRow,
 } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { issuePriority } from "../issue/issue-priority";
@@ -26,7 +25,9 @@ import { isDecisionAsk } from "./ask-decision";
 import { askUrgency } from "./ask-urgency";
 
 /** One row of the Inbox list: an open ask, or a thread of the reader's own. */
-export type InboxListRow = { kind: "ask"; ask: InboxRow } | { kind: "thread"; thread: MyReplyRow };
+export type InboxListRow =
+  | { kind: "ask"; ask: OpenAskRow }
+  | { kind: "thread"; thread: MyReplyRow };
 
 /** What kind of row this is, as the Type filter, the Type grouping and the row's own icon name
  *  it: the three shapes an ask comes in, and the two a thread does. */
@@ -72,7 +73,7 @@ export function rowProject(row: InboxListRow): string | null {
 
 /** Which project an ask belongs to, or null for one that belongs to none: the project of its
  *  issue (`issueProject`, `lib/issue-key.ts`) or of the document it was asked on. */
-export function askProject(ask: InboxRow): string | null {
+export function askProject(ask: OpenAskRow): string | null {
   const issue = ask.issue?.key ?? ask.issue_key;
   if (issue !== null && issue !== undefined) return issueProject(issue);
   return ask.document?.project ?? null;

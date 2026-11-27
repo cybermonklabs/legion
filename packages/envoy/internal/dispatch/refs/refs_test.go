@@ -27,6 +27,34 @@ func TestMain(m *testing.M) {
 	os.Exit(storetest.Main(m))
 }
 
+// replaceRefs reconciles the Dispatch references written by one source with found, for a test that
+// writes a source's references itself: targets no longer mentioned are deleted, new ones inserted
+// with insertedAt as created_at (nil: now()), and an edge that persists keeps its created_at and
+// source_seq. It returns the targets whose inbound edges moved — deleted or inserted, oldest state
+// first (Replacement.Changed). It is PlanReplace and Replacement.Queue back to back, the queued
+// statements run at once as a batch of their own, and it settles what the source owes the re-index
+// queues as Replacement.Queue does: the whole grammar's always, and the forms queue only when whole
+// says the test indexed the source's blocks in tx before this call (Replacement.SettlingForms,
+// RefsFormsOwed). No writer of the server reconciles a source this way: each plans its replacement
+// in its read phase (PlanReplace, PlanItemReplace, rebuild's planSourceReplace) and queues it in
+// its write phase.
+func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, whole bool) ([]Target, error) {
+	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
+	if err != nil {
+		return nil, err
+	}
+	if whole {
+		replacement = replacement.SettlingForms()
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return replacement.Changed(), nil
+}
+
 func createReferenceProject(t *testing.T, tx pgx.Tx, key string) {
 	t.Helper()
 	if _, err := tx.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ($1, $2, 'alice')`, key, key+" project"); err != nil {

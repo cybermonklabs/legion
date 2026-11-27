@@ -3,8 +3,12 @@ import type { ReactNode } from "react";
 
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
-import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  openAsksQuery,
+  projectArchitectureSourcesQuery,
+  projectsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import {
@@ -60,9 +64,9 @@ export function ProjectPage(): ReactNode {
   );
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
-  const inbox = useQuery({
-    queryKey: ["inbox", projectKey],
-    queryFn: () => api.getInbox(projectKey),
+  // The project's own open asks, which its Blocked on you pill counts.
+  const openAsks = useQuery({
+    ...openAsksQuery(projectKey ?? ""),
     enabled: projectKey !== undefined,
   });
   // Whose questions the pill counts, read as every other surface that counts work waiting on
@@ -183,7 +187,7 @@ export function ProjectPage(): ReactNode {
             list is global (a request belongs to no project), so counting one here would make
             this project's number partly about another page. */}
         <BlockedOnYou
-          asks={inbox.data ?? []}
+          asks={openAsks.data ?? []}
           className="order-3 shrink-0 md:order-5"
           variant="pill"
           viewer={viewer}

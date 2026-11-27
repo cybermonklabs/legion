@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -211,6 +212,15 @@ func TestAcceptRefusesEveryAttemptThatIsNotAPersonsFreshLatestDeliveryToThisSess
 			session: "s1", status: http.StatusNotFound, code: "MESSAGE_NOT_FOUND",
 		},
 		{
+			// An attempt's number is the int4 its row holds, so one past that range names no
+			// attempt: it is refused as an unknown attempt is, and never read as some other number.
+			name: "an attempt past the int4 an attempt's row holds",
+			prepare: func(_ *testing.T, _ http.Handler, _ *store.Store, root model.Message, _ func(string) *httptest.ResponseRecorder) (string, int) {
+				return root.ID, math.MaxInt32 + 1
+			},
+			session: "s1", status: http.StatusNotFound, code: "MESSAGE_NOT_FOUND",
+		},
+		{
 			name: "the session's own reply, which a person retried",
 			prepare: func(t *testing.T, handler http.Handler, _ *store.Store, _ model.Message, reply func(string) *httptest.ResponseRecorder) (string, int) {
 				answered := reply("On it.")
@@ -392,10 +402,11 @@ func assertNothingAccepted(t *testing.T, database *store.Store, messageID string
 	if got := len(acceptedEvents(t, database, messageID)); got != before {
 		t.Fatalf("a refused accept left %d message.accepted events, want %d", got, before)
 	}
+	// The attempt is compared as a bigint, so the read answers for an attempt past int4 too.
 	var accepted int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from message_deliveries
-		where message_id = $1 and attempt = $2 and (accepted_at is not null or accepted_as is not null)
+		where message_id = $1 and attempt::bigint = $2::bigint and (accepted_at is not null or accepted_as is not null)
 	`, messageID, attempt).Scan(&accepted); err != nil {
 		t.Fatalf("read the refused attempt: %v", err)
 	}

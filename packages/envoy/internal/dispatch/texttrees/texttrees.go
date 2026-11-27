@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -153,34 +154,49 @@ func (t Table) Read(ctx context.Context, mode pmdoc.DisplayMode, sums [][32]byte
 	for index := range sums {
 		keys[index] = sums[index][:]
 	}
-	rows, err := t.pool.Query(ctx, `
-		select sum, tree from text_trees where version = $1 and mode = $2 and sum = any($3)
-	`, pmdoc.DisplayTreeVersionNow(), int16(mode), keys)
+	rows, err := t.pool.Query(ctx, ReadStatement, pmdoc.DisplayTreeVersionNow(), int16(mode), keys)
 	if err != nil {
 		return nil, fmt.Errorf("read %d display trees: %w", len(sums), err)
 	}
 	defer rows.Close()
 	stored := make(map[[32]byte]json.RawMessage, len(sums))
 	for rows.Next() {
-		var sum []byte
-		// The tree is scanned as the driver's own bytes, which are good only until the next row,
-		// and copied by append: an append's array is as long as the allocation the runtime rounds
-		// it up to, where the scan into a []byte would make one exactly the tree's length. The
-		// display cache charges a tree its array's capacity (pmdoc.PutStoredDisplayTree), so this
-		// is the copy whose capacity is what the tree holds, at the same one allocation a row.
-		var tree pgtype.DriverBytes
-		if err := rows.Scan(&sum, &tree); err != nil {
-			return nil, fmt.Errorf("read a stored display tree: %w", err)
+		if err := HoldTree(rows, stored); err != nil {
+			return nil, err
 		}
-		// A row's sum is a key's own 32 bytes, so a row of any other width is a row this package
-		// did not write and no caller can look up.
-		if len(sum) != sha256.Size {
-			continue
-		}
-		stored[[32]byte(sum)] = append(json.RawMessage(nil), tree...)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read %d display trees: %w", len(sums), err)
 	}
 	return stored, nil
+}
+
+// ReadStatement is the statement Read runs: $1 the display parser version this process runs at
+// (pmdoc.DisplayTreeVersionNow), $2 the mode (a smallint) and $3 the sums (bytea[]), one row per
+// sum the table holds a tree of, read by HoldTree. It is exported for a reader that reads the
+// trees of its texts inside a statement of its own, binding $3 to the sums of those texts (api's
+// GET /api/v1/me/inbox).
+const ReadStatement = `
+		select sum, tree from text_trees where version = $1 and mode = $2 and sum = any($3)
+	`
+
+// HoldTree reads one row of ReadStatement into stored, keyed by its sum. A row's sum is a key's
+// own 32 bytes, so a row of any other width is a row this package did not write and no caller can
+// look up, and it is passed over. row is a row of a read its caller still holds open, or a record
+// whose bytes its caller holds, never a QueryRow's: the tree is scanned as the bytes that row
+// holds, which are good only until the reader moves past it, and copied by append. An append's
+// array is as long as the allocation the runtime rounds it up to, where the scan into a []byte
+// would make one exactly the tree's length. The display cache charges a tree its array's capacity
+// (pmdoc.PutStoredDisplayTree), so this is the copy whose capacity is what the tree holds, at the
+// same one allocation a row.
+func HoldTree(row pgx.Row, stored map[[32]byte]json.RawMessage) error {
+	var sum []byte
+	var tree pgtype.DriverBytes
+	if err := row.Scan(&sum, &tree); err != nil {
+		return fmt.Errorf("read a stored display tree: %w", err)
+	}
+	if len(sum) == sha256.Size {
+		stored[[32]byte(sum)] = append(json.RawMessage(nil), tree...)
+	}
+	return nil
 }

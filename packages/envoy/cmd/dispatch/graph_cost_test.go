@@ -397,43 +397,61 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 // lease, behind the `memory` build tag, which these two measurements do not carry.
 const costLeaseNamespace int32 = 0x4C4F4F50
 
-// costLeaseWait bounds the wait for the block-index lease. A pass reads one batch of each queue
-// it serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
+// costLeaseWait bounds the wait for a loop's lease. A pass reads one batch of each queue it
+// serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
 const costLeaseWait = 5 * time.Minute
 
-// costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured. It is memory_harness_test.go's
-// holdBlockIndexLease over a costArm's pool: duty.Exclusive takes that lease before every pass
-// and skips the pass where another session holds it.
+// costHoldBlockIndex takes on this arm the leases of both loops that index a document a write
+// left owed - the block-index pass's own (docs.BlockIndexLease) and the reference forms drain's
+// (docs.RefsFormsLease) - and answers the call that gives both back, so no tick of either runs
+// while a window is measured. The forms drain indexes a document under a lease of its own: every
+// version owes refs_forms_owed (migration 20261117025904), and a version whose blocks its write
+// deferred stays owed until a pass of this build indexes the document, so with the block index's
+// lease alone held that drain still indexes the documents a measured write leaves owed, in the
+// window itself. A build that has no forms drain takes a lease nothing contends for.
 func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
+	t.Helper()
+	forms := costHoldLease(t, arm, docs.RefsFormsLease)
+	index := costHoldLease(t, arm, docs.BlockIndexLease)
+	return func() {
+		index()
+		forms()
+	}
+}
+
+// costHoldLease takes the loop lease named lease on this arm and answers the call that gives it
+// back. It is memory_harness_test.go's holdBlockIndexLease over a costArm's pool, for any lease:
+// duty.Exclusive takes a loop's lease before every pass and skips the pass where another session
+// holds it.
+func costHoldLease(t *testing.T, arm *costArm, lease string) func() {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := arm.pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("%s: take a connection for the block-index lease: %v", arm.name, err)
+		t.Fatalf("%s: take a connection for the %q lease: %v", arm.name, lease, err)
 	}
 	deadline := time.Now().Add(costLeaseWait)
 	for {
 		var held bool
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
+			costLeaseNamespace, lease).Scan(&held); err != nil {
 			conn.Release()
-			t.Fatalf("%s: take the block-index lease: %v", arm.name, err)
+			t.Fatalf("%s: take the %q lease: %v", arm.name, lease, err)
 		}
 		if held {
 			break
 		}
 		if time.Now().After(deadline) {
 			conn.Release()
-			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				arm.name, docs.BlockIndexLease, costLeaseWait, arm.server.Output.String())
+			t.Fatalf("%s: a pass held the %q lease for more than %s:\n%s",
+				arm.name, lease, costLeaseWait, arm.server.Output.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
 		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("%s: give the block-index lease back: %v", arm.name, err)
+			costLeaseNamespace, lease); err != nil {
+			t.Errorf("%s: give the %q lease back: %v", arm.name, lease, err)
 		}
 	}
 }

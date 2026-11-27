@@ -6,9 +6,9 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 
-// `dispatch inbox` against a stub Dispatch: the four routes the Inbox page reads, answered as the
-// server answers them, so the test pins the lines the command prints rather than the renderer's
-// own idea of them.
+// `dispatch inbox` against a stub Dispatch: the three routes the Inbox page reads, the one read in
+// two of its states among them, answered as the server answers them, so the test pins the lines
+// the command prints rather than the renderer's own idea of them.
 
 const makeDirectory = temporaryDirectories("dispatch-inbox");
 
@@ -18,7 +18,7 @@ const TOKEN = fixtureSecret("dsp");
 const VIEWER = "alice@example.com";
 const SNOOZED_ID = "33333333-3333-4333-8333-333333333333";
 
-/** A row of `GET /api/v1/inbox`, with the fields the summary reads; the thread and the rest of an
+/** An ask row of the one read, with the fields the summary reads; the thread and the rest of an
  *  ask ride along in the real answer and are not read here. */
 function inboxRow(row: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -40,8 +40,10 @@ function inboxRow(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-/** The rows the stub lists, in the server's order: two the person must answer, one an agent owes,
- *  one the person deferred, and one on a project document, which the renderer names by its slug. */
+/** The asks the stub lists: two the person must answer, one the person deferred, one an agent
+ *  owes, and one on a project document, which the renderer names by its slug. Within each band
+ *  the command prints them in the order written here, the command's own order (`inboxAskOrder`):
+ *  the stub answers them reversed (`askEntries`), so the command orders them itself. */
 const ROWS = [
   inboxRow({
     id: "11111111-1111-4111-8111-111111111111",
@@ -86,6 +88,54 @@ const ROWS = [
   }),
 ];
 
+/** One entry of the one read around `row`, as its `inbox` and `unread` states answer it: the
+ *  node, its moment and the row the page draws of it under `field`. */
+function entry(
+  field: "agent" | "ask" | "thread",
+  row: Record<string, unknown>,
+  node: { readonly id: unknown; readonly kind: unknown },
+  moment: string
+): Record<string, unknown> {
+  return { [field]: row, moment, node, relations: [] };
+}
+
+/** The one read's answer around `entries`, unpaged as the command asks for it. */
+function meInboxBody(entries: Record<string, unknown>[], now: number): Record<string, unknown> {
+  return {
+    person: VIEWER,
+    as_of: new Date(now).toISOString(),
+    horizon: 1,
+    total: entries.length,
+    limit: 0,
+    offset: 0,
+    entries,
+  };
+}
+
+/** The entries of the asks, newest activity first as the one read lists them: the reverse of the
+ *  order written above, each a minute newer than the one written before it. */
+function askEntries(): Record<string, unknown>[] {
+  return ROWS.map((row, index) =>
+    entry(
+      "ask",
+      row,
+      { id: row.id, kind: "ask" },
+      new Date(Date.parse("2026-11-01T00:00:00Z") + index * 60_000).toISOString()
+    )
+  ).reverse();
+}
+
+/** The entries of `rows`, thread rows of the one read: an Agent row under `agent`, every other
+ *  kind under `thread`, each at its newest reply. */
+function threadEntries(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const reply = row.reply as { readonly created_at: string };
+    return row.kind === "agent"
+      ? entry("agent", row, { id: row.thread_id, kind: "message" }, reply.created_at)
+      : entry("thread", row, { id: row.thread_id, kind: row.kind }, reply.created_at);
+  });
+}
+
 /** The secrets broker's list as Dispatch relays it, pending rows first: one secret request with
  *  both session ids, its page on the broker and the state and deadline a current broker names;
  *  one machine login with no session, no page and no state, as an older broker sends it, which
@@ -129,10 +179,10 @@ function ago(now: number, ms: number): string {
   return new Date(now - ms).toISOString();
 }
 
-/** The rows of `GET /api/v1/me/replies?kind=reply,agent`, newest reply first: a comment thread
- *  on an issue someone answered, and an agent session's reply to a message the person sent it.
- *  Built when the stub answers, so their ages are read off the clock the command reads, and
- *  each offset sits between two steps so neither age falls to the step below as the test runs. */
+/** The thread rows of the one read's `unread` state, newest reply first: a comment thread on an
+ *  issue someone answered, and an agent session's reply to a message the person sent it. Built
+ *  when the stub answers, so their ages are read off the clock the command reads, and each
+ *  offset sits between two steps so neither age falls to the step below as the test runs. */
 function threadRows(now: number): Record<string, unknown>[] {
   return [
     {
@@ -174,9 +224,9 @@ function threadRows(now: number): Record<string, unknown>[] {
   ];
 }
 
-/** `GET /api/v1/me/replies`'s answer around `rows`, unpaged as the command asks for it. */
-function repliesBody(rows: Record<string, unknown>[], now: number): Record<string, unknown> {
-  return { rows, total: rows.length, limit: 0, offset: 0, as_of: new Date(now).toISOString() };
+/** The one read's `unread` answer around thread `rows`. */
+function unreadBody(rows: Record<string, unknown>[], now: number): Record<string, unknown> {
+  return meInboxBody(threadEntries(rows), now);
 }
 
 /** The Unread threads line `stdout` prints for the thread whose page is `ref`, which ends it. */
@@ -192,7 +242,7 @@ const LISTED = "listed" as const;
 let whoamiAnswer: Answer = LISTED;
 let inboxAnswer: Answer = LISTED;
 let pendingAnswer: Answer = LISTED;
-let repliesAnswer: Answer = LISTED;
+let unreadAnswer: Answer = LISTED;
 const requests: string[] = [];
 
 function refusal(code: string, error: string, status: number): Answer {
@@ -209,7 +259,7 @@ const SCOPE_REFUSED = refusal(
 const server = Bun.serve({
   port: 0,
   fetch(request) {
-    const { pathname, search } = new URL(request.url);
+    const { pathname, search, searchParams } = new URL(request.url);
     requests.push(`${request.method} ${pathname}${search}`);
     const answered = (answer: Answer, listed: unknown): Response =>
       answer === LISTED
@@ -223,13 +273,21 @@ const server = Bun.serve({
         scopes: ["person"],
       });
     }
-    if (pathname === "/api/v1/inbox") return answered(inboxAnswer, ROWS);
+    if (pathname === "/api/v1/me/inbox") {
+      const now = Date.now();
+      const state = searchParams.get("state");
+      // The `inbox` state holds the person's open asks beside their threads, read or not; the
+      // command reads its asks alone, and its threads from the `unread` state.
+      if (state === "inbox") {
+        return answered(
+          inboxAnswer,
+          meInboxBody([...askEntries(), ...threadEntries(threadRows(now))], now)
+        );
+      }
+      if (state === "unread") return answered(unreadAnswer, unreadBody(threadRows(now), now));
+    }
     if (pathname === "/api/v1/credential-requests") {
       return answered(pendingAnswer, { pending: PENDING });
-    }
-    if (pathname === "/api/v1/me/replies") {
-      const now = Date.now();
-      return answered(repliesAnswer, repliesBody(threadRows(now), now));
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
   },
@@ -243,7 +301,7 @@ beforeEach(() => {
   whoamiAnswer = LISTED;
   inboxAnswer = LISTED;
   pendingAnswer = LISTED;
-  repliesAnswer = LISTED;
+  unreadAnswer = LISTED;
   stateDir = makeDirectory();
   resetAdviceMemory();
 });
@@ -313,11 +371,11 @@ describe("dispatch inbox", () => {
       "- launcher_credential · runner-12 · 2026-11-02T10:00:00Z",
       EXPIRED_LINE,
     ]);
-    // The caller's own credential, on the four routes the Inbox page reads and no other.
+    // The caller's own credential, on the routes the Inbox page reads and no other.
     expect(requests.sort()).toEqual([
       "GET /api/v1/credential-requests?approver=me",
-      "GET /api/v1/inbox?assignee=me",
-      "GET /api/v1/me/replies?kind=reply%2Cagent",
+      "GET /api/v1/me/inbox?state=inbox",
+      "GET /api/v1/me/inbox?state=unread",
       "GET /api/v1/whoami",
     ]);
   });
@@ -427,9 +485,9 @@ describe("dispatch inbox", () => {
 
   test("lists a Reply row by its owner and an Agent row by its session, with replier and age", async () => {
     const now = Date.now();
-    repliesAnswer = {
+    unreadAnswer = {
       status: 200,
-      body: repliesBody(
+      body: unreadBody(
         [
           {
             kind: "message",
@@ -493,9 +551,9 @@ describe("dispatch inbox", () => {
     // A comment thread whose root its author deleted, then the default rows: the delete cleared
     // the root's body, which the subject is read from.
     const rows = threadRows(now);
-    repliesAnswer = {
+    unreadAnswer = {
       status: 200,
-      body: repliesBody(
+      body: unreadBody(
         [
           {
             ...rows[0],
@@ -532,9 +590,9 @@ describe("dispatch inbox", () => {
     // The subject is the head of the root's words as they stand, which an edit replaced: the line
     // says the root was edited and when, beside them. The default rows carry no edit and no mark.
     const rows = threadRows(now);
-    repliesAnswer = {
+    unreadAnswer = {
       status: 200,
-      body: repliesBody(
+      body: unreadBody(
         [
           {
             ...rows[0],
@@ -580,8 +638,8 @@ describe("dispatch inbox", () => {
     expect(entry.details).toMatchObject({ asks: 5, unread_threads: 2, credential_requests: 3 });
   });
 
-  test("a failed replies read warns on stderr, counts no threads and prints the rest", async () => {
-    repliesAnswer = refusal("INTERNAL", "the thread list could not be read", 502);
+  test("a failed read of the unread threads warns on stderr, counts no threads and prints the rest", async () => {
+    unreadAnswer = refusal("INTERNAL", "the thread list could not be read", 502);
 
     const { code, stdout, stderr } = await runInbox();
 
@@ -596,8 +654,8 @@ describe("dispatch inbox", () => {
     expect(stdout.trimEnd().endsWith(EXPIRED_LINE)).toBe(true);
   });
 
-  test("a scope refusal from the replies read exits 1 naming the code and the scope", async () => {
-    repliesAnswer = SCOPE_REFUSED;
+  test("a scope refusal from the read of the unread threads exits 1 naming the code and the scope", async () => {
+    unreadAnswer = SCOPE_REFUSED;
 
     const { code, stdout } = await runInbox();
 

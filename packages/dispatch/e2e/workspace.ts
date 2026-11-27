@@ -10,8 +10,8 @@ import {
   createIssue,
   createProject,
   createProjectDocument,
-  getInbox,
   getIssue,
+  listOpenAsks,
   patchIssue,
   replyToCommentDelivery,
   replyToMessageDelivery,
@@ -349,7 +349,7 @@ export async function seedWorkspace({
   // above answered: a 25 ms sampler read five wrong rows here about 230 ms before these five
   // stood (dispatch://INFRA-3052, comment 169c05c4-ab16-4a28-a470-e703dcee23ac). So the seed is
   // done only once these rows stand.
-  const matched = await awaitSeededInbox(inbox, () => getInbox({ login: "alice" }), {
+  const matched = await awaitSeededInbox(inbox, () => listOpenAsks({}, { login: "alice" }), {
     boundMs,
     signal,
   });

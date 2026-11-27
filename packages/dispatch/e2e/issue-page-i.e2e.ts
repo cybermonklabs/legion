@@ -42,7 +42,7 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
-  listMyReplies,
+  meInboxThreads,
   patchIssue,
   resolveComment,
 } from "./api";
@@ -2581,9 +2581,10 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
       { body: "An agent's answer alice has not read.", reply_to: seeded.head },
       asPlanner
     );
-    // The route's own default is the caller's unread threads alone.
+    // The one read's `unread` state, its threads somebody else wrote in since the caller read
+    // them, as the Inbox reads it.
     const unread = async () =>
-      ((await listMyReplies({ issue: seeded.key }, { login: "alice" })).rows ?? []).some(
+      (await meInboxThreads({ issue: seeded.key }, { login: "alice" })).rows.some(
         (row) => row.thread_id === seeded.head
       );
     await expect.poll(unread, { message: "the agent's reply left the thread read" }).toBe(true);

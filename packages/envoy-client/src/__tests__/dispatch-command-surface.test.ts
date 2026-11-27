@@ -162,10 +162,18 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       });
     case "GET /api/v1/references":
       return response({ node: { kind: "issue", id: ISSUE }, edges: [] });
-    // The Inbox's two lists, both empty: every line the summary prints from a row carries the
-    // row's own age, which the record must not date against the wall clock.
-    case "GET /api/v1/inbox":
-      return response([]);
+    // The Inbox's one read, empty in each of its states: every line the summary prints from a
+    // row carries the row's own age, which the record must not date against the wall clock.
+    case "GET /api/v1/me/inbox":
+      return response({
+        person: "person@example.com",
+        as_of: AT,
+        horizon: 1,
+        total: 0,
+        limit: 0,
+        offset: 0,
+        entries: [],
+      });
     case "GET /api/v1/credential-requests":
       return response({ pending: [] });
     case "GET /api/v1/asks/open":

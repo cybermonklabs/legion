@@ -50,7 +50,6 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(commentInput{}):             "CreateCommentInput",
 	reflect.TypeOf(createAgentTokenResponse{}): "CreatedAgentToken",
 	reflect.TypeOf(documentSummary{}):          "DocumentReferenceSummary",
-	reflect.TypeOf(inboxAsk{}):                 "InboxRow",
 	reflect.TypeOf(issueDetail{}):              "IssueDetails",
 	reflect.TypeOf(rankInput{}):                "IssueRankInput",
 	reflect.TypeOf(issueSummaryDocument{}):     "IssueReferenceSummaryDocument",

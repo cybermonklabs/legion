@@ -1023,7 +1023,7 @@
         },
         {
           "method": "GET",
-          "path": "/api/v1/me/replies?kind=reply,agent",
+          "path": "/api/v1/me/inbox?state=unread",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret"
@@ -1041,7 +1041,7 @@
         },
         {
           "method": "GET",
-          "path": "/api/v1/inbox?assignee=me",
+          "path": "/api/v1/me/inbox?state=inbox",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret"

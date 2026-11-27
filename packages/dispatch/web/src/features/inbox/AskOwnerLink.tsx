@@ -2,7 +2,7 @@ import { inboxThreadRow } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { InboxRow, MyReplyRow, OpenAskOwner } from "../../api/types";
+import type { MyReplyRow, OpenAskOwner, OpenAskRow } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
 import { referenceTriggerProps } from "../refs/RefPreview";
@@ -74,7 +74,13 @@ export function AskOwnerLink({
 
 /** An Inbox row's owner, which opens the row's ask. A row read without its issue object names
  *  the issue by key; a row with neither an issue nor a document has nothing to link. */
-export function InboxOwnerLink({ ask, rowOwner }: { ask: InboxRow; rowOwner: boolean }): ReactNode {
+export function InboxOwnerLink({
+  ask,
+  rowOwner,
+}: {
+  ask: OpenAskRow;
+  rowOwner: boolean;
+}): ReactNode {
   const key = askIssueKey(ask);
   const owner: OpenAskOwner | null =
     ask.document !== undefined

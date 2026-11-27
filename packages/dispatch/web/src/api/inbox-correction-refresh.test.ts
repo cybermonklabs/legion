@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
 
 import { eventRefreshTargets } from "./event-refresh";
-import { myRepliesKey } from "./queries";
+import { meInboxKey } from "./queries";
 import type { DispatchEvent } from "./types";
 
 // R2 and R3 of dispatch://INFRA-1523: every page that prints an edited post marks it, and every
 // page that prints a deleted post says so and gives no part of its body. The Inbox prints each
 // thread's root (`thread.subject`, ThreadTitle and ThreadPane) from the viewer's `["me",
-// "replies"]` rows, so an edit or a delete of a post in a thread of the viewer's has to refetch
-// those rows, as a new post in that thread does. The tester found an open Inbox still printing a
-// root its author had deleted, with no deleted line, until a reload (test round at 5bd5c11d).
+// "inbox"]` rows, the one read's, so an edit or a delete of a post in a thread of the viewer's has
+// to refetch those rows, as a new post in that thread does. The tester found an open Inbox still
+// printing a root its author had deleted, with no deleted line, until a reload (test round at
+// 5bd5c11d).
 
 /** An event of `type` on a comment or a message of CORE-1 whose thread alice is in. */
 function threadEvent(type: string): DispatchEvent {
@@ -34,7 +35,7 @@ function threadEvent(type: string): DispatchEvent {
 
 function refetchesInbox(type: string): boolean {
   return eventRefreshTargets(threadEvent(type), "alice").some(
-    (target) => JSON.stringify(target.queryKey) === JSON.stringify(myRepliesKey)
+    (target) => JSON.stringify(target.queryKey) === JSON.stringify(meInboxKey)
   );
 }
 

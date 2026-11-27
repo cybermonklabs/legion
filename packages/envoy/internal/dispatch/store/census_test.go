@@ -933,6 +933,59 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 	}
 }
 
+// The shipped 20261122100122 creates the queue of the events an older build's outbox records, its
+// function and its trigger after each update of events' published_destinations, under a lock_timeout
+// of its own: each statement changes only the catalog or the transaction's own settings, and the
+// trigger runs only on updates written after it, so over a database at 20261122100121 with the
+// limit at one byte the census exempts it, refuses nothing, and prints events above that limit with
+// why the migration is exempt, whatever events holds.
+func TestCensusExemptsTheEventsPublishedOwedTriggerAtAnyTableSize(t *testing.T) {
+	requireTriggerMigrationExempt(t, 20261122100121, 20261122100122, "20261122100122_events_published_owed.up.sql")
+}
+
+// Migration 20261122100123 queues older builds' ask assignment changes and comment or issue
+// message edits and deletes. These writes do not change a marker. The migration creates the
+// queue, function, and insert trigger with a lock timeout. Each statement changes only the
+// catalog or transaction settings. The trigger runs only on later inserts. On a database at
+// 20261122100122 with the limit at one byte the census exempts it, refuses nothing, and prints
+// events above that limit with why the migration is exempt, whatever events holds.
+func TestCensusExemptsTheEventsInboxOwedTriggerAtAnyTableSize(t *testing.T) {
+	requireTriggerMigrationExempt(t, 20261122100122, 20261122100123, "20261122100123_events_inbox_owed.up.sql")
+}
+
+// requireTriggerMigrationExempt takes the census of the shipped migrations through migration, whose
+// file is name and which creates a trigger on events, over a database migrated through before with
+// the limit at one byte, and holds it to listing that migration alone as pending, refusing nothing,
+// exempting it as one that creates a trigger, and printing events above that limit with why the
+// migration is exempt.
+func requireTriggerMigrationExempt(t *testing.T, before, migration int, name string) {
+	t.Helper()
+	store := openMigratedTestStore(t, before)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, migration), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if len(report.Pending) != 1 || report.Pending[0].Migration.Name != name {
+		t.Fatalf("pending = %+v, want %s alone; report:\n%s", report.Pending, name, reportText(report))
+	}
+	if report.Refused() {
+		t.Errorf("%s refused: %v", name, refusals(report))
+	}
+	if exemption := report.Pending[0].TableSizeExemption; !strings.Contains(exemption, "create trigger") {
+		t.Errorf("TableSizeExemption = %q, want one naming create trigger", exemption)
+	}
+	touches := ""
+	for _, line := range strings.Split(reportText(report), "\n") {
+		if strings.HasPrefix(line, "census: "+name+" touches events: ") {
+			touches = line
+		}
+	}
+	if !strings.Contains(touches, ", above the 1 bytes limit, from which the migration is exempt because its statements are only ") {
+		t.Errorf("the census prints %q for events, want it above the limit and exempt; report:\n%s", touches, reportText(report))
+	}
+	t.Logf("%s", touches)
+}
+
 // The shipped 20261103085452 adds four nullable columns with no default to artifact_versions, of
 // types bigint, text, text and integer. PostgreSQL records each of them in the catalog alone and
 // reads no stored row, so the migration is catalog-only. Until the census read an added column's
@@ -1606,6 +1659,12 @@ func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testi
 // a database migrated through N-1, and the set cut at N, so N is the one pending migration. The
 // census refuses a census naming what its schema lacks, so a shipped one that did would refuse
 // every deploy carrying it; this catches it at review instead.
+//
+// One database walks the set once: each census is taken just before the runner applies its
+// migration, when the database holds every migration below N and nothing else, against the set
+// loaded once and cut at N, which is what loading the files numbered up to N gives. Migrating
+// through N-1 afresh for each census, and loading each cut again, would read every migration
+// below N once per census after it, a cost that grows with the square of the set.
 func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1617,13 +1676,13 @@ func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	// between, so each migration of the history is applied once rather than judged again before
 	// every later census.
 	through := 0
-	for _, migration := range migrations {
+	for i, migration := range migrations {
 		if migration.Census == "" {
 			continue
 		}
 		migrateAbove(t, store, through, migration.Version-1)
 		through = migration.Version - 1
-		report, err := census(ctx, url, migrationsThrough(t, migration.Version), pgmigrate.CensusOptions{})
+		report, err := censusOf(ctx, url, migrations[:i+1], pgmigrate.CensusOptions{})
 		if err != nil {
 			t.Fatalf("census of %s: %v", migration.CensusName, err)
 		}

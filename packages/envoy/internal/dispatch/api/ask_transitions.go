@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -42,6 +43,10 @@ type askTransition struct {
 	// After runs once the transition's own event is appended, still inside the
 	// transaction; the events it returns are published with it.
 	After func(context.Context, pgx.Tx, *docs.Ledger, model.Ask) ([]*model.Event, error)
+	// Inbox is what the transition's write is in the ask's thread, which closeAskTx records right
+	// after its event (inboxwrite.PlanRecord): an answer replies, a decline takes part and delivers
+	// nothing, and a resolution, which is no write of a person's in the thread, is neither (zero).
+	Inbox inboxwrite.Arm
 }
 
 // answerRevision is the question revision a human reviewed before choosing an answer.
@@ -77,6 +82,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 	return askTransition{
 		EventType:      "ask.answered",
 		ReplacesAnswer: options.ReplacesAnswer,
+		Inbox:          inboxwrite.Replies,
 		Apply: func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
 			if options.Revision != nil && !stringPointersEqual(options.Revision.EditedAt, ask.EditedAt) {
 				return model.Ask{}, errorf(
@@ -138,9 +144,11 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			// The answer goes through the one writer of an ask's answer state, planned here under
 			// the ask's owner lock, from the last settle of this ask the ledger holds where this
 			// transaction made one (Ledger.PlanSettle), and queued on the ledger: its facts on the
-			// ask's node, held for the ask.answered event closeAskTx queues, then the row.
+			// ask's node, held for the ask.answered event closeAskTx queues, then the row, whose
+			// marker moves to the answer's moment in the same update, since closeAskTx records the
+			// answer in the store (inboxwrite.PlanRecord).
 			change := asks.Answered(answer)
-			change.Who, change.At, change.Held = actor, answer.At, held
+			change.Who, change.At, change.Held, change.TuplesStored = actor, answer.At, held, true
 			settled, err := ledger.PlanSettle(ctx, ask.ID, change)
 			if err != nil {
 				return model.Ask{}, err
@@ -466,6 +474,8 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// person's words is refused for how they open.
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
+		// A person who declines took part in the ask's thread, whatever becomes of the ask (R4).
+		Inbox: inboxwrite.TakesPart,
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
 			// The kind is refused here, inside Apply, for the reason answerAsk states for its
 			// own kind-dependent refusal: an ask's kind is known only once its row is read, and
@@ -516,15 +526,16 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 }
 
 // closeAskTx applies a transition to an open ask inside the caller's transaction, indexes the
-// ask's parts, appends the transition's event and runs its After; the caller commits and
-// publishes the events. Every write is queued on ledger, in the order made, so the copies'
-// pending rows SettleCopiesOf takes come before the parts' index and the event appends, as the
-// copy lock's order requires (docs.lockProjectCopies), and the events are filled in once Commit
-// has run the write phase (appendedEvents).
+// ask's parts, appends the transition's event, records the transition's write in the ask's thread
+// (inboxwrite.PlanRecord) and runs its After; the caller commits and publishes the events. Every
+// write is queued on ledger, in the order made, so the copies' pending rows SettleCopiesOf takes
+// come before the parts' index and the event appends, as the copy lock's order requires
+// (docs.lockProjectCopies), and the events are filled in once Commit has run the write phase
+// (appendedEvents).
 func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, actor model.Actor, transition askTransition) (model.Ask, []*model.Event, error) {
 	// What the transition states on the ask's node waits for its event, queued below.
 	var held graphstore.Uncaused
-	ask, err := s.transitionAskTx(ctx, tx, ledger, id, transition, &held)
+	ask, before, err := s.transitionAskTx(ctx, tx, ledger, id, transition, &held)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -537,11 +548,31 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// answer a transition wrote is queued before the event, so the ask's Replies rows are read by
 	// the event's insert, after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, false, model.ReferenceChanges{})
+	changes, indexed, err := s.queueAskParts(ctx, ledger, ask, nil, nil, at, false, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
 	base := model.NewAskEventPayload(ask, changes)
+	// What the transition's write is in the ask's thread, planned here and queued right after the
+	// event: an answer is a reply by the person it names, at its own moment, and the ask's marker
+	// moves to that moment in the answer's own update (asks.Change.TuplesStored), so the trigger
+	// user_threads_ask passes it by and the event names the row its answerer is about to hold; a
+	// decline takes part, at the resolution's moment.
+	var recording *inboxwrite.Recording
+	var inbox inboxwrite.Write
+	switch {
+	case transition.Inbox == inboxwrite.Replies && ask.Answer != nil:
+		inbox = inboxwrite.Answered(before, *ask.Answer, actor)
+	case transition.Inbox == inboxwrite.TakesPart && ask.Resolution != nil:
+		inbox = inboxwrite.Declined(ask.ID, actor, ask.Resolution.At)
+	}
+	if inbox.Arm != 0 {
+		planned, err := inboxwrite.PlanRecord(ctx, tx, inbox)
+		if err != nil {
+			return model.Ask{}, nil, err
+		}
+		recording = &planned
+	}
 	payload := any(base)
 	if transition.Payload != nil {
 		payload = transition.Payload(base)
@@ -551,14 +582,19 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// do.
 	event, err := s.queueLoggedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		transition.EventType, actor, payload,
-	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
+	), events.ThreadLoginsOf(ask.ID, inbox.KeptLogins()...), "ask", ask.ID)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// What the transition stated on the ask's node learns the event the step before appended.
+	// What the transition stated on the ask's node, what its parts state and its record in the
+	// ask's thread learn the event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
-		return nil
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		if recording == nil {
+			return nil
+		}
+		return recording.Queue(b, graphstore.LatestEvent)
 	}); err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -575,39 +611,68 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 
 // transitionAskTx reads an open ask under its owner's lock and applies a transition inside the
 // caller's transaction, leaving in held what it states on the ask's node; it appends no event.
-func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition, held *graphstore.Uncaused) (model.Ask, error) {
+// For an answer it also reads, before the answer's queued update moves the ask's marker, what that
+// marker still owes the store (inboxwrite.ReadAsk), which closeAskTx records with the answer; any
+// other transition reads nothing of it, and answers the zero value. An answer reads who takes part
+// in the ask's thread, so the project whose default assignee the ask falls through to, which the
+// read of the ask answers beside it by the one rule every writer into an ask's thread reads
+// (readAskAndDefaultForTransition, inboxwrite.AskDefaultProject), is held shared before that read
+// (inboxwrite.HoldProjectDefault), after the owner's lock and before any asks row: a move of the
+// default either committed first, and the answer reaches the person it moved the ask to, or waits
+// for the answer and then finds the ask closed, which it moves nothing of.
+func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition, held *graphstore.Uncaused) (model.Ask, inboxwrite.Ask, error) {
 	unlockedAsk, err := s.loadAsk(ctx, tx, id)
 	if err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, inboxwrite.Ask{}, err
 	}
 	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, inboxwrite.Ask{}, err
 	}
-	ask, err := s.readAskForTransition(ctx, tx, id)
+	var ask model.Ask
+	var project string
+	if transition.Inbox == inboxwrite.Replies {
+		ask, project, err = s.readAskAndDefaultForTransition(ctx, tx, id)
+	} else {
+		ask, err = s.readAskForTransition(ctx, tx, id)
+	}
 	if err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, inboxwrite.Ask{}, err
 	}
 	switch ask.State {
 	case "open":
 		if transition.ReplacesAnswer != nil {
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWER_CHANGED", "the answer changed after you reviewed it; review the current answer and confirm your change")
+			return model.Ask{}, inboxwrite.Ask{}, errorf(http.StatusConflict, "ASK_ANSWER_CHANGED", "the answer changed after you reviewed it; review the current answer and confirm your change")
 		}
 	case "answered":
 		switch {
 		case transition.EventType != "ask.answered":
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWERED", "ask is already answered")
+			return model.Ask{}, inboxwrite.Ask{}, errorf(http.StatusConflict, "ASK_ANSWERED", "ask is already answered")
 		case transition.ReplacesAnswer == nil:
 			// A first answer to an ask someone answered first.
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_CLOSED", "ask is already answered")
+			return model.Ask{}, inboxwrite.Ask{}, errorf(http.StatusConflict, "ASK_CLOSED", "ask is already answered")
 		}
 		// A change to the current answer, which Apply checks is the answer the human reviewed.
 	case "resolved":
-		return model.Ask{}, errorf(http.StatusConflict, "ASK_RESOLVED", "ask is already resolved")
+		return model.Ask{}, inboxwrite.Ask{}, errorf(http.StatusConflict, "ASK_RESOLVED", "ask is already resolved")
 	default:
-		return model.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
+		return model.Ask{}, inboxwrite.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
 	}
-	return transition.Apply(ctx, tx, ledger, ask, held)
+	// An answer reads the members of the ask's thread with the ask itself
+	// (inboxwrite.ReadAskAndMembers): nothing of its read phase writes before its record is
+	// planned, so the record reads them no second time.
+	var before inboxwrite.Ask
+	if transition.Inbox == inboxwrite.Replies {
+		if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
+			return model.Ask{}, inboxwrite.Ask{}, err
+		}
+		if before, err = inboxwrite.ReadAskAndMembers(ctx, tx, id); err != nil {
+			return model.Ask{}, inboxwrite.Ask{}, err
+		}
+	}
+	applied, err := transition.Apply(ctx, tx, ledger, ask, held)
+	return applied, before, err
 }
+
 func selectedOptions(options []model.AskOption, selected []string) bool {
 	labels := make(map[string]struct{}, len(options))
 	for _, option := range options {

@@ -9,9 +9,10 @@ import {
 
 import { issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { boardMoveMutationKey } from "../../api/queries";
+import { boardMoveMutationKey, openAsksKey } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, IssuePriority } from "../../api/types";
+import { invalidateMeInbox } from "../inbox/one-read-cache";
 import type { BoardMoveVariables } from "../project/board-moves";
 import { type Shape, shape } from "../writes/tab-storage";
 import type { KeyedPress } from "../writes/useKeyedWrite";
@@ -29,7 +30,6 @@ import {
   cacheOf,
   everyField,
   fieldLook,
-  inboxKey,
   issueAnswer,
   issueLook,
   type Look,
@@ -508,7 +508,8 @@ function confirmLanding(
 function readAgain(client: QueryClient, issueKey: string): void {
   void client.invalidateQueries({ queryKey: ["issue", issueKey] });
   void client.invalidateQueries({ queryKey: ["issues"] });
-  void client.invalidateQueries({ queryKey: inboxKey });
+  void client.invalidateQueries({ queryKey: openAsksKey });
+  void invalidateMeInbox(client);
 }
 
 /** Holds each read out now on a cache a pick shows on that was sent before the answer `record`

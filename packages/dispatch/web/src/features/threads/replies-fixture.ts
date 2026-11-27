@@ -1,13 +1,21 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
-import type { MyReplyAgentRow, MyReplyThreadRow } from "../../api/types";
+import { meInboxOwnerQuery, whoAmIQuery } from "../../api/queries";
+import type {
+  MeInboxAgentRow,
+  MeInboxResponse,
+  MessageRead,
+  MyReplyAgentRow,
+  MyReplyRow,
+  MyReplyThreadRow,
+} from "../../api/types";
+import { oneReadAnswer } from "../inbox/inbox-fixture";
 import type { RepliesOwner } from "./useMarkThreadRead";
 
-/** One unread thread row for `threadId`, as `GET /api/v1/me/replies` answers it: a Reply row,
- *  read through a mark older than its reply, at a version of its own - not 0, so a test cannot
- *  pass on a missing field. An Agent row is a shape of its own, which the tests that need one
- *  build themselves. */
+/** One unread thread row for `threadId`, as the one read answers a Reply row: read through a
+ *  mark older than its reply, at a version of its own - not 0, so a test cannot pass on a missing
+ *  field. An Agent row is a shape of its own, built below (`agentRow`, `plannerAgentRow`, and
+ *  `withConversation` for the one read's answer of it). */
 export function replyRow(
   threadId: string,
   overrides: Partial<MyReplyThreadRow> = {}
@@ -75,6 +83,40 @@ export function plannerAgentRow(overrides: Partial<MyReplyAgentRow> = {}): MyRep
   });
 }
 
+/** `row` as the one read answers an Agent row: with the conversation with its session that its
+ *  reading pane draws (`agentConversation`), which nothing reads again. */
+export function withConversation(row: MyReplyAgentRow, conversation: MessageRead): MeInboxAgentRow {
+  return { ...row, conversation };
+}
+
+/** The conversation the one read carries for `agentRow("message-1")`: the reader's message to
+ *  session `s1`, which nobody has answered yet. */
+export const AGENT_CONVERSATION: MessageRead = {
+  message: {
+    author: { id: "alice", kind: "user" },
+    body: "Please check the staging gate.",
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
+    deliveries: [],
+    edited_at: null,
+    id: "message-1",
+    in_reply_to: null,
+    issue_key: null,
+    reply_block: null,
+    target: "session:s1",
+  },
+  replies: [],
+};
+
+/** The one read's `unread` answer narrowed to one owner, holding the rows `rows`, each an entry of
+ *  its thread at its newest reply: what every thread mounted on that owner reads to learn whether
+ *  it is unread (`meInboxOwnerQuery`). */
+export function unreadSetAnswer(rows: readonly MyReplyRow[]): MeInboxResponse {
+  return { ...oneReadAnswer(rows, { asOf: "2026-10-12T00:00:00Z" }), limit: 200 };
+}
+
 /** Seeds the signed-in viewer (alice) and `owner`'s unread threads, so every thread mounted on
  *  that owner reads them from the cache rather than a request. */
 export function seedUnread(
@@ -87,11 +129,8 @@ export function seedUnread(
     kind: "user",
     login: "alice",
   });
-  queryClient.setQueryData(myRepliesOwnerQuery(owner).queryKey, {
-    as_of: "2026-10-12T00:00:00Z",
-    limit: 200,
-    offset: 0,
-    rows: threadIds.map((id) => replyRow(id)),
-    total: threadIds.length,
-  });
+  queryClient.setQueryData(
+    meInboxOwnerQuery(owner).queryKey,
+    unreadSetAnswer(threadIds.map((id) => replyRow(id)))
+  );
 }

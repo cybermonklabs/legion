@@ -9,7 +9,9 @@ import { MemoryRouter } from "react-router-dom";
 
 import { nextFrame as oneFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
-import type { Ask, Comment } from "../../api/types";
+import { openAsksQuery } from "../../api/queries";
+import type { Ask, Comment, OpenAskRow } from "../../api/types";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { useDrawerPage } from "../issue-page/drawer-page";
 import {
   type MarginDrawer,
@@ -116,7 +118,7 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], asks);
+  queryClient.setQueryData(openAsksQuery().queryKey, asks as OpenAskRow[]);
   queryClient.setQueryData(["asks", issue.key], asks);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], comments);
@@ -504,7 +506,7 @@ test("a desktop comment deep link activates Comments and scrolls its card from P
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
@@ -545,7 +547,7 @@ test("a desktop comment deep link activates Comments and scrolls its card from P
     view.unmount();
     restoreMatchMedia();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
     getMyState.mockRestore();
     listComments.mockRestore();

@@ -9,9 +9,11 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { openAsksQuery } from "../../api/queries";
 import type { ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
@@ -542,16 +544,16 @@ function renderMarginCompose(
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  // Each send re-reads the issue, its comments and the inbox; the answers are the ones the
+  // Each send re-reads the issue, its comments and the open asks; the answers are the ones the
   // cache above was seeded with, so a refetch leaves the margin showing what the test set up.
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
     spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>

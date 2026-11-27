@@ -225,8 +225,14 @@ func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
 // then one each time cfg.Events is signalled, and while the horizon stands below an id a read of
 // it saw (filler.heldBelow) one 1 s later, doubling to 8 s, as FillToHorizon reads it. A pass that
 // fails is followed by another 1 s later, doubling to failRetryMax, and the events do not hurry
-// it. Everything runs on a context the hold's loss ends, so a batch in flight as the hold is lost
-// rolls back, and a pause or a rest ends there.
+// it. After each pass, until a walk succeeds, it walks the first-body repair once
+// (filler.repairCutFirstBodies), whether the pass succeeded or not; a walk that fails is logged and
+// walked again after the next pass, and the passes run all the same. The first walk follows the
+// hold's first pass rather than coming before it, so that pass reads the event log's horizon as
+// soon as the hold is taken: a repair batch waiting at the cursor row ahead of it would put that
+// read after every transaction that began while it waited, and the horizon waits each one out
+// (events.Horizon.Await). Everything runs on a context the hold's loss ends, so a batch in flight
+// as the hold is lost rolls back, and a pause or a rest ends there.
 func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 	held, stop := context.WithCancel(ctx)
 	defer stop()
@@ -243,10 +249,21 @@ func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 	default:
 	}
 	reread, failWait := rereadFirst, rereadFirst
+	repaired := false
 	for {
 		safe, err := r.fill.pass(held)
 		if ctx.Err() != nil || r.lost(held, hold, err) {
 			return
+		}
+		if !repaired {
+			_, repairErr := r.fill.repairCutFirstBodies(held)
+			if ctx.Err() != nil || r.lost(held, hold, repairErr) {
+				return
+			}
+			if repairErr != nil {
+				r.fill.logger.Error("dispatch: the keyword fill's first-body repair failed; it walks again after the next pass", "error", repairErr)
+			}
+			repaired = repairErr == nil
 		}
 		var due time.Duration
 		woken := true

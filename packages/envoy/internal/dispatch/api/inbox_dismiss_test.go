@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -726,6 +728,103 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
 			t.Fatalf("%s: status=%d body=%s, want 400 %s", query, response.Code, response.Body.String(), code)
 		}
+	}
+}
+
+// The one read's Dismissed view (GET /api/v1/me/inbox?state=dismissed) reads every dismissed row
+// once, a page at a time from its cursor, however the rows tie. One press dismisses five threads of
+// both kinds at one moment, so the order and the cursor rest on the root's id alone after the
+// moment (meInboxOrder): a key that read the node's kind as well would order a comment and an Agent
+// root of that moment otherwise than the page's arms are cut in (meInboxDismissedCut), and a page
+// of two would skip a row or answer one twice. Each page's total is the page it answers, only a
+// page that more rows follow names a cursor, and a cursor that names no thread or Agent root is
+// refused there. Each entry a page answers carries the relations the walk of every relation (the
+// read with no state) gives its node, its dismissal among them, though under this state the walk
+// reads the page's own nodes alone (meInboxBuild's page_nodes).
+func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
+	seed := seedInboxRead(t)
+	handler, database := seed.handler, seed.database
+	rows := []string{
+		inboxDismissReplyPrefix + seed.first, inboxDismissReplyPrefix + seed.second,
+		inboxDismissReplyPrefix + seed.other, inboxDismissReplyPrefix + seed.document,
+		inboxDismissAgentPrefix + seed.agent,
+	}
+	if dismissed := dismissRows(t, handler, database, "alice", rows...); dismissed != len(rows) {
+		t.Fatalf("dismissed %d threads, want the %d named", dismissed, len(rows))
+	}
+	ctx := context.Background()
+	const marks = `
+		select dismissed_at as at, thread_id as id from user_threads where login = 'alice' and dismissed_at is not null
+		union all
+		select dismissed_at, message_id from user_agent_thread_dismissed where login = 'alice'`
+	var moments int
+	if err := database.Pool.QueryRow(ctx, `select count(distinct at) from (`+marks+`) marked`).Scan(&moments); err != nil {
+		t.Fatalf("count the dismissals' moments: %v", err)
+	}
+	if moments != 1 {
+		t.Fatalf("the press dismissed at %d moments, want one: the rows must tie for the order to rest on the id", moments)
+	}
+	want, err := readStrings(ctx, database.Pool, `select id::text from (`+marks+`) marked order by at desc, id desc`)
+	if err != nil || len(want) != len(rows) {
+		t.Fatalf("read the dismissals in their order: %v (err %v), want the %d dismissed", want, err, len(rows))
+	}
+
+	read := []string{}
+	answered := map[string]meInboxEntry{}
+	query := url.Values{"state": {myRepliesStateDismissed}, "limit": {"2"}}
+	for page := 1; ; page++ {
+		if page > len(rows) {
+			t.Fatalf("the Dismissed view read %v and still names a cursor", read)
+		}
+		answer := readMeInboxAs(t, handler, "alice", query)
+		if answer.Total != len(answer.Entries) {
+			t.Fatalf("page %d answers total %d over %d entries, want the page it answers", page, answer.Total, len(answer.Entries))
+		}
+		for _, entry := range answer.Entries {
+			if entry.Thread == nil && entry.Agent == nil {
+				t.Fatalf("page %d holds %s %s with no row of the page", page, entry.Node.Kind, entry.Node.ID)
+			}
+			read = append(read, entry.Node.ID)
+			answered[entry.Node.ID] = entry
+		}
+		more := len(read) < len(want)
+		if (answer.NextCursor != "") != more {
+			t.Fatalf("page %d names cursor %q after %d of the %d rows, want one exactly while rows follow", page, answer.NextCursor, len(read), len(want))
+		}
+		if !more {
+			break
+		}
+		query.Set("cursor", answer.NextCursor)
+	}
+	if !slices.Equal(read, want) {
+		t.Fatalf("the Dismissed view read %v, want %v: every dismissed row once, newest dismissal first, then by id", read, want)
+	}
+	walk := readMeInboxAs(t, handler, "alice", url.Values{})
+	for _, id := range read {
+		entry := answered[id]
+		walked, held := meInboxEntryOfNode(walk, entry.Node.Kind, entry.Node.ID)
+		if !held {
+			t.Fatalf("the walk holds no entry of the dismissed %s %s", entry.Node.Kind, entry.Node.ID)
+		}
+		same := slices.EqualFunc(entry.Relations, walked.Relations, func(page, all meInboxRelation) bool {
+			return page.Kind == all.Kind && page.Direction == all.Direction && page.At.Equal(all.At)
+		})
+		dismissal := slices.ContainsFunc(entry.Relations, func(relation meInboxRelation) bool {
+			return relation.Kind == graphstore.TupleDismissed && relation.Direction == meInboxOutbound
+		})
+		if !same || !dismissal {
+			t.Errorf("the dismissed %s %s carries %+v on its page, want %+v as the walk reads it, its dismissal among them",
+				entry.Node.Kind, entry.Node.ID, entry.Relations, walked.Relations)
+		}
+	}
+
+	notARoot := meInboxCursor{moment: time.Now(), kind: graphstore.KindComment, id: "not-a-root"}.String()
+	response := meInboxRequestAs(t, handler, ctx, "alice", url.Values{"state": {myRepliesStateDismissed}, "cursor": {notARoot}})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
+		t.Fatalf("a Dismissed cursor naming no root: status=%d body=%s, want 400 INVALID_QUERY", response.Code, response.Body.String())
 	}
 }
 

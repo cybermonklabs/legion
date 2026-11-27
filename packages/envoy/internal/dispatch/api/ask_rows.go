@@ -42,7 +42,9 @@ const newestReply = `select c.id, c.author, c.created_at, c.turn from comments c
 			limit 1`
 
 // lastReplyJoin attaches the newest comment in the ask's thread as lr; the ask must be
-// aliased a. askReadFrom and listOpenAsks both read the reply through it.
+// aliased a. askReadFrom reads the reply through it, for every read of an ask, and so do
+// askWaitingOn below, the Inbox page's ask rows (meInboxPageRows, api/me_inbox.go) and the open
+// approval requests a document reports (openApprovalAsksStatement, api/reviews.go).
 const lastReplyJoin = `
 		left join lateral (` + newestReply + `) lr on true`
 
@@ -69,23 +71,26 @@ const waitingOnExpression = `case
 	else coalesce(lr.turn, 'human')
 end`
 
-// askedOfPersonExpression is the one rule for which person a question reaches, resolved as the
-// question is read, in three steps: the person somebody handed it to, the assignee of its issue
-// until somebody does, and the default assignee of the question's project while the issue holds
-// nobody - or where there is no issue at all, which is a question on a project document. Every
-// project names a default and the column refuses nothing
-// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so every question
-// reaches a person.
+// askedOfPersonExpression is the one rule for which person a question reaches
+// (asks.AskedOfPersonExpression, which spells it, and says why it lives below api): the person
+// somebody handed it to, the assignee of its issue until somebody does, and the default assignee
+// of the question's project while the issue holds nobody - or where there is no issue at all,
+// which is a question on a project document.
 //
-// Six reads share it. One is askReadColumns below, the column list every ask read selects: the
-// Inbox's rows (api/inbox.go), one ask, an issue's ask list, a document's ask list (api/asks.go)
-// and the decisions read (api/decisions.go). The other five write it into a statement of their
-// own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go), the author's read
-// behind `dispatch open-asks` (the active CTE of listOpenAsks in api/asks.go), the open ask the
-// Replies list leaves out, since the Inbox already lists it (myRepliesOwner in api/replies.go),
-// the read the hand-on route takes before it writes, which is whom the question waited on
-// until then (putAskAskedOf in api/ask_asked_of.go), and the person a write that opens a
-// question answers with (askWaitingOnPerson below).
+// Seven reads of this package share it. One is askReadColumns below, the column list every ask
+// read selects: the open-ask rows (openAskRowColumns, which GET /api/v1/inbox, GET
+// /api/v1/me/inbox and GET /api/v1/asks/open select), one ask, an issue's ask list, a document's
+// ask list (api/asks.go) and the decisions read (api/decisions.go). The other six write it into a
+// statement of their own: the Inbox read's person filter (?assignee=, listInbox in api/inbox.go),
+// the open-asks read's person filter (?waiting_on=, listOpenAsks in api/asks.go), the open ask
+// the Replies list leaves out, since the Inbox already lists it (myRepliesOwner in
+// api/replies.go), the read the hand-on route takes before it writes, which is whom the question
+// waited on until then (putAskAskedOf in api/ask_asked_of.go), the person a write that opens a
+// question answers with (askWaitingOnPerson below), and the asks GET /api/v1/me/inbox lists as
+// waiting on its person (meInboxPageRows in api/me_inbox.go). Three more, outside this package,
+// are the answer's catch-up of an ask an older build created (inboxwrite.ReadAsk), the create's
+// delivery to the person the ask waits on (inboxwrite.Record), and the move of that person by the
+// writes that change who an ask waits on (inboxwrite.QueueMoveWaiting).
 //
 // It names the ask a, its issue i and its project p, so every query reading it joins all three
 // the way askReadFrom does, the ask's own document among them: a question owned by an issue has
@@ -98,38 +103,31 @@ end`
 // from - the Inbox's person filter through askReadFrom, as it sits in the statement that
 // selects askReadColumns.
 //
-// It compares with = rather than wrapping either column in lower(btrim(...)): asks.asked_of,
-// issues.assignee and projects.default_assignee all hold what model.CanonicalLogin returns, so
-// the sides match as they are stored. The expression spans three tables, so no index on
-// issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
-const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
+// The expression spans three tables, so no index on issues.assignee
+// (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
+const askedOfPersonExpression = asks.AskedOfPersonExpression
 
 // ownerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
-// its document as ar. Both askedOfPersonJoins and projectOfComment (api/project_scope.go) append
-// it so the join has one spelling across the module.
-const ownerProjectJoin = `
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+// its document as ar. Both askedOfPersonJoins, through asks.AskedOfPersonJoins, and projectOfComment
+// (api/project_scope.go) append it, so the join has one spelling across the module, the one in
+// asks (asks.OwnerProjectJoin).
+const ownerProjectJoin = asks.OwnerProjectJoin
 
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
-// a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Six FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
-// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go), the
-// read putAskAskedOf takes before it writes (api/ask_asked_of.go) and projectOfAsk
-// (api/project_scope.go) - and each builds them from this one text, so the rule and the tables
-// it names move together. The six clauses serve seven reads: askReadFrom serves two of them,
-// askReadColumns and the Inbox's person filter, which share one statement, and each other clause
-// serves one. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
-// expression to its own.
+// a (asks.AskedOfPersonJoins): its issue as i, its own document as ar, and the project of
+// whichever of the two owns it as p. Seven FROM clauses of this package carry them - askReadFrom
+// and askWaitingOnPerson below, the opened-since read of listOpenAsks (api/asks.go), the
+// not-exists subquery of myRepliesOwner (api/replies.go), the read putAskAskedOf takes before it
+// writes (api/ask_asked_of.go), the Inbox page's ask rows (meInboxPageRows in api/me_inbox.go)
+// and projectOfAsk (api/project_scope.go) - and each builds them from this one text, so the rule
+// and the tables it names move together. askReadFrom serves three of the eight reads,
+// askReadColumns and the two person filters, the Inbox's and the open-asks read's, each in the
+// statement that selects askReadColumns. TestOneExpressionDecidesWhoWaits holds them to this one
+// spelling as it holds the expression to its own.
 //
-// Each is an outer join: a question owned by an issue has no document row and one owned by a
-// document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
-// exactly one of the two, so the coalesce names the project either way - the shape this
-// repository already reads a question's project through (api/inbox.go, api/asks.go,
-// projectListQuery in api/projects.go). The leading newline makes it a block a caller appends
-// to its own `from <table> a`, whatever that caller indents its statement by.
-const askedOfPersonJoins = `
-	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
+// The project is reached through either owner the way this repository already reads a
+// question's project (api/inbox.go, api/asks.go, projectListQuery in api/projects.go).
+const askedOfPersonJoins = asks.AskedOfPersonJoins
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
@@ -196,14 +194,15 @@ var askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnE
 	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person, ` + asks.NodeAnswerColumn("a") + ` as node_answer`
 
 // askOpenOf is how a statement that reads open asks across owners - the Inbox (listInbox), the
-// asks the Replies list leaves out for it (myRepliesOwner), a session's or a project's open asks
-// (listOpenAsks) and the open approval requests of a list of documents
-// (openApprovalAsksStatement) - picks the open ask aliased ask: its row's state open, which the
-// partial index asks_open (0001) holds, so the index picks the candidates out of every ask
-// stored, and its node's state open (asks.NodeStateOf), which decides (R3). An ask its node holds
-// anything but open is never picked. The two agree outside a roll; inside its window the row is
-// the newer of the two, written by a process of the release before and not yet stated on the node
-// by the decisions step's catch-up, so an ask that process answered is left out until then.
+// Ask rows of the one read (meInboxPageRows), the asks the Replies list leaves out for them
+// (myRepliesOwner), a session's or a project's open asks (listOpenAsks) and the open approval
+// requests of a list of documents (openApprovalAsksStatement) - picks the open ask aliased ask: its
+// row's state open, which the partial index asks_open (0001) holds, so the index picks the
+// candidates out of every ask stored, and its node's state open (asks.NodeStateOf), which decides
+// (R3). An ask its node holds anything but open is never picked. The two agree outside a roll;
+// inside its window the row is the newer of the two, written by a process of the release before
+// and not yet stated on the node by the decisions step's catch-up, so an ask that process answered
+// is left out until then.
 func askOpenOf(ask string) string {
 	return ask + `.state = '` + asks.StateOpen + `' and ` + asks.NodeStateOf(ask) + ` = '` + asks.StateOpen + `'`
 }
@@ -456,4 +455,146 @@ func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, err
 	}
 	reply.CreatedAt = timestampValue(*repliedAt)
 	return ask, &reply, nil
+}
+
+// askOwnerIssue is the issue an open-ask row stands on: its key and title, and the issue's own
+// assignee, which is not the person the question reaches - a question on an issue nobody holds
+// carries a null assignee here and its project's default assignee as the row's waiting_on_person.
+type askOwnerIssue struct {
+	Key      string  `json:"key"`
+	Title    string  `json:"title"`
+	Assignee *string `json:"assignee"`
+}
+
+// askOwnerDocument is the project document an open-ask row stands on, for a question no issue
+// owns.
+type askOwnerDocument struct {
+	Project string `json:"project"`
+	Slug    string `json:"slug"`
+	Name    string `json:"name"`
+}
+
+// askThread is the initial data a card renders beside an ask: its reply chain, the rewordings
+// the question went through, its answers, and the sessions it reaches. Every open-ask row and an
+// issue's ask list asked for a thread both carry one per ask, so a client renders a thread
+// without a fetch per ask. `answers` is empty on an open-ask row, which has none; the issue ask
+// list fills it for the answered asks on the page.
+type askThread struct {
+	Replies   []shapedComment           `json:"replies"`
+	Edits     []askEditRead             `json:"edits"`
+	Answers   []model.AskAnswerWithTree `json:"answers"`
+	Followers []model.AskFollower       `json:"followers"`
+	askReach
+}
+
+// askReach is who besides the followers a person's answer and replies on an ask reach: the
+// session holding the claim on the ask's issue (the outbox's claimant route) and the issue's
+// route, a session or a role holder. The embedded model.IssueRouteReach is that route's reach
+// right now (routeRoster.reach, the same the issue reads carry): RouteStatus says whether the
+// route reaches anyone (live, no_holder, or unknown when the listener did not answer), and
+// RouteHolder is the session it reaches while live, so a reader can count a session that is both
+// claimant and route holder once and tell an unreachable route from one it cannot see.
+// Claimant is null while nobody or a person holds the claim; Route, RouteStatus and RouteHolder
+// while the issue has no route; RouteHolder whenever RouteStatus is not live; and all four on a
+// project document's ask, which has no issue. The single-ask read and every askThread carry it
+// at the same keys.
+type askReach struct {
+	Claimant *string `json:"claimant"`
+	Route    *string `json:"route"`
+	model.IssueRouteReach
+}
+
+// openAskRow is the row of an open ask that every read of open asks answers, built here and
+// nowhere else: the ask rows of GET /api/v1/inbox (listInbox) and of GET /api/v1/me/inbox (an
+// Ask entry's row, readAsks and meInboxAsks), and the rows of GET /api/v1/asks/open
+// (listOpenAsks), which carry what that read has always carried beside it (openAsk). It is the
+// ask shaped for display, the issue or project document it stands on, the issue's priority, the
+// newest reply in its thread, the reader's own snooze and the thread a card renders.
+// scanOpenAskRow reads one out of openAskRowColumns, and finishOpenAskRows adds its details and
+// its thread for a read that reads them on the pool.
+type openAskRow struct {
+	shapedAsk
+	Issue     *askOwnerIssue      `json:"issue,omitempty"`
+	Document  *askOwnerDocument   `json:"document,omitempty"`
+	Priority  *int                `json:"priority"`
+	LastReply *model.AskLastReply `json:"last_reply"`
+	// SnoozedUntil is the caller's own snooze on this row, null when they have not snoozed it.
+	// It is surfaced, never filtered: the row stays in everyone's list including its snoozer's,
+	// who folds it away while this moment is still ahead and sees it again once it passes.
+	SnoozedUntil *string   `json:"snoozed_until"`
+	Thread       askThread `json:"thread"`
+}
+
+// openAskRowColumns are askReadColumns plus what an open-ask row carries beside the ask: its
+// issue's key, title, assignee and priority, its project document's project, slug and name, and
+// the reader's snooze, in the order scanOpenAskRow reads them. A statement selecting them reads
+// from openAskRowFrom.
+var openAskRowColumns = askReadColumns + `,
+		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
+		       sn.snoozed_until`
+
+// openAskRowFrom is askReadFrom and the snooze of the reader whose canonical login the statement
+// binds at snoozer, which an empty login finds none of. The issue and the document
+// openAskRowColumns read are askReadFrom's own joins, i and ar, so a statement over it joins
+// neither table again.
+func openAskRowFrom(snoozer string) string {
+	return askReadFrom + `
+		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = ` + snoozer
+}
+
+// scanOpenAskRow decodes one openAskRowColumns row; extra receives the columns selected after
+// them. What the row carries beside it is its caller's to add: finishOpenAskRows for a read that
+// reads it on the pool, and meInboxAsks for the one read, whose statement read it already.
+func scanOpenAskRow(row pgx.Row, extra ...any) (openAskRow, error) {
+	var listed openAskRow
+	var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
+	var snoozedUntil *time.Time
+	ask, reply, err := scanAskRead(row, append([]any{
+		&issueKey, &issueTitle, &issueAssignee, &listed.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil,
+	}, extra...)...)
+	if err != nil {
+		return openAskRow{}, err
+	}
+	listed.Ask = ask
+	listed.LastReply = reply
+	if snoozedUntil != nil {
+		stamp := timestampValue(*snoozedUntil)
+		listed.SnoozedUntil = &stamp
+	}
+	if issueKey != nil {
+		listed.Issue = &askOwnerIssue{Key: *issueKey, Title: *issueTitle, Assignee: issueAssignee}
+	}
+	if documentProject != nil {
+		listed.Document = &askOwnerDocument{Project: *documentProject, Slug: *documentSlug, Name: *documentName}
+	}
+	return listed, nil
+}
+
+// finishOpenAskRows adds to rows, read for who, what each carries beside its row: the details
+// every list of asks carries (loadAskDetails), then the thread a card renders (loadAskThreads),
+// and last each row's shape. The rows and the threads under them are one read of the stored
+// trees: each registers its texts with reader, which the caller resolves once its answer is whole
+// and its rows will not move again. It reads on the pool, never inside a transaction, because the
+// reach read ends with a listener call.
+func (s *server) finishOpenAskRows(ctx context.Context, who model.Actor, rows []*openAskRow, reader *displayTreeReader) error {
+	asks := make([]*model.Ask, len(rows))
+	askIDs := make([]string, len(rows))
+	for index, row := range rows {
+		asks[index] = &row.Ask
+		askIDs[index] = row.ID
+	}
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, who, asks); err != nil {
+		return err
+	}
+	threads, err := s.loadAskThreads(ctx, who, askIDs, reader)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		row.Thread = threads[row.ID]
+		// The row's shape is taken once the ask is final: loadAskDetails has just written the part
+		// ids of its options and of its answer into the row these fields stand in front of.
+		row.shape(reader)
+	}
+	return nil
 }

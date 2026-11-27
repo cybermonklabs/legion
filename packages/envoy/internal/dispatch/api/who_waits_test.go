@@ -21,18 +21,18 @@ import (
 
 // inboxFor reads one person's Inbox rows through the person filter `dispatch inbox` sends
 // (?assignee=me), or through filter where the test names another.
-func inboxFor(t *testing.T, handler http.Handler, login, filter string) []inboxAsk {
+func inboxFor(t *testing.T, handler http.Handler, login, filter string) []openAskRow {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?assignee="+filter, nil, login)
 	if response.Code != http.StatusOK {
 		t.Fatalf("read %s's inbox (?assignee=%s): status=%d body=%s", login, filter, response.Code, response.Body.String())
 	}
-	return decodeBody[[]inboxAsk](t, response)
+	return decodeBody[[]openAskRow](t, response)
 }
 
 // inboxRowsOf counts how many of the read's rows are the ask, so a row listed twice is told from
 // one listed once.
-func inboxRowsOf(rows []inboxAsk, askID string) int {
+func inboxRowsOf(rows []openAskRow, askID string) int {
 	listed := 0
 	for _, row := range rows {
 		if row.ID == askID {
@@ -330,7 +330,7 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 			documentUnhanded:   "alice",
 			handedToTheDefault: "alice",
 		}
-		rows := map[string]inboxAsk{}
+		rows := map[string]openAskRow{}
 		for _, row := range inboxFor(t, handler, "alice", "") {
 			rows[row.ID] = row
 		}

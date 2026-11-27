@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -34,8 +35,11 @@ const (
 	dispatchTopicPrefix = "notifications.dispatch."
 	documentTopicPrefix = dispatchTopicPrefix + "document."
 	// maxCommentThreadDepth bounds the reply_to walks in loadRootCommentAuthors and
-	// loadCommentRecipients so a malformed cycle (comments.reply_to has no acyclicity constraint)
-	// cannot spin the recursive query and stall the outbox scan.
+	// loadCommentRecipients: neither walks more steps than this, so a long chain of replies
+	// cannot stall the outbox scan. The delivery walk answers a chain this deep whole, reports
+	// one it cuts at the bound, and ends a cycle (comments.reply_to has no acyclicity constraint)
+	// on the rows it already visited (commentRecipientsQuery); the root walk's cycle runs to this
+	// bound and finds no root.
 	maxCommentThreadDepth = 32
 	// mentionPendingDelay is how long an event waits when a copy of it was held back for a
 	// mention whose send is still undecided - a session route's own copy
@@ -896,19 +900,24 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // mid-batch schedules nothing beside the holder that took it and leaves the owed keys to that
 // holder's record: a record it skipped is one whose owed_seq the owner's next event leaves behind,
 // which holds a mention's copy until that holder writes it (model.MentionCopyHolderSQL). Each row
-// is guarded on published_at is null. An event the batch read only as a blocker, not due
-// (owedAgain), has its owed_keys and owed_seq written alone, and only when either changed, so an
-// owner whose events wait, and that no event was written to since, rewrites no row a batch finds
-// as it left it.
+// is guarded on published_at is null, but for the destinations it reached: an event the holder
+// published first, while a process that lost the hold to it was still sending the same event,
+// still has every topic that process reached added to its published_destinations when it records,
+// and nothing else of its row moves - its publish state and what it owes are the holder's. An
+// event the batch read only as a blocker, not due (owedAgain), has its owed_keys and owed_seq
+// written alone, and only when either changed, so an owner whose events wait, and that no event
+// was written to since, rewrites no row a batch finds as it left it.
 //
 // Beside the events' own rows it writes what the batch delivered into the node and tuple store
 // (deliveredGraph), as further arms of this one statement (graphstore.WriteArms): the nodes of
 // the roles and sessions it reached, the pages under them, each role's held_by tuple and the
 // delivered_to tuple of every delivery. Those arms are written whoever holds the publisher
-// hold, as the reached destinations are: a delivery that happened is no schedule to make. They
-// take no owner row - this statement runs on a pooled connection with no transaction of its own
-// - and each is repeat-safe under the store's two partial repeat keys, which is what a record
-// that is retried needs.
+// hold, as the reached destinations are: a delivery that happened is no schedule to make. So the
+// session and role topics of an event's published_destinations are the far ends of the
+// delivered_to tuples its records stated, whichever process recorded each. They take no owner
+// row - this statement runs on a pooled connection with no transaction of its own - and each is
+// repeat-safe under the store's two partial repeat keys, which is what a record that is retried
+// needs.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -997,14 +1006,19 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					where t.topic <> all(e.published_destinations)
 					order by t.position
 				),
-				published_at = case when o.state = 'published' then now() end,
+				published_at = coalesce(e.published_at, case when o.state = 'published' then now() end),
 				publish_error = case
+					when e.published_at is not null then e.publish_error
 					when o.state = 'published' then null
 					when o.state = 'backed_off' and h.mine then o.failure
 					else e.publish_error
 				end,
-				attempt_count = case when o.state = 'backed_off' and h.mine then o.attempts else e.attempt_count end,
+				attempt_count = case
+					when e.published_at is null and o.state = 'backed_off' and h.mine then o.attempts
+					else e.attempt_count
+				end,
 				next_attempt_at = case
+					when e.published_at is not null then e.next_attempt_at
 					when o.state = 'published' then null
 					when not h.mine then e.next_attempt_at
 					when o.state = 'backed_off' then now() + make_interval(secs => o.delay)
@@ -1012,15 +1026,20 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					when o.state = 'owed_again' then e.next_attempt_at
 					else null
 				end,
-				owed_keys = case when o.owed_known and h.mine then coalesce(w.keys, '{}') else e.owed_keys end,
-				owed_seq = case when o.owed_known and h.mine then o.owed_seq else e.owed_seq end
+				owed_keys = case
+					when e.published_at is null and o.owed_known and h.mine then coalesce(w.keys, '{}')
+					else e.owed_keys
+				end,
+				owed_seq = case when e.published_at is null and o.owed_known and h.mine then o.owed_seq else e.owed_seq end
 			from outcome o
 			cross join hold h
 			left join reached r on r.id = o.id
 			left join owed w on w.id = o.id
-			where e.id = o.id and e.published_at is null
-			  and (o.state = 'published' or h.mine or r.id is not null)
-			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}') or e.owed_seq is distinct from o.owed_seq)
+			where e.id = o.id
+			  and ((e.published_at is null and (o.state = 'published' or h.mine or r.id is not null)
+			        and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}')
+			             or e.owed_seq is distinct from o.owed_seq))
+			       or (e.published_at is not null and not r.topics <@ e.published_destinations))
 		)`+arms+`
 		select mine from hold
 	`, args...).Scan(&holds)
@@ -1098,12 +1117,12 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 // destinations collects an event's destinations, each subject once: a subject an earlier route
 // already reaches is not added again, and neither is one a fallback row owns
 // (mentionDeliveries.held), which the fallback pass publishes or settles (publishFallbackCopies).
-// comment is the new comment whose mention attempts a settle or a hold of one of its copies writes
+// comment is the comment whose mention attempts a settle or a hold of one of its copies writes
 // through, and delivered the destinations the event reached before this read. mentions is what
-// the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
-// was held back for a mention still being sent (leftTo). failed holds the settles and the holds
-// of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// the event's mentions did (a new comment's or a callback reply's alone, readsMentions), and
+// mentionPending whether a session's copy was held back for a mention still being sent (leftTo).
+// failed holds the settles and the holds of held-back copies that failed, which end no list: each
+// backs the event off once the destinations the list does name are sent (err).
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}
@@ -1160,9 +1179,10 @@ func (d *destinations) addSession(sessionID, label, id string) {
 }
 
 // addWorkingSession adds the subject of a session the owner's own work names - the session its
-// route names and the session that claims it - as addSession does, except that its copy reads
-// whether an attempt of the comment that names no session yet, and whose role this read could
-// name no holder for, is live, beside its own attempts (destinations.workingSessionHold,
+// route names, the session that claims it, and each session the mentions of a new comment or of a
+// callback reply name (mentionDeliveries.mentioned) - as addSession does, except that its copy
+// reads whether an attempt of the comment that names no session yet, and whose role this read
+// could name no holder for, is live, beside its own attempts (destinations.workingSessionHold,
 // unpinnedRoleMentions.liveUnnamed).
 //
 // While such an attempt is live their copies wait, in the event's list and marked, so that none
@@ -1219,13 +1239,14 @@ func (d *destinations) err(cause error) error {
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
-// its follower routes and the previous claimant's notice. It answers the whole reading: the list,
-// and whether a session's copy was held back for a mention still being sent (destinations.leftTo).
-// A session a mention already delivered the comment to is no destination of it, and the batch
-// sends it nothing: that delivery is recorded under the attempt's own receipt (deliveredGraph).
-// The mention deliveries of a new comment that
-// names a mention at all (payloadHasMentions) are read before anything else, so a lookup of them
-// that fails leaves the event with no destination. Any other lookup that fails, or a route that
+// the sessions the mentions of a new comment or of a callback reply name
+// (mentionDeliveries.mentioned), then its follower routes and the previous claimant's notice. It
+// answers the whole reading: the list, and whether a session's copy was held back for a mention
+// still being sent (destinations.leftTo). A session a mention already delivered the comment to is
+// no destination of it, and the batch sends it nothing: that delivery is recorded under the
+// attempt's own receipt (deliveredGraph). The mention deliveries of an event that reads them
+// (readsMentions) are read before anything else, so a lookup of them that fails leaves the event
+// with no destination. Any other lookup that fails, or a route that
 // does not parse, ends the list there: the destinations before it are returned with the error,
 // which backs the event off once they are sent. So a recipient read the batch has no answer for
 // (unansweredRecipients) still lets the owner topic, the route and the claimant go first. A settle
@@ -1239,7 +1260,7 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 	event := item.event
 	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered}
 	var err error
-	if event.Type == "comment.created" && payloadHasMentions(event.Payload) {
+	if readsMentions(event) {
 		commentID := payloadString(event.Payload, "id")
 		d.comment = mentionComment{ctx: ctx, deps: deps, event: event, id: commentID}
 		if d.mentions, err = look.mentionDeliveries(commentID); err != nil {
@@ -1263,6 +1284,19 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 		}
 		if err := addAuthorRoutes(event, routing, look, d); err != nil {
 			return d, d.err(err)
+		}
+	}
+	// A new comment and a callback reply reach each session their mentions name
+	// (mentionDeliveries.mentioned), on that session's own topic, as a copy left to the mention
+	// (addWorkingSession): none once a mention of it delivered the comment, held while one is
+	// still being sent, and added where each failed, or where no attempt names the session, as no
+	// attempt of a callback reply does. So a session the comment names and nothing else routes to
+	// is still told of it once (R5). The event's own actor is none of them (recipientFilter, R3's
+	// own-event rule): a session whose comment names itself, or a role it holds, is sent nothing.
+	filter := newRecipientFilter(event)
+	for _, sessionID := range slices.Sorted(maps.Keys(d.mentions.mentioned)) {
+		if filter.keep(sessionID) {
+			d.addWorkingSession(sessionID, "publish mentioned session", "session:"+sessionID)
 		}
 	}
 	if err := addFollowerRoutes(event, look, d); err != nil {

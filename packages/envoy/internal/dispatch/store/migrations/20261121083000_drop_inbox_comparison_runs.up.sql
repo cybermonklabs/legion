@@ -1,0 +1,24 @@
+-- 20261121083000_drop_inbox_comparison_runs.up.sql
+--
+-- The one inbox's 20261117132340_inbox_comparison_runs created inbox_comparison_runs as the
+-- record of `envoy-dispatch inbox-compare`, the comparison of the one read (GET /api/v1/me/inbox)
+-- with the three reads it replaces, which gated the Inbox's move onto the one read. The Inbox now
+-- draws from the one read by default and every caller has moved off the three reads, so this
+-- commit deletes the comparison: its command, its package, its route
+-- (GET /api/v1/inbox/comparison), its page (/inbox/comparison) and this table.
+--
+-- The comparison ran in the one inbox's branch alone and never against a deployment (it signed in
+-- through dev sign-in only), and no build of a release reads or writes this table: the branch
+-- that created it drops it before it merges. So no running build loses a table it reads, and a
+-- rollback to any released build finds nothing missing. The two migration files of 20261117132340
+-- stay, since a database that applied that version keeps its row in schema_migrations: boot leaves
+-- a recorded version with no file as it is, but `envoy-dispatch versions` exits 1 on one.
+--
+-- No `if exists`: 20261117132340 creates the table unconditionally, so every database recording
+-- that version holds it, and `if exists` would pass over a schema that is not the one we think it
+-- is.
+--
+-- The table has no foreign key in or out and no index but its primary key (id), so the drop takes
+-- ACCESS EXCLUSIVE on that table alone. It reads no row, so it holds that lock for the instant the
+-- migration's transaction lasts.
+drop table inbox_comparison_runs;

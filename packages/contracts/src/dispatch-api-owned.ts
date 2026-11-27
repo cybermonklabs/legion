@@ -4,7 +4,7 @@ import {
   AskAnchorArtifactSchema,
   AskBlockArtifactSchema,
   AskOptionSchema,
-  InboxDocumentSchema,
+  AskOwnerDocumentSchema,
 } from "./dispatch-api-asks";
 import { SuggestionSchema } from "./dispatch-api-comments";
 import {
@@ -48,9 +48,9 @@ const OWNED_SCHEMAS = {
   AskApprovalDocument: AskApprovalDocumentSchema,
   AskBlockArtifact: AskBlockArtifactSchema,
   AskOption: AskOptionSchema,
+  AskOwnerDocument: AskOwnerDocumentSchema,
   BlockPathEntry: BlockPathEntrySchema,
   ExternalLink: ExternalLinkSchema,
-  InboxDocument: InboxDocumentSchema,
   ReplyBlock: ReplyBlockSchema,
   Suggestion: SuggestionSchema,
 } satisfies Record<SplitOwnedSchemaName, z.ZodType>;

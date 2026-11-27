@@ -1,0 +1,29 @@
+-- 20261116135959_refs_tuples_stored.up.sql
+--
+-- refs learns, row by row, whether the store holds the citation the row is the projection of:
+--   tuples_stored   true for a row this release's writer of an item's refs rows inserted beside
+--                   the `mentions` tuple it states out of the item's node for that row - a
+--                   comment's, a message's or an ask's citation (refs.replaceRefs, the seed) - in
+--                   the same transaction. False for every other row: one the release before this
+--                   one wrote, a document's row, whose citations another child moves, and a row
+--                   whose item or far end the store cannot key, which states no tuple.
+--
+-- It is the row's marker for that one relation, and graph_edges reads it (migration
+-- 20261126045003): the refs arm answers a row that holds false and the store's citation arm the
+-- tuple of a row that holds true. The marker is the row's and not its source's. A test on the
+-- comment's, message's or ask's own marker would split the arm by source, and a build of the
+-- release before this one, editing or re-indexing an item this release wrote during a roll or
+-- after a rollback, inserts refs rows for that item that state no tuple: under a source marker
+-- they would be answered by neither arm. Under this one each such row takes the default, false,
+-- so the refs arm answers it, as 20261109215947 has block_refs rows decide for themselves. A row
+-- that build deletes retracts nothing, and the store's arm answers no tuple whose row is gone.
+--
+-- A column with a constant default and no constraint beyond `not null` is a catalog change on
+-- PostgreSQL 11 and later: no stored row is rewritten or read, and every existing row reads false,
+-- which is true of it, since no writer before this one stated a citation. The ALTER takes ACCESS
+-- EXCLUSIVE on refs for its catalog write and no lock on any other table, so it closes no cycle
+-- with a write of the release still serving; the runner's lock_timeout bounds its wait
+-- (pgmigrate.LockTimeout), and the runner applies it again on a timeout
+-- (pgmigrate.LockTimeoutAttempts). The release before this one writes refs by naming its columns,
+-- so its rows take the default and the two releases roll side by side.
+alter table refs add column tuples_stored boolean not null default false;

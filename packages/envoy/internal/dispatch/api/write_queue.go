@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -103,38 +104,51 @@ func (s *server) queueLoggedEventOn(
 // readers between them read it once, for the first of the two texts that names a question block
 // and not at all for an ask whose texts name none. Both resolve the short ids for the ask's
 // author (refs.NewReader).
-func (s *server) queueNewAskReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.ReferenceChanges, error) {
+//
+// The ask's node is the one the route queued before the row (node): its question's citations and
+// its parts' block nodes and links are stated out of it (refs.WrittenItem), so neither reads the
+// node back. What they state is answered for the route to queue under the ask.opened it appends
+// (graphstore.QueueCaused).
+func (s *server) queueNewAskReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, node graphstore.Node) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	ctx = ledger.ReadContext(ctx)
 	document := refs.PendingAskDocument(ask)
+	scope := refs.WrittenItem(node)
 	located := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.deps.ServerURL, document).Mentions(ask.Question)
-	replacement, changes, err := planFoundReferences(ctx, tx, "ask", ask.ID, text.Refs(located), nil)
+	replacement, changes, err := planFoundReferences(ctx, tx, "ask", ask.ID, text.Refs(located), nil, &scope, ask.CreatedAt)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if err := queueReplacement(ledger, replacement); err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	// The question's reconciliation is queued before the parts, so the parts' statements settle
 	// the ask's row of the forms queue (questionReconciled).
-	return s.queueAskParts(ctx, ledger, ask, document, ask.CreatedAt, true, changes)
+	changes, stated, err := s.queueAskParts(ctx, ledger, ask, document, &scope, ask.CreatedAt, true, changes)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	stated.Tuples = append(stated.Tuples, replacement.Cited().Tuples...)
+	return changes, stated, nil
 }
 
 // queueEditedReferences reconciles fromKind/fromID's references in the route's two phases for an
-// edit of an ask's question or a comment's body from previous to body, whose short ids resolve
-// for writer, the author the source's row records (refs.NewReader): the counted targets also
-// name every target the source still cites when the edit moves the head of its text, which each
-// of its edges shows, cut against this server's deployment (refs.EditedTargets). The source's row
-// is stored - an edit changes a row an earlier transaction wrote - so the document its `#id`s
-// resolve against is the one that row answers (refs.ScopeOf), read only if the body names a
-// question block.
-func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, fromKind, fromID, previous, body string) (model.ReferenceChanges, error) {
+// edit of an ask's question or a comment's body from previous to body, made at `at`, whose short
+// ids resolve for writer, the author the source's row records (refs.NewReader): the counted
+// targets also name every target the source still cites when the edit moves the head of its
+// text, which each of its edges shows, cut against this server's deployment (refs.EditedTargets).
+// The source's row is stored - an edit changes a row an earlier transaction wrote - so the
+// document its `#id`s resolve against is the one that row answers (refs.ScopeOf), read only if the
+// body names a question block, and an item's node is the one the store holds
+// (planFoundReferences). It answers the citations the reconciliation states, for the route to
+// queue under the event it appends.
+func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, fromKind, fromID, previous, body string, at time.Time) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	ctx = ledger.ReadContext(ctx)
 	found := text.Refs(refs.NewReader(ctx, tx, writer, fromKind, fromID, s.deps.ServerURL).Mentions(body))
-	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, s.deps.ServerURL, found))
+	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, s.deps.ServerURL, found), nil, at)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return changes, queueReplacement(ledger, replacement)
+	return changes, replacement.Cited(), queueReplacement(ledger, replacement)
 }
 
 // queueItemReferences plans the index of the blocks of a comment or an issue message this
@@ -143,14 +157,15 @@ func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *d
 // reconciliation's, in that order, in tx's write phase. A direct message (cites false) writes no
 // mention, so its blocks hold none either: its blocks alone are indexed, and it moves nothing.
 // Every read below runs under the ledger the write queues on, whatever context the route passed
-// (docs.Ledger.ReadContext).
-func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, kind refs.ItemKind, itemID, body string, source refs.PendingSource, at time.Time, cites bool) (model.ReferenceChanges, error) {
+// (docs.Ledger.ReadContext). scope is the item's node as the route queued it (refs.WrittenItem),
+// and what the index and the citations state is answered for the route to queue under its event.
+func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, kind refs.ItemKind, itemID, body string, source refs.PendingSource, scope refs.ItemScope, at time.Time, cites bool) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	ctx = ledger.ReadContext(ctx)
-	changes, write, err := s.planPendingItem(ctx, tx, writer, kind, itemID, body, source, at, cites)
+	changes, write, stated, err := s.planPendingItem(ctx, tx, writer, kind, itemID, body, source, scope, at, cites)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return changes, ledger.Queue(write)
+	return changes, stated, ledger.Queue(write)
 }
 
 // planPendingItem is planItemWrite for an item of kind kind whose row this transaction has not
@@ -159,30 +174,30 @@ func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *doc
 // those fields and only for a body that names a question block (refs.NewPendingDocument,
 // refs.PendingDocument), since no read of that row can answer it yet.
 //
-// Every route that writes a comment or an issue message plans through this one call, in one of
-// three shapes: the one whose insert is queued on a ledger and whose index is queued beside it
+// Every route that creates a comment or a message plans through this call, in one of three
+// shapes: the one whose insert is queued on a ledger and whose index is queued beside it
 // (queueItemReferences), the one whose insert is queued on a batch it runs itself
-// (createStoredMessage), and the two delivery replies, which have not made the insert at all
-// when they plan and run the planned step where they make their write (planCommentReply,
-// planMessageReply).
+// (createStoredMessage, and each copy of a broadcast, planBroadcastCopy), and the two delivery
+// replies, which have not made the insert at all when they plan and run the planned step where
+// they make their write (planCommentReply, planMessageReply).
 func (s *server) planPendingItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, body string,
-	source refs.PendingSource, at time.Time, cites bool,
-) (model.ReferenceChanges, docs.WriteStep, error) {
-	return s.planItemWrite(ctx, tx, writer, kind, itemID, body, refs.NewPendingDocument(string(kind), source), at, cites, nil, nil)
+	source refs.PendingSource, scope refs.ItemScope, at time.Time, cites bool,
+) (model.ReferenceChanges, docs.WriteStep, graphstore.Uncaused, error) {
+	return s.planItemWrite(ctx, tx, writer, kind, itemID, body, refs.NewPendingDocument(string(kind), source), &scope, at, cites, nil, nil)
 }
 
 // queueEditedItemReferences is queueItemReferences for an edit of a comment from previous to
 // body, written at `at`, with the block ids the editor carried (carried; nil: the ids follow the
-// text, refs.IndexItem); writer is the author the comment's row records: planEditedItem, read
-// under the ledger the write queues on and queued on it. A carried id the index refuses returns
-// its *itemblocks.CarriedError.
-func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit) (model.ReferenceChanges, error) {
-	changes, write, err := s.planEditedItem(ledger.ReadContext(ctx), tx, writer, kind, itemID, previous, body, at, carried)
+// text); writer is the author the comment's row records. It reads planEditedItem under the
+// ledger's read context, queues its write there, and returns the stated tuples for the route to
+// queue under its event. A carried id the index refuses returns its *itemblocks.CarriedError.
+func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	changes, write, stated, err := s.planEditedItem(ledger.ReadContext(ctx), tx, writer, kind, itemID, previous, body, at, carried)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return changes, ledger.Queue(write)
+	return changes, stated, ledger.Queue(write)
 }
 
 // planEditedItem is planItemWrite for a rewrite of a stored comment's or issue message's body
@@ -195,11 +210,13 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // grammar against this server's deployment). It is the one plan of every such rewrite, which its
 // caller queues where it makes the write: on a comment's ledger (queueEditedItemReferences, and
 // deleteComment's through clearDeletedPostBody) or on the batch a message's route runs itself
-// (editMessage, and deleteMessage's through clearDeletedPostBody).
+// (editMessage, and deleteMessage's through clearDeletedPostBody). The item's node is the one the
+// store holds, and what the index and the citations state is answered for the caller to queue
+// under the event it appends (graphstore.QueueCaused).
 func (s *server) planEditedItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit,
-) (model.ReferenceChanges, docs.WriteStep, error) {
-	return s.planItemWrite(ctx, tx, writer, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
+) (model.ReferenceChanges, docs.WriteStep, graphstore.Uncaused, error) {
+	return s.planItemWrite(ctx, tx, writer, kind, itemID, body, nil, nil, at, true, carried, func(found []text.Ref) []refs.Target {
 		return refs.EditedTargets(previous, body, s.deps.ServerURL, found)
 	})
 }
@@ -209,23 +226,28 @@ func (s *server) planEditedItem(
 // edges stay; nil for a first write) move, and returns those counts with the step that writes
 // both, for the route to run where it makes the write: queued on its ledger
 // (queueItemReferences), on the batch of a transaction that runs its write phase itself
-// (createStoredMessage), or as a batch of its own beside the statements of a route that writes
-// as it goes (store.RunWrite, the two delivery replies). The reconciliation is queued after the
-// index, so it settles the item's row of the forms queue after both deletes
-// (refs.Replacement.SettlingForms), and the excerpt of each block is cut in the plan, against this
-// server's deployment (refs.PlanItemIndex).
+// (createStoredMessage, writeBroadcast's copies), in the batch that inserts the row of a route
+// that writes as it goes (store.RunWrite, a session's reply to a message, insertSessionReply), or
+// as a batch of its own beside such a route's statements (the comment reply, replyComment). The
+// reconciliation is queued after the index, so it settles the item's row of the forms queue after
+// both deletes (refs.Replacement.SettlingForms), and the excerpt of each block is cut in the plan,
+// against this server's deployment (refs.PlanItemIndex). It answers what the index and the
+// citations state in the node and tuple store - the block nodes, their part_of and links, and the
+// item's mentions - which the route queues under the event it appends (graphstore.QueueCaused).
 //
 // Every read it makes runs under the context it is given, which its caller derives from the
 // ledger the write queues on (queueItemReferences, docs.Ledger.ReadContext), so a mention of a
 // row this transaction has queued resolves to that row (refs.Pending). A transaction that runs
 // its own write phase has queued no row and reads under the context it holds
-// (createStoredMessage, planCommentReply, planMessageReply).
+// (createStoredMessage, planBroadcastCopy, planCommentReply, planMessageReply).
 //
 // document is what the route hands over for an item whose row this transaction has not written,
 // so that no read of it can answer: the document its `#id`s resolve against
 // (refs.NewReaderInScope, planPendingItem). It is nil for a write of an item already stored,
-// which ScopeOf answers for itself. writer is the author the item's row records, or will record
-// for a row only queued, whom its short ids resolve for (refs.NewReader).
+// which ScopeOf answers for itself. scope is likewise the item's node as the route queued it
+// (refs.WrittenItem), and nil for an item whose node the store holds, which the plan reads.
+// writer is the author the item's row records, or will record for a row only queued, whom its
+// short ids resolve for (refs.NewReader).
 func (s *server) planItemWrite(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -233,14 +255,18 @@ func (s *server) planItemWrite(
 	kind refs.ItemKind,
 	itemID, body string,
 	document *refs.PendingDocument,
+	scope *refs.ItemScope,
 	at time.Time,
 	cites bool,
 	carried *refs.CarriedEdit,
 	edited func(found []text.Ref) []refs.Target,
-) (model.ReferenceChanges, docs.WriteStep, error) {
+) (model.ReferenceChanges, docs.WriteStep, graphstore.Uncaused, error) {
 	index, err := refs.ReadItemIndex(ctx, tx, kind, itemID)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
+	}
+	if scope != nil {
+		index = index.Scoped(*scope)
 	}
 	if edited != nil {
 		// The update that sets edited_at is queued, so the read above does not show it.
@@ -252,8 +278,9 @@ func (s *server) planItemWrite(
 	}
 	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, s.deps.ServerURL, at, located, carried)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
+	stated := indexing.Stated()
 	var replacement refs.Replacement
 	var changes model.ReferenceChanges
 	if cites {
@@ -262,18 +289,21 @@ func (s *server) planItemWrite(
 		if edited != nil {
 			moved = slices.Concat(moved, edited(found))
 		}
-		if replacement, changes, err = planFoundReferences(ctx, tx, string(kind), itemID, found, moved); err != nil {
-			return model.ReferenceChanges{}, nil, err
+		if replacement, changes, err = planFoundReferences(ctx, tx, string(kind), itemID, found, moved, scope, at); err != nil {
+			return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 		}
 		replacement = replacement.SettlingForms()
+		stated.Tuples = append(stated.Tuples, replacement.Cited().Tuples...)
 	}
 	return changes, func(b *store.WriteBatch) error {
-		indexing.Queue(b)
+		if err := indexing.Queue(b); err != nil {
+			return err
+		}
 		if cites {
 			replacement.Queue(b)
 		}
 		return nil
-	}, nil
+	}, stated, nil
 }
 
 // queueReplacement queues replacement's delete and insert in the transaction's write phase.
@@ -289,8 +319,28 @@ func queueReplacement(ledger *docs.Ledger, replacement refs.Replacement) error {
 // artifacts, which the reconciliation does not write, so it reads what it read after the write.
 // No document operation reconciles a comment's, an ask's or a message's references, so the
 // source's held edges are the stored ones.
-func planFoundReferences(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, moved []refs.Target) (refs.Replacement, model.ReferenceChanges, error) {
-	replacement, err := refs.PlanReplace(ctx, tx, fromKind, fromID, found, nil)
+//
+// A comment's, a message's or an ask's reconciliation is planned with the item's citations
+// (refs.PlanItemReplace), which every writer of an item's refs rows states, so no row is written
+// holding tuples_stored without the tuple it says the store holds: under scope, the item's node
+// as the calling write queued it (refs.WrittenItem), or, where scope is nil, the node the store
+// holds, read here (refs.ReadItemScope); its new rows and their citations are dated `at`, the
+// moment of the write. Any other source's is planned as refs.PlanReplace plans it.
+func planFoundReferences(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, moved []refs.Target, scope *refs.ItemScope, at time.Time) (refs.Replacement, model.ReferenceChanges, error) {
+	var replacement refs.Replacement
+	var err error
+	switch kind := refs.ItemKind(fromKind); kind {
+	case refs.ItemComment, refs.ItemMessage, refs.ItemAsk:
+		var itemScope refs.ItemScope
+		if scope != nil {
+			itemScope = *scope
+		} else if itemScope, err = refs.ReadItemScope(ctx, tx, kind, fromID); err != nil {
+			return refs.Replacement{}, model.ReferenceChanges{}, err
+		}
+		replacement, err = refs.PlanItemReplace(ctx, tx, itemScope, kind, fromID, found, at)
+	default:
+		replacement, err = refs.PlanReplace(ctx, tx, fromKind, fromID, found, nil)
+	}
 	if err != nil {
 		return refs.Replacement{}, model.ReferenceChanges{}, err
 	}

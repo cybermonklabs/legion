@@ -22,12 +22,12 @@ import type {
   AskSnooze,
   Comment,
   DisplayTree,
-  InboxRow,
   IssueDetails,
   Message,
   MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
+  OpenAskRow,
   Version,
 } from "../../api/types";
 import { CHANGED_BLOCK_CLASS, type ChangeBaseline, changeMarksAgainst } from "../doc/change-marks";
@@ -35,7 +35,7 @@ import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
+import { agentRow, plannerAgentRow, withConversation } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
@@ -287,7 +287,7 @@ function renderPane({
   createEditor,
   seed = () => {},
 }: {
-  ask: InboxRow;
+  ask: OpenAskRow;
   createEditor?: (inner: CreateEditor) => CreateEditor;
   seed?: (client: QueryClient) => void;
 }) {
@@ -312,7 +312,7 @@ function renderPane({
   const snoozeLiveness: (readonly [string, boolean])[] = [];
   /** Every registration a card's hand-on made, in order: `[askId, live]`. */
   const handOnLiveness: (readonly [string, boolean])[] = [];
-  const tree = (row: InboxRow) => (
+  const tree = (row: OpenAskRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
@@ -337,14 +337,14 @@ function renderPane({
     client,
     handOnLiveness,
     opened,
-    rerender: (row: InboxRow) => view.rerender(tree(row)),
+    rerender: (row: OpenAskRow) => view.rerender(tree(row)),
     runtime: fake,
     snoozeLiveness,
     view,
   };
 }
 
-function decisionAsk(overrides: Partial<InboxRow> = {}): InboxRow {
+function decisionAsk(overrides: Partial<OpenAskRow> = {}): OpenAskRow {
   return issueAsk({
     block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
     block_id: "ship_it",
@@ -357,8 +357,8 @@ function decisionAsk(overrides: Partial<InboxRow> = {}): InboxRow {
  *  a first request has none of, and `overrides` tells two requests on one document apart. */
 function approvalAsk(
   approved?: { at: string; by: { id: string; kind: "user" }; version: number },
-  overrides: Partial<InboxRow> = {}
-): InboxRow {
+  overrides: Partial<OpenAskRow> = {}
+): OpenAskRow {
   return issueAsk({
     approval: {
       approved,
@@ -679,7 +679,7 @@ test("an approval that falls back to the card draws the question once, as the ca
 // The one scroller is the column's, not the row's: it outlives every question the reader steps
 // through. These four rows pin where an approval request leaves it.
 
-const SECOND_REQUEST: Partial<InboxRow> = {
+const SECOND_REQUEST: Partial<OpenAskRow> = {
   id: "ask-b",
   question: "Approve spec.md at version 4, after the rewrite?",
 };
@@ -721,7 +721,7 @@ test("a second approval request opens the column at its own start, wherever the 
 
 /** A request on a document this harness cannot read, so the column falls back to its card and
  *  writes nothing: what the reader steps through on the way back to the first request. */
-const UNREADABLE_REQUEST: Partial<InboxRow> = {
+const UNREADABLE_REQUEST: Partial<OpenAskRow> = {
   approval: {
     approved: undefined,
     artifact_id: "artifact-2",
@@ -1163,7 +1163,7 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     asked_of: "alice",
     issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
   });
-  const held = Promise.withResolvers<InboxRow>();
+  const held = Promise.withResolvers<OpenAskRow>();
   const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
   // The control reads the people as the reader reaches for it, bob among them.
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
@@ -1249,14 +1249,14 @@ const DESIGN_NOTES_NAMED: AskAnchorArtifact = {
 
 /** A question in the project document `design-notes`: it has no issue, and `askIssueKey` reads
  *  `issue` before `issue_key`, so both go. */
-const IN_DESIGN_NOTES: Partial<InboxRow> = {
+const IN_DESIGN_NOTES: Partial<OpenAskRow> = {
   document: { name: "Design notes", project: "CORE", slug: "design-notes" },
   issue: undefined,
   issue_key: null,
 };
 
 /** The decision block `ship_it` in `talk.md`. */
-function talkDecisionAsk(): InboxRow {
+function talkDecisionAsk(): OpenAskRow {
   return decisionAsk({ block_artifact: { id: "artifact-2", primary: false, slug: "talk-md" } });
 }
 
@@ -1265,8 +1265,8 @@ function talkDecisionAsk(): InboxRow {
 function documentApprovalAsk(
   artifactId: string,
   named: AskAnchorArtifact,
-  overrides: Partial<InboxRow> = {}
-): InboxRow {
+  overrides: Partial<OpenAskRow> = {}
+): OpenAskRow {
   return approvalAsk(undefined, {
     approval: {
       artifact_id: artifactId,
@@ -1281,7 +1281,7 @@ function documentApprovalAsk(
 }
 
 /** The Reply row of `ask`'s thread on `CORE-1`. */
-function askThread(ask: InboxRow): MyReplyThreadRow {
+function askThread(ask: OpenAskRow): MyReplyThreadRow {
   return threadRow({
     issue: { key: "CORE-1", title: "Fix the thing" },
     kind: "ask",
@@ -2030,10 +2030,12 @@ test("an issue message conversation reads the issue's messages", async () => {
   }
 });
 
-test("an Agent row shows the session's name and reads that session's messages", async () => {
-  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([]);
+test("an Agent row shows the session's name and draws the conversation its row carries, reading none", async () => {
+  const getAgentConversation = spyOn(api, "getAgentConversation").mockResolvedValue([]);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
-  const { view } = renderThread(plannerAgentRow());
+  const { view } = renderThread(
+    withConversation(plannerAgentRow(), plannerExchange("message-1", "reply-1"))
+  );
   try {
     expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "agent");
     const pane = screen.getByTestId("inbox-pane");
@@ -2044,10 +2046,13 @@ test("an Agent row shows the session's name and reads that session's messages", 
       "href",
       "/agents/planner/live"
     );
-    await waitFor(() => expect(listAgentMessages).toHaveBeenCalledWith("planner"));
+    await waitFor(() =>
+      expect(pane.querySelector('[data-inbox-thread-turn="reply-1"]')).not.toBeNull()
+    );
+    expect(getAgentConversation).not.toHaveBeenCalled();
   } finally {
     view.unmount();
-    listAgentMessages.mockRestore();
+    getAgentConversation.mockRestore();
     listAgents.mockRestore();
   }
 });
@@ -2368,16 +2373,12 @@ function plannerExchange(id: string, reply: string): MessageRead {
 // there - and what that box sends is its own reply, under its own thread's newest message.
 test("the next Agent thread of a session shows nothing of a reply refused in the thread before it", async () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([
-    plannerExchange("message-1", "reply-1"),
-    plannerExchange("message-2", "reply-2"),
-  ]);
   const createAgentMessage = spyOn(api, "createAgentMessage")
     .mockRejectedValueOnce(
       new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
     )
     .mockResolvedValue({} as never);
-  const first = plannerAgentRow();
+  const first = withConversation(plannerAgentRow(), plannerExchange("message-1", "reply-1"));
   const { rerender, view } = renderThread(first);
   try {
     const user = userEvent.setup();
@@ -2388,12 +2389,15 @@ test("the next Agent thread of a session shows nothing of a reply refused in the
     await within(pane).findByText("Couldn't send — Dispatch refused the message");
 
     rerender(
-      agentRow("message-2", {
-        ...first,
-        reply: { ...first.reply, id: "reply-2" },
-        thread_id: "message-2",
-        unread_reply_ids: ["reply-2"],
-      })
+      withConversation(
+        agentRow("message-2", {
+          ...first,
+          reply: { ...first.reply, id: "reply-2" },
+          thread_id: "message-2",
+          unread_reply_ids: ["reply-2"],
+        }),
+        plannerExchange("message-2", "reply-2")
+      )
     );
     expect(pane.querySelector('[data-inbox-thread="message-2"]')).not.toBeNull();
     const next = within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
@@ -2418,7 +2422,6 @@ test("the next Agent thread of a session shows nothing of a reply refused in the
   } finally {
     view.unmount();
     listAgents.mockRestore();
-    listAgentMessages.mockRestore();
     createAgentMessage.mockRestore();
   }
 });

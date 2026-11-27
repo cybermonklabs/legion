@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -30,6 +31,14 @@ import (
 // PlanItemIfOwed and ItemRepair.Write back to back, the repair's statements run at once as a
 // batch of their own; a transaction that decides before it writes plans the repair and queues it
 // in its write phase, reading the blocks it leaves from the plan (ItemRepair.Block).
+//
+// What the index states in the node and tuple store - the block nodes, their part_of and links,
+// and the item's citations - is queued at the sentinel (graphstore.NoEvent, ItemRepair.Queue):
+// an owed index is of text an earlier write already appended an event for, and no event records
+// this pass, whichever transaction it runs in. For the same reason it is dated by the time that
+// text was written (writtenAt: a comment's or a message's coalesce(edited_at, created_at)), and
+// not by this pass's clock: the facts are the item's text's, not the pass's
+// (IndexOwedItemBlocks).
 func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serverURL string) (bool, error) {
 	repair, err := PlanItemIfOwed(ctx, tx, kind, itemID, serverURL)
 	if err != nil {
@@ -111,7 +120,7 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 	if !mentions {
 		return repair, nil
 	}
-	if repair.refs, err = PlanReplace(ctx, q, string(kind), itemID, text.Refs(located), &writtenAt); err != nil {
+	if repair.refs, err = PlanItemReplace(ctx, q, index.scope, kind, itemID, text.Refs(located), writtenAt); err != nil {
 		return ItemRepair{}, fmt.Errorf("index %s %s: %w", kind, itemID, err)
 	}
 	repair.refs = repair.refs.SettlingForms()
@@ -125,15 +134,22 @@ func (r ItemRepair) Owed() bool {
 
 // Queue queues the repair's writes on a write phase's batch: the item's blocks and their
 // mentions, then, for a comment, an issue message or an ask, its own references, whose settle of
-// the queues follows both deletes.
-func (r ItemRepair) Queue(b *store.WriteBatch) {
+// the queues follows both deletes, and last what the two state in the node and tuple store, at the
+// sentinel (graphstore.NoEvent), since no event records an owed index (IndexItemIfOwed).
+func (r ItemRepair) Queue(b *store.WriteBatch) error {
 	if !r.owed {
-		return
+		return nil
 	}
-	r.indexing.Queue(b)
+	if err := r.indexing.Queue(b); err != nil {
+		return err
+	}
+	stated := r.indexing.Stated()
 	if r.mentions {
 		r.refs.Queue(b)
+		stated.Tuples = append(stated.Tuples, r.refs.Cited().Tuples...)
 	}
+	graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+	return nil
 }
 
 // Write runs the repair's writes at once, as a batch of their own (Queue, store.RunWrite), for a
@@ -144,10 +160,7 @@ func (r ItemRepair) Write(ctx context.Context, tx pgx.Tx) error {
 	if !r.owed {
 		return nil
 	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		r.Queue(b)
-		return nil
-	}); err != nil {
+	if err := store.RunWrite(ctx, tx, r.Queue); err != nil {
 		return fmt.Errorf("index the blocks of %s %s: %w", r.kind, r.itemID, err)
 	}
 	return nil
@@ -220,9 +233,37 @@ func ReplyBlocks(ctx context.Context, q Queryer, who model.Actor, kind ItemKind,
 	if len(replyIDs) == 0 {
 		return blocks, nil
 	}
+	query, err := ReplyBlocksStatement(kind)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, query, replyIDs, VisibilityArg(who))
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks %s replies name: %w", kind, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		replyID, block, err := ScanReplyBlock(rows, kind)
+		if err != nil {
+			return nil, err
+		}
+		blocks[replyID] = block
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the blocks %s replies name: %w", kind, err)
+	}
+	return blocks, nil
+}
+
+// ReplyBlocksStatement is the statement ReplyBlocks reads the blocks of kind its replies name
+// with: $1 the reply ids (uuid[]) and $2 the acting credential (VisibilityArg), one row per reply
+// whose block who may see, read by ScanReplyBlock. It is exported for a reader that splices it
+// into a statement of its own over replies of its own (api's GET /api/v1/me/inbox). A kind that
+// is no item kind is refused.
+func ReplyBlocksStatement(kind ItemKind) (string, error) {
 	tables, err := kind.tables()
 	if err != nil {
-		return nil, fmt.Errorf("read reply blocks of %s: not an item kind", kind)
+		return "", fmt.Errorf("read reply blocks of %s: not an item kind", kind)
 	}
 	replies, _ := repliesFrom(kind).tables()
 	owner, joins := `coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, '')`, `
@@ -231,36 +272,30 @@ func ReplyBlocks(ctx context.Context, q Queryer, who model.Actor, kind ItemKind,
 	if repliesFrom(kind) == ItemMessage {
 		owner, joins = `'', ''`, ``
 	}
-	query := `
+	return `
 		select r.id::text, b.node_id, b.block_id, b.excerpt, b.position is null, b.` + tables.item + `::text,
 		       r.issue_key, ` + owner + `, ` + kind.postMarkColumns("post") + `
 		from ` + replies.items + ` r
 		join ` + tables.blocks + ` b on b.node_id = r.replies_to_block
 		join ` + tables.items + ` post on post.id = b.` + tables.item + joins + `
 		where r.id = any($1::uuid[]) and r.replies_to_block is not null
-		  and ` + VisibleKind(string(kind), "b."+tables.item+"::text", "$2")
-	rows, err := q.Query(ctx, query, replyIDs, VisibilityArg(who))
-	if err != nil {
-		return nil, fmt.Errorf("read the blocks %s replies name: %w", kind, err)
+		  and ` + VisibleKind(string(kind), "b."+tables.item+"::text", "$2"), nil
+}
+
+// ScanReplyBlock reads one row of ReplyBlocksStatement(kind): the reply's id and the block it
+// names, its reference addressed under the reply's owner, with the marks of the post it belongs to.
+func ScanReplyBlock(row pgx.Row, kind ItemKind) (replyID string, block *model.ReplyBlock, err error) {
+	var itemID, project, slug string
+	var issueKey *string
+	var marks postMarks
+	block = &model.ReplyBlock{}
+	if err := row.Scan(append([]any{&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug}, marks.targets()...)...); err != nil {
+		return "", nil, fmt.Errorf("scan the block a %s reply names: %w", kind, err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var replyID, itemID, project, slug string
-		var issueKey *string
-		var marks postMarks
-		block := model.ReplyBlock{}
-		if err := rows.Scan(append([]any{&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug}, marks.targets()...)...); err != nil {
-			return nil, fmt.Errorf("scan the block a %s reply names: %w", kind, err)
-		}
-		if block.DeletedAt, block.DeletedBy, err = marks.deleted(); err != nil {
-			return nil, fmt.Errorf("the %s block %s: %w", kind, block.Node, err)
-		}
-		block.EditedAt = marks.editedAt
-		block.Ref = BlockRef(itemRef(string(kind), issueKey, project, slug, itemID), block.BlockID)
-		blocks[replyID] = &block
+	if block.DeletedAt, block.DeletedBy, err = marks.deleted(); err != nil {
+		return "", nil, fmt.Errorf("the %s block %s: %w", kind, block.Node, err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the blocks %s replies name: %w", kind, err)
-	}
-	return blocks, nil
+	block.EditedAt = marks.editedAt
+	block.Ref = ItemBlockRef(kind, issueKey, project, slug, itemID, block.BlockID)
+	return replyID, block, nil
 }

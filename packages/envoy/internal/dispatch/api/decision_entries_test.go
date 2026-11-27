@@ -1428,6 +1428,34 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 	notListed("the version that holds no typed block", d1)
 }
 
+// The Decisions entry of an answered ask carries, beside its `selected`, a `selected_trees` list
+// holding the tree of the label at the same index, under `Dispatch-Trees: 1` and only there, as
+// every read of an answer does (TestEveryReadOfAnAnswerCarriesTheTreeOfEachLabelItChose): the
+// Decisions tab draws each chosen label from it. The route table's 200 schema declares the list.
+func TestADecisionsEntryCarriesTheTreeOfEachLabelItsAskChose(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, askID := chosenLabelAsk(t)
+	target := "/api/v1/issues/" + issueKey + "/decisions"
+	raw, held := valueAt(t, treesRequest(t, handler, target, false), "entries")
+	type listed struct {
+		Node decisionEntryNode `json:"node"`
+	}
+	var entries []listed
+	if !held || json.Unmarshal(raw, &entries) != nil {
+		t.Fatalf("GET %s carries no entries list: %s", target, raw)
+	}
+	at := slices.IndexFunc(entries, func(entry listed) bool {
+		return entry.Node.Kind == graphstore.KindAsk && entry.Node.ID == askID
+	})
+	if at < 0 {
+		t.Fatalf("GET %s lists no entry of ask %s: %s", target, askID, raw)
+	}
+	requireChosenLabelTrees(t, handler, target, "entries."+fmt.Sprint(at))
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	requireTreeInAnswerSchema(t, document, "/api/v1/issues/{key}/decisions", "entries.0.selected_trees.0")
+}
+
 // staleFixture is an issue whose spec holds the requirements r1 and r2, and the agent's decision d1
 // in choices.md, which ties r1 as its words are first written. A link's stale compares text sums
 // (decisionread's markStale): the decision's own words as they stand against those its document

@@ -168,7 +168,11 @@ dispatch, dev-oidc-issuer and requestseed; a second build names the broker's, fr
 rather than left to the runner's default, so each binary is static by construction: the
 shard and alone jobs run them in a container of this repository's own image, and a
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
-$RUNNER_TEMP, so the checkout stays clean.
+$RUNNER_TEMP, so the checkout stays clean. The server is stamped with this checkout's
+commit, as e2e/run-server.sh stamps the build it makes when no binary is given (its
+comment says why a server must carry one). -ldflags reaches every binary of the build,
+and -X sets main.buildCommit only where a main package declares it: cmd/dispatch alone,
+since the linker passes over a name a binary does not have.
 
 `-ldflags='-s -w'` leaves out the symbol table and the DWARF debug information, which no
 leg reads: a panic's stack trace still names each function, file and line (Go keeps its own
@@ -984,7 +988,9 @@ in the "Browser-test dispatch dashboard against two server processes" step makes
 
 run-server.sh builds it too, inside the harness's boot wait for each server
 (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
-current and start in seconds.
+current and start in seconds. It is stamped with this checkout's commit, as run-server.sh
+stamps its own build (whose comment says why a server must carry one), so that build finds
+it current rather than linking again.
 
 ## Why the Chromium install takes no apt and no cache, and what its budget is
 
@@ -1106,7 +1112,8 @@ build again (packages/dispatch's build:contracts).
 ## Why the embedder job's server build carries the lane in its name
 
 run-server.sh builds it too, inside the harness's boot wait; built here, the server
-finds it current and starts in seconds. The name carries the lane because
+finds it current and starts in seconds, stamped with this checkout's commit as the
+multiprocess job's step of the same build is. The name carries the lane because
 .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
 

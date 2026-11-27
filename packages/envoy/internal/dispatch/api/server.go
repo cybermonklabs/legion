@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -188,6 +189,13 @@ type Deps struct {
 	// stall warning sees it inside its own patience.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
+	// HorizonDB is the database the event horizon observes through (horizon): its observations,
+	// the reads beside them, its stall diagnosis and its write of the horizon it proved. Nil is
+	// the store's horizon pool (store.Pool.Horizon), with its fallback to the shared pool, which
+	// every deployment observes through: neither routes.BuildAppContext nor cmd/dispatch sets it.
+	// Only this package's tests set another, so a test that counts a request's statements can tell
+	// the horizon's own from the rest.
+	HorizonDB events.HorizonDB
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -233,11 +241,13 @@ type Deps struct {
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
-	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
-	// is hashed into every list validator (listETag), so two builds never answer one ETag for
-	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
-	// it empty, which is one identity for every such build and is why a deploy is what it is
-	// for rather than a key anything depends on being unique.
+	// its own `buildCommit`: the image build stamps it (docker/Dockerfile's LEGION_COMMIT), and so
+	// do the e2e harness's build (packages/dispatch/e2e/run-server.sh) and the CI steps that build
+	// that binary ahead of it, each with its checkout's commit. It is hashed into every list
+	// validator (listETag), so two builds never answer one ETag for two bodies; a build nothing
+	// stamped - every `go test` binary, a devbox `go run` - leaves it empty, which is one identity
+	// for every such build and is why a deploy is what it is for rather than a key anything
+	// depends on being unique.
 	BuildCommit string
 	// Clock is the clock these timers of this package run on: the heartbeat on which a socket
 	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
@@ -663,6 +673,11 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// failBetween is the set of writers whose next write the fail-between test hook armed
+	// (PUT /api/v1/writes/_test/fail-between/{writer}), which every request this server serves
+	// carries (routeHandler), so each writer's failpoint.Planned finds it; nil on a server without
+	// TestHooksEnabled, whose requests carry none.
+	failBetween *failpoint.Armed
 	// newIssueOverride is what the new-issue test hook last set
 	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
@@ -897,6 +912,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
 	}
+	if deps.TestHooksEnabled {
+		s.failBetween = failpoint.NewArmed()
+	}
 	routes := s.routes()
 	if undecidable := s.undecidableWrites(routes); len(undecidable) > 0 {
 		// A mutating row the project check cannot decide would serve a project-scoped caller a
@@ -1024,6 +1042,14 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+	}
+	if s.failBetween != nil {
+		// Every request carries the fail-between set, so the writer it reaches finds whether a
+		// test armed it (failpoint.Planned); a server without test hooks carries none.
+		armed, inner := s.failBetween, handler
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))
+		}
 	}
 	handler = s.decideBrokerToken(trackTransactions(handler))
 	if route.Method+" "+route.Pattern == statusChangeRoute {
@@ -2165,13 +2191,24 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 // (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
 // it paid for the event alone.
 func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	return s.appendEventThen(ctx, tx, event, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		return nil
+	})
+}
+
+// appendEventThen is appendEvent for an event the statements then queues follow under, in the
+// same batch: the event's append, then each statement then queues, which names the event's id as
+// the id sequence left it (graphstore.LatestEvent) and runs as the batch reaches it. A route that
+// writes as it goes sends the event and everything it causes as one round trip, so the statements
+// it causes run inside the transaction's id window without a round trip of their own between them.
+func (s *server) appendEventThen(ctx context.Context, tx pgx.Tx, event model.Event, then func(*store.WriteBatch) error) (model.Event, error) {
 	var appended model.Event
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
 			return err
 		}
-		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
-		return nil
+		return then(b)
 	})
 	return appended, err
 }

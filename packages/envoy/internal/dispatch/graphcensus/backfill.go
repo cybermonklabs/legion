@@ -148,6 +148,21 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 			return report, errors.Join(moved, err)
 		}
 	}
+	// Every kind the one inbox moves but the identity mentions of a text, after every pass above
+	// has written the nodes and the authors its facts hang from (backfillInbox): the messages, the
+	// comment pointers, the delivery routes a comment names, the body blocks of a comment, a message
+	// and an ask with their links and the item's citations, the delivery attempts, what an ask an
+	// older build created or answered and a decline owes, and the six read-state tables. A row the
+	// object pass left in another project holds them back no more than it holds back the asks, and
+	// the run answers it after them.
+	done, err := backfillInbox(ctx, database)
+	report.Kinds = append(report.Kinds, done...)
+	for _, kind := range done {
+		writeKindBackfill(out, kind)
+	}
+	if err != nil {
+		return report, errors.Join(moved, err)
+	}
 	return report, moved
 }
 

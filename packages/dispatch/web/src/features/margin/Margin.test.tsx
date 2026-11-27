@@ -12,10 +12,12 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
-import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
+import { openAsksQuery } from "../../api/queries";
+import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails, OpenAskRow } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -203,7 +205,7 @@ test("clicking a document mark opens its thread in the margin and stays on the d
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
@@ -273,7 +275,7 @@ test("the margin of a document opened at its current name, not its slug, lists t
     ...issue,
     artifacts: [...(issue.artifacts ?? []), notes],
   });
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment, notesComment]);
@@ -308,7 +310,7 @@ test("focusItemForMark opens the matching thread in the compact sheet", async ()
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
@@ -352,7 +354,7 @@ test("Margin hides an open ask composer when its issue closes", async () => {
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -399,18 +401,18 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
-  // The send refetches the issue, its inbox and its comments; each answers the seeded set, and
+  // The send refetches the issue, the open asks and its comments; each answers the seeded set, and
   // the refetch comes after the close, so the issue it answers is the closed one.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issue,
     closed_at: "2026-09-09T01:00:00Z",
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -448,7 +450,7 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
     view.unmount();
     createComment.mockRestore();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listComments.mockRestore();
   }
 });
@@ -463,7 +465,7 @@ test("Margin hides an open composer when navigating to a different artifact", as
   const getIssue = spyOn(api, "getIssue").mockImplementation(async (key) =>
     key === "CORE-2" ? secondIssue : issue
   );
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
@@ -492,7 +494,7 @@ test("Margin hides an open composer when navigating to a different artifact", as
   } finally {
     view.unmount();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
     getMyState.mockRestore();
     listComments.mockRestore();
@@ -508,7 +510,7 @@ test("Margin surfaces and retries a failed fetch for the issue's asks", async ()
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
   const getAsk = answerAskThreads(anchoredAsk);
@@ -557,15 +559,15 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
     state: "answered",
   };
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], [unanchoredAsk]);
+  queryClient.setQueryData(openAsksQuery().queryKey, [unanchoredAsk] as OpenAskRow[]);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  // The answer refetches the issue, its asks and the inbox. The inbox lists open asks, and this
-  // one has just been answered, so it is no longer in it.
+  // The answer refetches the issue, its asks and the open asks. The read of the open asks lists
+  // open asks, and this one has just been answered, so it is no longer in it.
   const getAsk = answerAskThreads(unanchoredAsk);
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
   const view = render(
@@ -606,7 +608,7 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
     answerAsk.mockRestore();
     getAsk.mockRestore();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
   }
 });
@@ -633,7 +635,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     state: "answered",
   };
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], [anchoredAsk]);
+  queryClient.setQueryData(openAsksQuery().queryKey, [anchoredAsk] as OpenAskRow[]);
   queryClient.setQueryData(["asks", issue.key], [anchoredAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -641,8 +643,8 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   const refetched = Promise.withResolvers<IssueAskRow[]>();
   const getAsk = answerAskThreads(anchoredAsk);
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  // The inbox lists open asks, and this one has just been answered.
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  // The read of the open asks lists open asks, and this one has just been answered.
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockImplementation(() => refetched.promise);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -685,7 +687,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     listIssueAsks.mockRestore();
     getAsk.mockRestore();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -703,7 +705,7 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
     state: "answered",
   };
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], [anchoredAsk]);
+  queryClient.setQueryData(openAsksQuery().queryKey, [anchoredAsk] as OpenAskRow[]);
   queryClient.setQueryData(["asks", issue.key], [anchoredAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -721,8 +723,8 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
     replies: [],
   });
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  // The inbox lists open asks, and this one has just been answered.
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  // The read of the open asks lists open asks, and this one has just been answered.
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([askRow(answeredAsk)]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -763,7 +765,7 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
     getAsk.mockRestore();
     listIssueAsks.mockRestore();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -775,7 +777,7 @@ test("Margin leaves an unanchored root out of document review", async () => {
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [unanchoredRootComment]);
@@ -873,7 +875,7 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
   // This viewer's tab never had either ask open in its inbox or query cache - unlike a tab
   // that was present when they were created, both queries start empty.
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const getAsk = answerAskThreads(answeredAsk, openAsk);
@@ -935,7 +937,7 @@ test("a reply to an ask renders exactly once in the margin, not also as a standa
     ...commentDeliveryFields(),
   };
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], [anchoredAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [askReply]);
@@ -981,14 +983,14 @@ test("composeForMark opens the composer with the mark anchor and resolves when i
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
-  // The send refetches the issue, its inbox and its comments; each answers the seeded set.
+  // The send refetches the issue, the open asks and its comments; each answers the seeded set.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -1017,7 +1019,7 @@ test("composeForMark opens the composer with the mark anchor and resolves when i
     view.unmount();
     createComment.mockRestore();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listComments.mockRestore();
   }
 });
@@ -1031,7 +1033,7 @@ test("composeForMark rejects when the composer is dismissed unsaved", async () =
     },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -1144,15 +1146,15 @@ function renderMarginWithBridge(
   queryClient = marginQueryClient()
 ) {
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  // A send from this margin refetches the issue, its inbox and its comments; each answers the
+  // A send from this margin refetches the issue, the open asks and its comments; each answers the
   // seeded set, so the margin stays as the test set it up.
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
     spyOn(api, "listComments").mockResolvedValue([]),
   ];
   const view = render(
@@ -1440,7 +1442,7 @@ test("a compose after leaving a document mid-send opens, and that send's landing
   const getIssue = spyOn(api, "getIssue").mockImplementation(async (key) =>
     key === "CORE-2" ? secondIssue : issue
   );
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
@@ -1490,7 +1492,7 @@ test("a compose after leaving a document mid-send opens, and that send's landing
   } finally {
     view.unmount();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
     getMyState.mockRestore();
     listComments.mockRestore();
@@ -1528,7 +1530,7 @@ test("a compose left mid-send keeps its draft, its refusal and its mark for the 
   const getIssue = spyOn(api, "getIssue").mockImplementation(async (key) =>
     key === "CORE-2" ? secondIssue : issue
   );
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
@@ -1579,7 +1581,7 @@ test("a compose left mid-send keeps its draft, its refusal and its mark for the 
   } finally {
     view.unmount();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
     getMyState.mockRestore();
     listComments.mockRestore();
@@ -1606,7 +1608,7 @@ test("a newer compose on a document whose send is out waits on it, after visits 
   const getIssue = spyOn(api, "getIssue").mockImplementation(async (key) =>
     key === "CORE-2" ? secondIssue : issue
   );
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
@@ -1692,7 +1694,7 @@ test("a newer compose on a document whose send is out waits on it, after visits 
   } finally {
     view.unmount();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
     getMyState.mockRestore();
     listComments.mockRestore();
@@ -1722,7 +1724,7 @@ test("a compose on another document leaves the first open with its mark, and eac
   const getIssue = spyOn(api, "getIssue").mockImplementation(async (key) =>
     key === "CORE-2" ? secondIssue : issue
   );
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
@@ -1794,7 +1796,7 @@ test("a compose on another document leaves the first open with its mark, and eac
   } finally {
     view.unmount();
     getIssue.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listIssueAsks.mockRestore();
     getMyState.mockRestore();
     listComments.mockRestore();
@@ -2089,7 +2091,7 @@ test("Margin links an orphaned ask to its original document version", async () =
     },
   };
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], [orphanedAsk]);
+  queryClient.setQueryData(openAsksQuery().queryKey, [orphanedAsk] as OpenAskRow[]);
   queryClient.setQueryData(["asks", issue.key], [orphanedAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -2117,7 +2119,7 @@ test("the desktop margin takes no width on a route that has no margin", async ()
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["user-state"], {});
   // This margin's issue is never seeded: it reads the issue, its asks and its comments, and
   // each of them is empty here.
@@ -2194,7 +2196,7 @@ test("desktop margin resize handle supports keyboard adjustments and reset", asy
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -2269,7 +2271,7 @@ test("margin keeps an ask draft through parent, width, and viewport layout updat
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
@@ -2410,7 +2412,7 @@ function renderDocumentMargin(comments: Comment[]) {
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   queryClient.setQueryData(
     ["artifact-ref", `${documentArtifact.project}/${documentArtifact.slug}`],
@@ -2426,9 +2428,9 @@ function renderDocumentMargin(comments: Comment[]) {
     indexed: false,
     item: graphNode({ id, kind: "comment" }),
   }));
-  // A save refetches the margin's own reads: the document's asks and the viewer's inbox, both
+  // A save refetches the margin's own reads: the document's asks and the open asks, both
   // empty here as the cache was seeded.
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listOpenAsks = answerOpenAsks([]);
   const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
   const view = render(
     <MemoryRouter
@@ -2447,7 +2449,7 @@ function renderDocumentMargin(comments: Comment[]) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view };
+  return { commentBlocks, listOpenAsks, listArtifactAsks, listArtifactComments, view };
 }
 
 async function expandThreadCard(user: UserEvent, card: HTMLElement): Promise<void> {
@@ -2477,7 +2479,7 @@ test("Margin keeps sibling edit controls hidden while an owner save is pending",
   const sibling = documentComment("sibling-comment", "Sibling comment");
   const save = Promise.withResolvers<Comment>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
-  const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
+  const { commentBlocks, listOpenAsks, listArtifactAsks, listArtifactComments, view } =
     renderDocumentMargin([saving, sibling]);
 
   try {
@@ -2513,7 +2515,7 @@ test("Margin keeps sibling edit controls hidden while an owner save is pending",
     editComment.mockRestore();
     listArtifactComments.mockRestore();
     commentBlocks.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listArtifactAsks.mockRestore();
   }
 });
@@ -2524,7 +2526,7 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
   const reply = documentComment("reply-comment", "Reply comment", root.id);
   const save = Promise.withResolvers<Comment>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
-  const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
+  const { commentBlocks, listOpenAsks, listArtifactAsks, listArtifactComments, view } =
     renderDocumentMargin([root, reply]);
 
   try {
@@ -2562,7 +2564,7 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
     editComment.mockRestore();
     listArtifactComments.mockRestore();
     commentBlocks.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     listArtifactAsks.mockRestore();
   }
 });

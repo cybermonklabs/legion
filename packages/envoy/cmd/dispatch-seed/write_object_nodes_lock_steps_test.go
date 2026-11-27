@@ -24,8 +24,9 @@ const (
 // TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder holds the seed's writes of its issues', its
 // asks' and its messages' nodes to the lock order written on api/inbox_read.go's
 // markInboxReadThreads, against a real Postgres. writeIssues writes a batch's issue nodes through
-// graphstore.Write and then copies the batch's issues rows; writeAsks and writeMessages write the
-// nodes of an ask batch and of a message batch the same way, before the batch's
+// graphstore.Write and then copies the batch's issues rows; writeAsks writes the nodes of an ask
+// batch the same way, and writeMessages writes a message batch's nodes with the facts it states
+// of them in a graphstore.Write of its own, each before the batch's
 // first asks or messages row. The issue batch takes no owner lock; an item batch takes the owner
 // lock of each of its items first, in owner key order, since the window write after its rows takes
 // each item's (refs.WriteItemWindows). Each batch writes its nodes in ascending (kind, id),
@@ -138,7 +139,7 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 			}
 		}
 		f.run.plan.messages = []messagePlan{message(2), message(1)}
-		// The first batch of messages writes the one mention of a session (writeSessionMention).
+		// The first message's body names the one session the seed mentions (messageMention).
 		f.run.plan.sessions = []string{"seed-lock-session"}
 		nodes := make([]graphstore.Node, len(f.run.plan.messages))
 		for index, planned := range f.run.plan.messages {

@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Agent, TmuxPlace, UserAgentStates } from "../../api/types";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { MachinePage } from "./MachinePage";
 
 const HOST = "sand-devbox";
@@ -51,8 +52,9 @@ function id(letter: string): string {
 
 function renderMachine(agents: readonly Agent[], host = HOST, agentState: UserAgentStates = {}) {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
-  // The two reads the page takes its `Needs you` count from, which the shell already makes.
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  // The reads the page takes its `Needs you` count from, which every page already makes: the open
+  // asks, which the margin reads, and who is signed in, which the shell reads.
+  const listOpenAsks = answerOpenAsks([]);
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -70,7 +72,7 @@ function renderMachine(agents: readonly Agent[], host = HOST, agentState: UserAg
   return {
     close: () => {
       view.unmount();
-      for (const spy of [listAgents, getInbox, whoAmI, getMyAgentState]) {
+      for (const spy of [listAgents, listOpenAsks, whoAmI, getMyAgentState]) {
         spy.mockRestore();
       }
     },

@@ -3,7 +3,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { BATCH_WINDOW_MS } from "../web/src/api/event-feed";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { setLiveSessions } from "./agents";
-import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  getMeInbox,
+  listOpenAsks,
+  patchIssue,
+} from "./api";
 import { recordClipboard } from "./clipboard";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import { inboxList, inboxPane, paneScroller, selectedRow, selectRow } from "./inbox-pane";
@@ -25,6 +33,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
+import { inboxRead } from "./pick-writes";
 import { hasReadingPane } from "./reading-pane";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -299,11 +308,11 @@ test.describe("inbox selection", () => {
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
-      // Every read of the Inbox the page sends, and every snooze event of alice's its live feed
-      // carries: a snooze's event names no ask.
+      // Every read of the reader's own rows the page sends, the one read's `inbox` state, and
+      // every snooze event of alice's its live feed carries: a snooze's event names no ask.
       const inboxReads: string[] = [];
       page.on("request", (request) => {
-        if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
+        if (request.method() === "GET" && inboxRead(new URL(request.url()))) {
           inboxReads.push(request.url());
         }
       });
@@ -467,7 +476,7 @@ test.describe("inbox selection", () => {
     const second = await createIssue({ project: "CORE", title: "Still open" });
     const live = await createAsk(second.key, { question: "Ship it?" }, session);
     const moment = async (askId: string) =>
-      (await getInbox()).find((row) => row.id === askId)?.snoozed_until ?? null;
+      (await listOpenAsks()).find((row) => row.id === askId)?.snoozed_until ?? null;
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -552,19 +561,19 @@ test.describe("inbox selection", () => {
     }
   });
 
-  // The ordinal is only usable if it counts the way the bands read: top to bottom. The server
-  // orders by whose turn it is and how recent the activity is; `Later` is the SPA's own band and
-  // sits last whatever the server said, so a snoozed ask is where the two orders come apart.
+  // The ordinal is only usable if it counts the way the bands read: top to bottom. The one read
+  // lists the reader's rows newest activity first; `Later` is the SPA's own band and sits last
+  // whatever the server said, so a snoozed ask is where the two orders come apart.
   test("ask positions follow the order the bands show them, not the server's", async ({
     browser,
   }) => {
     await createProject({ key: "CORE", name: "Core" });
     const issue = await createIssue({ project: "CORE", title: "Two asks, two bands" });
-    const deferred = await createAsk(issue.key, { question: "Alpha decision" }, session);
     const handedBack = await createAsk(issue.key, { question: "Beta decision" }, session);
-    // A human reply hands Beta's turn to the agents, so the server lists Alpha - still the
-    // reader's turn - first.
+    // A human reply hands Beta's turn to the agents; Alpha, asked after it, is the newest
+    // activity, so the one read lists it - still the reader's turn - first.
     await createComment(issue.key, { ask_id: handedBack.id, body: "Looking into it." });
+    const deferred = await createAsk(issue.key, { question: "Alpha decision" }, session);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -576,8 +585,11 @@ test.describe("inbox selection", () => {
       await page.getByRole("button", { name: /^Later \(1\)/ }).click();
       await expect(rows).toHaveCount(2);
 
-      // The precondition this test exists for: the server's order is the opposite of the bands'.
-      const served = (await getInbox({ login: "alice" })).map((row) => row.id);
+      // The precondition this test exists for: the one read's order is the opposite of the bands'.
+      const answer = await getMeInbox({ state: "inbox" }, { login: "alice" });
+      const served = (answer.entries ?? []).flatMap((entry) =>
+        entry.ask === undefined ? [] : [entry.ask.id]
+      );
       expect(served).toEqual([deferred.id, handedBack.id]);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", handedBack.id);
       await expect(rows.nth(1)).toHaveAttribute("data-inbox-row", deferred.id);

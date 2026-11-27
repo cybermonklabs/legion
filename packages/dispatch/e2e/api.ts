@@ -2,7 +2,6 @@ import {
   AGENT_STREAM_LIMITS,
   DISPATCH_ASKS_HEADER,
   type DispatchEvent,
-  type InboxThreadKind,
   type paths,
 } from "@legion/contracts";
 import type { Cookie } from "@playwright/test";
@@ -570,9 +569,20 @@ export function getPriorityHistory(id: string, options: ApiOptions = {}) {
   return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
 }
 
-/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
-export function getInbox(options: ApiOptions = {}) {
-  return get("/api/v1/inbox", {}, options);
+/** `GET /api/v1/asks/open`, the read the SPA's `openAsksQuery` makes: the open asks the caller
+ *  may see, every project's with no `project` and one project's with it, each the row the Inbox
+ *  draws of it; `waiting_on` keeps the asks that wait on that person. */
+export async function listOpenAsks(
+  query: Query<"/api/v1/asks/open", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return (await get("/api/v1/asks/open", { query }, options)).asks ?? [];
+}
+
+/** `GET /api/v1/me/inbox`, the one read, as the caller asks it: every node tied to their person,
+ *  with the relation kinds that tie it to them, and the row the Inbox draws where it draws one. */
+export function getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}, options: ApiOptions = {}) {
+  return get("/api/v1/me/inbox", { query }, options);
 }
 
 /** `GET /api/v1/search`: the palette's own read, so a row's `href` here is the path a reader
@@ -589,25 +599,23 @@ export function listMyAnswers(
   return get("/api/v1/me/answers", { query: page }, options);
 }
 
-/** `GET /api/v1/me/replies`: the Inbox's thread rows - the threads the caller wrote in where
- *  someone else has written since they last read it, and, with `kind` naming it, their one-off
- *  messages to an agent session holding a reply - newest reply first. An absent `kind` is the
- *  route's own default, `reply` alone; an absent `state` is `unread`; an absent `limit` is every
- *  row, which is what the Inbox itself reads. `inbox` is every row of the caller's Inbox, read or
- *  not, less what they have dismissed, and `dismissed` is what they dismissed out of it, newest
- *  dismissal first and `INBOX_DISMISSED_PAGE` rows at a time, `cursor` reading the next page from
- *  the `next_cursor` of the page before it. Under `dismissed` the answer's `total` is the page it
- *  holds rather than the whole pile, which nothing counts, so a caller that wants the pile pages
- *  through `next_cursor`. */
-export function listMyReplies(
-  page: Omit<Query<"/api/v1/me/replies", "get">, "kind"> & {
-    kind?: readonly InboxThreadKind[];
-  } = {},
+/** The caller's Reply and Agent rows in one state of the one read, in the read's own order,
+ *  newest first, beside the answer they came in: `unread` (the default) the threads somebody else
+ *  has written in since the caller read them, `inbox` every one in their Inbox, read or not,
+ *  less what they dismissed, and `dismissed` what they dismissed out of it, newest dismissal
+ *  first, `cursor` reading the next page from the `next_cursor` of the page before it. The
+ *  answer's `total` counts every entry of the state, so under `inbox` it counts the caller's own
+ *  asks too; `rows.length` is the threads alone. */
+export async function meInboxThreads(
+  query: Query<"/api/v1/me/inbox", "get"> = {},
   options: ApiOptions = {}
 ) {
-  // `kind` is one comma list on the wire, as the SPA's own client folds it (`listMyReplies`,
-  // web/src/api/client.ts); every other key is the document's own.
-  return get("/api/v1/me/replies", { query: { ...page, kind: page.kind?.join(",") } }, options);
+  const answer = await getMeInbox({ state: "unread", ...query }, options);
+  const rows = (answer.entries ?? []).flatMap((entry) => {
+    if (entry.thread !== undefined) return [entry.thread];
+    return entry.agent === undefined ? [] : [entry.agent];
+  });
+  return { ...answer, rows };
 }
 
 /** `PUT /api/v1/me/threads/{id}/read`: move the caller's read mark on one thread forward. */
@@ -644,10 +652,11 @@ export function listAgents(options: ApiOptions = {}) {
   return get("/api/v1/agents", {}, options);
 }
 
-/** A session's conversation as the Agents page reads it: its exchanges in the server's order. */
-export function listAgentMessages(sessionID: string, options: ApiOptions = {}) {
+/** `GET /api/v1/agents/{session_id}/conversation`: a session's conversation as the Agents page
+ *  reads it, its exchanges in the server's order. */
+export function getAgentConversation(sessionID: string, options: ApiOptions = {}) {
   return get(
-    "/api/v1/agents/{session_id}/messages",
+    "/api/v1/agents/{session_id}/conversation",
     { params: { session_id: sessionID } },
     options
   );

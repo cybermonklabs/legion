@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A boot no longer dials a new Postgres connection for each concurrent-index migration it finds
+  already applied: the runner gives that connection back to the pool, its session reset, and takes
+  one out of the pool only for a build it owes. Each closed connection cost a dial one after
+  another, so through a database slow to accept connections a boot spent minutes in its
+  migrations.
+time: 2026-11-24T14:02:16Z
+custom:
+  Issue: marked-migration-warm-connection

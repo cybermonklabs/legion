@@ -2,8 +2,12 @@ import type {
   AskThread,
   CredentialPendingRow,
   IssueAskRow,
+  MeInboxAgent,
+  MeInboxEntry,
+  MeInboxResponse,
   MyReplyRow,
   MyReplySession,
+  OpenAskRow,
 } from "./dispatch-api.generated";
 
 /**
@@ -52,6 +56,54 @@ export interface MyReplyAgentRow extends MyReplyRow {
  *  reads as a Reply row, which is what every surface already draws for one. */
 export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgentRow {
   return row.kind === "agent" ? (row as MyReplyAgentRow) : (row as MyReplyThreadRow);
+}
+
+/** An Agent row of the one read, narrowed as `inboxThreadRow` narrows one of
+ *  `GET /api/v1/me/replies`, with the conversation it draws beside it. */
+export type MeInboxAgentRow = MeInboxAgent & MyReplyAgentRow;
+
+/** The row the page draws for one entry of `GET /api/v1/me/inbox`, by which of its three it
+ *  carries: the Inbox's ask row, a Reply row or an Agent row. An entry carries at most one, and
+ *  one the page draws no row for - a mention of the person, their own write nobody answered -
+ *  carries none. */
+export type InboxEntryRow =
+  | { readonly kind: "ask"; readonly ask: OpenAskRow }
+  | { readonly kind: "thread"; readonly thread: MyReplyThreadRow }
+  | { readonly kind: "agent"; readonly agent: MeInboxAgentRow }
+  | { readonly kind: "none" };
+
+/** `entry`'s row, as the shape its own field names. The route answers the three as optional
+ *  fields of one entry schema, so this is the one place a surface tells them apart. */
+export function inboxEntryRow(entry: MeInboxEntry): InboxEntryRow {
+  if (entry.ask !== undefined) return { kind: "ask", ask: entry.ask };
+  if (entry.thread !== undefined)
+    return { kind: "thread", thread: entry.thread as MyReplyThreadRow };
+  if (entry.agent !== undefined) return { kind: "agent", agent: entry.agent as MeInboxAgentRow };
+  return { kind: "none" };
+}
+
+/** The ask rows an answer of `GET /api/v1/me/inbox` carries, in its own order: none for no
+ *  answer. */
+export function meInboxAsks(answer: Pick<MeInboxResponse, "entries"> | undefined): OpenAskRow[] {
+  return (answer?.entries ?? []).flatMap((entry) => {
+    const row = inboxEntryRow(entry);
+    return row.kind === "ask" ? [row.ask] : [];
+  });
+}
+
+/** The Reply or Agent row `entry` carries, or undefined for an entry with neither. */
+export function inboxEntryThread(entry: MeInboxEntry): MyReplyRow | undefined {
+  const row = inboxEntryRow(entry);
+  return row.kind === "thread" ? row.thread : row.kind === "agent" ? row.agent : undefined;
+}
+
+/** The Reply and Agent rows an answer of `GET /api/v1/me/inbox` carries, in its own order: none
+ *  for no answer. */
+export function meInboxThreads(answer: Pick<MeInboxResponse, "entries"> | undefined): MyReplyRow[] {
+  return (answer?.entries ?? []).flatMap((entry) => {
+    const thread = inboxEntryThread(entry);
+    return thread === undefined ? [] : [thread];
+  });
 }
 
 /** Whether a row of `GET /api/v1/credential-requests?approver=me` still waits on somebody's

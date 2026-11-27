@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact, AskBlockArtifact, InboxRow, MyReplyRow } from "../../api/types";
+import type { Artifact, AskBlockArtifact, MyReplyRow, OpenAskRow } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import {
   linkHoverText,
@@ -65,7 +65,7 @@ function atBlock(path: string, blockId: string | null | undefined): string {
  *  block's, the one a quote was taken from. Undefined for a question in no document, and for a
  *  row that does not name the document of its kind: another field's document is not this
  *  question's. */
-function issueDocumentOf(ask: InboxRow): IssueDocument | undefined {
+function issueDocumentOf(ask: OpenAskRow): IssueDocument | undefined {
   if (ask.kind === "approval" && ask.approval !== undefined) {
     return ask.approval_artifact;
   }
@@ -84,7 +84,7 @@ function issueDocumentOf(ask: InboxRow): IssueDocument | undefined {
  *  The section is the heading the pane found; before the document has drawn, the question's own
  *  block, and for an anchored question the block its quote sits in. An approval request has
  *  neither, so it opens its document at the top. */
-function openPagePath(ask: InboxRow, sectionBlockId: string | undefined): string | undefined {
+function openPagePath(ask: OpenAskRow, sectionBlockId: string | undefined): string | undefined {
   const issueKey = askIssueKey(ask);
   const blockId = sectionBlockId ?? ask.block_id ?? ask.anchor?.block_id;
   if (issueKey !== null) {
@@ -111,7 +111,7 @@ export interface ReadingPaneHeadProps {
   /** The document the column shows, once it is read; undefined for a question in no document and
    *  while the read is out. The approval actions are this document's. */
   artifact: Artifact | undefined;
-  ask: InboxRow;
+  ask: OpenAskRow;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
   /** The reader's own Assign to me from this head started (`live`), or has stopped being in

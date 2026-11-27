@@ -9,7 +9,7 @@ import {
   artifactBlocksQuery,
   issueCoverageQuery,
   issueResultsQuery,
-  myRepliesOwnerQuery,
+  meInboxOwnerQuery,
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
@@ -19,6 +19,7 @@ import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference } from "../../refs/routes";
+import { unreadSetAnswer } from "../../threads/replies-fixture";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { presetPath } from "../issue-address";
 import { framesByHand, TWO_THREADS } from "../outline-fixtures";
@@ -419,8 +420,8 @@ test("Enter on the Retry of the Decisions view's refused decisions read, before 
   }
 });
 
-/** The reader's unread set on the issue as its read answers it: nothing unread. */
-const NOTHING_UNREAD = { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 };
+/** The reader's unread set on the issue as the one read answers it: nothing unread. */
+const NOTHING_UNREAD = unreadSetAnswer([]);
 
 // The page's reads are refreshed by events, never by their age, and the stage draws the outline
 // anew as the reader comes back to Conversation from a view. Under the app's `staleTime` a read is
@@ -459,7 +460,7 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
   // What the reader holds unread on the issue, which a thread's read mark reads.
-  client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
+  client.setQueryData(meInboxOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
   // The blocks of each of the issue's documents: its spec, which holds its decisions.
   for (const { id } of issue.artifacts ?? []) {
     client.setQueryData(artifactBlocksQuery(id).queryKey, [], answered);
@@ -506,7 +507,7 @@ async function requestsOf(
     { event_head: "0", kind: "user", login: READER },
     answered
   );
-  client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
+  client.setQueryData(meInboxOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
   const view = render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
   // A read the mount asks for is sent from its observer's effect, which `render` runs: a flush of
   // effects and microtasks after it sends any not yet sent.
@@ -556,21 +557,21 @@ test("a thread's read mark drawn after the app's staleTime asks the unread set n
   // Answers that never come, so no read updates what is drawn after `requestsOf` has counted the
   // requests. Who is reading is the stub `stubReads` set, which `spyOn` hands back.
   spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
-  const replies = spyOn(api, "listMyReplies").mockReturnValue(
+  const unreadSet = spyOn(api, "getMeInboxPage").mockReturnValue(
     Promise.withResolvers<never>().promise
   );
   const mark: ThreadMark = { at: "2026-11-05T01:04:00Z", issueKey: KEY, threadId: "head-b" };
   try {
     expect(
-      await requestsOf(replies, <ThreadReadMark mark={mark} />),
+      await requestsOf(unreadSet, <ThreadReadMark mark={mark} />),
       "the thread's read mark"
     ).toBe(0);
     expect(
-      await requestsOf(replies, <MarkGivingNoFreshness mark={mark} />),
+      await requestsOf(unreadSet, <MarkGivingNoFreshness mark={mark} />),
       "a surface that gives no freshness"
     ).toBe(1);
   } finally {
-    replies.mockRestore();
+    unreadSet.mockRestore();
   }
 });
 

@@ -191,10 +191,11 @@ func writeAskText(t *testing.T, tx pgx.Tx, reader *Reader, ask model.Ask, at tim
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if questionFirst {
 			question.Queue(b)
-			parts.SettlingForms().Queue(b)
-			return nil
+			return parts.SettlingForms().Queue(b)
 		}
-		parts.Queue(b)
+		if err := parts.Queue(b); err != nil {
+			return err
+		}
 		question.SettlingForms().Queue(b)
 		return nil
 	}); err != nil {

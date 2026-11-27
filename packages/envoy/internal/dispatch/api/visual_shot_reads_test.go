@@ -4,10 +4,11 @@
 // visual-guard.ts). What a page cannot stop is a write the server makes while it answers, so this
 // test sends each API read, each sign-in read and each live view those pages make
 // (testdata/visual-shot-reads.json, which a visual row fails without), and reads every statement
-// each one ran through read_only_token_test.go's tracer of a request's statements
-// (markedStatements, writesOf). A write to any table its channel does not allow fails the test, by
-// the read or view and the table. It opens and closes a document's room as a page does too, and
-// holds the room to writing nothing.
+// the pool runs while each one is answered: its tracer (shotStatements) records every statement
+// the pool runs while its watch is on, and writesOf (read_only_token_test.go) reads their writes.
+// A write to any table its channel does not allow fails the test, by the read or view and the
+// table. It opens and closes a document's room as a page does too, and holds the room to writing
+// nothing.
 package api
 
 import (
@@ -40,14 +41,17 @@ import (
 // shotWriteChannels are the three ways a visual row's page reaches the server without writing
 // itself - a read of the API, a view of the live socket, a document's room - each with every table
 // the server may write while it answers that way, and what makes that write no change a later
-// shot draws. Each table is one this test sees written on that channel; a write to any other
-// table fails it. None of them holds a document version or an event (a settlement a room owed),
-// pull_request_heads or the attribution events beside it (GET /issues/{key}/results asking GitHub
-// which pull request holds a commit), or route_roster (the suite's server stores no copy of the
-// listener's sessions).
+// shot draws. Each table is one this test sees written on that channel, or on one of the channels
+// shotSharedCursors names it with; a write to any other table fails it. None of them holds a
+// document version or an event (a settlement a room owed), pull_request_heads or the attribution
+// events beside it (GET /issues/{key}/results asking GitHub which pull request holds a commit), or
+// route_roster (the suite's server stores no copy of the listener's sessions).
 var shotWriteChannels = map[string]map[string]string{
 	shotReadChannel: {
 		"text_trees": "the display-tree cache a read with Dispatch-Trees: 1 fills, built from what Dispatch holds",
+		// GET /api/v1/me/inbox waits on the event horizon (sinceHorizon, Horizon.Await), and the
+		// observation it waits on writes the proven horizon after the read has its answer.
+		"event_horizon": "the event log's shared safe horizon a read waits on, persisted at most once a second by the observation it waits on: the cursor the event feed writes, which no page draws",
 	},
 	shotLiveChannel: {
 		"event_horizon":         "the event log's shared safe horizon the event feed reads up to, persisted at most once an interval: a cursor, which no page draws",
@@ -55,6 +59,14 @@ var shotWriteChannels = map[string]map[string]string{
 	},
 	shotAuthChannel: {},
 	shotRoomChannel: {},
+}
+
+// shotSharedCursors are the tables several channels write as one cursor, each with those channels:
+// the server's one event horizon persists what it proved at most once a second, so whichever
+// channel waits on it first writes event_horizon and the other then finds it written. Such a
+// table's allowance is held to some one of its channels writing it, never to which.
+var shotSharedCursors = map[string][]string{
+	"event_horizon": {shotReadChannel, shotLiveChannel},
 }
 
 const (
@@ -94,12 +106,12 @@ func visualShotReads(t *testing.T) visualShotList {
 	return list
 }
 
-// shotStatements is markedStatements, which records the statements a request the test marked runs
-// and the work it detaches, with a watch beside it that records every statement the pool runs
-// while it is on: a document room loads and settles on contexts of the server's own, which no
-// request marks.
+// shotStatements is the tracer a traced store runs its hooks through: it records every statement
+// the pool runs while its watch is on, and writesOf reads their writes. Every channel is read
+// through the watch, since each reaches statements no request marks: a document room loads and
+// settles on contexts of the server's own, and the event horizon a read waits on writes what it
+// proved on its observer's goroutine after the read has its answer (events.Horizon.writePersisted).
 type shotStatements struct {
-	markedStatements
 	watching atomic.Bool
 	mu       sync.Mutex
 	watched  []string
@@ -114,20 +126,29 @@ func (s *shotStatements) observe(statement string) {
 	s.watched = append(s.watched, statement)
 }
 
-func (s *shotStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+func (s *shotStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	s.observe(data.SQL)
-	return s.markedStatements.TraceQueryStart(ctx, conn, data)
+	return ctx
 }
 
-func (s *shotStatements) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
-	s.observe(data.SQL)
-	s.markedStatements.TraceBatchQuery(ctx, conn, data)
+func (s *shotStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (s *shotStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
 }
 
-func (s *shotStatements) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+func (s *shotStatements) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	s.observe(data.SQL)
+}
+
+func (s *shotStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func (s *shotStatements) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
 	s.observe("insert into " + data.TableName.Sanitize() + " (copy from)")
-	return s.markedStatements.TraceCopyFromStart(ctx, conn, data)
+	return ctx
 }
+
+func (s *shotStatements) TraceCopyFromEnd(context.Context, *pgx.Conn, pgx.TraceCopyFromEndData) {}
 
 // watch starts recording every statement, and stop ends it and answers what it recorded.
 func (s *shotStatements) watch() {
@@ -190,19 +211,18 @@ func shotReadPaths(c shotCorpus) map[string]string {
 	// The person page of the signed-in person, as the visual seed's person row opens it.
 	return map[string]string{
 		"/api/v1/agents":                              "/api/v1/agents",
-		"/api/v1/agents/{session_id}/messages":        "/api/v1/agents/planner/messages",
 		"/api/v1/artifacts/{id}":                      "/api/v1/artifacts/" + c.spec,
 		"/api/v1/artifacts/{id}/asks":                 "/api/v1/artifacts/" + c.runbook + "/asks",
 		"/api/v1/artifacts/{id}/blocks":               "/api/v1/artifacts/" + c.spec + "/blocks",
 		"/api/v1/artifacts/{id}/comments":             "/api/v1/artifacts/" + c.runbook + "/comments",
 		"/api/v1/artifacts/{id}/subscribers":          "/api/v1/artifacts/" + c.runbook + "/subscribers",
 		"/api/v1/artifacts/{id}/text":                 "/api/v1/artifacts/" + c.spec + "/text",
+		"/api/v1/asks/open":                           "/api/v1/asks/open",
 		"/api/v1/asks/{id}":                           "/api/v1/asks/" + c.ask,
 		"/api/v1/broadcasts":                          "/api/v1/broadcasts",
 		"/api/v1/broadcasts/{id}":                     "/api/v1/broadcasts/" + c.broadcast,
 		"/api/v1/credential-grants":                   "/api/v1/credential-grants?approver=me",
 		"/api/v1/credential-requests":                 "/api/v1/credential-requests?approver=me",
-		"/api/v1/inbox":                               "/api/v1/inbox",
 		"/api/v1/issues":                              "/api/v1/issues",
 		"/api/v1/issues/{key}":                        "/api/v1/issues/" + c.issue,
 		"/api/v1/issues/{key}/artifacts":              "/api/v1/issues/" + c.issue + "/artifacts",
@@ -219,7 +239,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/me/agents/state":                     "/api/v1/me/agents/state",
 		"/api/v1/me/answers":                          "/api/v1/me/answers",
 		"/api/v1/me/documents/{id}/read":              "/api/v1/me/documents/" + c.spec + "/read",
-		"/api/v1/me/replies":                          "/api/v1/me/replies",
+		"/api/v1/me/inbox":                            "/api/v1/me/inbox?state=inbox",
 		"/api/v1/me/state":                            "/api/v1/me/state",
 		"/api/v1/people/{login}/nodes":                "/api/v1/people/" + shotPerson + "/nodes?limit=50&offset=0",
 		"/api/v1/priorities":                          "/api/v1/priorities",
@@ -239,22 +259,47 @@ func shotReadPaths(c shotCorpus) map[string]string {
 }
 
 // shotRead reads target as the dashboard does, the person signed in with a session cookie as the
-// suite's dev sign-in signs in and the display trees asked for, on a request the tracer records, and waits out the work it detached before it answers, so
-// the statements it took are this read's alone. It waits for the detached work alone: the server's
-// whole background wait (waitBackground) is its shutdown's, after which it closes every live socket
-// that opens with 1012.
-func shotRead(t *testing.T, handler http.Handler, served *server, statements *shotStatements, cookie *http.Cookie, target string) (*httptest.ResponseRecorder, []string) {
+// suite's dev sign-in signs in and the display trees asked for, and answers every statement the
+// pool ran from the request until the work it detached and the event horizon's write it started
+// have ended (horizonWriteSettled). It waits for the detached work alone: the server's whole
+// background wait (waitBackground) is its shutdown's, after which it closes every live socket that
+// opens with 1012.
+func shotRead(t *testing.T, handler http.Handler, served *server, database *store.Store, statements *shotStatements, cookie *http.Cookie, target string) (*httptest.ResponseRecorder, []string) {
 	t.Helper()
-	statements.take()
-	ctx := context.WithValue(context.Background(), countedRead{}, true)
-	request := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	statements.watch()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 	request.AddCookie(cookie)
 	request.Header.Set(displayTreesHeader, "1")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	served.detached.wait()
-	return response, statements.take()
+	horizonWriteSettled(t, served, database)
+	return response, statements.stop()
 }
+
+// horizonWriteSettled waits, within horizonWriteBound, until event_horizon holds the horizon the
+// server's event horizon has proven, read on database, which the tracer does not watch. A read
+// that waits on the horizon (sinceHorizon) answers once the observation it waits on is proven, and
+// that observation writes the proven horizon after, on its own goroutine (Horizon.writePersisted),
+// so the read's watch stays on until the write has landed. A horizon still above the row at the
+// bound is one no write is under way for: an observation tries the write at most once a second,
+// and found the last try too recent.
+func horizonWriteSettled(t *testing.T, served *server, database *store.Store) {
+	t.Helper()
+	written := func() bool {
+		var persisted int64
+		if err := database.Pool.QueryRow(context.Background(), `select coalesce((select safe from event_horizon where id = 1), 0)`).Scan(&persisted); err != nil {
+			t.Fatalf("read the persisted event horizon: %v", err)
+		}
+		return persisted >= served.horizon().Proven()
+	}
+	testwait.Holds(horizonWriteBound, 10*time.Millisecond, written)
+}
+
+// horizonWriteBound is how long horizonWriteSettled waits for the horizon's write: the second an
+// observation waits between two tries and the two seconds it gives one (horizonPersistEvery and
+// horizonPersistTimeout, internal/dispatch/events/horizon.go).
+const horizonWriteBound = 3 * time.Second
 
 // nothingOwed waits until the document service owes no document a settlement, as the visual seed
 // waits before any row draws, and fails naming what it still owes.
@@ -421,12 +466,12 @@ func liveAnswer(t *testing.T, client *socketClient, sub string) {
 // visual review's pages, on each way they reach it, to the tables shotWriteChannels allows that
 // way. It sends every route the list names (testdata/visual-shot-reads.json) at a corpus of the
 // shape the visual seed writes, as the dashboard sends it - signed in, with Dispatch-Trees: 1, on a
-// server whose listener roster is read uncached as the suite's is - and reads every statement each
-// read runs and every statement the work it detaches runs. It subscribes each live view kind the
-// list names on GET /ws/live, one at a time over the pipeline fixture, and reads every statement
-// the pool runs from the subscribe to the view's first answer. It opens the spec's room as a page
-// does and closes it, once the service owes no settlement, and reads every statement the pool runs
-// meanwhile.
+// server whose listener roster is read uncached as the suite's is - and reads every statement the
+// pool runs from each read's request until the work it detached and the event horizon's write it
+// started have ended. It subscribes each live view kind the list names on GET /ws/live, one at a
+// time over the pipeline fixture, and reads every statement the pool runs from the subscribe to the
+// view's first answer. It opens the spec's room as a page does and closes it, once the service owes
+// no settlement, and reads every statement the pool runs meanwhile.
 //
 // Its positive controls: every read answers 200 and the reads store a display tree between them;
 // every live view answers, and the delivery views read the deploy runs; the room's load is seen;
@@ -542,7 +587,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		if !held {
 			continue
 		}
-		response, ran := shotRead(t, handler, served, statements, cookie, target)
+		response, ran := shotRead(t, handler, served, database, statements, cookie, target)
 		if response.Code != http.StatusOK {
 			t.Errorf("GET %s: status=%d body=%s, want 200: the read must answer for its statements to be its handler's", target, response.Code, response.Body.String())
 			continue
@@ -564,7 +609,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		}
 		handler.ServeHTTP(w, r)
 	})
-	if _, ran := shotRead(t, planted, served, statements, cookie, "/api/v1/projects"); !slices.ContainsFunc(
+	if _, ran := shotRead(t, planted, served, database, statements, cookie, "/api/v1/projects"); !slices.ContainsFunc(
 		violationsOnly(shotWriteViolations(shotReadChannel, "GET /api/v1/projects", ran)),
 		func(violation string) bool {
 			return strings.HasPrefix(violation, "GET /api/v1/projects wrote projects: ")
@@ -648,13 +693,22 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		t.Errorf("a person's edit in the room was not named by the room and doc_updates among %d statements", len(edited))
 	}
 
-	// Each allowance is one this test sees written on its channel: an allowance nothing here
-	// writes is one nothing holds, and goes.
+	// Each allowance is one this test sees written on its channel, or for a shared cursor on one
+	// of the channels shotSharedCursors names it with: an allowance nothing here writes is one
+	// nothing holds, and goes.
 	for channel, allowed := range shotWriteChannels {
 		for table := range allowed {
+			if slices.Contains(shotSharedCursors[table], channel) {
+				continue
+			}
 			if !written[channel][table] {
 				t.Errorf("shotWriteChannels allows the %s channel %s, which no %s of this test wrote: drop the allowance", channel, table, channel)
 			}
+		}
+	}
+	for table, channels := range shotSharedCursors {
+		if !slices.ContainsFunc(channels, func(channel string) bool { return written[channel][table] }) {
+			t.Errorf("shotWriteChannels allows the %s channels %s, which none of them wrote in this test: drop the allowance", strings.Join(channels, " and "), table)
 		}
 	}
 	t.Logf("tables written, by channel: %v", written)

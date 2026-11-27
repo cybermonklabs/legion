@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
+import { openAsksQuery, userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Anchor,
@@ -358,7 +358,7 @@ export function useMarginItems(
       : owner?.kind === "document"
         ? ["artifact", owner.artifactId, "comments"]
         : ["comments", undefined];
-  const asks = useQuery(inboxQuery());
+  const asks = useQuery(openAsksQuery());
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(

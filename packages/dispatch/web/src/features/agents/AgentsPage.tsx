@@ -16,8 +16,8 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import {
-  agentMessagesQuery,
-  inboxQuery,
+  agentConversationQuery,
+  openAsksQuery,
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -184,7 +184,7 @@ function AgentExchangeReply({
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () =>
       void queryClient.invalidateQueries({
-        queryKey: agentMessagesQuery(agent.session_id).queryKey,
+        queryKey: agentConversationQuery(agent.session_id).queryKey,
       }),
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
@@ -274,7 +274,7 @@ function AgentTargetedMessage({
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () =>
       void queryClient.invalidateQueries({
-        queryKey: agentMessagesQuery(agent.session_id).queryKey,
+        queryKey: agentConversationQuery(agent.session_id).queryKey,
       }),
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
@@ -372,7 +372,7 @@ function AgentMessageList({
   replyDisabled: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const messages = useQuery(agentMessagesQuery(agent.session_id));
+  const messages = useQuery(agentConversationQuery(agent.session_id));
   const agentState = useQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
@@ -817,7 +817,7 @@ function AgentRowDetails({
   // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was. The
   // message a reply quotes is looked up there too, so a draft open when its author deletes or
   // edits that message quotes what became of it.
-  const messages = useQuery(agentMessagesQuery(agent.session_id));
+  const messages = useQuery(agentConversationQuery(agent.session_id));
   const listed = useMemo(
     () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
     [messages.data]
@@ -1447,7 +1447,8 @@ export function AgentsPage(): ReactNode {
   // row: it decides what each row's directory shows, and a list of two hundred rows is two
   // hundred listeners otherwise.
   const mdViewport = useMediaQuery(MD_VIEWPORT_QUERY);
-  const inbox = useQuery(inboxQuery());
+  // Every open ask the viewer can see, which the cards count per session.
+  const openAsks = useQuery(openAsksQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
@@ -1463,8 +1464,8 @@ export function AgentsPage(): ReactNode {
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.
   const needsYouBySession = useMemo(
-    () => tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),
-    [inbox.data, viewer]
+    () => tallyBySession(waitingOnYou(openAsks.data ?? [], viewer)),
+    [openAsks.data, viewer]
   );
   // The second card number, counted in its own right rather than as what is left of `open_asks`:
   // questions whose next move is the session's, on anybody's issue, snoozes ignored. A snooze is
@@ -1473,12 +1474,12 @@ export function AgentsPage(): ReactNode {
   // the subtraction this replaces got wrong is the other direction: it charged this session with
   // every question of the reader's they had snoozed, and with every other person's.
   const waitingOnAgentBySession = useMemo(
-    () => tallyBySession(inbox.data ?? [], (ask) => ask.waiting_on === "agent"),
-    [inbox.data]
+    () => tallyBySession(openAsks.data ?? [], (ask) => ask.waiting_on === "agent"),
+    [openAsks.data]
   );
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
-  const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
+  const issueKeysBySession = useMemo(() => sessionIssueKeys(openAsks.data ?? []), [openAsks.data]);
   // The free-text query, the machines and the roles are the page's own `?q=`, `?machine=` and
   // `?role=`, all owned by `agent-search.ts`; the group selection stays plain component state.
   // A link in from the machines page names one machine in `?machine=`,

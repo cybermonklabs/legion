@@ -7,7 +7,7 @@
 
 import { inboxThreadRow } from "@legion/contracts";
 
-import type { InboxRow, MyReplyRow } from "../../api/types";
+import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import { askIssueKey } from "./ask-name";
 import type { InboxListRow } from "./list-row";
 
@@ -25,7 +25,7 @@ import type { InboxListRow } from "./list-row";
  * registry read lands at its own time and only where a card draws one, so matching on it would
  * make one row match a word at one width and not at another.
  */
-function inboxSearchHaystack(ask: InboxRow): string {
+function inboxSearchHaystack(ask: OpenAskRow): string {
   const issueKey = askIssueKey(ask);
   const parts: (string | null | undefined)[] = [issueKey, ask.issue?.title];
   // The requirement is the name of the document a row stands on *where it has no issue*, which
@@ -44,7 +44,7 @@ function inboxSearchHaystack(ask: InboxRow): string {
 }
 
 /**
- * The text a thread row's words match against. A thread is not an `InboxRow`, so the same fields
+ * The text a thread row's words match against. A thread is not an `OpenAskRow`, so the same fields
  * are read off its own shape: the issue it hangs under, by key and title; the document's name
  * where it stands on a document alone, as an ask's haystack takes it only where the row has no
  * issue; its subject, which is what a thread says of itself; and whoever wrote in it last, as

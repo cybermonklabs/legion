@@ -20,22 +20,25 @@ import (
 // TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of the check c-lock-order
 // for the batches backfill_fence_test.go and
 // TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow do not prove: writeBlockRefBatch,
-// writeCommentBatch, writeRoleBatch and writeSessionBatch, and the two batches of the passes over
+// writeCommentBatch, writeRoleBatch and writeSessionBatch, the two batches of the passes over
 // the project of every node, writeObjectBatch and writeScopeBatch (projects_lock_steps_test.go),
-// each a store write call site graphstore's TestEveryStoreWriteCallSiteIsListed lists.
-// graphstore's TestEveryStoreWriteTakesOneLockOrder cannot run them, since this package imports
-// graphstore.
+// each a store write call site graphstore's TestEveryStoreWriteCallSiteIsListed lists, and every
+// batch of the inbox's passes that takes an owner, project, item or user_threads row
+// (backfill_inbox_lock_steps_test.go). graphstore's TestEveryStoreWriteTakesOneLockOrder cannot
+// run them, since this package imports graphstore.
 //
 // Each subtest seeds the rows one batch writes from, then holds, each in a transaction of its own,
 // a row of every step the batch takes and a row of every step it does not take, and runs the real
-// Backfill on a connection of its own (startBackfill). It lets go of each hold the run's backend
-// queues behind, one at a time, and reads the order the run queued in (followTheBackfill). Each
-// time the run queues it also reads, in pg_stat_activity, the statement the run waits at and, in
-// pg_locks, the tables the run's transaction holds a lock on, so a step the run took ahead of one
-// an invariant puts first shows as a lock on that step's table. The run must never queue behind a
-// step's row the batch does not take, must take every step it does take, and must take them as the
-// invariants on markInboxReadThreads have them (lockstep.RequireTheStoreLockOrder). The subtest
-// then reads what the run wrote, so the run it followed is the one that committed.
+// Backfill, or the one pass the batch is of, on a connection of its own (startRun). It lets go
+// of each hold the run's backend queues behind, one at a time, and reads the order the run queued
+// in (followTheBackfill, followTheRun, followThePass). Each time the run queues it also reads, in
+// pg_stat_activity, the statement the run waits at and, in pg_locks, the tables the run's
+// transaction holds a lock on, so a step the run took ahead of one an invariant puts first shows as
+// a lock on that step's table. The run must never queue behind a step's row the batch does not
+// take, must take every step it does take, and must take them as the invariants on
+// markInboxReadThreads have them (lockstep.RequireTheStoreLockOrder) and, for the inbox's batches,
+// in the writers' row order as well (requireTheWritersRowOrder). The subtest then reads what the
+// run wrote, so the run it followed is the one that committed.
 func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeBlockRefBatch takes the owner row, the fence, its block_refs rows, then the tuple append, and no node row", requireTheBlockRefBatchLockOrder)
 	t.Run("writeCommentBatch takes its comments' owner rows, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
@@ -44,6 +47,17 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeObjectBatch takes its documents' owner locks in ascending owner key, then each run's node rows ascending and its tuples, and no event", requireTheObjectBatchLockOrder)
 	t.Run("writeScopeBatch over block nodes takes the owner lock, the fence, then the node rows ascending and the project tuple, and no projection row", requireTheBlockScopeBatchLockOrder)
 	t.Run("writeScopeBatch over a comment node takes no owner lock and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
+	t.Run("writeMessages takes the owner lock, the messages rows ascending, then the store and the reached thread row before its delivery", requireTheMessagesBatchLockOrder)
+	t.Run("writeCommentPointers takes the owner lock, the comments rows ascending, then the store and the reached thread row before its delivery", requireTheCommentPointersBatchLockOrder)
+	t.Run("the messages_past_bound batch takes the owner lock, then the messages rows ascending, and nothing of the store", requireTheMessagesPastBoundBatchLockOrder)
+	for _, kind := range inboxItemKinds {
+		for _, part := range itemParts {
+			t.Run("the "+part.pass(kind)+" batch takes the owner lock, the "+kind.kind+"'s row, its block state row and its "+part.name+" rows, then the store",
+				requireTheItemBatchLockOrder(kind, part))
+		}
+	}
+	t.Run("writeAsksOwed takes the owner lock, the project's lock, the asks row, then the reached thread row before its delivery", requireTheAsksOwedBatchLockOrder)
+	t.Run("writeUserThreads takes the owner lock, then the thread's rows in ascending login", requireTheUserThreadsBatchLockOrder)
 }
 
 // requireTheBlockRefBatchLockOrder holds writeBlockRefBatch to its steps. The batch is one of the
@@ -146,7 +160,10 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
-// author's node (graphstore.QueueAuthored), passes as well.
+// author's node (graphstore.QueueAuthored), passes as well. The run followed is the comment pass
+// alone: the pass over the comment pointers that runs after it (the one inbox's
+// commentPointersPass) takes the issue's owner row first, as every writer of a comment does, and
+// following the whole run would read that pass's lock as this batch's.
 func requireTheCommentBatchLockOrder(t *testing.T) {
 	ctx := context.Background()
 	writes := newAddressingWrites(t)
@@ -240,8 +257,10 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		Statement: "update comments c set node_kind",
 	}, `select 1 from comments where id = $1::uuid for no key update`, c1.id)
 
-	report := followTheBackfill(t, database, "writeCommentBatch",
-		[]*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
+	report := followTheRun(t, database, "writeCommentBatch", func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+		done, err := backfillComments(ctx, database)
+		return BackfillReport{Kinds: []KindBackfill{done}}, err
+	}, []*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
 
 	for _, seeded := range comments {
 		authorKind, authorID, _ := graphstore.AuthorOf(seeded.by)

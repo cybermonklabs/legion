@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -21,9 +22,9 @@ import (
 // joined, a comment's thread root's author, a message's author, the sessions a document credits,
 // the sessions a person's reply under a comment reaches and where the read found each
 // (loadCommentRecipients, threadRecipient), the sessions an issue's primary document credits
-// (loadPrimaryDocumentAuthors), what a new comment's mentions did (mentionDeliveries), and which
-// of a comment's mentions failed (mentionFallbackKeys). A comment or message that does not exist
-// answers no author, found false.
+// (loadPrimaryDocumentAuthors), what the mentions of a new comment or of a callback reply did
+// (mentionDeliveries), and which of a comment's mentions failed (mentionFallbackKeys). A comment or
+// message that does not exist answers no author, found false.
 type lookup interface {
 	followers(askID string) ([]string, error)
 	rootCommentAuthor(commentID string) (model.Actor, bool, error)
@@ -207,8 +208,8 @@ func (l *lookups) mentionFallbackKeys(commentID string) (map[string]string, erro
 // the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). The
 // reading of a comment only an edit asked for is left out (editOnly): the edit asks which of its
 // comment's mentions failed and nothing else, so the batch's readings stay the readings of its
-// new comments. This is the one place that rule is applied; every reader of a reading points
-// here.
+// new comments and callback replies (readsMentions). This is the one place that rule is applied;
+// every reader of a reading points here.
 func (l *lookups) readings() []mentionDeliveries {
 	readings := make([]mentionDeliveries, 0, len(l.mentions))
 	for id, deliveries := range l.mentions {
@@ -243,11 +244,11 @@ type queryer interface {
 // (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
 // whole statement over it, and is recorded failed, as the per-id read failed on it before - but a
 // reply's reply_to, which then names no thread, has no recipients and fails nothing. The mention
-// read is of two sets of comments at once - the new comments whose destinations read what their
-// mentions did (wanted.mentions) and the comments whose edits ask which of their mentions failed
-// (wanted.editMentions, mentionFallbackKeys) - so it costs its two statements whatever either set
-// holds, and the reading of a comment only an edit asked for is left out of the batch's readings
-// (editOnlyIDs, lookups.readings).
+// read is of two sets of comments at once - the new comments and callback replies whose
+// destinations read what their mentions did (wanted.mentions, readsMentions) and the comments
+// whose edits ask which of their mentions failed (wanted.editMentions, mentionFallbackKeys) - so
+// it costs its two statements whatever either set holds, and the reading of a comment only an
+// edit asked for is left out of the batch's readings (editOnlyIDs, lookups.readings).
 //
 // A read of ask followers, thread root authors, message authors or mention deliveries that fails
 // fails the batch, which is then left unrecorded and read again. A recipient read - document
@@ -297,8 +298,9 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 }
 
 // mergedIDs is the ids of both lists, sorted and each once, as validIDs answers each: the one
-// list loadMentionDeliveries reads for a batch's new comments and for the comments its edits ask
-// the failed mentions of, which costs the two statements of that read whatever either list holds.
+// list loadMentionDeliveries reads for a batch's new comments and callback replies and for the
+// comments its edits ask the failed mentions of, which costs the two statements of that read
+// whatever either list holds.
 func mergedIDs(ids, more []string) []string {
 	both := slices.Concat(ids, more)
 	slices.Sort(both)
@@ -577,11 +579,26 @@ var mentionDeliveryQuery = `
 
 // mentionFallbackHoldsQuery lists every destination of every comment in ids a fallback row owns,
 // settled or not: a row settled published or skipped that copy once, so the event's own publish
-// skips the destination for good (mentionDeliveries.held).
+// skips the destination for good (mentionDeliveries.held). In the same statement, and so in no
+// round trip of its own, it lists, marked true, each session a mentions tuple out of each comment's
+// node has asserted (mentionDeliveries.mentioned), keyed by that node. It reads every asserted row
+// rather than the relation as it stands. A session the comment names as a delivery route - the
+// session or role a comment_mentions row targets, and the session that row resolved to - keeps its
+// mention whatever an edit writes (refs.unnamedMentions keeps a comment's delivery routes). A
+// session only the comment's text names loses its mention to the edit that takes it out of the
+// text (refs.unnamedMentions, through the item index's planItemBlocks), and it stays listed here:
+// the event the batch reads carries the text it was written with, which named the session, and a
+// later edit takes back no copy of that event. A session a later edit names is listed once that
+// edit's tuples are written.
 const mentionFallbackHoldsQuery = `
-	select comment_id::text, destination
+	select comment_id::text, destination, false
 	from comment_fallback_copies
 	where comment_id = any($1::text[]::uuid[])
+	union all
+	select distinct t.from_id, t.to_id, true
+	from graph_tuples t
+	where t.from_kind = '` + graphstore.KindComment + `' and t.from_id = any($1::text[]) and t.kind = '` + graphstore.TupleMentions + `'
+	  and t.to_kind = '` + graphstore.KindSession + `' and t.asserted
 `
 
 // fallbackChoice is which of one comment's attempts names the dedupe key each of its keys'
@@ -621,14 +638,16 @@ func (m settledMention) beats(current settledMention) bool {
 }
 
 // loadMentionDeliveries reads what the mentions of every comment in ids did and which of their
-// destinations fallback rows own (mentionDeliveries), in two statements. Two events ask for a
-// comment: a comment.created that names a mentioned session, which takes the whole reading, both
-// the destinations it adds and the routes a mention's target suppresses (eventDestinations), and
-// a comment.edited whose payload names a mention, which takes that reading's failed mentions
-// alone (lookup.mentionFallbackKeys) and adds no reading to the batch's (editOnlyIDs,
+// destinations fallback rows own (mentionDeliveries), in two statements. Three events ask for a
+// comment: a comment.created that names a mentioned session and a callback reply's
+// comment.answered (readsMentions), each of which takes the whole reading, both the destinations
+// it adds and the routes a mention's target suppresses (eventDestinations), and a comment.edited
+// whose payload names a mention, which takes that reading's failed mentions alone
+// (lookup.mentionFallbackKeys) and adds no reading to the batch's (editOnlyIDs,
 // lookups.readings). Every other event, resolutions and reopenings included, asks for no comment
-// and suppresses nothing. A comment no attempt was recorded for answers empty sets, so it
-// suppresses nothing either.
+// and suppresses nothing. A comment no attempt was recorded for - a callback reply among them -
+// answers empty sets of attempts, so it suppresses nothing either, and its mentioned sessions
+// alone.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in
@@ -716,8 +735,13 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 		return fmt.Errorf("load the batch's fallback copies: %w", err)
 	}
 	var destination string
-	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination}, func() error {
-		of(commentID).held[destination] = struct{}{}
+	var mentioned bool
+	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination, &mentioned}, func() error {
+		if mentioned {
+			of(commentID).mentioned[destination] = struct{}{}
+		} else {
+			of(commentID).held[destination] = struct{}{}
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("load the batch's fallback copies: %w", err)

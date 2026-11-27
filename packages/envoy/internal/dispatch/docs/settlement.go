@@ -688,30 +688,40 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // (refs.QueueStamp), and never touches sequence allocation. What it appends joins the ledger's
 // events, after those the version write appended, which the settlement publishes once it commits.
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
-// the ask writes queued before it.
+// the ask writes queued before it, with the logins whose rows the writes it records keep once
+// they are recorded after it.
 //
-// caused holds, by an event's place in events, the writes of the node and tuple store that event
-// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
-// or the node of an ask the settlement opened and its author's follow. Their appends are queued
-// right after the event's and its stamp, naming the event's id as the id sequence left it
+// caused holds, by an event's place in events, what the write phase queues with that event
+// (eventWrites): the writes of the node and tuple store that event is the cause of
+// (graphstore.Uncaused), in the order they are stated - the version's block index, or the node of
+// an ask the settlement opened and its author's follow, what an ask's index stated - and then the
+// steps that follow them under the same event: the record of a write the event records in an
+// ask's thread, and the move of an ask it records restored open. All of them are queued right
+// after the event's append and its stamp, naming the event's id as the id sequence left it
 // (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
 // read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
 // is read as that step left it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int]eventWrites) error {
 	if len(events) == 0 {
 		return nil
 	}
 	sink := eventSink(ctx)
 	return write(ctx, st.tx, func(b *store.WriteBatch) error {
 		for index, planned := range events {
-			if err := st.service.events.QueueAppendWithLogins(b, planned, settlementEventLogins(planned), sink); err != nil {
+			writes := caused[index]
+			if err := st.service.events.QueueAppendWithLogins(b, planned, settlementEventLogins(planned, writes.kept), sink); err != nil {
 				return err
 			}
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
-			for _, stated := range caused[index] {
+			for _, stated := range writes.stated {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
+			}
+			for _, step := range writes.after {
+				if err := step(b); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

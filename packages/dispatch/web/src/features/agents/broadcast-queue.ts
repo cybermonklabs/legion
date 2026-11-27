@@ -2,7 +2,7 @@ import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentConversationQuery } from "../../api/queries";
 import type { BroadcastCreated } from "../../api/types";
 import { type Shape, shape } from "../writes/tab-storage";
 import { defineWriteKind, ofKind, type Write, type Writes } from "../writes/write-store";
@@ -66,7 +66,7 @@ const keptBroadcast = shape.record({
 /** Reads again what a broadcast made: every recipient's conversation and the broadcasts. */
 function refreshRecipients(client: QueryClient, sessions: readonly string[]): void {
   for (const session of sessions) {
-    void client.invalidateQueries({ queryKey: agentMessagesQuery(session).queryKey });
+    void client.invalidateQueries({ queryKey: agentConversationQuery(session).queryKey });
   }
   void client.invalidateQueries({ queryKey: ["broadcast"] });
 }

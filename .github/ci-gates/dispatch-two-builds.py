@@ -1,7 +1,7 @@
-# Its "Build the Dispatch server" step names an output (-o), which the simple form does not
-# reduce, so the step is pinned whole, as dispatch-browser-multiprocess's is. The Go step is a
-# gate of its own below; this gate carries that step's reads too, since the job must be
-# selected for the step to run in it.
+# Its "Build the Dispatch server" step reads the commit it stamps the build with and names an
+# output (-o), which the simple form does not reduce, so the step is pinned whole, as
+# dispatch-browser-multiprocess's is. The Go step is a gate of its own below; this gate carries
+# that step's reads too, since the job must be selected for the step to run in it.
 GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
     script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer (harness-start.ts, which "
                "e2e/global-setup.ts runs) in "
@@ -13,8 +13,8 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
 ], exact=[
     two_builds_go_step(),
     two_builds_same_step(),
-    pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
-        (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+    pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, DISPATCH_E2E_BUILD_SCRIPT, [
+        (ENVOY, ["./cmd/dispatch"], DISPATCH_E2E_BUILD, {"mode": "build"}),
     ]),
     # The browser half's stack connection limit, read before its two browser steps, which
     # start the harness's own Postgres rather than using the service.

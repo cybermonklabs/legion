@@ -73,15 +73,18 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 	}
 }
 
-// A mention whose send fails, to a session no copy of the comment reaches - a reply in a thread a
-// person started, on an issue with no route - adds no copy: the comment's comment.created payload
-// is unchanged, and once the outbox has looked at it again it still reached no topic of s2's.
-func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone(t *testing.T) {
+// A mention whose send fails, to a session no other route of the comment reaches - a reply in a
+// thread a person started, on an issue with no route - still tells that session of the comment
+// once (R5): while the send is undecided the comment's event names no topic of s2's, and once the
+// mention has failed the event is published with s2's own topic among its destinations, once, and
+// no later read of it adds a second. The comment.created payload is unchanged throughout.
+func TestAFailedMentionOfASessionNothingElseReachesGivesItOneCopy(t *testing.T) {
 	t.Parallel()
 	listener, state := newMentionListener(t)
-	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
+	// Never released: the send to s2 waits until its caller gives up, and the attempt fails. The
+	// wait is long enough for an outbox to read the comment's event while the send is still held.
 	_ = state.hold("s2")
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: 1500 * time.Millisecond})
 	issue := createInteractionIssue(t, handler, "TEST", "A failed mention", "before")
 	root := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{"body": "Where should this go?"}))
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -90,27 +93,105 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 	if session := state.awaitSend(t); session != "s2" {
 		t.Fatalf("the mention's send went to %s, want s2", session)
 	}
-	// The send is still held, so its attempt is pending while comment.created is published.
-	published := eventDeliveries(t, database, "comment.created", created.ID)
-	if len(published) != 1 || slices.Contains(published[0].Destinations, contracts.LegacyAgentSubject("s2")) {
-		t.Fatalf("comment.created deliveries = %#v, want the one event's, none of it to s2", published)
-	}
+	// The send is still held, so its attempt is pending: an outbox that reads the comment's event
+	// then holds s2's copy back, and nothing the event records names s2 yet. The attempt is read
+	// after the outbox, so the outbox read it pending.
 	before := commentCreatedRow(t, database, created.ID)
-	if before.publishedAt == nil {
-		t.Fatalf("comment.created of %s is unpublished after the outbox published it", created.ID)
+	runOutboxUntilItReads(t, database, "comment.created", created.ID)
+	if pending := commentDeliveryStates(t, database, created.ID); !slices.Equal(pending, []string{"pending"}) {
+		t.Fatalf("the mention whose send is held is %v, want its one attempt pending", pending)
+	}
+	if destinations := publishedDestinationsOf(t, database, "comment.created", created.ID); slices.Contains(destinations, contracts.LegacyAgentSubject("s2")) {
+		t.Fatalf("comment.created names %v while the mention is still being sent, want no topic of s2's", destinations)
 	}
 
+	published := eventDeliveries(t, database, "comment.created", created.ID)
 	settled := settledCommentDeliveries(t, database, created.ID)
 	if len(settled) != 1 || settled[0].State != "failed" {
 		t.Fatalf("the mention whose send never answered = %#v, want its one attempt failed", settled)
 	}
+	if len(published) != 1 || countOf(published[0].Destinations, contracts.LegacyAgentSubject("s2")) != 1 {
+		t.Fatalf("comment.created deliveries once the mention failed = %#v, want the one event's, s2's topic among them once", published)
+	}
 	again := eventDeliveries(t, database, "comment.created", created.ID)
-	if len(again) != 1 || slices.Contains(again[0].Destinations, contracts.LegacyAgentSubject("s2")) {
-		t.Fatalf("comment.created deliveries after the mention failed = %#v, want none of them to s2", again)
+	if len(again) != 1 || countOf(again[0].Destinations, contracts.LegacyAgentSubject("s2")) != 1 {
+		t.Fatalf("comment.created deliveries read again = %#v, want s2's topic among them once still", again)
 	}
 	if after := commentCreatedRow(t, database, created.ID); after.payload != before.payload || after.publishedAt == nil {
 		t.Fatalf("comment.created after the mention failed = %+v, want its payload as before and published: %+v", after, before)
 	}
+}
+
+// commentDeliveryStates is the state of each attempt of commentID's mentions, by target and then
+// attempt.
+func commentDeliveryStates(t *testing.T, database *store.Store, commentID string) []string {
+	t.Helper()
+	states, err := readStrings(context.Background(), database.Pool,
+		`select state from comment_deliveries where comment_id = $1::uuid order by target, attempt`, commentID)
+	if err != nil {
+		t.Fatalf("read the attempts of %s: %v", commentID, err)
+	}
+	return states
+}
+
+// publishedDestinationsOf is the destinations the one event of eventType about id records, none
+// while the outbox has published it nowhere.
+func publishedDestinationsOf(t *testing.T, database *store.Store, eventType, id string) []string {
+	t.Helper()
+	var destinations []string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(published_destinations, '{}') from events where type = $1 and payload->>'id' = $2`,
+		eventType, id).Scan(&destinations); err != nil {
+		t.Fatalf("read the destinations of %s %s: %v", eventType, id, err)
+	}
+	return destinations
+}
+
+// runOutboxUntilItReads runs an outbox over database until it has read the one eventType event
+// about id - published it, or held it back to be read again (next_attempt_at) - and stops it.
+func runOutboxUntilItReads(t *testing.T, database *store.Store, eventType, id string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		outbox.New(outbox.Deps{
+			Store: database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+			Listen:     database.Pool.Listener,
+			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
+		}).Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var read bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select published_at is not null or next_attempt_at is not null from events where type = $1 and payload->>'id' = $2
+		`, eventType, id).Scan(&read); err != nil {
+			t.Fatalf("read whether the outbox read %s %s: %v", eventType, id, err)
+		}
+		if read {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the outbox did not read %s %s within 5 s", eventType, id)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// countOf is how many of values are value.
+func countOf(values []string, value string) int {
+	count := 0
+	for _, held := range values {
+		if held == value {
+			count++
+		}
+	}
+	return count
 }
 
 // commentCreatedState is a comment.created row's payload, as text, and its published_at.

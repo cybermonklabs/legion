@@ -33,6 +33,9 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   block: "Artifact",
   comment: "Comment",
   component: "Component",
+  // One attempt to reach one session or role; nothing points at one today, so it is named for the
+  // day an edge does rather than left out.
+  delivery_attempt: "Delivery attempt",
   issue: "Issue",
   message: "Message",
   // The page of a role, or of a session that claimed none: it reads as whose page it is,

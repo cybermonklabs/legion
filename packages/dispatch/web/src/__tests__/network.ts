@@ -27,6 +27,7 @@ import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
 import { defineNetwork, InterceptorSource } from "msw/experimental";
+import type { MeInboxResponse } from "../api/types";
 import { TEST_ORIGIN } from "./register-dom";
 
 /** Every request a test let reach the network since the last report, each `<METHOD> <path>`. */
@@ -87,7 +88,20 @@ const shellHandlers: RequestHandler[] = [
   // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
   // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
   http.get("/api/v1/projects/:key/legion/daemon", () => Response.json(null)),
-  http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
+  // The one read, which the Inbox entry's count reads on every page (`useUnreadThreadCount`,
+  // `meInboxCountQuery`), the sidebar's Needs-you count reads, and the Inbox and its drawer draw
+  // the reader's own rows from: a reader nothing has reached.
+  http.get("/api/v1/me/inbox", () =>
+    Response.json({
+      as_of: "2026-10-12T02:00:00Z",
+      entries: [],
+      horizon: 0,
+      limit: 50,
+      offset: 0,
+      person: "alice",
+      total: 0,
+    } satisfies MeInboxResponse)
+  ),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
   // The base an upload names: before it posts a markdown file, the Upload control reads the

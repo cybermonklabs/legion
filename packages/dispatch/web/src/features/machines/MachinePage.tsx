@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
+import { openAsksQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useCappedSearchParam } from "../../lib/query-param";
 import {
@@ -85,16 +85,17 @@ function MachineView({ host }: { host: string }): ReactNode {
   // deep-linkable. The server is in the value because tmux numbers windows per server, so a
   // bare `@1` would name a window on every server of the machine at once (`windowChoice`).
   const [picked] = useCappedSearchParam("window");
-  // What the viewer is owed, read once for the page from the two queries the shell already
-  // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
-  // the four states, and the page adds no request of its own.
-  const inbox = useQuery(inboxQuery());
+  // What the viewer is owed, read once for the page - never once per pane - so a pane that needs
+  // them reads `needs-you`, the first of the four states, from two reads every page already
+  // makes: every open ask, which the margin the shell mounts on every route reads too
+  // (`useMarginItems`), and the agent state the shell reads. The page adds no request of its own.
+  const openAsks = useQuery(openAsksQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const agentState = useQuery(userAgentStateQuery()).data;
   const counts = useMemo<PaneCounts>(
     () => ({
-      asksForYou: tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),
+      asksForYou: tallyBySession(waitingOnYou(openAsks.data ?? [], viewer)),
       unreadReplies: new Map(
         Object.entries(agentState ?? {}).map(([sessionId, state]) => [
           sessionId,
@@ -102,7 +103,7 @@ function MachineView({ host }: { host: string }): ReactNode {
         ])
       ),
     }),
-    [agentState, inbox.data, viewer]
+    [agentState, openAsks.data, viewer]
   );
   // The grouping is the registry's alone, so it is rebuilt only when the rows change; the
   // drawing's age is this render's clock, so it goes on ageing while the page sits open.

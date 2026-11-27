@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -1611,10 +1612,11 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 		t.Helper()
 		commentID := comment.ID
 		found := text.Refs(refs.NewReader(ctx, tx, comment.Author, "comment", commentID, "").Mentions("Now see " + targetRef))
-		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
+		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil, nil, time.Now().UTC())
 		if err != nil {
 			t.Fatalf("plan comment %s's references: %v", commentID, err)
 		}
+		cited := replacement.Cited()
 		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 			replacement.Queue(b)
 			return nil
@@ -1630,6 +1632,10 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 		}
 		if err := refs.Stamp(ctx, tx, "comment", commentID, event.ID); err != nil {
 			t.Fatalf("stamp comment %s's mention: %v", commentID, err)
+		}
+		// The comment's citation, under the same event, as the comment's own write states it.
+		if err := graphstore.Caused(ctx, tx, cited, event.ID); err != nil {
+			t.Fatalf("state comment %s's citation: %v", commentID, err)
 		}
 		return event.ID
 	}

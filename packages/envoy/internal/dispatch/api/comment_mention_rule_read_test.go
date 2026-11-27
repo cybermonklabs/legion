@@ -239,6 +239,14 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 // delivery makes once it holds the claim (deliverResolvedCommentMention). It fails that read
 // before it is sent, as a statement timeout or a dropped connection would, by handing pgx a context
 // that is already done; every other statement passes.
+//
+// It watches batches as well as statements sent alone (pgx.BatchTracer, which pgx uses only when
+// the connection's tracer is one, as storetest.Traced installs this one): pgx hands a statement
+// sent in a batch to a batch tracer and never to TraceQueryStart, and the take goes in a batch
+// beside what it states of its attempt in the store (graphstore.QueueAttempted). The failpoint arms
+// on the take whichever way it is sent, so a take sent in a batch still arms it and the read after
+// it is still the one that fails. The read of the rule goes alone (copyrule.Holder), so only
+// TraceQueryStart fails it.
 type ruleReadFailer struct {
 	stage  atomic.Int32
 	failed atomic.Int32
@@ -253,9 +261,13 @@ const (
 
 var errRuleReadFails = errors.New("the read of the copy rule fails")
 
+// ruleReadTake is the text of the take's statement (claimedCommentDelivery.take), which arms the
+// failpoint.
+const ruleReadTake = "update comment_deliveries set claimed_at = now()"
+
 func (f *ruleReadFailer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	switch {
-	case strings.Contains(data.SQL, "update comment_deliveries set claimed_at = now()"):
+	case strings.Contains(data.SQL, ruleReadTake):
 		f.stage.CompareAndSwap(ruleReadArmed, ruleReadAfterATake)
 	case strings.Contains(data.SQL, "k.owed_keys &&") && f.stage.CompareAndSwap(ruleReadAfterATake, ruleReadFailed):
 		f.failed.Add(1)
@@ -268,19 +280,47 @@ func (f *ruleReadFailer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data 
 
 func (f *ruleReadFailer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
+// TraceBatchStart arms the failpoint on a take queued in the batch, as TraceQueryStart arms it on
+// a take sent alone, before any statement of the batch is sent.
+func (f *ruleReadFailer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if data.Batch == nil {
+		return ctx
+	}
+	for _, queued := range data.Batch.QueuedQueries {
+		if strings.Contains(queued.SQL, ruleReadTake) {
+			f.stage.CompareAndSwap(ruleReadArmed, ruleReadAfterATake)
+		}
+	}
+	return ctx
+}
+
+func (f *ruleReadFailer) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (f *ruleReadFailer) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
 // ruleReadsFail is a tracer that fails every read of the copy rule while failing is set, as
 // ruleReadFailer fails one, and counts the reads of the rule and the statements on
 // comment_deliveries the server sends, and the writes among those, since its last take.
+//
+// It counts the statements of a batch as well as those sent alone (pgx.BatchTracer), for the
+// reason ruleReadFailer watches batches: pgx hands a batched statement to a batch tracer alone, and
+// a claim or a release of an attempt goes in a batch beside what it states of the attempt in the
+// store (graphstore.QueueAttempted). A try that sent a statement on comment_deliveries in a batch
+// is counted as one that sent it alone, so it cannot pass as a try that made none. The read of the
+// rule goes alone (copyrule.Holder), so only TraceQueryStart fails it.
 type ruleReadsFail struct {
 	failing                   atomic.Bool
 	mu                        sync.Mutex
 	reads, statements, writes int
 }
 
-func (f *ruleReadsFail) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	sql := strings.ToLower(strings.Join(strings.Fields(data.SQL), " "))
+// count counts one statement the server sends, alone or in a batch, and answers whether it is a
+// read of the copy rule.
+func (f *ruleReadsFail) count(statement string) bool {
+	sql := strings.ToLower(strings.Join(strings.Fields(statement), " "))
 	rule := strings.Contains(sql, "k.owed_keys &&")
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	switch {
 	case rule:
 		f.reads++
@@ -293,8 +333,11 @@ func (f *ruleReadsFail) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data p
 			}
 		}
 	}
-	f.mu.Unlock()
-	if rule && f.failing.Load() {
+	return rule
+}
+
+func (f *ruleReadsFail) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if f.count(data.SQL) && f.failing.Load() {
 		done, cancel := context.WithCancelCause(ctx)
 		cancel(errRuleReadFails)
 		return done
@@ -303,6 +346,22 @@ func (f *ruleReadsFail) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data p
 }
 
 func (f *ruleReadsFail) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TraceBatchStart counts each statement queued in the batch, as TraceQueryStart counts one sent
+// alone, before any of them is sent.
+func (f *ruleReadsFail) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if data.Batch == nil {
+		return ctx
+	}
+	for _, queued := range data.Batch.QueuedQueries {
+		f.count(queued.SQL)
+	}
+	return ctx
+}
+
+func (f *ruleReadsFail) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (f *ruleReadsFail) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // take answers the counts since the last take and starts them again.
 func (f *ruleReadsFail) take() (reads, statements, writes int) {

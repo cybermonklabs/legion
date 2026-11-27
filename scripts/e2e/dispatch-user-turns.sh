@@ -383,7 +383,7 @@ find_session_file() {
 
 # message_id BODY: the Dispatch id of the message to the session whose body is BODY.
 message_id() {
-  human "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/messages" |
+  human "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/conversation" |
     jq -r --arg b "$1" 'first(.[] | select(.message.body == $b)) | .message.id'
 }
 # accepted ID: the attempts of message ID Dispatch records the session took as its user's own
@@ -397,7 +397,7 @@ accepted() {
 complete() { page complete "http://127.0.0.1:$dispatch_port" "$login" "$session_id" "$1" "$2" "$evidence/checks/$3.png" "${4:-}"; }
 # session_reply BODY: the first of the session's Dispatch replies to the message whose body is BODY.
 session_reply() {
-  human "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/messages" |
+  human "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/conversation" |
     jq -r --arg b "$1" 'first(.[] | select(.message.body == $b) | .replies[] | select(.author.kind == "session") | .body) // empty'
 }
 has_session_reply() { [ -n "$(session_reply "$1")" ]; }
@@ -541,7 +541,7 @@ btw_body="LEGION-394 $run BTW: what is two plus two? Answer with the numeral alo
 begin btw-is-a-side-question
 note "page: $(send btw "$btw_body" btw)"
 btw_answered() {
-  human "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/messages" |
+  human "http://127.0.0.1:$dispatch_port/api/v1/agents/$session_id/conversation" |
     jq -e --arg b "$btw_body" 'any(.[]; .message.body == $b and any(.replies[]; .author.kind == "session"))' >/dev/null
 }
 until_true 180 "the session's answer to the BTW in Dispatch" btw_answered

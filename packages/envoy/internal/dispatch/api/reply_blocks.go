@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -107,10 +108,12 @@ type replyRowPlan struct {
 	// and the read that gives a stored reply its block would find nothing
 	// (namedBlock.replyBlock).
 	replyBlock *model.ReplyBlock
-	// changes are the reference graph changes the reply's event counts, and write is the step
-	// that writes its blocks, their mentions and its references.
+	// changes are the reference graph changes the reply's event counts, write is the step that
+	// writes its blocks, their mentions and its references, and indexed is what that step states
+	// in the node and tuple store, which the reply queues under its event (graphstore.QueueCaused).
 	changes model.ReferenceChanges
 	write   docs.WriteStep
+	indexed graphstore.Uncaused
 	// refusal is the *apiError this planning earned, held back to the branch that answers with
 	// it so that no answer of the route moves. A failure that is not a refusal is returned at
 	// once instead (deferredRefusal).

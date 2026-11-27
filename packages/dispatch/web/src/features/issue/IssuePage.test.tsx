@@ -29,16 +29,17 @@ import type {
   ArtifactVersionText,
   Ask,
   GraphReferences,
-  InboxRow,
   IssueCoverage,
   IssueDetails,
   IssueReferences,
+  OpenAskRow,
   Project,
   Subscriber,
   UserIssueState,
 } from "../../api/types";
 import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
+import { openAsksAnswer } from "../inbox/inbox-fixture";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -197,7 +198,7 @@ let stubbedIssue: IssueDetails = issue;
 
 function stubIssuePage(
   nextIssue: IssueDetails,
-  inbox: InboxRow[] = [],
+  inbox: OpenAskRow[] = [],
   subscribers: Subscriber[] = [],
   state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   agents: Agent[] = []
@@ -209,14 +210,14 @@ function stubIssuePage(
   const originalListComments = api.listComments;
   const originalListIssueMessages = api.listIssueMessages;
   const originalListHandoffs = api.listHandoffs;
-  const originalGetInbox = api.getInbox;
+  const originalListOpenAsks = api.listOpenAsks;
   const originalGetMyState = api.getMyState;
   const originalListAgents = api.listAgents;
   const originalGetIssueSubscribers = api.getIssueSubscribers;
   const originalListProjects = api.listProjects;
   stubbedIssue = nextIssue;
   api.getIssue = async () => nextIssue;
-  api.getInbox = async () => inbox;
+  api.listOpenAsks = async () => openAsksAnswer(inbox);
   api.getMyState = async () => ({ "CORE-1": state });
   api.getIssueEvents = async () => [];
   // The Conversation builds its list from the issue's own asks, comments, messages and handoffs;
@@ -234,7 +235,7 @@ function stubIssuePage(
   api.listProjects = async () => [];
   return () => {
     api.getIssue = originalGetIssue;
-    api.getInbox = originalGetInbox;
+    api.listOpenAsks = originalListOpenAsks;
     api.getMyState = originalGetMyState;
     api.getIssueEvents = originalGetIssueEvents;
     api.listIssueAsks = originalListIssueAsks;
@@ -1806,7 +1807,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   };
   const originalGetIssue = api.getIssue;
   const originalGetIssueEvents = api.getIssueEvents;
-  const originalGetInbox = api.getInbox;
+  const originalListOpenAsks = api.listOpenAsks;
   const originalGetMyState = api.getMyState;
   const originalGetIssueSubscribers = api.getIssueSubscribers;
   const originalListIssueAsks = api.listIssueAsks;
@@ -1822,7 +1823,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
 
   try {
     api.getIssue = async (key: string) => (key === "CORE-2" ? secondIssue : issue);
-    api.getInbox = async () => [];
+    api.listOpenAsks = async () => openAsksAnswer([]);
     api.getMyState = async () => ({
       "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
       "CORE-2": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
@@ -1878,7 +1879,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
   } finally {
     api.getIssue = originalGetIssue;
     api.getIssueEvents = originalGetIssueEvents;
-    api.getInbox = originalGetInbox;
+    api.listOpenAsks = originalListOpenAsks;
     api.getMyState = originalGetMyState;
     api.getIssueSubscribers = originalGetIssueSubscribers;
     api.listIssueAsks = originalListIssueAsks;

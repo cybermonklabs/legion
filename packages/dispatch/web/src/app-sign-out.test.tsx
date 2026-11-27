@@ -296,7 +296,7 @@ test("a composer's typed text is not shown to another person signed in from anot
   let login = "alice";
   const agentReads = [
     spyOn(api, "listAgents").mockResolvedValue([planner]),
-    spyOn(api, "listAgentMessages").mockResolvedValue([]),
+    spyOn(api, "getAgentConversation").mockResolvedValue([]),
     spyOn(api, "getMyAgentState").mockResolvedValue({}),
   ];
   answerAgentStates().mockImplementation(async () => ({ unread_replies: 0 }));

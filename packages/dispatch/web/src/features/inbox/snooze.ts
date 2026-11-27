@@ -1,4 +1,4 @@
-import type { InboxRow } from "../../api/types";
+import type { OpenAskRow } from "../../api/types";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -88,7 +88,7 @@ export const SNOOZE_PRESETS: readonly SnoozePreset[] = [
  * Reads a row that carries no snooze at all (an issue header's `open_asks`) as not snoozed.
  */
 export function isSnoozed(
-  row: Partial<Pick<InboxRow, "snoozed_until">>,
+  row: Partial<Pick<OpenAskRow, "snoozed_until">>,
   now: number = Date.now()
 ): boolean {
   const until = row.snoozed_until;

@@ -378,7 +378,7 @@ func storeCommentWithADecisionBlock(t *testing.T, database *store.Store, issueKe
 	`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, testServerURL, createdAt, nil, nil); err != nil {
+	if _, _, err := refs.IndexItem(ctx, tx, refs.ItemComment, id, body, testServerURL, createdAt, nil, nil); err != nil {
 		t.Fatalf("index the comment's blocks: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

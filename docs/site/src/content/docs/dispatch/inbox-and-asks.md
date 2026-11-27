@@ -120,7 +120,7 @@ Type, Project and Assignee. Each opens a list you can search, and every value in
 many rows it holds, counted inside what the other four fields have already narrowed — so a value
 that reads 3 has three rows behind it, and picking it never empties the list.
 
-Type is the field that tells the kinds apart: Question, Decision, Approval, Reply and Agent
+Type is the field that tells the kinds apart: Question, Decision, Approval, Threads and Agent
 message.
 
 Each value you pick becomes a chip under the bar. Remove one with its ×, or all of them with
@@ -163,6 +163,10 @@ people as you like; the button then names the one you picked, or how many.
   every project names a default assignee, so it shows an empty list.
 - Clear the filter to see every open ask.
 
+Your own asks are read with your threads, and anybody else's with every open ask at once, which
+Dispatch reads on every page; each pick in the filter, between one person and another, narrows
+what the Inbox holds and asks the server nothing.
+
 The **Assign to me** button is on an ask Dispatch names no person for, so no ask carries it while
 every project names a default assignee. Choosing it makes the issue yours, so the ask is in your
 own list, and your counts, from then on. An ask on a project document belongs to no issue and
@@ -188,12 +192,12 @@ document, which belongs to no issue, matches the document's name too. Capitals m
 difference. The `f` key puts the focus in the box from anywhere on the page, and `Escape` there
 puts it back on the selected row, or on the first row when no row is selected.
 
-The box narrows the list the Inbox already holds, as the **Assignee** filter does: nothing is
-asked of the server again, so the sections, their counts and the keys that walk the list all
-follow what you typed. An ask the text hides drops out of the count of ticked asks and out of the
-snooze that acts on them, and keeps its tick for when it comes back. The credential requests above
-the list and the **Blocked on you** summary are not narrowed. When no ask holds every word, the
-list reads **Nothing matches this text**.
+The box narrows the list the Inbox already holds: nothing is asked of the server again, so the
+sections, their counts and the keys that walk the list all follow what you typed. An ask the text
+hides drops out of the count of ticked asks and out of the snooze that acts on them, and keeps its
+tick for when it comes back. The credential requests above the list and the **Blocked on you**
+summary are not narrowed. When no ask holds every word, the list reads **Nothing matches this
+text**.
 
 The text is part of the address too, as `?q=`, so a link carries what you searched for as well as
 whose asks you were looking at.
@@ -242,7 +246,7 @@ focused to drop every tick.
 
 Two kinds of row in the Inbox are threads rather than questions:
 
-- A **Reply** row is a thread you wrote in — an ask, a comment thread, a message thread on an
+- A **Threads** row is a thread you wrote in — an ask, a comment thread, a message thread on an
   issue — that somebody else has written in since you last read it.
 - An **Agent message** row is a one-off message you sent an agent session that the session has
   answered.
@@ -271,7 +275,7 @@ control reads **Move to Inbox** and one press puts the thread back. Somebody els
 thread you dismissed brings it back to the Inbox, unread, on its own; a reply you send from the
 **Dismissed** view leaves the thread where it is.
 
-The **Type** filter has a value for each kind, so **Reply** narrows the list to those threads
+The **Type** filter has a value for each kind, so **Threads** narrows the list to those threads
 alone, which is also what the address `/replies` opens.
 
 In the drawer each thread row is a card, with **Open**, which goes to the thread's own page,

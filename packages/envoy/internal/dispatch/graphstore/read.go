@@ -286,23 +286,58 @@ func NodesOfKind(ctx context.Context, q Queryer, kind string) ([]Node, error) {
 // scanNode reads one node row, as ReadNode and NodesOfKind both take it. A null project_key is the
 // empty Project, and a null parties nil Parties.
 func scanNode(row pgx.Row) (Node, error) {
-	var node Node
-	var attributes, madeBy []byte
-	var project *string
-	if err := row.Scan(&node.Kind, &node.ID, &node.Supertag, &node.Visibility, &node.State,
-		&attributes, &node.MadeAt, &madeBy, &node.SourceEvent, &project, &node.Parties); err != nil {
+	var held HeldNode
+	if err := row.Scan(held.Targets()...); err != nil {
 		return Node{}, err
 	}
-	if project != nil {
-		node.Project = *project
+	node, _, err := held.Node()
+	return node, err
+}
+
+// HeldNodeColumns is a node read's columns (ReadNode) off alias, a graph_nodes row a caller's
+// statement left-joins beside a row it reads already, so one statement answers both; HeldNode
+// scans them, and a row the join found no node for reads as no node.
+func HeldNodeColumns(alias string) string {
+	columns := strings.Split(nodeColumns, ", ")
+	for index, column := range columns {
+		columns[index] = alias + "." + column
 	}
-	if err := json.Unmarshal(attributes, &node.Attributes); err != nil {
-		return Node{}, fmt.Errorf("decode attributes of node %s/%s: %w", node.Kind, node.ID, err)
+	return strings.Join(columns, ", ")
+}
+
+// HeldNode is a node as HeldNodeColumns answers it, every column nullable: scanned into by its
+// Targets, and read as ReadNode answers it by Node.
+type HeldNode struct {
+	kind, id, supertag, visibility, state, project *string
+	attributes, madeBy                             []byte
+	madeAt                                         *time.Time
+	sourceEvent                                    *int64
+	parties                                        []string
+}
+
+// Targets are the scan targets of the node's columns, in nodeColumns' order.
+func (h *HeldNode) Targets() []any {
+	return []any{&h.kind, &h.id, &h.supertag, &h.visibility, &h.state, &h.attributes, &h.madeAt, &h.madeBy,
+		&h.sourceEvent, &h.project, &h.parties}
+}
+
+// Node is the node scanned and whether the store holds it: no node where the columns were null.
+func (h HeldNode) Node() (Node, bool, error) {
+	if h.kind == nil {
+		return Node{}, false, nil
 	}
-	if err := json.Unmarshal(madeBy, &node.MadeBy); err != nil {
-		return Node{}, fmt.Errorf("decode writer of node %s/%s: %w", node.Kind, node.ID, err)
+	node := Node{Kind: *h.kind, ID: *h.id, Supertag: *h.supertag, Visibility: *h.visibility, State: *h.state,
+		MadeAt: *h.madeAt, SourceEvent: *h.sourceEvent, Parties: h.parties}
+	if h.project != nil {
+		node.Project = *h.project
 	}
-	return node, nil
+	if err := json.Unmarshal(h.attributes, &node.Attributes); err != nil {
+		return Node{}, false, fmt.Errorf("decode attributes of node %s/%s: %w", node.Kind, node.ID, err)
+	}
+	if err := json.Unmarshal(h.madeBy, &node.MadeBy); err != nil {
+		return Node{}, false, fmt.Errorf("decode writer of node %s/%s: %w", node.Kind, node.ID, err)
+	}
+	return node, true, nil
 }
 
 // kindList is the kinds parameter a read binds: the empty list is sent as null, which is how

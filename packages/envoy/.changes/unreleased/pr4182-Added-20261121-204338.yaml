@@ -1,0 +1,5 @@
+kind: Added
+body: 'Dispatch answers the Inbox with one read, `GET /api/v1/me/inbox`: every item that holds a relation to the reader (what reached them, the threads they take part in, the mentions of them, their read marks and dismissals), each with the relation kinds that tie it to them, newest first, in one statement over the node store. `GET /api/v1/asks/open` takes `waiting_on=<login>` and, with neither `project` nor `author_session`, answers every project the caller may see. `GET /api/v1/agents/{session_id}/conversation` answers a session''s conversation. The Inbox page draws from these three reads.'
+time: 2026-11-21T20:43:38.837398664Z
+custom:
+    Issue: pr4182

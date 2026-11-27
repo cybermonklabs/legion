@@ -1,3 +1,4 @@
+import { inboxEntryRow } from "@legion/contracts";
 import {
   type InfiniteData,
   type Mutation,
@@ -29,12 +30,14 @@ import type {
   IDCandidate,
   IssueDetails,
   IssueReferencesAnswer,
+  MeInboxAgentRow,
+  MeInboxEntry,
+  MeInboxResponse,
   MessageEventPayload,
   MessageRead,
   MessageWithTrees,
   MyAnswerRow,
   MyAnswersResponse,
-  MyRepliesResponse,
   MyReplyRow,
   PersonNode,
   PersonNodes,
@@ -106,10 +109,10 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   "ask-thread": askThreadWrite,
   /** An issue's asks (`["asks", key, …]`), each with its thread where the read asked for it. */
   asks: ofKind("comment", markedAskRows),
-  /** A session's conversation (`agentMessagesQuery`, `["agents", session, "messages"]`), which
-   *  lists each issue message sent to it; `["agents"]` itself lists the sessions. */
+  /** A session's conversation (`agentConversationQuery`, `["agents", session, "conversation"]`),
+   *  which lists each issue message sent to it; `["agents"]` itself lists the sessions. */
   agents: ofKind("message", (answer, post, queryKey) =>
-    queryKey[2] === "messages" ? markedMessageReads(answer, post) : undefined
+    queryKey[2] === "conversation" ? markedMessageReads(answer, post) : undefined
   ),
   /** A document's own read (`["artifact", id]`), the name of each of its versions among it, a
    *  read of one version (`["artifact", id, "version", n]`, and `["artifact", id, n]` where a
@@ -144,8 +147,6 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
       ? markedPages(answer, (page) => markEach(page, marked))
       : markEach(rowsOf<DispatchEvent>(answer), marked);
   },
-  /** The Inbox's ask rows (`inboxQuery`, `["inbox", project]`), each with its thread. */
-  inbox: ofKind("comment", markedAskRows),
   /** An issue's details (`["issue", key]`): the name of each version of each of its documents.
    *  Its references read (`["issue", key, "references"]`, the Artifacts tab's): each row of
    *  `links` and `linked_from` whose node is the post or a block of it, which the row names by the
@@ -174,14 +175,18 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
       ? markedPages(answer, (page) => markedAnswerPage(page, post))
       : undefined
   ),
-  /** The reader's thread rows (`["me", "replies", …]`): the Inbox's, what they dismissed (pages),
-   *  each owner's unread set and the count's one-row page. */
-  "me replies": (answer, post) =>
-    isPages<MyRepliesResponse>(answer)
-      ? markedPages(answer, (page) => markedThreadPage(page, post))
-      : isThreadPage(answer)
-        ? markedThreadPage(answer, post)
+  /** The one read (`["me", "inbox", …]`): the reader's Inbox, what they dismissed (pages) and
+   *  each owner's unread set, each entry's Reply or Agent row, an Agent row's conversation, and an
+   *  open ask's thread. The count's read (`["me", "inbox", "count"]`) is a number, and holds no
+   *  post. */
+  "me inbox": (answer, post) =>
+    isPages<MeInboxResponse>(answer)
+      ? markedPages(answer, (page) => markedInboxAnswer(page, post))
+      : isInboxAnswer(answer)
+        ? markedInboxAnswer(answer, post)
         : undefined,
+  /** The open asks (`openAsksQuery`, `["open-asks", { project }]`), each with its thread. */
+  "open-asks": ofKind("comment", markedAskRows),
   /** A person's page (`["people", login, "nodes"]`, pages): each row of the post, which the page
    *  names by the first line of its words (`PersonPage`). */
   people: (answer, post) =>
@@ -301,10 +306,11 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  *   events: no `body`, `body_truncated`, `suggestion` or body tree, and the anchor quote the
  *   delete emptied, as the server's read of the event log gives it (`attachPostMarks` in
  *   `api/events.go`), which leaves the previews a reply's events froze of the post;
- * - a thread row of the reader's (`["me", "replies", …]`) whose root is the post (`subject`
- *   empty) or whose latest reply is (`reply.first_line` empty), and a reply of the reader's
- *   answers (`["me", "answers"]`, `body` empty);
- * - a row of a person's page (`["people", login, "nodes"]`) that is the post: an empty `title`;
+ * - a Reply or an Agent row of the reader's in the one read (`["me", "inbox", …]`) whose root is
+ *   the post (`subject` empty) or whose latest reply is (`reply.first_line` empty), and a reply
+ *   of the reader's answers (`["me", "answers"]`, `body` empty);
+ * - a row of a person's page (`["people", login, "nodes"]`) that is the post: an empty
+ *   `first_line` and no `first_line_tree`;
  * - a search hit of the post (`["search", …]`): an empty `snippet` and no `snippet_tree`;
  * - a graph read (`["references", "to", …]`) whose node is the post or a block of it, and each of
  *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
@@ -943,7 +949,7 @@ function markedAskThread<T extends Pick<AskThread, "replies">>(
   return replies === undefined ? undefined : { ...thread, replies };
 }
 
-/** A list of ask rows, each with its thread where the read carries one (`InboxRow`,
+/** A list of ask rows, each with its thread where the read carries one (`OpenAskRow`,
  *  `IssueAskThreadRow`), once `post` is corrected; undefined where no thread holds a copy. */
 function markedAskRows(answer: unknown, post: CorrectedPost): unknown[] | undefined {
   return markEach(rowsOf<{ readonly thread?: AskThread | null }>(answer), (row) => {
@@ -1090,31 +1096,71 @@ function withoutBodyTree(
   return kept;
 }
 
-/** Whether `answer` is one page of thread rows (`GET /api/v1/me/replies`). */
-function isThreadPage(answer: unknown): answer is MyRepliesResponse {
+/** Whether `answer` is one answer of the one read (`GET /api/v1/me/inbox`): its entries. */
+function isInboxAnswer(answer: unknown): answer is MeInboxResponse {
   return (
-    typeof answer === "object" && answer !== null && "rows" in answer && Array.isArray(answer.rows)
+    typeof answer === "object" &&
+    answer !== null &&
+    "entries" in answer &&
+    Array.isArray(answer.entries)
   );
 }
 
-/** One page of Inbox thread rows once `post` is corrected; undefined where no row of it holds a
+/** One answer of the one read once `post` is corrected; undefined where no entry of it holds a
  *  copy of the post. */
-function markedThreadPage(
-  page: MyRepliesResponse,
+function markedInboxAnswer(
+  answer: MeInboxResponse,
   post: CorrectedPost
-): MyRepliesResponse | undefined {
-  const rows = markEach(page.rows, (row) => markedThreadRow(row, post));
-  return rows === undefined ? undefined : { ...page, rows };
+): MeInboxResponse | undefined {
+  const entries = markEach(answer.entries, (entry) => markedInboxEntry(entry, post));
+  return entries === undefined ? undefined : { ...answer, entries };
+}
+
+/** An entry of the one read once `post` is corrected, by the row it carries (`inboxEntryRow`): an
+ *  open ask's thread, which takes comment replies, a Reply row, or an Agent row and the
+ *  conversation it carries; undefined where its row holds no copy of the post, and for an entry
+ *  that carries no row. */
+function markedInboxEntry(entry: MeInboxEntry, post: CorrectedPost): MeInboxEntry | undefined {
+  const row = inboxEntryRow(entry);
+  switch (row.kind) {
+    case "ask": {
+      const thread = post.kind === "comment" ? markedAskThread(row.ask.thread, post) : undefined;
+      return thread === undefined ? undefined : { ...entry, ask: { ...row.ask, thread } };
+    }
+    case "thread": {
+      const thread = markedThreadRow(row.thread, post);
+      return thread === undefined ? undefined : { ...entry, thread };
+    }
+    case "agent": {
+      const agent = markedAgentRow(row.agent, post);
+      return agent === undefined ? undefined : { ...entry, agent };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** An Agent row of the one read once `post` is corrected: the row as a thread row is
+ *  (`markedThreadRow`), and the conversation with its session it carries, which its reading pane
+ *  draws (`agentConversation`); undefined where neither holds a copy of the post. */
+function markedAgentRow(row: MeInboxAgentRow, post: CorrectedPost): MeInboxAgentRow | undefined {
+  const marked = markedThreadRow(row, post) as MeInboxAgentRow | undefined;
+  const conversation =
+    post.kind === "message" ? markedMessageRead(row.conversation, post) : undefined;
+  if (marked === undefined && conversation === undefined) {
+    return undefined;
+  }
+  return { ...(marked ?? row), conversation: conversation ?? row.conversation };
 }
 
 /**
- * An Inbox thread row as `GET /api/v1/me/replies` answers it once `post` is corrected: a row whose
- * root is the post carries the edit's time, or the delete's mark with no subject and the anchor
- * the delete left it (`deletedAnchor`), which the card prints the quote of (`ThreadQuote`), and
- * one whose latest reply is the post carries that reply's delete mark with no first line
- * (`readMyReplyRows` in `api/replies.go`, whose row carries the root comment's anchor). An ask's
- * and a comment's thread take comment replies, a message's message replies. Undefined for any
- * other row, and for a reply's edit, which a row does not mark.
+ * An Inbox thread row, a Reply or an Agent row, as the one read answers it once `post` is
+ * corrected: a row whose root is the post carries the edit's time, or the delete's mark with no
+ * subject and the anchor the delete left it (`deletedAnchor`), which the card prints the quote of
+ * (`ThreadQuote`), and one whose latest reply is the post carries that reply's delete mark with
+ * no first line (`scanMyReplyRow` in `api/replies.go`, whose row carries the root comment's
+ * anchor). An ask's and a comment's thread take comment replies, a message's message replies.
+ * Undefined for any other row, and for a reply's edit, which a row does not mark.
  */
 function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | undefined {
   const replyKind = row.kind === "message" || row.kind === "agent" ? "message" : "comment";
@@ -1155,15 +1201,18 @@ function markedPersonPage(page: PersonNodes, post: CorrectedPost): PersonNodes |
 }
 
 /** A row of a person's page that is the post, once `mark` is written: the edit's time, or the
- *  delete's mark with no title, as the server answers the row of a deleted comment, whose cleared
- *  body leaves no first line (`listPersonNodes` in `api/person_nodes.go`). An edit keeps the title,
- *  as every other copy keeps its words, until a read gives the new ones. */
+ *  delete's mark with no first line and no tree of it, as the server answers the row of a deleted
+ *  comment or issue message, whose cleared body leaves no first line (`listPersonNodes` in
+ *  `api/person_nodes.go`), under either of its names: `first_line`, and `title`, the name a page of
+ *  the release before reads. An edit keeps the first line, as every other copy keeps its words,
+ *  until a read gives the new ones. */
 function markedPersonNode(row: PersonNode, mark: PostMark): PersonNode {
   if (mark.kind === "edited") {
     return { ...row, edited_at: editedAfter(row.edited_at, mark.at) };
   }
-  const { deleted_by: _by, ...kept } = row;
-  return { ...kept, ...deletionMarks(mark.deletion), title: "" };
+  const { deleted_by: _by, first_line_tree: _tree, ...kept } = row;
+  // kept for one release: person-node-title
+  return { ...kept, ...deletionMarks(mark.deletion), first_line: "", title: "" };
 }
 
 /** A search answer once `post` is corrected: each hit of the post; undefined where none is. */

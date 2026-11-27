@@ -207,12 +207,14 @@ var readsWithoutAViewer = map[string]string{
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
 	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
 	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanItemReplace":    serverWork + " - a write's read phase plans the reconciliation of an item's references against its refs rows, with the citations those rows stand for, which the write queues as its own tuples",
 	"PlanOpenedAskTies":  serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
 	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
+	"ReadItemScope":      serverWork + " - a write's read phase reads the node the store holds of the item whose blocks and citations it writes, which its block nodes and citations take, and which no caller outside this package can read back",
 	"RecordExcerpts":     serverWork,
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
@@ -552,18 +554,23 @@ func storeReads(t *testing.T) (viewing, without []string) {
 	return viewing, without
 }
 
-// recordingQueryer is the Queryer a read runs on while this test reads the statements it issues.
+// recordingQueryer is the Queryer a read runs on while a test reads the statements it issues, and
+// the arguments each was bound with, at the same place: a test that explains a statement it
+// recorded binds it as the read did (TestAPersonsListKeysEveryReadOfTheStoreOnThePerson).
 type recordingQueryer struct {
 	inner      Queryer
 	statements []string
+	arguments  [][]any
 }
 
 func (r *recordingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	r.statements = append(r.statements, sql)
+	r.arguments = append(r.arguments, args)
 	return r.inner.Query(ctx, sql, args...)
 }
 
 func (r *recordingQueryer) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	r.statements = append(r.statements, sql)
+	r.arguments = append(r.arguments, args)
 	return r.inner.QueryRow(ctx, sql, args...)
 }

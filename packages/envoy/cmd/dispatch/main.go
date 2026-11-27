@@ -81,10 +81,13 @@ const (
 	idleTimeout       = 2 * time.Minute
 )
 
-// buildCommit is the legion commit this binary was built from. Only the image build stamps it
-// (packages/envoy/docker/Dockerfile passes its LEGION_COMMIT build argument through -ldflags -X,
-// and refuses anything but a full commit sha); every other build leaves it empty, and /healthz
-// then reports the commit as null rather than naming one it cannot vouch for.
+// buildCommit is the legion commit this binary was built from, stamped through -ldflags -X. The
+// image build stamps it (packages/envoy/docker/Dockerfile passes its LEGION_COMMIT build
+// argument, and refuses anything but a full commit sha), and so do the e2e harness's build
+// (packages/dispatch/e2e/run-server.sh, with its checkout's commit), the CI steps that build that
+// binary ahead of it, and the base builds of a two-build check. A build nothing stamped - a
+// `go test` binary, a devbox `go run` - leaves it empty, and /healthz then reports the commit as
+// null rather than naming one it cannot vouch for.
 var buildCommit string
 
 type bootConfig struct {

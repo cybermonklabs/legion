@@ -49,7 +49,7 @@ import type {
   GraphReferences,
   Handoff,
   HandoffSummary,
-  InboxRow,
+  InboxListState,
   Issue,
   IssueCheckResults,
   IssueCoverage,
@@ -64,11 +64,11 @@ import type {
   ItemBlocks,
   MarkdownRoundTripInput,
   MarkdownRoundTripResponse,
+  MeInboxResponse,
   Message,
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
-  MyRepliesResponse,
   OpenAsksResponse,
   PostHistoryRead,
   Priorities,
@@ -1662,20 +1662,23 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
-  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
-   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
-   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
-   *  route does (`#url`). Answers Dispatch's JSON, or any other 2xx's body as the bytes that
-   *  came, an attachment's whatever its type (`RouteAnswer`, `#route`), and refuses a 2xx whose
-   *  body holds a credential the request presented (`DispatchCredentialEchoError`).
+  /** `GET <path>`, for `dispatch api`, and for the reads `dispatch inbox` makes of a server of the
+   *  release before (`inboxReadOfTheReleaseBefore`): one read of a route no method here names.
+   *  `path` begins `/api/v1` and may carry a query, and the contract's rule for `dispatch api`'s
+   *  (`dispatch_api`) refuses a scheme, a host and a dot segment, so it resolves under this
+   *  client's server as every other route does (`#url`). Answers Dispatch's JSON, or any other
+   *  2xx's body as the bytes that came, an attachment's whatever its type (`RouteAnswer`,
+   *  `#route`), and refuses a 2xx whose body holds a credential the request presented
+   *  (`DispatchCredentialEchoError`).
    *
    *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
    *  the token presented is not live) and throws a refusal as `#payloadOf` throws it, an answer
    *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
-   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
-   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
-   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
-   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+   *  client makes but `sendRoute`'s and `meInbox`'s, it skips `#noRoute`, so it neither sends that
+   *  request again nor turns the answer into `DispatchNoRouteError`. The caller wrote this path,
+   *  and a caller-written path Dispatch has no route for is far more often a wrong path than half
+   *  of a release in progress, so Dispatch's own refusal, which names the route, is printed as it
+   *  came. */
   async readRoute(path: string): Promise<RouteAnswer> {
     return this.#route("GET", path);
   }
@@ -1692,24 +1695,28 @@ export class DispatchClient {
     return this.#route(method, path, body);
   }
 
-  /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
-   *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
-   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
-   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
-   *  which is what the Inbox page shows by default. The route reads the caller's own `person`
-   *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
-  async inbox(assignee: string): Promise<InboxRow[]> {
-    return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
-  }
-
-  /** `GET /api/v1/me/replies?kind=reply,agent`: every unread thread the caller's Inbox lists —
-   *  a thread they wrote in that somebody else has written in since, and a one-off message they
-   *  sent an agent session that it answered — newest reply first, in the server's own order,
-   *  which no reader re-sorts. No `limit` is asked for, so the answer holds every row. The route
-   *  reads the caller's own `person` scope and refuses a credential without it with 403
-   *  OAUTH_SCOPE_REQUIRED, as the Inbox does. */
-  async myReplies(): Promise<MyRepliesResponse> {
-    return this.#json("GET", ["api", "v1", "me", "replies"], undefined, { kind: "reply,agent" });
+  /** `GET /api/v1/me/inbox?state=<state>`: the caller's own Inbox from the one read, newest
+   *  activity first, every entry of it for `inbox` and `unread`, since no `limit` is asked for
+   *  (under `dismissed`, which `dispatch inbox` does not ask for, the route answers one page of
+   *  200). `inbox` holds the open asks that wait on the caller - an ask waits on the person it was
+   *  handed to, else on its issue's assignee, else on its project's default assignee, so the
+   *  caller's are the asks handed to them, the asks nobody handed on of the issues assigned to
+   *  them, and the asks nobody handed on, on an issue nobody holds or on a project document, of a
+   *  project whose default assignee they are - beside their Reply and Agent rows, read or not;
+   *  `unread` holds the threads they wrote in that somebody else has written in since, and the
+   *  one-off messages they sent an agent session that it answered. The route reads the caller's
+   *  own `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED.
+   *
+   *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
+   *  the token presented is not live) and throws an answer of no route as it came (`isNoRoute`),
+   *  as `readRoute` does: `dispatch inbox` has an answer of its own to a Dispatch without this
+   *  route, the two reads of the release before, which every build serves
+   *  (`inboxReadOfTheReleaseBefore`), so asking again over a roll's waits would only delay it.
+   *  kept for one release: dispatch-inbox-fallback
+   */
+  async meInbox(state: InboxListState): Promise<MeInboxResponse> {
+    const url = this.#url(["api", "v1", "me", "inbox"], { state });
+    return this.#response<MeInboxResponse>("GET", url, (await this.#send("GET", url)).answer);
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may

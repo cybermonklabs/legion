@@ -4,8 +4,8 @@ import {
   createProject,
   getArtifact,
   getAsk,
-  getInbox,
   getIssue,
+  listOpenAsks,
   patchIssue,
   resolveAsk,
 } from "./api";
@@ -122,7 +122,7 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
     await expect(list.locator(`[data-inbox-row="${seed.decisionAskId}"]`)).toHaveCount(0);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
     await expect
-      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .poll(async () => (await listOpenAsks()).some((row) => row.id === seed.decisionAskId))
       .toBe(false);
   } finally {
     await alice.close();
@@ -340,7 +340,7 @@ test("an options-only answer the server refuses keeps its question in the column
     await expect(list.locator(`[data-inbox-row="${seed.decisionAskId}"]`)).toHaveCount(1);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
     await expect
-      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .poll(async () => (await listOpenAsks()).some((row) => row.id === seed.decisionAskId))
       .toBe(true);
   } finally {
     await alice.close();
@@ -491,14 +491,14 @@ test("Open page opens the document of the question, at its section, for each kin
     seed.runbookDecision,
     seed.beforeHeading,
   ];
-  const inbox = await getInbox();
+  const open = await listOpenAsks();
   expect(
-    inbox.find((row) => row.id === seed.talkDecision),
+    open.find((row) => row.id === seed.talkDecision),
     "question 1's Inbox row names no project document"
   ).not.toHaveProperty("document");
   expect(
     questions.map((id) => {
-      const row = inbox.find((listed) => listed.id === id);
+      const row = open.find((listed) => listed.id === id);
       return { id, waiting_on: row?.waiting_on, waiting_on_person: row?.waiting_on_person };
     }),
     "items 1 to 7 each wait on alice"
@@ -642,7 +642,7 @@ test("on a phone the reading view answers a decision block, steps and approves a
     await card.getByRole("radio", { exact: true, name: "Ledger first" }).click();
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
-      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .poll(async () => (await listOpenAsks()).some((row) => row.id === seed.decisionAskId))
       .toBe(false);
 
     // The view reads the next row, the request to approve version 4: Next change steps to its

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -216,6 +217,13 @@ func TestTheCensusResolvesAMovedToIntoAnAskOnlyToALiveAskNode(t *testing.T) {
 // say which index each read can take, and a read no index serves shows as a scan with none.
 func planWithoutSeqScans(t *testing.T, database *store.Store, statement string, arguments ...any) json.RawMessage {
 	t.Helper()
+	return explainWithoutSeqScans(t, database, "format json", statement, arguments...)
+}
+
+// explainWithoutSeqScans is the plan EXPLAIN with options gives of statement with sequential scans
+// off, in a transaction of its own (planWithoutSeqScans, analyzedPlanWithoutSeqScans).
+func explainWithoutSeqScans(t *testing.T, database *store.Store, options, statement string, arguments ...any) json.RawMessage {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -226,7 +234,7 @@ func planWithoutSeqScans(t *testing.T, database *store.Store, statement string, 
 		t.Fatalf("disable sequential scans: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+statement, arguments...).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain ("+options+") "+statement, arguments...).Scan(&raw); err != nil {
 		t.Fatalf("explain the statement: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)
@@ -269,10 +277,19 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 // holds (currentOutOfNodes, statedOutOfNodes) through graph_tuples_current alone, an index of the
 // store's set, in three keyed scans: the walk's first node of each kind, the walk's next node past
 // each one, and the probe of each node's tuples of those kinds. graph_edges' answer of each tie the
-// census holds it to (graphEdgesOut) is read node by node, so the view's tuple arm reads
-// graph_tuples through one scan keyed by the node's kind and its id: a plan that keys the kind
-// alone reads every tuple of that kind, and reads them again for each node. The census holds the
-// view's answer of each tie it answers, each by name.
+// census holds it to (graphEdgesOut) is read node by node, through exactly two probes of
+// graph_tuples, each keyed by the node's id: the view's tuple arm on graph_tuples_as_of_out, keyed
+// by the node's kind and its id, and the arm over an item's blocks on graph_tuples_current, keyed
+// by (block, the node's id, the tie's kind). That second arm is migration 20261126045003's: it
+// answers a block at an item's address under a from_kind it reads off the address
+// (comment_block, message_block, ask_block), and PostgreSQL drops an arm from a plan only where
+// the read's value and the arm's are both constants, so a read that binds from_kind as each node's
+// kind keeps it; the reply arms render their kind as the constant replies_to (20261126045001,
+// 20261126045002), and every other kind's read drops them. A third probe, or one not keyed by the
+// node's id, fails this; so does the item block arm's probe answering a row for a node that is no
+// block, which it cannot, no block's address being an ask's id. A plan that keys the kind alone
+// reads every tuple of that kind, and reads them again for each node. The census holds the view's
+// answer of each tie it answers, each by name.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -287,7 +304,7 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want the one of the owners' alias_of", keyed)
 	}
 	if keyed := requireKeyedTupleReads(t, keys, "the session row side",
-		planWithoutSeqScans(t, database, `select s.id from (`+recordedSessions(censusAuthors)+`) s`, bound...),
+		planWithoutSeqScans(t, database, `select s.id from (`+recordedSessions(censusAuthors, MessagesNameTheirNode)+`) s`, bound...),
 		"graph_tuples_current"); keyed != 0 {
 		t.Errorf("the session row side reads graph_tuples through %d scan(s), want none: the stored authors are bound", keyed)
 	}
@@ -307,30 +324,91 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 		}
 	}
 
+	// The six ties graph_edges answers, each with the tuple kind its read keys.
+	edgeKinds := map[string]string{
+		refs.TupleShaped + edgeSuffix:           refs.TupleShaped,
+		refs.TupleFromAsk + edgeSuffix:          refs.TupleFromAsk,
+		graphstore.TupleDecidedBy + edgeSuffix:  graphstore.TupleDecidedBy,
+		graphstore.TupleFollowedBy + edgeSuffix: graphstore.TupleFollowedBy,
+		"ask_parent" + edgeSuffix:               graphstore.TupleOwnedBy,
+		"ask_anchor" + edgeSuffix:               graphstore.TupleAnchoredTo,
+	}
 	var edges []string
 	for _, held := range projections {
 		if held.table != "graph_edges" {
 			continue
 		}
 		edges = append(edges, held.name)
-		plan := planWithoutSeqScans(t, database, held.rows)
-		if keyed := requireKeyedTupleReads(t, keys, "graph_edges' "+held.name, plan); keyed != 1 {
-			t.Errorf("graph_edges' %s reads graph_tuples through %d keyed scan(s), want 1: the probe of each node's tuples",
-				held.name, keyed)
+		kind, known := edgeKinds[held.name]
+		if !known {
+			t.Errorf("the census holds graph_edges' answer of %s, which this test names no tuple kind of", held.name)
+			continue
 		}
+		plan := planWithoutSeqScans(t, database, held.rows)
+		requireKeyedTupleReads(t, keys, "graph_edges' "+held.name, plan)
+		var probes []string
 		for _, scan := range explaintest.IndexScans(t, plan) {
-			if strings.HasPrefix(scan.Index, "graph_tuples") && !strings.Contains(scan.Cond, "from_id = n.id") {
-				t.Errorf("graph_edges' %s reads %s under the condition %q, want it keyed by each node's id: %s",
-					held.name, scan, scan.Cond, plan)
+			if strings.HasPrefix(scan.Index, "graph_tuples") {
+				probes = append(probes, scan.Index+" "+scan.Cond)
 			}
 		}
-	}
-	for _, tie := range []string{refs.TupleShaped, refs.TupleFromAsk, graphstore.TupleDecidedBy,
-		graphstore.TupleFollowedBy, "ask_parent", "ask_anchor"} {
-		if !slices.Contains(edges, tie+edgeSuffix) {
-			t.Errorf("the census holds graph_edges' answer of %v, and not of %s, a tie graph_edges answers", edges, tie)
+		slices.Sort(probes)
+		want := []string{
+			"graph_tuples_as_of_out ((from_kind = n.kind) AND (from_id = n.id))",
+			"graph_tuples_current ((from_kind = 'block'::text) AND (from_id = n.id) AND (kind = '" + kind + "'::text))",
+		}
+		if !slices.Equal(probes, want) {
+			t.Errorf("graph_edges' %s reads graph_tuples through %q, want exactly the tuple arm's and the item block arm's probes %q, each keyed by the node's id: %s",
+				held.name, probes, want, plan)
 		}
 	}
+	slices.Sort(edges)
+	if names := slices.Sorted(maps.Keys(edgeKinds)); !slices.Equal(edges, names) {
+		t.Errorf("the census holds graph_edges' answer of %v, want the six ties it answers, %v", edges, names)
+	}
+
+	// The item block arm's probe finds nothing for a node that is no block: no block's address is
+	// an ask's id. Over a store holding an ask's node, each read of a tie an ask holds, narrowed to
+	// that node, reaches it (its tuple arm probe ran) and makes its item block arm probe once, as
+	// EXPLAIN ANALYZE measures them.
+	const ask = "00000000-0000-4000-8000-0000000000a5"
+	writeTestTuples(t, database, []graphstore.Node{graphstore.AskNode(ask, "CORE", nil, censusWriter, time.Now().UTC())}, nil)
+	analyzed := 0
+	for _, held := range projections {
+		if held.table != "graph_edges" || !slices.Contains(strings.Split(held.nodeKind, ", "), graphstore.KindAsk) {
+			continue
+		}
+		analyzed++
+		plan := analyzedPlanWithoutSeqScans(t, database,
+			held.rows+"\n\t\t  and n.kind = '"+graphstore.KindAsk+"' and n.id = $1", ask)
+		var general, item []explaintest.Node
+		for _, node := range explaintest.Nodes(t, plan) {
+			switch {
+			case node.Index == "graph_tuples_as_of_out":
+				general = append(general, node)
+			case node.Index == "graph_tuples_current" && strings.Contains(node.IndexCond, "(from_kind = 'block'::text)"):
+				item = append(item, node)
+			}
+		}
+		if len(general) != 1 || general[0].Loops < 1 {
+			t.Errorf("graph_edges' %s read of ask %s runs its tuple arm probe %v, want once at least, so the bound below is read for that node: %s",
+				held.name, ask, general, plan)
+		}
+		if len(item) != 1 {
+			t.Errorf("graph_edges' %s read of ask %s has the item block arm probes %+v, want one: %s",
+				held.name, ask, item, plan)
+		}
+	}
+	if analyzed == 0 {
+		t.Fatal("the census holds no tie of graph_edges an ask holds, so no read above was analyzed")
+	}
+}
+
+// analyzedPlanWithoutSeqScans is planWithoutSeqScans run under EXPLAIN ANALYZE, so each node of
+// the plan carries how many times it ran and how many rows it answered.
+func analyzedPlanWithoutSeqScans(t *testing.T, database *store.Store, statement string, arguments ...any) json.RawMessage {
+	t.Helper()
+	return explainWithoutSeqScans(t, database, "analyze, format json", statement, arguments...)
 }
 
 // typedBlock writes a block node of document at address, of supertag and in state, as the typed

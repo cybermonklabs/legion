@@ -502,6 +502,9 @@ func holdsKeptAskAttribute(node *pmdoc.Node) bool {
 // kept for one release: stored-ask-state
 func askBlocksWithAnAsk(ctx context.Context, tx pgx.Tx, document string, tree *pmdoc.Node) (map[string]bool, error) {
 	blocks, _ := readableAskBlocks(tree)
+	if err := lockAskBlocksForWrite(ctx, tx, document); err != nil {
+		return nil, err
+	}
 	read, err := readBlockAsks(ctx, tx, document, nil, blocks, readCopiedAskSources)
 	if err != nil {
 		return nil, err

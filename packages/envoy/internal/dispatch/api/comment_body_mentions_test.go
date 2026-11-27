@@ -326,6 +326,76 @@ func TestCommentEditChangesWhoItNamesAndSendsNothing(t *testing.T) {
 	}
 }
 
+// The edit records a new mention's participation under its own event, but neither sends a
+// delivery nor creates any delivery records.
+func TestAnEditThatNewlyMentionsAPersonMakesThemTakePartAndReachesNobody(t *testing.T) {
+	t.Parallel()
+	const bob = "bob@example.com"
+	for _, route := range []struct {
+		name, kind string
+		ledgers    []string
+	}{
+		{"editComment", "comment", []string{"comment_mentions", "comment_deliveries", "comment_fallback_copies"}},
+		{"editMessage", "message", []string{"message_deliveries"}},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			listener, sends := partyListener(t)
+			defer listener.Close()
+			handler, database := newTargetedMessageHandler(t, listener.URL)
+			issue := createInteractionIssue(t, handler, "TEST", "Edited person mention", "before")
+			body := map[string]any{"body": "Nobody yet."}
+			var id string
+			if route.kind == "comment" {
+				id = createThreadComment(t, handler, issue.Key, body, "alice").ID
+			} else {
+				id = createIssueMessage(t, handler, issue.Key, body, "alice").ID
+			}
+			participation := func() []string {
+				t.Helper()
+				events, err := readStrings(t.Context(), database.Pool, `
+					select source_event::text from graph_tuples
+					where kind = 'participates_in' and asserted
+					  and from_kind = 'person' and from_id = $1
+					  and to_kind = $2 and to_id = $3
+				`, bob, route.kind, id)
+				if err != nil {
+					t.Fatalf("read Bob's participation: %v", err)
+				}
+				return events
+			}
+			if before := participation(); len(before) != 0 {
+				t.Fatalf("Bob's participation before the edit = %v, want none", before)
+			}
+			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/"+route.kind+"s/"+id,
+				map[string]any{"body": "[Bob](dispatch://person/" + bob + ") please look."}, "alice")
+			if response.Code != http.StatusOK {
+				t.Fatalf("edit: status=%d body=%s", response.Code, response.Body)
+			}
+			event := writeEventOf(t, database, route.kind+".edited", id)
+			if after := participation(); !slices.Equal(after, []string{fmt.Sprint(event)}) {
+				t.Errorf("Bob's participation after the edit = %v, want exactly one assertion from edit event %d", after, event)
+			}
+			var delivered int
+			if err := database.Pool.QueryRow(t.Context(), `
+				select count(*) from graph_tuples
+				where kind = 'delivered_to' and to_kind = 'person' and to_id = $1
+			`, bob).Scan(&delivered); err != nil || delivered != 0 {
+				t.Errorf("deliveries to Bob = %d, want none (error: %v)", delivered, err)
+			}
+			for _, table := range route.ledgers {
+				var records int
+				if err := database.Pool.QueryRow(t.Context(), "select count(*) from "+table+
+					" where "+route.kind+"_id = $1", id).Scan(&records); err != nil || records != 0 {
+					t.Errorf("%s rows for the edited post = %d, want none (error: %v)", table, records, err)
+				}
+			}
+			if sent := sends(); len(sent) != 0 {
+				t.Errorf("listener sends = %#v, want none", sent)
+			}
+		})
+	}
+}
+
 // A party reference a code context holds names nobody: the body is showing the address rather
 // than naming its party, which is how every renderer of the record draws it. The three contexts
 // are a fenced code block, an indented code block and a code span; nothing is listed, nothing is

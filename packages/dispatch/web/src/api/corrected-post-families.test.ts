@@ -22,8 +22,9 @@ import {
 } from "../__tests__/correction-feed";
 import { graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { oneReadAnswer } from "../features/inbox/inbox-fixture";
 import { useMarginItems } from "../features/margin/useMarginItems";
-import { replyRow } from "../features/threads/replies-fixture";
+import { agentRow, replyRow, withConversation } from "../features/threads/replies-fixture";
 import { ApiError, ambiguousItems, api } from "./client";
 import {
   CORRECTED_POST_FAMILIES,
@@ -32,7 +33,7 @@ import {
   REFUSAL_FAMILIES,
 } from "./corrected-post";
 import { useEventFeed } from "./event-feed";
-import { referenceTargetsQuery, whoAmIQuery } from "./queries";
+import { openAsksQuery, referenceTargetsQuery, whoAmIQuery } from "./queries";
 import { DispatchQueryClient, hearLiveEvent } from "./query-client";
 import type {
   Artifact,
@@ -43,6 +44,7 @@ import type {
   IssueReferences,
   MessageRead,
   MessageWithTrees,
+  OpenAskRow,
   ReferenceLink,
 } from "./types";
 
@@ -380,7 +382,7 @@ test("every computed query key resolves to the families it names", () => {
   ).toEqual([]);
   // The positive control: the reader finds C-Q1's families and the computed ones C-Q1 misses.
   expect(SOURCE_FAMILIES.has("issue-messages")).toBe(true);
-  expect(SOURCE_FAMILIES.has("me replies")).toBe(true);
+  expect(SOURCE_FAMILIES.has("me inbox")).toBe(true);
 });
 
 test("every query family the source keys is written by a correction or listed as holding no post", () => {
@@ -450,7 +452,7 @@ const WRITTEN_ELSEWHERE: Readonly<
     file: "api/corrected-post-messages.test.ts",
     test: "a message's delete writes its mark into the issue's message list, as into the pinned copy",
   },
-  "me replies": {
+  "me inbox": {
     file: "features/inbox/useInboxThreadRows.test.tsx",
     test: "a thread row whose refetch fails after its post's edit and delete reads as edited, then deleted",
   },
@@ -567,10 +569,10 @@ const DOCUMENT = {
 /** A read of version 2 of doc-1 alone, with its name. */
 const VERSION_TWO = { markdown: "Hold the deploy until Monday.\n", number: 2, summary: OLD_WORDS };
 
-/** Two Inbox thread rows of `kind` (`GET /api/v1/me/replies`): one whose root is the post, with its
- *  words as the row's subject and, for a comment, the root's anchor, whose quote the card prints
- *  (`ThreadQuote`); and one whose latest reply is the post, with its words as that reply's first
- *  line. */
+/** Two Inbox thread rows of `kind` (a Reply row of the one read, `GET /api/v1/me/inbox`): one
+ *  whose root is the post, with its words as the row's subject and, for a comment, the root's
+ *  anchor, whose quote the card prints (`ThreadQuote`); and one whose latest reply is the post,
+ *  with its words as that reply's first line. */
 function threadRows(kind: "comment" | "message") {
   return [
     replyRow(POST, {
@@ -765,8 +767,8 @@ const ROWS: readonly WriteRow[] = [
   {
     answer: [{ id: "ask-1", thread: askThread() }],
     copies: (answer) => threadCopies(answer, 0, "thread"),
-    family: "inbox",
-    key: ["inbox"],
+    family: "open-asks",
+    key: ["open-asks", {}],
     kind: "comment",
   },
   {
@@ -859,7 +861,7 @@ const ROWS: readonly WriteRow[] = [
       marksAt(answer, 0, "replies", 0, "reply_block"),
     ],
     family: "agents",
-    key: ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "messages"],
+    key: ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "conversation"],
     kind: "message",
   },
   {
@@ -902,28 +904,60 @@ const ROWS: readonly WriteRow[] = [
     key: ["me", "answers"],
     kind: "comment",
   },
-  // What the reader dismissed (pages), and one owner's unread set (one page).
+  // The one read: the reader's Inbox, with an open ask's thread and two Reply rows; what they
+  // dismissed (pages), with two Reply rows and an Agent row carrying its conversation, the post as
+  // that conversation's message; and one owner's unread set (one answer).
   {
-    answer: {
-      pageParams: [0],
-      pages: [{ limit: 20, offset: 0, rows: threadRows("comment"), total: 2 }],
-    },
-    copies: (answer) => [marksAt(answer, "pages", 0, "rows", 0)],
-    deletedCopies: (answer) => [marksAt(answer, "pages", 0, "rows", 1, "reply")],
-    family: "me replies",
-    key: ["me", "replies", "dismissed"],
+    answer: oneReadAnswer([
+      { id: "ask-1", thread: askThread() } as unknown as OpenAskRow,
+      ...threadRows("comment"),
+    ]),
+    copies: (answer) => [
+      ...threadCopies(answer, "entries", 0, "ask", "thread"),
+      marksAt(answer, "entries", 1, "thread"),
+    ],
+    deletedCopies: (answer) => [marksAt(answer, "entries", 2, "thread", "reply")],
+    family: "me inbox",
+    key: ["me", "inbox", "inbox"],
     kind: "comment",
   },
   {
-    answer: { limit: 20, offset: 0, rows: threadRows("message"), total: 2 },
-    copies: (answer) => [marksAt(answer, "rows", 0)],
-    deletedCopies: (answer) => [marksAt(answer, "rows", 1, "reply")],
-    family: "me replies",
-    key: ["me", "replies", "unread", "CORE-1"],
+    answer: {
+      pageParams: [undefined],
+      pages: [
+        oneReadAnswer([
+          ...threadRows("message"),
+          withConversation(agentRow(OTHER), {
+            message: wordyMessage(),
+            replies: [quotingReply("message") as MessageWithTrees],
+          }),
+        ]),
+      ],
+    },
+    copies: (answer) => {
+      const conversation = at(answer, "pages", 0, "entries", 2, "agent", "conversation");
+      return [
+        marksAt(answer, "pages", 0, "entries", 0, "thread"),
+        marksAt(conversation, "message"),
+        marksAt(conversation, "replies", 0, "reply_block"),
+      ];
+    },
+    deletedCopies: (answer) => [marksAt(answer, "pages", 0, "entries", 1, "thread", "reply")],
+    family: "me inbox",
+    key: ["me", "inbox", "dismissed"],
     kind: "message",
   },
-  // A person's page (`PersonPage`, pages): the post's row, named by the first line of its words,
-  // beside another comment's.
+  {
+    answer: oneReadAnswer(threadRows("message")),
+    copies: (answer) => [marksAt(answer, "entries", 0, "thread")],
+    deletedCopies: (answer) => [marksAt(answer, "entries", 1, "thread", "reply")],
+    family: "me inbox",
+    key: ["me", "inbox", { issue: "CORE-1" }],
+    kind: "message",
+  },
+  // A person's page (`PersonPage`, pages): the post's row, named by the first line of its words
+  // and the tree of that line, and by that line again as `title`, the name a page of the release
+  // before reads, beside another comment's.
   {
     answer: {
       pageParams: [0],
@@ -935,6 +969,8 @@ const ROWS: readonly WriteRow[] = [
           rows: [
             {
               created_at: "2026-11-19T00:00:00Z",
+              first_line: OLD_WORDS,
+              first_line_tree: WORDS_TREE,
               href: `/issues/CORE-1/comments/${POST}`,
               id: POST,
               kind: "comment",
@@ -943,6 +979,7 @@ const ROWS: readonly WriteRow[] = [
             },
             {
               created_at: "2026-11-18T00:00:00Z",
+              first_line: "Agreed.",
               href: `/issues/CORE-1/comments/${OTHER}`,
               id: OTHER,
               kind: "comment",
@@ -1518,7 +1555,7 @@ test("a margin action refused after its comment's delete puts back no word of th
   client.setQueryData(["issue", "CORE-1"], { artifacts: [SPEC], primary_artifact_id: SPEC.id });
   client.setQueryData(["asks", "CORE-1"], []);
   client.setQueryData(comments, [commentOf(POST, { suggestion })]);
-  client.setQueryData(["inbox"], []);
+  client.setQueryData(openAsksQuery().queryKey, []);
   client.setQueryData(["user-state"], {});
   const save = Promise.withResolvers<never>();
   const acceptComment = spyOn(api, "acceptComment").mockReturnValue(save.promise);
@@ -1626,7 +1663,7 @@ test("a delete empties a cached event's anchor quote where its own event's is em
 });
 
 // A delete empties the anchor quote of a cached Inbox thread row whose root is the post, where it
-// emptied the comment's. The row carries its root comment's anchor (`readMyReplyRows` in
+// emptied the comment's. The row carries its root comment's anchor (`scanMyReplyRow` in
 // `api/replies.go`), and the card prints that anchor's quote above the thread (`ThreadQuote`).
 // Where the root is a pending insert suggestion, the quote is the text the insert put in the
 // document, the comment's own words: its delete empties the row's quote, as it does the comment's
@@ -1634,20 +1671,20 @@ test("a delete empties a cached event's anchor quote where its own event's is em
 // delete that leaves the quote, a replace suggestion's or a plain comment's, which is the
 // document's own text, leaves the row's.
 test("a delete empties a cached Inbox thread row's anchor quote where its own event's is empty, and keeps a quote of the document's text", () => {
-  const rows = ["me", "replies", "inbox"];
+  const rows = ["me", "inbox", "inbox"];
   const rowAfter = (cached: string, deleted: string) => {
     const client = new QueryClient();
-    client.setQueryData(rows, {
-      limit: 20,
-      offset: 0,
-      rows: [replyRow(POST, { anchor: { ...INSERT_ANCHOR, quote: cached }, subject: OLD_WORDS })],
-      total: 1,
-    });
+    client.setQueryData(
+      rows,
+      oneReadAnswer([
+        replyRow(POST, { anchor: { ...INSERT_ANCHOR, quote: cached }, subject: OLD_WORDS }),
+      ])
+    );
     markCorrectedPost(
       client,
       correction("comment", POST, false, { anchor: { ...INSERT_ANCHOR, quote: deleted } })
     );
-    return at(client.getQueryData(rows), "rows", 0);
+    return at(client.getQueryData(rows), "entries", 0, "thread");
   };
   const insert = rowAfter(OLD_WORDS, "");
   const kept = rowAfter("the old wording", "the old wording");

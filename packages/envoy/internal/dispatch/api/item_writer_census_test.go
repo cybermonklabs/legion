@@ -64,17 +64,17 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Eighteen entries take no owner lock - seven exceptions, since cmd/dispatch-seed's three loaders
+// Twenty entries take no owner lock - eight exceptions, since cmd/dispatch-seed's three loaders
 // share one, the boot rename pass's three statement builders share another, the migration
-// runners' four writers of their version tables share a third and the broker's hold store's five
-// writers share a fourth - and each says why. Everything else on the list holds the item's owner,
-// which is what makes the advisory lock at refs.LockItemOwner enough: those that take it in a
-// transaction they open are rows of the lock table, which proves it by holding it
-// (item_row_owner_lock_test.go), and those that write inside a transaction their caller opened
-// rest on the lock that caller took, which no test here or there drives; the gap map
-// (itemRowLockNoRow) names each with why, and TestTheLockTablePlacesEveryWriterTheCensusNames
-// keeps every entry in one of the two. That any of them still takes or holds it is read off no
-// entry here.
+// runners' four writers of their version tables share a third, the backfill's two passes over
+// tables no item owns share a fourth and the broker's hold store's five writers share a fifth -
+// and each says why. Everything else on the list holds the item's owner, which is what makes the
+// advisory lock at refs.LockItemOwner enough: those that take it in a transaction they open are
+// rows of the lock table, which proves it by holding it (item_row_owner_lock_test.go), and those
+// that write inside a transaction their caller opened rest on the lock that caller took, which no
+// test here or there drives; the gap map (itemRowLockNoRow) names each with why, and
+// TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That any of
+// them still takes or holds it is read off no entry here.
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
@@ -97,7 +97,7 @@ var itemRowWriters = map[string]map[string]string{
 		"editAsk":      "the ask's owner lock, taken before the document's (requireOpenOwner)",
 	},
 	"internal/dispatch/api/broadcasts.go": {
-		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
+		"queueBroadcastCopy": "none, and none to take: each copy is a direct message, whose " +
 			"conversation is no owner (store.OwnerOf), and nothing rewrites a direct message's " +
 			"body: only an issue message is edited or deleted",
 	},
@@ -179,6 +179,30 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/graphcensus/backfill_asks.go": {
 		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
 			"opens (lockAskOwners, events.LockOwnerRows)",
+	},
+	"internal/dispatch/graphcensus/backfill_inbox.go": {
+		"writeAttempts": backfillNoItemTable + "comment_deliveries and message_deliveries, a delivery " +
+			"attempt's rows (attemptTable.table), whose live writers - the mention claims, a send's " +
+			"settle - take no owner lock either",
+		"writeBlocks": "the owner lock of each item of the batch, taken first in the transaction " +
+			"the pass opens, before the item rows and their block state rows (lockItems, lockOwnersOf, " +
+			"events.LockOwnerRows); it writes the item's block table, which this scan cannot read",
+		"writeCommentPointers": "the owner lock of each comment of the batch, taken first in the " +
+			"transaction the pass opens, before the comments rows (lockOwnersOf, events.LockOwnerRows)",
+		"writeLinks": "the owner lock of each item of the batch, taken first in the transaction " +
+			"the pass opens, before the item rows and their block state rows (lockItems, lockOwnersOf, " +
+			"events.LockOwnerRows); it writes the item's block-ref table, which this scan cannot read",
+		"writeMessages": "the owner lock of each message of the batch that names an issue, taken " +
+			"first in the transaction the pass opens, before the messages rows (lockOwnersOf, " +
+			"events.LockOwnerRows)",
+	},
+	"internal/dispatch/graphcensus/backfill_inbox_threads.go": {
+		"writeMarks": backfillNoItemTable + "user_agent_read, user_agent_state, user_agent_reply_read, " +
+			"user_agent_thread_dismissed and user_ask_snooze, a person's read state " +
+			"(readStateTable.table), whose live writers - the read and dismiss routes - take no owner " +
+			"lock for them either",
+		"writeAsksOwed": "the owner lock of each ask of the batch, taken first in the transaction " +
+			"the pass opens, before the asks rows (lockOwnersOf, events.LockOwnerRows)",
 	},
 	"internal/dispatch/refs/comment_nodes.go": {
 		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
@@ -290,8 +314,8 @@ const holdTableException = "none, and none to take: the tables are the broker's 
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the eighteen entries here that take
-// no owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
+// does not drive (itemRowLockNoRow names each with why), and the twenty entries here that take no
+// owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
 //
@@ -403,6 +427,20 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 	"there is nothing for it to wait for, and a row asserting that it does not wait would prove " +
 	"the exception rather than the rule"
 
+// backfillNoItemTable opens the census entry of a backfill pass that takes no owner lock because
+// it writes no item row: its table is a format operand the scan cannot read, so the entry names
+// the tables the operand takes, none of which is one of itemRowTables.
+const backfillNoItemTable = "none, and none to take: a boot pass of graphcensus.Backfill that " +
+	"locks only the rows it marks, `for no key update`, and writes no item row. The table this scan " +
+	"cannot read is "
+
+// inboxPassLockSteps is why a pass of the backfill's inbox passes that takes the owner lock has no
+// row of the lock table: no request runs it, and its lock-step test already holds each batch behind
+// the owner lock before the item rows it writes.
+const inboxPassLockSteps = "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +
+	"holds each batch behind the item's owner lock, which it takes before the item rows " +
+	"(graphcensus' TestEveryBackfillBatchTakesTheStoreLockOrder, the subtest named after the pass)"
+
 // itemRowLockNoRow is the lock table's gap map: every writer of the census that the lock table
 // (itemRowLockTable, item_row_owner_lock_test.go) does not drive, with why it has no row.
 // Together with itemRowLockTable it accounts for the census exactly, which
@@ -430,6 +468,17 @@ var itemRowLockNoRow = map[string]map[string]string{
 			"holds it behind both owners' locks (graphcensus' " +
 			"TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows)",
 	},
+	"internal/dispatch/graphcensus/backfill_inbox.go": {
+		"writeAttempts":        itemRowNoOwnerLock,
+		"writeBlocks":          inboxPassLockSteps,
+		"writeCommentPointers": inboxPassLockSteps,
+		"writeLinks":           inboxPassLockSteps,
+		"writeMessages":        inboxPassLockSteps,
+	},
+	"internal/dispatch/graphcensus/backfill_inbox_threads.go": {
+		"writeAsksOwed": inboxPassLockSteps,
+		"writeMarks":    itemRowNoOwnerLock,
+	},
 	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
@@ -448,7 +497,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"writeComments": itemRowNoOwnerLock,
 		"writeMessages": itemRowNoOwnerLock,
 	},
-	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},
+	"internal/dispatch/api/broadcasts.go":       {"queueBroadcastCopy": itemRowNoOwnerLock},
 	"internal/dispatch/docs/decided_wording.go": {"restoreWordings": itemRowNoOwnerLock},
 	"internal/cipher/natshold/store.go": {
 		"DeleteCohort": itemRowNoOwnerLock,

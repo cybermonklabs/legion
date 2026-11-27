@@ -29,7 +29,7 @@ import { agentRow, getSentMessages } from "./agents";
 import {
   createAgentMessage,
   createMessage,
-  listAgentMessages,
+  getAgentConversation,
   publishAgentStreamFrame,
   replyToMessageDelivery,
 } from "./api";
@@ -244,7 +244,7 @@ async function sentDelivery(body: string): Promise<{ attempt: number; id: string
   await expect
     .poll(async () => {
       const frame = (await getSentMessages()).find((sent) => sent.message === body);
-      const stored = (await listAgentMessages(READING_SESSION_ID)).find(
+      const stored = (await getAgentConversation(READING_SESSION_ID)).find(
         (row) => row.message.body === body
       );
       if (frame === undefined || stored === undefined) return false;

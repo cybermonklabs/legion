@@ -66,7 +66,8 @@ func namesTheExpression(node ast.Node) bool {
 
 // TestOneExpressionDecidesWhoWaitsInOneSpelling holds the six reads that name a person to the
 // one constant: each of the six names it, and the SQL it holds - the expression and the three
-// joins it reads over - is spelled once in the module. The precedent for reading the source
+// joins it reads over - is spelled once in the module, in package asks, below api and docs, so
+// both of them read one rule (asks.AskedOfPersonExpression). The precedent for reading the source
 // rather than the behaviour is api/lock_level_test.go.
 func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	t.Parallel()
@@ -134,10 +135,10 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	}
 	slices.Sort(copies)
 	slices.Sort(joins)
-	if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(copies, want) {
+	if want := []string{"../../../internal/dispatch/asks/waiting_on.go (1)"}; !slices.Equal(copies, want) {
 		t.Fatalf("the rule is spelled in %v, want it written once, in %v", copies, want)
 	}
-	if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(joins, want) {
+	if want := []string{"../../../internal/dispatch/asks/waiting_on.go (1)"}; !slices.Equal(joins, want) {
 		t.Fatalf("the joins the rule reads are spelled in %v, want them written once, in %v", joins, want)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -307,6 +310,7 @@ func parseThreadOwner(rawIssue, rawArtifact string) (issue string, artifact *str
 }
 
 // parseMyRepliesOwner reads the optional ?issue= or ?artifact= of GET /api/v1/me/replies.
+// kept for one release: inbox-old-reads
 func parseMyRepliesOwner(r *http.Request) (issue string, artifact *string, err error) {
 	query := r.URL.Query()
 	return parseThreadOwner(query.Get("issue"), query.Get("artifact"))
@@ -354,6 +358,7 @@ func parseThreadKinds(values []string) (reply, agent bool, err error) {
 // ?kind= splits into one empty string, which is how this route names none, so the empties are
 // dropped here rather than skipped by the parser: the mark-all reads its kinds off a JSON list,
 // where "" is a value the caller wrote and the route refuses.
+// kept for one release: inbox-old-reads
 func parseMyRepliesKinds(r *http.Request) (reply, agent bool, err error) {
 	named := []string{}
 	for _, value := range strings.Split(r.URL.Query().Get("kind"), ",") {
@@ -372,6 +377,7 @@ func parseMyRepliesKinds(r *http.Request) (reply, agent bool, err error) {
 }
 
 // parseMyRepliesState reads ?state=: unread, the default, inbox or dismissed.
+// kept for one release: inbox-old-reads
 func parseMyRepliesState(r *http.Request) (state string, err error) {
 	switch value := strings.TrimSpace(r.URL.Query().Get("state")); value {
 	case "":
@@ -394,12 +400,14 @@ type myRepliesCursor struct {
 }
 
 // myRepliesCursorOf is the cursor a page answers for the row it ended on.
+// kept for one release: inbox-old-reads
 func myRepliesCursorOf(row model.MyReplyRow) string {
 	return row.DismissedAt.UTC().Format(time.RFC3339Nano) + "," + row.ThreadID
 }
 
 // parseMyRepliesCursor reads one ?cursor=, which is a cursor this route answered: the dismissal
 // mark and the thread id it names, as myRepliesCursorOf writes them.
+// kept for one release: inbox-old-reads
 func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 	at, thread, found := strings.Cut(raw, ",")
 	refusal := errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor is one this route answered in next_cursor")
@@ -426,6 +434,7 @@ func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 // Each state refuses the other's parameters rather than ignoring them, as GET /api/v1/issues
 // refuses a cursor (parseIssuePage): answering a cursor request with the first page, or a limit
 // request with 200 rows, would hand the caller rows it cannot tell from the ones it asked for.
+// kept for one release: inbox-old-reads
 func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, cursor *myRepliesCursor, err error) {
 	query := r.URL.Query()
 	if state == myRepliesStateDismissed {
@@ -450,19 +459,32 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 			"cursor is a query parameter of state=%s alone; this state pages with limit and offset",
 			myRepliesStateDismissed)
 	}
+	if limit, offset, err = parseLimitOffset(query); err != nil {
+		return nil, 0, nil, err
+	}
+	return limit, offset, nil, nil
+}
+
+// parseLimitOffset reads ?limit= and ?offset=, the paging of GET /api/v1/me/replies' unread and
+// inbox states and of GET /api/v1/me/inbox: an absent limit is nil, which each caller reads as
+// every row but GET /api/v1/me/inbox under state=dismissed, which reads it as one page
+// (parseMeInboxRequest), a limit the caller names keeps the rules GET /api/v1/me/answers has (1 to
+// myAnswersMaxLimit, so limit=0 is refused), and an offset is one non-negative integer, 0 when
+// absent.
+func parseLimitOffset(query url.Values) (limit *int, offset int, err error) {
 	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
+			return nil, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
 		}
 		limit = &value
 	}
 	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
+			return nil, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
 		}
 		offset = value
 	}
-	return limit, offset, nil, nil
+	return limit, offset, nil
 }
 
 // listMyReplies answers GET /api/v1/me/replies: the caller's Inbox threads of the kinds ?kind=
@@ -488,6 +510,7 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 // error of its own to report. One block over a per-kind callback would hide four differences
 // behind one parameter list to save six lines. The unpaged total is the one line the two would
 // have shared, and it is taken once, after both.
+// kept for one release: inbox-old-reads
 func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -642,6 +665,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 // answer's total needs when the read is paged. The Dismissed view has no count - its total is the
 // page it answers (listMyReplies) - so it answers an empty count for that state, which that read
 // never asks for. The Agent half's own statements are myAgentPageQuery's (api/replies_agent.go).
+// kept for one release: inbox-old-reads
 func myRepliesQueries(state string, from *myRepliesCursor) (count, page string) {
 	switch state {
 	case myRepliesStateInbox:
@@ -669,6 +693,7 @@ func myRepliesPageArgs(countArgs []any, reach *int, from *myRepliesCursor) []any
 // myRepliesOrderOf is the time a row is ordered by in one state: the newest write somebody else
 // made in the thread, or, in the Dismissed view, the moment it was dismissed. A row of either kind
 // in that state carries a mark, since each half reads only its dismissed rows.
+// kept for one release: inbox-old-reads
 func myRepliesOrderOf(state string, row model.MyReplyRow) time.Time {
 	if state == myRepliesStateDismissed && row.DismissedAt != nil {
 		return *row.DismissedAt
@@ -679,6 +704,7 @@ func myRepliesOrderOf(state string, row model.MyReplyRow) time.Time {
 // readMyReplyRows reads one state's Reply rows under the parameters myRepliesPageArgs built, then
 // the answer of each row whose newest write by somebody else is its ask's answer
 // (answerReplyRows).
+// kept for one release: inbox-old-reads
 func (s *server) readMyReplyRows(
 	ctx context.Context, tx pgx.Tx, query string, args []any,
 ) ([]model.MyReplyRow, error) {
@@ -690,67 +716,13 @@ func (s *server) readMyReplyRows(
 	read := []model.MyReplyRow{}
 	var answered []int
 	for rows.Next() {
-		var row model.MyReplyRow
-		var issueKey, issueTitle, project, slug, name, replyID *string
-		var subject, body string
-		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
-		var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
-		var answerWrite bool
-		var readThrough time.Time
-		var projectKey string
-		// The version is a Reply row's alone, so this scan is the one place that sets it: an
-		// Agent row carries none and sends none (model.MyReplyRow.Version).
-		var version int64
-		if err := rows.Scan(
-			&row.ThreadID, &row.Kind, &row.Ref,
-			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
-			&replyID, &answerWrite, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
-			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
-			&row.DismissedAt, &version,
-		); err != nil {
-			return nil, fmt.Errorf("scan my reply: %w", err)
-		}
-		// The thread's root post carries the time its author last edited it, and the root and the
-		// reply the row shows each carry the mark of a delete, so a row whose text a delete cleared
-		// says that the post is deleted and not an empty line.
-		row.EditedAt = subjectEditedAt
-		var err error
-		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
+		row, answerWrite, err := scanMyReplyRow(rows, s.deps.ServerURL)
+		if err != nil {
 			return nil, err
 		}
-		if row.Reply.DeletedAt, row.Reply.DeletedBy, err = model.DeletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
-			return nil, err
-		}
-		row.Reply.Kind = "reply"
 		if answerWrite {
 			answered = append(answered, len(read))
 		}
-		if issueKey != nil {
-			row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
-		} else if project != nil {
-			row.Document = &model.OpenAskDocument{Project: *project, Slug: *slug, Name: *name}
-		}
-		row.Project = &projectKey
-		row.ReadThrough = &readThrough
-		row.Version = &version
-		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
-		if replyID != nil {
-			row.Reply.ID = *replyID
-		}
-		if author != nil {
-			if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-				return nil, fmt.Errorf("decode my reply author: %w", err)
-			}
-		}
-		if len(anchor) > 0 {
-			var value model.Anchor
-			if err := model.DecodeAnchor(anchor, &value); err != nil {
-				return nil, fmt.Errorf("decode my reply anchor: %w", err)
-			}
-			row.Anchor = &value
-		}
-		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -763,9 +735,82 @@ func (s *server) readMyReplyRows(
 	return read, nil
 }
 
+// scanMyReplyRow decodes one Reply row myRepliesPageRest selects: the row listMyReplies answers,
+// and the thread row of an entry GET /api/v1/me/inbox answers. Its subject and its reply's first
+// line are cut against serverURL, this server's deployment (refs.FirstLine). answerWrite says the
+// row's newest write by somebody else is its ask's answer, which the statement only marks: its
+// caller sets that reply from the answer as the ask's node holds it (answerReply).
+func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, bool, error) {
+	var row model.MyReplyRow
+	var issueKey, issueTitle, project, slug, name, replyID *string
+	var subject, body string
+	var author, anchor, subjectDeletedBy, replyDeletedBy []byte
+	var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
+	var answerWrite bool
+	var readThrough time.Time
+	var projectKey string
+	// The version is a Reply row's alone, so this scan is the one place that sets it: an
+	// Agent row carries none and sends none (model.MyReplyRow.Version).
+	var version int64
+	if err := scanned.Scan(
+		&row.ThreadID, &row.Kind, &row.Ref,
+		&issueKey, &issueTitle, &project, &slug, &name,
+		&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
+		&replyID, &answerWrite, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
+		&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
+		&row.DismissedAt, &version,
+	); err != nil {
+		return model.MyReplyRow{}, false, fmt.Errorf("scan my reply: %w", err)
+	}
+	// The thread's root post carries the time its author last edited it, and the root and the
+	// reply the row shows each carry the mark of a delete, so a row whose text a delete cleared
+	// says that the post is deleted and not an empty line.
+	row.EditedAt = subjectEditedAt
+	var err error
+	if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
+		return model.MyReplyRow{}, false, err
+	}
+	if row.Reply.DeletedAt, row.Reply.DeletedBy, err = model.DeletedPostMark(replyDeletedAt, replyDeletedBy); err != nil {
+		return model.MyReplyRow{}, false, err
+	}
+	row.Reply.Kind = "reply"
+	if issueKey != nil {
+		row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
+	} else if project != nil {
+		row.Document = &model.OpenAskDocument{Project: *project, Slug: *slug, Name: *name}
+	}
+	row.Project = &projectKey
+	row.ReadThrough = &readThrough
+	row.Version = &version
+	row.Subject = refs.FirstLine(subject, serverURL)
+	if replyID != nil {
+		row.Reply.ID = *replyID
+	}
+	if author != nil {
+		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
+			return model.MyReplyRow{}, false, fmt.Errorf("decode my reply author: %w", err)
+		}
+	}
+	if len(anchor) > 0 {
+		var value model.Anchor
+		if err := model.DecodeAnchor(anchor, &value); err != nil {
+			return model.MyReplyRow{}, false, fmt.Errorf("decode my reply anchor: %w", err)
+		}
+		row.Anchor = &value
+	}
+	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
+	return row, answerWrite, nil
+}
+
+// myReplyAnswersStatement reads the asks in $1 as answerReply sets a Reply row's reply from one:
+// each ask's row state and answer and its node's answer (asks.NodeAnswerColumn), which
+// scanMyReplyAnswer lays over the row (asks.ReadAnswer). It is a var, not a const, because
+// asks.NodeAnswerColumn builds its read of the node from graphstore.CurrentTupleRead.
+var myReplyAnswersStatement = `select a.id::text, a.state, a.answer, ` + asks.NodeAnswerColumn("a") + ` from asks a where a.id = any($1::uuid[])`
+
 // answerReplyRows sets the reply of each row of read that answered names, a row whose newest write
 // by somebody else is its ask's answer, from that answer as the ask's node holds it
-// (asks.ReadAnswer), as every read of an answer reads it (R3): kind answer, the answerer as its
+// (answerReply), as every read of an answer reads it (R3): kind answer, the answerer as its
 // author, and the answer's options and then its text, joined by " - ", as its first line, cut as
 // the page cuts every other first line (refs.FirstLine), so no reference is cut in half. A row
 // whose ask holds no answer as its node holds it keeps the reply the page's statement read for it,
@@ -773,7 +818,8 @@ func (s *server) readMyReplyRows(
 // alone, rather than a lateral of the page's: the node's facts are read through one text
 // (asks.NodeAnswerTuples), whose relations and values no one index orders, and the page's plan is
 // held to sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's
-// transaction, so it reads the snapshot the page read.
+// transaction, so it reads the snapshot the page read. GET /api/v1/me/inbox reads the same
+// statement inside its own one statement, over its page's Reply rows (meInboxPageReads).
 func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, serverURL string) error {
 	if len(answered) == 0 {
 		return nil
@@ -784,40 +830,55 @@ func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, an
 		ids[index] = read[row].ThreadID
 		rowOf[read[row].ThreadID] = row
 	}
-	rows, err := tx.Query(ctx, `select a.id::text, a.state, a.answer, `+asks.NodeAnswerColumn("a")+` from asks a where a.id = any($1::uuid[])`, ids)
+	rows, err := tx.Query(ctx, myReplyAnswersStatement, ids)
 	if err != nil {
 		return fmt.Errorf("read the answers of my replies: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, state string
-		var answer, nodeAnswer []byte
-		if err := rows.Scan(&id, &state, &answer, &nodeAnswer); err != nil {
-			return fmt.Errorf("scan the answer of my reply: %w", err)
-		}
-		ask, err := asks.ReadAnswer(id, state, answer, nodeAnswer)
+		ask, err := scanMyReplyAnswer(rows)
 		if err != nil {
 			return err
 		}
-		if ask.Answer == nil {
-			continue
-		}
-		reply := &read[rowOf[id]].Reply
-		reply.Kind = "answer"
-		reply.Author = model.Actor{Kind: "user", ID: ask.Answer.User}
-		var line []string
-		if selected := strings.Join(ask.Answer.Selected, ", "); selected != "" {
-			line = append(line, selected)
-		}
-		if ask.Answer.Text != nil && *ask.Answer.Text != "" {
-			line = append(line, *ask.Answer.Text)
-		}
-		reply.FirstLine = refs.FirstLine(strings.Join(line, " - "), serverURL)
+		answerReply(&read[rowOf[ask.ID]].Reply, ask, serverURL)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the answers of my replies: %w", err)
 	}
 	return nil
+}
+
+// scanMyReplyAnswer decodes one myReplyAnswersStatement row: the ask's state and answer as every
+// ask read shows them (asks.ReadAnswer).
+func scanMyReplyAnswer(row pgx.Row) (model.Ask, error) {
+	var id, state string
+	var answer, nodeAnswer []byte
+	if err := row.Scan(&id, &state, &answer, &nodeAnswer); err != nil {
+		return model.Ask{}, fmt.Errorf("scan the answer of my reply: %w", err)
+	}
+	return asks.ReadAnswer(id, state, answer, nodeAnswer)
+}
+
+// answerReply sets reply, the newest write by somebody else on a Reply row whose newest such write
+// is its ask's answer, from ask's answer as the ask's node holds it (scanMyReplyAnswer), as every
+// read of an answer reads it (R3): kind answer, the answerer as its author, and the answer's
+// options and then its text, joined by " - ", as its first line, cut against serverURL as every
+// line of the row is (scanMyReplyRow). Where the ask holds no answer as its node holds it, reply
+// keeps what the page's statement read for it, a reply with no author and no line.
+func answerReply(reply *model.MyReplyReply, ask model.Ask, serverURL string) {
+	if ask.Answer == nil {
+		return
+	}
+	reply.Kind = "answer"
+	reply.Author = model.Actor{Kind: "user", ID: ask.Answer.User}
+	var line []string
+	if selected := strings.Join(ask.Answer.Selected, ", "); selected != "" {
+		line = append(line, selected)
+	}
+	if ask.Answer.Text != nil && *ask.Answer.Text != "" {
+		line = append(line, *ask.Answer.Text)
+	}
+	reply.FirstLine = refs.FirstLine(strings.Join(line, " - "), serverURL)
 }
 
 // threadReadInput is the body of PUT /api/v1/me/threads/{id}/read.
@@ -835,6 +896,12 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // thread forward to read_through (stored as no later than now, as the Agents page's read mark is),
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
 // writes nothing.
+//
+// A mark that moved is a tuple from the caller's person node too (R6): read_through to the
+// thread's root at the moment the row now holds, appended through graphstore.QueueFromPerson under
+// the event the move appends, in that event's batch, so the tuple is caused by the write that
+// made it. The row keeps the login and the marker it holds: user_threads' marker is the one writer
+// of a thread's and the backfill's (inboxwrite.PlanRecord, migration 20261116160000).
 //
 // It runs in the two phases every write route runs in (INFRA-636): a read phase holding no
 // transaction id, which takes the thread's owner lock and then the project's and reads the row
@@ -941,15 +1008,30 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// predicate is written on the update as well as on the read, because this is the statement
 	// that must never move a mark back, whatever was read before it; under the owner's lock it
 	// moves the row the read said it would, so the event below is appended for a mark that moved.
-	if _, err := tx.Exec(r.Context(), `
+	// The row answers the mark it now holds and its root's kind, which the mark's tuple states,
+	// and the transaction's now(), which the person node a mark makes is made at.
+	var kind, root string
+	var readThrough, at time.Time
+	if err := tx.QueryRow(r.Context(), `
 		update user_threads set read_through = least($3::text::timestamptz, now())
-		where `+threadReadMoves, login, threadID, *input.ReadThrough); err != nil {
+		where `+threadReadMoves+`
+		returning kind, thread_id::text, read_through, now()
+	`, login, threadID, *input.ReadThrough).Scan(&kind, &root, &readThrough, &at); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
+	// The event, and under it the mark's tuple, in one batch, with the failure point between the
+	// row written above and the tuple (failpoint.ThreadRead).
+	fails := failpoint.Planned(r.Context(), failpoint.ThreadRead)
+	event, err := s.appendEventThen(r.Context(), tx, projectOwner(project).event(
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
-	))
+	), func(b *store.WriteBatch) error {
+		failpoint.Queue(b, fails)
+		graphstore.QueueFromPerson(b, at, []graphstore.Tuple{
+			personMark(actor, graphstore.TupleReadThrough, kind, root, readThrough, true, graphstore.LatestEvent),
+		})
+		return nil
+	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

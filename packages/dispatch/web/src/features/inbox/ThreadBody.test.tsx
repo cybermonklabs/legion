@@ -16,7 +16,8 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
+import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
+import { agentRow, plannerAgentRow, withConversation } from "../threads/replies-fixture";
 import { ThreadRowCard } from "./ThreadRowCard";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -153,8 +154,9 @@ function renderCard(thread: MyReplyRow): QueryClient {
 
 test("an Agent row's card draws the message, the session's reply and the composer", async () => {
   spy("listAgents", [session]);
-  spy("listAgentMessages", [
-    {
+  // The row carries its conversation with the session, as the one read answers it.
+  renderCard(
+    withConversation(plannerAgentRow(), {
       message: message("message-1", "Have a look at the build"),
       replies: [
         message("reply-1", "Looked at it.", {
@@ -163,9 +165,8 @@ test("an Agent row's card draws the message, the session's reply and the compose
           in_reply_to: "message-1",
         }),
       ],
-    } satisfies MessageRead,
-  ]);
-  renderCard(plannerAgentRow());
+    })
+  );
 
   const body = await screen.findByTestId("inbox-thread-agent");
   // Every message is drawn whole, by the one markdown renderer, which warms asynchronously.
@@ -185,8 +186,8 @@ test("an Agent row's card draws the message, the session's reply and the compose
 
 test("a reply the session took as a user turn says so and links the live view", async () => {
   spy("listAgents", [session]);
-  spy("listAgentMessages", [
-    {
+  renderCard(
+    withConversation(plannerAgentRow({ unread_reply_ids: [] }), {
       message: message("message-1", "Have a look at the build"),
       replies: [
         message("reply-1", "Running it now.", {
@@ -211,9 +212,8 @@ test("a reply the session took as a user turn says so and links the live view", 
           in_reply_to: "message-1",
         }),
       ],
-    } satisfies MessageRead,
-  ]);
-  renderCard(plannerAgentRow({ unread_reply_ids: [] }));
+    })
+  );
 
   const note = await screen.findByTestId("agent-reply-accepted");
   expect(note.textContent).toBe("Taken as a turn of the live conversation.");
@@ -226,8 +226,8 @@ test("a session the live list no longer holds says so and offers no composer", a
   // then (`MarkdownBody`): the first body of a file takes the asynchronous path.
   await warmMarkdownRenderer();
   spy("listAgents", []);
-  spy("listAgentMessages", [
-    {
+  renderCard(
+    withConversation(plannerAgentRow(), {
       message: message("message-1", "Have a look at the build"),
       replies: [
         message("reply-1", "Looked at it.", {
@@ -235,9 +235,8 @@ test("a session the live list no longer holds says so and offers no composer", a
           in_reply_to: "message-1",
         }),
       ],
-    } satisfies MessageRead,
-  ]);
-  renderCard(plannerAgentRow());
+    })
+  );
 
   const ended = await screen.findByTestId("agent-session-ended");
   expect(ended.textContent).toBe("Not in the live session list — it may have ended.");
@@ -248,10 +247,12 @@ test("a session the live list no longer holds says so and offers no composer", a
 
 test("a listed session that advertises no delivery mode warns above its composer", async () => {
   spy("listAgents", [{ ...session, capabilities: [] }]);
-  spy("listAgentMessages", [
-    { message: message("message-1", "Have a look"), replies: [] } satisfies MessageRead,
-  ]);
-  renderCard(plannerAgentRow({ unread_reply_ids: [] }));
+  renderCard(
+    withConversation(plannerAgentRow({ unread_reply_ids: [] }), {
+      message: message("message-1", "Have a look"),
+      replies: [],
+    })
+  );
 
   await screen.findByTestId("inbox-thread-agent");
   await waitFor(() => expect(screen.getByText("Takes no messages")).toBeTruthy());
@@ -264,10 +265,12 @@ test("a listed session that advertises no delivery mode warns above its composer
 // warning says that is why, not that the plugin cannot reach the conversation.
 test("a listed session whose capabilities hold no delivery mode warns the same way", async () => {
   spy("listAgents", [{ ...session, capabilities: ["future-capability"] }]);
-  spy("listAgentMessages", [
-    { message: message("message-1", "Have a look"), replies: [] } satisfies MessageRead,
-  ]);
-  renderCard(plannerAgentRow({ unread_reply_ids: [] }));
+  renderCard(
+    withConversation(plannerAgentRow({ unread_reply_ids: [] }), {
+      message: message("message-1", "Have a look"),
+      replies: [],
+    })
+  );
 
   await screen.findByTestId("inbox-thread-agent");
   await waitFor(() => expect(screen.getByText("Takes no messages")).toBeTruthy());
@@ -361,13 +364,12 @@ test("an Inbox thread box, comment or Agent, draws no Cancel reply", async () =>
   cleanup();
 
   spy("listAgents", [session]);
-  spy("listAgentMessages", [
-    {
+  renderCard(
+    withConversation(plannerAgentRow(), {
       message: message("message-1", "Have a look at the build"),
       replies: [],
-    } satisfies MessageRead,
-  ]);
-  renderCard(plannerAgentRow());
+    })
+  );
   const agent = await screen.findByTestId("inbox-thread-agent");
   await waitFor(() => expect(agent.querySelector("[data-inbox-agent-composer]")).not.toBeNull());
   expect(within(agent).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
@@ -453,35 +455,34 @@ function cardOf(id: string): HTMLElement {
 // card's Retry replies under its own thread's newest message.
 test("an Agent card shows nothing of a reply refused in another card of its session", async () => {
   spy("listAgents", [session]);
-  spy(
-    "listAgentMessages",
-    ["1", "2"].map(
-      (n) =>
-        ({
-          message: message(`message-${n}`, `Question ${n}`),
-          replies: [
-            message(`reply-${n}`, `Answer ${n}`, {
-              author: { id: "planner", kind: "session" },
-              created_at: "2026-10-12T01:00:00Z",
-              in_reply_to: `message-${n}`,
-            }),
-          ],
-        }) satisfies MessageRead
-    )
-  );
+  // Each row carries its own thread's conversation, as the one read answers it.
+  const conversation = (n: string): MessageRead => ({
+    message: message(`message-${n}`, `Question ${n}`),
+    replies: [
+      message(`reply-${n}`, `Answer ${n}`, {
+        author: { id: "planner", kind: "session" },
+        created_at: "2026-10-12T01:00:00Z",
+        in_reply_to: `message-${n}`,
+      }),
+    ],
+  });
   const createAgentMessage = spyOn(api, "createAgentMessage")
     .mockRejectedValueOnce(
       new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
     )
     .mockResolvedValue({} as never);
   restores.push(createAgentMessage);
-  const first = plannerAgentRow();
-  const second = agentRow("message-2", {
-    ...first,
-    reply: { ...first.reply, id: "reply-2" },
-    thread_id: "message-2",
-    unread_reply_ids: ["reply-2"],
-  });
+  const planner = plannerAgentRow();
+  const first = withConversation(planner, conversation("1"));
+  const second = withConversation(
+    agentRow("message-2", {
+      ...planner,
+      reply: { ...planner.reply, id: "reply-2" },
+      thread_id: "message-2",
+      unread_reply_ids: ["reply-2"],
+    }),
+    conversation("2")
+  );
   const show = renderCards([first]);
   const user = userEvent.setup();
 
@@ -520,28 +521,30 @@ test("an Agent card whose thread moves on under a refused reply says what its bo
       created_at: at,
       in_reply_to: "message-1",
     });
-  const thread = (replies: Message[]): MessageRead[] => [
-    { message: message("message-1", "Have a look at the build"), replies },
-  ];
+  const thread = (replies: Message[]): MessageRead => ({
+    message: message("message-1", "Have a look at the build"),
+    replies,
+  });
+  // The row carries its conversation, as the one read answers it.
+  const row = (replies: Message[]) => withConversation(plannerAgentRow(), thread(replies));
   const first = answer("reply-1", "Looked at it.", "2026-10-12T01:00:00Z");
-  const list = spyOn(api, "listAgentMessages").mockResolvedValue(thread([first]));
-  restores.push(list);
   const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
     new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
   );
   restores.push(createAgentMessage);
-  const client = renderCard(plannerAgentRow());
+  const show = renderCards([row([first])]);
   const user = userEvent.setup();
 
   await user.click(await screen.findByRole("textbox", { name: "Comment" }));
   await user.paste("Reply to the first answer");
+  // The box's reference search reads what was pasted once it settles; it settles here, before
+  // the press, rather than in the middle of what the press draws.
+  await act(() => new Promise<void>((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS)));
   await user.click(screen.getByRole("button", { name: "Send" }));
   await screen.findByText("Couldn't send — Dispatch refused the message");
 
-  list.mockResolvedValue(
-    thread([first, answer("reply-2", "And one more thing.", "2026-10-12T02:00:00Z")])
-  );
-  await act(() => client.invalidateQueries());
+  // The one read answers again, its row carrying the thread with a newer message in it.
+  show([row([first, answer("reply-2", "And one more thing.", "2026-10-12T02:00:00Z")])]);
   expect(
     await screen.findByText(
       "This message was written as a reply to an earlier message, and this box now replies to a newer one. Discard it to write a reply here."

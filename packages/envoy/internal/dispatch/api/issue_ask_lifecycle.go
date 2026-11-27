@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -81,7 +82,21 @@ func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 // each ask's withdrawal (planWithdrawal), all before the close's first write. Unindexed blocks are
 // the close's final sweep's to mark (sweepClosedIssueAsks). It answers the withdrawal planned,
 // oldest id first, for recordWithdrawnAsksTx.
+//
+// The ask-state write locks the asks rows of each document's ask blocks `for no key update`, in
+// ascending id within the document and one document after another (docs' lockAskBlocksForWrite),
+// and the withdrawals then write each open ask's row, so the close takes its issue's asks rows in
+// no one ascending order. A move of the project's default (putProjectDefaultAssignee) takes the
+// project's owner lock exclusive and then locks, in ascending id, every open asks row that falls
+// through to the default: a close holding one document's rows while it waited for a row of the
+// next that the move held, while the move waited for one of the first document's, would deadlock
+// with it. So where the issue's asks fall through to its project's default the project's owner
+// lock is taken shared first (inboxwrite.HoldDefault), after the issue's own and before any asks
+// row is read: a move of the default either committed already or waits for the close.
 func (s *server) prepareWithdrawal(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) (withdrawal, error) {
+	if err := inboxwrite.HoldDefault(ctx, tx, &issueKey, nil); err != nil {
+		return withdrawal{}, err
+	}
 	open, shown, err := s.readOpenIssueAsks(ctx, tx, issueKey)
 	if err != nil {
 		return withdrawal{}, err
@@ -211,7 +226,15 @@ type restoredAsks struct {
 // to its recorded author, retracts a restored ask whose block left, and restores the retracted
 // ask. Its pending rows are queued after the ask-state write and before the first event, and no
 // copy lock comes after them (docs.lockProjectCopies).
+//
+// Each restored ask reaches the person it waits on as the reopen leaves it (recordRestoredAsksTx),
+// so where the issue's asks fall through to its project's default the project's owner lock is
+// taken shared first (inboxwrite.HoldDefault), after the issue's own and before any asks row is
+// read: a move of the default either committed already or waits for the reopen.
 func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey string, actor model.Actor) (restoredAsks, error) {
+	if err := inboxwrite.HoldDefault(ctx, tx, &issueKey, nil); err != nil {
+		return restoredAsks{}, err
+	}
 	withdrawn, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
@@ -249,7 +272,11 @@ func (s *server) prepareRestoration(ctx context.Context, tx pgx.Tx, issueKey str
 // recordRestoredAsksTx is the reopen's second half: it indexes the parts of each of restored, the
 // asks prepareRestoration wrote back open, and queues one ask.opened event for each, whose actor
 // is actor, the reopener, as settlement's own restoration of an ask appends, and right after it
-// the append of what that ask's restore stated on its node, under that event.
+// the append of what that ask's restore and its parts' index stated on the store, under that
+// event. A closed issue moved no delivery of its withdrawn asks, so right after that each restored
+// ask reaches the person it waits on now and stops reaching whoever its delivery stood to, under
+// the same ask.opened (inboxwrite.Restored): an assignee written while the issue was closed, or a
+// default moved then, is where the ask goes.
 //
 // Once those events are queued, it does for each document of the issue what a settlement while
 // the issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open
@@ -275,7 +302,7 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		// names what that moved and stamps the part rows the index leaves with its own id, so a
 		// ?since= read lists them. The restore holds the parts alone, so their step reconciles
 		// the question's references too (questionReconciled false).
-		changes, err := s.queueAskParts(ctx, ledger, ask, nil, restored.at, false, model.ReferenceChanges{})
+		changes, indexed, err := s.queueAskParts(ctx, ledger, ask, nil, nil, restored.at, false, model.ReferenceChanges{})
 		if err != nil {
 			return nil, err
 		}
@@ -285,12 +312,14 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		if err != nil {
 			return nil, err
 		}
-		// What the restore stated on the ask's node learns the ask.opened the step before
-		// appended.
+		// What the restore stated on the ask's node and what its parts state learn the ask.opened
+		// the step before appended, and the ask's move follows them under the same event.
 		held := restored.held[index]
+		move := inboxwrite.Restored(ask.ID, restored.at, actor)
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
-			return nil
+			graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+			return inboxwrite.QueueMoveWaiting(b, move, graphstore.LatestEvent)
 		}); err != nil {
 			return nil, err
 		}
@@ -306,11 +335,12 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // has committed. The commit's notification (migration 20261101181500's trigger) closes the issue's
 // rooms on every process, so a room stops taking a browser's ask block within moments of it; the
 // sweep catches the blocks written before then. In a transaction of its own, holding the issue's
-// owner lock, it writes the blocks of withdrawn - the asks the close withdrew - and of every
-// other resolved block ask of the issue, and their copies, again, from their rows as they now
-// stand, writes the copies of every answered block ask of the issue from its row with the answer
-// left out (docs.WriteIssueAskStates), and writes resolved every readable ask block no settlement
-// has indexed: one a browser wrote into the room after the close forked it, or one whose
+// owner lock, and the project's where the issue's asks fall through to its default
+// (sweepIssueAskBlocksTx), it writes the blocks of withdrawn - the asks the close withdrew - and
+// of every other resolved block ask of the issue, and their copies, again, from their rows as they
+// now stand, writes the copies of every answered block ask of the issue from its row with the
+// answer left out (docs.WriteIssueAskStates), and writes resolved every readable ask block no
+// settlement has indexed: one a browser wrote into the room after the close forked it, or one whose
 // settlement failed before the close. Each such block is logged. An issue reopened in the meantime
 // is left alone. The sweep never fails the close: an error is logged. A block a room stores after
 // the sweep, before its process has heard of the close, leaves its document owing a settlement,
@@ -362,7 +392,22 @@ func (s *server) sweepClosedIssueAsksTx(ctx context.Context, issueKey string, wi
 // (readOpenIssueAsks), which a repair records withdrawn after this, all in one write of each
 // document (docs.WriteIssueAskStates). It marks resolved every readable ask block no settlement
 // has indexed, which WriteIssueAskStates logs, and answers them for a caller that counts them.
+//
+// That write locks the asks rows of each document's ask blocks one document after another (docs'
+// lockAskBlocksForWrite), as the close's own does (prepareWithdrawal), and the repair's withdrawal
+// then writes each open ask's row (repairIssueAsksOf); the sweep after a close and the repair each
+// run in a transaction of their own, which holds the issue's owner lock and nothing else. A closed
+// issue can still hold open asks, which a move of the project's default locks in ascending id
+// (putProjectDefaultAssignee): one a process older than the withdrawal closed, which the repair
+// withdraws here. So where the issue's asks fall through to its project's default the project's
+// owner lock is taken shared first (inboxwrite.HoldDefault), after the issue's own and before any
+// asks row is locked, as the close takes it: a move of the default either committed already or
+// waits for the sweep. The asks the repair reads before it (readOpenIssueAsks) are read plainly,
+// which locks no row.
 func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey string, withdrawnIDs []string, withdrawing []model.Ask, actor model.Actor) ([]docs.BlockRef, error) {
+	if err := inboxwrite.HoldDefault(ctx, tx, &issueKey, nil); err != nil {
+		return nil, err
+	}
 	// The rows as they stand under the issue's owner lock: a reopen, an answer and a second close
 	// between the close's commit and this lock leave them other than the close wrote them. Every
 	// other resolved or answered block ask's blocks are written from its row too: an ask resolved

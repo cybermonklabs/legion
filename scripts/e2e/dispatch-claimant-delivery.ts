@@ -368,11 +368,11 @@ await runCase("case3-ask-answer", async () => {
   const askId = String(ask.id);
   note(`session C opened ask ${askId} on ${claimedKey}`);
   note(`GET /api/v1/asks/${askId}: ${reach((await asAgent(`/api/v1/asks/${askId}`)) as Json)}`);
-  const inbox = (await asPerson("GET", "/api/v1/inbox")) as Json[];
+  const open = (await asPerson("GET", "/api/v1/asks/open")) as Json;
   // The ask's reach is on the row's thread, as on every ask thread the server answers.
-  const row = inbox.find((item) => item.id === askId);
+  const row = ((open.asks ?? []) as Json[]).find((item) => item.id === askId);
   note(
-    `GET /api/v1/inbox row's thread: ${row === undefined ? "no row" : reach(row.thread as Json | undefined)}`
+    `GET /api/v1/asks/open row's thread: ${row === undefined ? "no row" : reach(row.thread as Json | undefined)}`
   );
   const after = await newestSeq(claimedKey);
   await asPerson("POST", `/api/v1/asks/${askId}/answer`, {

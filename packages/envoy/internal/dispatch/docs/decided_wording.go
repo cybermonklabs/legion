@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -210,9 +211,10 @@ func owedSettlementsOfRestored(ctx context.Context, tx pgx.Tx, restored []restor
 }
 
 // restoreDocumentDecidedWordings is RestoreDecidedWordings for the decided asks of rows, the asks
-// of the document artifactID that settlement loaded and locked (loadAskBlocks), writing each
-// restored wording into rows, so the rest of the settlement weighs the block against the wording
-// the ask was decided on and writes that wording back into it. It returns the asks it restored, as
+// of the document artifactID that settlement loaded and locked (loadAskBlocks and
+// lockAskBlocksForWrite). It writes the restored wording into rows so settlement weighs the
+// block against the wording the ask was decided on.
+// Settlement writes that wording back into the block. This returns the asks it restored, as
 // rows now holds them, whose copies the settlement marks owed with the copies of the asks it
 // retracts (reconcileAskBlocks).
 func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx, rows map[string]model.Ask) ([]model.Ask, error) {
@@ -259,7 +261,9 @@ func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx,
 // queued. They are indexed at the time this restoration writes them, the change they record, and
 // not at the time of the edit it undoes, which the restore leaves on the row (edited_at). No
 // event carries the change, as none does for refs.RebuildAll's, so nothing counts what the
-// restoration moved. Which asks it restores, their
+// restoration moved, and what the two index passes state in the node and tuple store - the
+// question's citations, the parts' nodes, their part_of and their links - is appended at the
+// sentinel (graphstore.NoEvent), right after the parts' write. Which asks it restores, their
 // references and their parts are read and planned where it is called (decidedWordingPlan); the
 // restoration, the references and the parts go through write, queued in that order, so an ask's
 // parts are written after the update whose wording they hold. The restoration names the planned
@@ -311,7 +315,7 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 	})
 	planned := make([]string, 0, len(restored))
 	answers := make([]*string, 0, len(restored))
-	steps := make([]WriteStep, 0, 2*len(restored))
+	steps := make([]WriteStep, 0, 3*len(restored))
 	for _, wording := range restored {
 		planned = append(planned, wording.ask)
 		answers = append(answers, wording.answerText)
@@ -319,7 +323,7 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 		// the database answered for the first of them and resolves their short ids for the ask's
 		// author.
 		reader := refs.NewReader(ctx, tx, wording.author, "ask", wording.ask, s.serverURL)
-		_, step, err := planAskReferences(ctx, tx, reader, wording.ask, wording.wording.Question)
+		_, step, cited, err := planAskReferences(ctx, tx, reader, wording.ask, wording.wording.Question, nil)
 		if err != nil {
 			return nil, fmt.Errorf("index the restored question of ask %s: %w", wording.ask, err)
 		}
@@ -336,13 +340,15 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 			Options:  wording.wording.Options,
 			Answer:   wording.answer,
 		}
-		indexing, _, err := planAskPartIndex(ctx, tx, reader, ask, at)
+		indexing, _, err := planAskPartIndex(ctx, tx, reader, ask, at, nil)
 		if err != nil {
 			return nil, fmt.Errorf("index the parts of the restored ask %s: %w", wording.ask, err)
 		}
 		indexing = indexing.SettlingForms()
-		steps = append(steps, func(b *store.WriteBatch) error {
-			indexing.Queue(b)
+		stated := indexing.Stated()
+		stated.Tuples = append(stated.Tuples, cited.Tuples...)
+		steps = append(steps, indexing.Queue, func(b *store.WriteBatch) error {
+			graphstore.QueueCaused(b, stated, graphstore.NoEvent)
 			return nil
 		})
 	}

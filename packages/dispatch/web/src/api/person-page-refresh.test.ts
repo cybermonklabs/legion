@@ -4,13 +4,14 @@ import { eventRefreshTargets } from "./event-refresh";
 import type { DispatchEvent } from "./types";
 
 // R2 and R3 of dispatch://INFRA-1523: a person's page (`["people", <login>, "nodes"]`, main's
-// #3178) prints the first line of each comment's words beside its marks. The cached correction
-// writes the mark at once but not the words, so an edit or a delete of a comment must read every
-// open person's page again, or an edited comment keeps its old first line until the page's own
-// refetch.
+// #3178) prints the first line of each comment's and issue message's words beside its marks
+// (#4182 lists the issue messages too). The cached correction writes the mark at once but not the
+// words, so an edit or a delete of a comment or an issue message must read every open person's
+// page again, or an edited post keeps its old first line until the page's own refetch.
 
-/** A comment event of type `type`, on an issue or on a project document. */
-function commentEvent(type: string, onDocument: boolean): DispatchEvent {
+/** An event of type `type` on a post, a comment or an issue message, on an issue or (a comment)
+ *  on a project document. */
+function postEvent(type: string, onDocument: boolean): DispatchEvent {
   const event = {
     actor: { id: "alice", kind: "user" },
     artifact_id: onDocument ? "33333333-4444-4555-8666-777777777777" : null,
@@ -41,13 +42,19 @@ function refreshesPersonPage(event: DispatchEvent): boolean {
 for (const type of ["comment.edited", "comment.deleted"]) {
   for (const onDocument of [false, true]) {
     test(`a ${type} of a comment on ${onDocument ? "a project document" : "an issue"} reads every person's page again`, () => {
-      expect(refreshesPersonPage(commentEvent(type, onDocument))).toBe(true);
+      expect(refreshesPersonPage(postEvent(type, onDocument))).toBe(true);
     });
   }
 }
 
-// The negative control: an event that changes no comment's words or marks leaves the page alone,
+for (const type of ["message.edited", "message.deleted"]) {
+  test(`a ${type} of an issue message reads every person's page again`, () => {
+    expect(refreshesPersonPage(postEvent(type, false))).toBe(true);
+  });
+}
+
+// The negative control: an event that changes no post's words or marks leaves the page alone,
 // so the rule above is not given to every event.
 test("a comment.resolved leaves every person's page alone", () => {
-  expect(refreshesPersonPage(commentEvent("comment.resolved", false))).toBe(false);
+  expect(refreshesPersonPage(postEvent("comment.resolved", false))).toBe(false);
 });

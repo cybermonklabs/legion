@@ -9,7 +9,7 @@
  */
 import { expect } from "@playwright/test";
 
-import { listMyReplies } from "./api";
+import { meInboxThreads } from "./api";
 import { inboxPane } from "./inbox-pane";
 import { holdReadMarks, replyRowId } from "./inbox-threads";
 import { stubbed } from "./stub/stub-test";
@@ -55,9 +55,8 @@ const unreadCommentTest = stubbed(async () => {
   const seeded = await seedThreads();
   await readThrough(seeded.commentIssue, seeded.comment, 2);
   expect(
-    ((await listMyReplies({ state: "unread" })).rows ?? []).find(
-      (row) => row.thread_id === seeded.comment
-    )?.unread_count
+    (await meInboxThreads({ state: "unread" })).rows.find((row) => row.thread_id === seeded.comment)
+      ?.unread_count
   ).toBe(4);
   return seeded;
 });

@@ -1,14 +1,19 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -329,7 +334,7 @@ func TestListOpenAsksRejectsInvalidSelectors(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
 	for _, target := range []string{
-		"/api/v1/asks/open",
+		"/api/v1/asks/open?waiting_on=%20%20",
 		"/api/v1/asks/open?author_session=%20%20",
 		"/api/v1/asks/open?author_session=session&since=not-a-timestamp",
 	} {
@@ -409,15 +414,19 @@ func TestListOpenAsksForProject(t *testing.T) {
 	requireWithdrawn(t, handler, issue.Key, issueAsk.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 }
 
-func TestListOpenAsksRequiresExactlyOneScope(t *testing.T) {
+// The read takes at most one scope, and neither is every project
+// (TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk). A scope key sent blank
+// names nothing, and is refused by name rather than read as the key left out, which would widen a
+// caller's read to every project.
+func TestListOpenAsksTakesAtMostOneScope(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
 	for _, test := range []struct {
 		target string
 		code   string
 	}{
-		{"/api/v1/asks/open", "AUTHOR_SESSION_OR_PROJECT_REQUIRED"},
-		{"/api/v1/asks/open?author_session=%20%20", "AUTHOR_SESSION_OR_PROJECT_REQUIRED"},
+		{"/api/v1/asks/open?author_session=%20%20", "INVALID_QUERY"},
+		{"/api/v1/asks/open?project=", "INVALID_QUERY"},
 		{"/api/v1/asks/open?author_session=session&project=TEST", "AUTHOR_SESSION_OR_PROJECT_CONFLICT"},
 	} {
 		response := sessionRequest(t, handler, http.MethodGet, test.target, nil)
@@ -432,6 +441,257 @@ func TestListOpenAsksRequiresExactlyOneScope(t *testing.T) {
 			t.Errorf("%s: code=%q, want %q", test.target, body.Code, test.code)
 		}
 	}
+}
+
+// openAsksRows reads GET /api/v1/asks/open at query as login, failing on anything but a 200.
+func openAsksRows(t *testing.T, handler http.Handler, query url.Values, login string) []openAsk {
+	t.Helper()
+	target := "/api/v1/asks/open"
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+	response := dispatchRequest(t, handler, http.MethodGet, target, nil, login)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read %s as %s: status=%d body=%s", target, login, response.Code, response.Body.String())
+	}
+	return decodeBody[openAsksResponse](t, response).Asks
+}
+
+// askIDsOf is the ids of rows, sorted, so two reads that order their rows by different rules
+// are compared by what they hold.
+func askIDsOf(rows []openAskRow) []string {
+	ids := make([]string, len(rows))
+	for index, row := range rows {
+		ids[index] = row.ID
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// openAskIDsOf is askIDsOf over the rows of GET /api/v1/asks/open, each the open-ask row it
+// carries.
+func openAskIDsOf(rows []openAsk) []string {
+	listed := make([]openAskRow, len(rows))
+	for index, row := range rows {
+		listed[index] = row.openAskRow
+	}
+	return askIDsOf(listed)
+}
+
+// waitingOnFixture is three questions on two issues of one project, each waiting on one of the
+// two people the test server records as signed in: one on alice's issue, one on bob's, and one on
+// alice's issue that she handed to bob, which waits on bob and not on the issue's assignee.
+type waitingOnFixture struct {
+	onAlices, onBobs, handedToBob string
+}
+
+func seedWaitingOn(t *testing.T, handler http.Handler) waitingOnFixture {
+	t.Helper()
+	alices := createInteractionIssue(t, handler, "TEST", "Alice's issue", "A spec")
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "TEST", "title": "Bob's issue", "assignee": "bob",
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create bob's issue: status=%d body=%s", response.Code, response.Body.String())
+	}
+	bobs := decodeBody[model.Issue](t, response)
+	seeded := waitingOnFixture{
+		onAlices:    createIssueAsk(t, handler, alices.Key, "On alice's issue"),
+		onBobs:      createIssueAsk(t, handler, bobs.Key, "On bob's issue"),
+		handedToBob: createIssueAsk(t, handler, alices.Key, "Handed to bob"),
+	}
+	handAskOn(t, handler, seeded.handedToBob, "bob", "alice")
+	return seeded
+}
+
+// ?waiting_on=<login> answers the asks that wait on that person - the waiting_on_person each row
+// names, whom a hand-on moves - and the same asks the Inbox's ?assignee=<login> answers for them,
+// whatever the casing the login is written in.
+func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	seeded := seedWaitingOn(t, handler)
+	for _, test := range []struct {
+		login, written string
+		want           []string
+	}{
+		{"alice", "alice", []string{seeded.onAlices}},
+		{"bob", "bob", []string{seeded.onBobs, seeded.handedToBob}},
+		{"bob", "  BOB  ", []string{seeded.onBobs, seeded.handedToBob}},
+	} {
+		rows := openAsksRows(t, handler, url.Values{"waiting_on": {test.written}}, "alice")
+		for _, row := range rows {
+			if row.WaitingOnPerson != test.login {
+				t.Errorf("waiting_on=%q answers %s, which waits on %q", test.written, row.ID, row.WaitingOnPerson)
+			}
+		}
+		want := slices.Sorted(slices.Values(test.want))
+		if got := openAskIDsOf(rows); !slices.Equal(got, want) {
+			t.Errorf("waiting_on=%q answers %v, want %v", test.written, got, want)
+		}
+		if inbox := askIDsOf(inboxFor(t, handler, "alice", test.login)); !slices.Equal(inbox, want) {
+			t.Errorf("the Inbox's assignee=%s answers %v, and waiting_on=%q answers %v", test.login, inbox, test.written, want)
+		}
+	}
+}
+
+// A waiting_on that names nobody the read could narrow to is refused by name: a blank value, a
+// repeated key, a login nobody has signed in as, `unassigned`, which is such a login (the read
+// narrows to one person and to nobody else), and `me`, which the read does not take, since it
+// answers about any person and the caller's own mail is the one read's (GET /api/v1/me/inbox).
+func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	seedWaitingOn(t, handler)
+	for _, query := range []url.Values{
+		{"waiting_on": {""}},
+		{"waiting_on": {"   "}},
+		{"waiting_on": {"alice", "bob"}},
+		{"waiting_on": {"nobody-signed-in"}},
+		{"waiting_on": {"me"}},
+		{"waiting_on": {"unassigned"}},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/open?"+query.Encode(), nil, "alice")
+		var refusal struct{ Code, Error string }
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil ||
+			refusal.Code != "INVALID_QUERY" || !strings.HasPrefix(refusal.Error, "waiting_on ") {
+			t.Errorf("?%s answers %d %s, want 400 INVALID_QUERY naming waiting_on", query.Encode(), response.Code, response.Body.String())
+		}
+	}
+}
+
+// With neither scope the read answers every project's open asks the caller may see, and no ask
+// whose node is reserved for another author: the ask node's visibility predicate binds every row.
+// The author the node is reserved for reads it, so what keeps it from the other reader is that
+// predicate and nothing else of the read.
+func TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	test := createInteractionIssue(t, handler, "TEST", "A TEST issue", "A spec")
+	other := createInteractionIssue(t, handler, "OTHER", "An OTHER issue", "A spec")
+	onTest := createIssueAsk(t, handler, test.Key, "On TEST")
+	onOther := createIssueAsk(t, handler, other.Key, "On OTHER")
+	reserved := createIssueAsk(t, handler, other.Key, "Reserved for bob")
+	author, err := json.Marshal(model.Actor{Kind: "user", ID: "bob"})
+	if err != nil {
+		t.Fatalf("encode the reserved node's author: %v", err)
+	}
+	if tag, err := database.Pool.Exec(context.Background(), `
+		update graph_nodes set visibility = $3, made_by = $4::jsonb where kind = $1 and id = $2
+	`, graphstore.KindAsk, reserved, graphstore.VisibilityAuthor, string(author)); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("reserve the ask node %s for bob: %v (%d rows)", reserved, err, tag.RowsAffected())
+	}
+
+	everyProject := openAskIDsOf(openAsksRows(t, handler, nil, "alice"))
+	if want := slices.Sorted(slices.Values([]string{onTest, onOther})); !slices.Equal(everyProject, want) {
+		t.Fatalf("alice's read with neither scope answers %v, want the TEST and OTHER asks %v and not the reserved %s",
+			everyProject, want, reserved)
+	}
+	if oneProject := openAskIDsOf(openAsksRows(t, handler, url.Values{"project": {"OTHER"}}, "alice")); !slices.Equal(oneProject, []string{onOther}) {
+		t.Fatalf("alice's read of OTHER answers %v, want %s alone", oneProject, onOther)
+	}
+	bobs := openAskIDsOf(openAsksRows(t, handler, nil, "bob"))
+	if want := slices.Sorted(slices.Values([]string{onTest, onOther, reserved})); !slices.Equal(bobs, want) {
+		t.Fatalf("bob's read with neither scope answers %v, want %v with the ask reserved for him", bobs, want)
+	}
+}
+
+// One ask, read through the three reads that answer its row - GET /api/v1/inbox, the Ask entry of
+// GET /api/v1/me/inbox and GET /api/v1/asks/open - answers the same row in each, field for field:
+// the row is built once (openAskRow), and the open-asks read only adds its own four fields beside
+// it. The ask carries a reply in its thread and the reader's snooze, so the row is not mostly
+// nulls.
+func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "One row", "A spec")
+	askID := createIssueAsk(t, handler, issue.Key, "Which row?")
+	created(t, "alice's reply in the ask's thread", dispatchRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "This one.", "ask_id": askID}, "alice"))
+	if snoozed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/asks/"+askID+"/snooze", map[string]any{
+		"snoozed_until": time.Now().UTC().Add(3 * time.Hour).Format(time.RFC3339Nano),
+	}, "alice"); snoozed.Code != http.StatusOK {
+		t.Fatalf("snooze the ask: status=%d body=%s", snoozed.Code, snoozed.Body.String())
+	}
+
+	rowOf := func(what string, rows []map[string]json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		for _, row := range rows {
+			var id string
+			if json.Unmarshal(row["id"], &id) == nil && id == askID {
+				return row
+			}
+		}
+		t.Fatalf("%s holds no row of %s", what, askID)
+		return nil
+	}
+	read := func(target string) []byte {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", target, response.Code, response.Body.String())
+		}
+		return response.Body.Bytes()
+	}
+	inbox := rowOf("GET /api/v1/inbox", decodeJSONBytes[[]map[string]json.RawMessage](t, read("/api/v1/inbox?assignee=me")))
+	var entries []map[string]json.RawMessage
+	for _, entry := range decodeJSONBytes[struct {
+		Entries []struct {
+			Ask map[string]json.RawMessage `json:"ask"`
+		} `json:"entries"`
+	}](t, read("/api/v1/me/inbox?state=inbox")).Entries {
+		if entry.Ask != nil {
+			entries = append(entries, entry.Ask)
+		}
+	}
+	one := rowOf("GET /api/v1/me/inbox", entries)
+	open := rowOf("GET /api/v1/asks/open", decodeJSONBytes[struct {
+		Asks []map[string]json.RawMessage `json:"asks"`
+	}](t, read("/api/v1/asks/open?waiting_on=alice")).Asks)
+
+	if string(inbox["snoozed_until"]) == "null" || string(inbox["last_reply"]) == "null" {
+		t.Fatalf("the Inbox's row carries snoozed_until %s and last_reply %s, want both set", inbox["snoozed_until"], inbox["last_reply"])
+	}
+	for _, other := range []struct {
+		what  string
+		row   map[string]json.RawMessage
+		extra []string
+	}{
+		{"GET /api/v1/me/inbox", one, nil},
+		{"GET /api/v1/asks/open", open, []string{"age_seconds", "human_replied", "owner", "ref"}},
+	} {
+		if got, want := slices.Sorted(maps.Keys(other.row)), slices.Sorted(slices.Values(append(slices.Collect(maps.Keys(inbox)), other.extra...))); !slices.Equal(got, want) {
+			t.Errorf("%s's row carries %v, want the Inbox row's fields and %v: %v", other.what, got, other.extra, want)
+		}
+		for field, value := range inbox {
+			if !bytes.Equal(compactJSON(t, other.row[field]), compactJSON(t, value)) {
+				t.Errorf("%s's row carries %s %s, and the Inbox's %s", other.what, field, other.row[field], value)
+			}
+		}
+	}
+}
+
+// decodeJSONBytes decodes body as a T, failing the test on a body that is not one.
+func decodeJSONBytes[T any](t *testing.T, body []byte) T {
+	t.Helper()
+	var value T
+	if err := json.Unmarshal(body, &value); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	return value
+}
+
+// compactJSON is raw with its insignificant whitespace taken out, so two encodings of one value
+// compare equal.
+func compactJSON(t *testing.T, raw json.RawMessage) []byte {
+	t.Helper()
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, raw); err != nil {
+		t.Fatalf("compact %s: %v", raw, err)
+	}
+	return compacted.Bytes()
 }
 
 func TestTargetedReadsRejectNonUUIDIDsWithA400(t *testing.T) {

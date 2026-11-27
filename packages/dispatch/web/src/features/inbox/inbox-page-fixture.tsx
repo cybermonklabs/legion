@@ -11,7 +11,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import type { Commits } from "../../__tests__/commits";
 import { api } from "../../api/client";
-import type { InboxRow, Issue, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import type { Issue, IssueDetails, OpenAskRow } from "../../api/types";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { type InboxRoute, parseInboxSearch } from "../refs/routes";
@@ -19,14 +19,14 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
-import { issueAsk } from "./inbox-fixture";
+import { issueAsk, type OneReadHeld, oneReadReply } from "./inbox-fixture";
 
 export function inboxIssue(
   id: string,
   key: string,
   question: string,
-  overrides: Partial<InboxRow> = {}
-): InboxRow {
+  overrides: Partial<OpenAskRow> = {}
+): OpenAskRow {
   return issueAsk({
     id,
     issue: { assignee: "alice", key, title: `${key} title` },
@@ -37,7 +37,7 @@ export function inboxIssue(
 }
 
 /** The narrow `Issue` a PATCH answers with, for an inbox row's issue. */
-export function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
+export function narrowIssueOf(row: OpenAskRow, assignee: string | null): Issue {
   return {
     advances: [],
     advances_revision: 0,
@@ -225,33 +225,27 @@ export function mockIssueReads() {
   return spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails);
 }
 
-/** A read of the reader's threads as `GET /api/v1/me/replies` answers it. */
-function threadsReadOf(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return {
-    as_of: "2026-10-12T02:00:00Z",
-    limit: 0,
-    offset: 0,
-    rows: [...rows],
-    total: rows.length,
-  };
-}
-
-/** The Inbox's own thread read (`inboxThreadsQuery`), held until the test lands it: the read the
- *  page makes once the sign-in read has answered, which a reload or a link can see land after
- *  the asks'. Every other replies read - an owner's unread set - answers at once with nothing. */
-export function holdThreadsRead(): {
-  land: (rows: readonly MyReplyRow[]) => Promise<void>;
+/** The one read's `inbox` state (`meInboxQuery`), which the page draws every row of the reader's
+ *  own Inbox from, their asks and their threads alike, held until the test lands it with what it
+ *  holds: until then the page draws none of those rows. Every other state of the one read - an
+ *  owner's unread set, the unread count - answers at once from what has landed, which is nothing
+ *  before the landing. */
+export function holdOneRead(): {
+  land: (held: OneReadHeld) => Promise<void>;
   restore: () => void;
 } {
-  const held = Promise.withResolvers<MyRepliesResponse>();
-  const read = spyOn(api, "listMyReplies").mockImplementation((page) =>
-    page.state === "inbox" ? held.promise : Promise.resolve(threadsReadOf([]))
-  );
+  const landing = Promise.withResolvers<void>();
+  let landed: OneReadHeld = {};
+  const read = spyOn(api, "getMeInboxPage").mockImplementation(async (query) => {
+    if (query.state === "inbox") await landing.promise;
+    return oneReadReply(query, landed);
+  });
   return {
-    land: async (rows) => {
+    land: async (held) => {
       await act(async () => {
-        held.resolve(threadsReadOf(rows));
-        await held.promise;
+        landed = held;
+        landing.resolve();
+        await landing.promise;
       });
     },
     restore: () => read.mockRestore(),

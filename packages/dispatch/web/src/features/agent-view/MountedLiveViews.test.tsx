@@ -151,7 +151,9 @@ function mockDispatch(agentState: UserAgentStates = {}): Mock<typeof api.putAgen
   spies.push(
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "sami" }),
     spyOn(api, "listAgents").mockImplementation(async () => registry),
-    spyOn(api, "listAgentMessages").mockImplementation(async (session) => threads[session] ?? []),
+    spyOn(api, "getAgentConversation").mockImplementation(
+      async (session) => threads[session] ?? []
+    ),
     spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
     putAgentState
   );

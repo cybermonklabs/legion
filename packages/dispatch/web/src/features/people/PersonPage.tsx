@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { nextOffsetPage } from "../../api/queries";
+import type { PersonNode } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
@@ -27,6 +28,14 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 const PAGE_SIZE = 50;
 
+/** A row of the person nodes read as a server of either release answers it: this build's carries
+ *  the line as `first_line` and again as `title`, and a server of the release before answers it as
+ *  `title` alone, which the page reads while a roll or a rollback leaves such a pod serving.
+ *
+ *  kept for one release: person-node-title
+ */
+type PersonNodeRead = Omit<PersonNode, "first_line"> & { readonly first_line?: string };
+
 /** What each tie reads as on the page. A row carries one or both: a comment a person wrote that
  *  was then delivered back to a session of theirs is authored and received at once. */
 const RELATION_LABELS: Record<string, string> = {
@@ -37,11 +46,11 @@ const RELATION_LABELS: Record<string, string> = {
 /** `/people/<login>`: one person's page, from one `GET /api/v1/people/{login}/nodes` — what they
  *  wrote and what reached them, newest first, read from the node and tuple store. Every row is
  *  re-read from that route: the page holds no list of its own and walks no edge, because the
- *  route takes no kind, filter or traversal. A comment its author deleted keeps its row, drawn
- *  as the deleted line in place of its title (`DeletedBody`), and one its author edited says
- *  ` · edited` after its kind in the row's byline (`EditedMark`), as every surface that prints a
- *  post marks it (dispatch://INFRA-1523, R2 and R3). A row with neither mark draws exactly what
- *  it drew before the marks. */
+ *  route takes no kind, filter or traversal. A comment or an issue message its author deleted
+ *  keeps its row, drawn as the deleted line in place of its first line (`DeletedBody`), and one
+ *  its author edited says ` · edited` after its kind in the row's byline (`EditedMark`), as every
+ *  surface that prints a post marks it (dispatch://INFRA-1523, R2 and R3). A row with neither
+ *  mark draws exactly what it drew before the marks. */
 export function PersonPage(): ReactNode {
   const { login = "" } = useParams();
   useDocumentTitle(`${login} · Dispatch`);
@@ -56,7 +65,7 @@ export function PersonPage(): ReactNode {
   if (nodes.isError) {
     return <p className={dangerText}>Could not load this page: {nodes.error.message}</p>;
   }
-  const rows = nodes.data.pages.flatMap((page) => page.rows ?? []);
+  const rows: PersonNodeRead[] = nodes.data.pages.flatMap((page) => page.rows ?? []);
 
   return (
     <section aria-label="Person">
@@ -80,9 +89,12 @@ export function PersonPage(): ReactNode {
         <ul aria-label="Person nodes" className="space-y-3">
           {rows.map((row) => {
             const deleted = postDeletion(row);
+            // kept for one release: person-node-title
+            const line = row.first_line ?? row.title;
             return (
               <li
                 className={`rounded-xl border p-3 ${card} ${borderDefault}`}
+                data-person-node={`${row.kind}:${row.id}`}
                 key={`${row.kind}:${row.id}`}
               >
                 <div className={`flex flex-wrap items-center gap-2 text-xs ${textMutedOnCanvas}`}>
@@ -95,14 +107,15 @@ export function PersonPage(): ReactNode {
                     <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
                   ))}
                 </div>
-                {/* The line reaches the page with no tree: the person nodes read sends none, so
-                    the preview parses it (`UNTREED_ROWS` in `refs/surface-lists.test.ts`). */}
+                {/* The record's first line as the server cut it, drawn from the server's reading
+                    of it (`first_line_tree`); a row a server of the release before answers
+                    carries no tree, and the preview parses its line. */}
                 <PostPreview
                   className="mt-2 text-sm"
                   deleted={deleted}
                   fullTitle
                   lines={2}
-                  markdown={row.title}
+                  markdown={line}
                   source={textSourceOf(
                     textSourceKind(row.kind),
                     row.id,
@@ -111,6 +124,7 @@ export function PersonPage(): ReactNode {
                     parseIssuePath(row.href)?.key
                   )}
                   surface="person-node-title"
+                  tree={row.first_line_tree}
                 />
                 <Link
                   className={`mt-2 inline-block min-h-11 py-2 text-sm ${linkText} ${linkHoverText}`}

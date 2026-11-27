@@ -1,0 +1,53 @@
+-- 20261116114515_messages_node.up.sql
+--
+-- messages learns the address of the node it projects, as 20261109022248 gave document_blocks,
+-- block_refs and comments the same two columns and 20261116102800 gave the two attempt tables:
+--   node_kind      the `kind` of the row's node in graph_nodes, message.
+--   node_address   its `id` there, the message's own id.
+-- The pair is also the row's marker. A row that names its node is one whose writer stated its
+-- pointers in the store - replies_to, part_of, addressed_to and broadcast_id - and who wrote it
+-- (graphstore.MessageFacts, graphstore.AuthorFacts), so graph_edges answers its replies_to edges
+-- from the tuples (migration 20261126045001). A row an older build inserts during a roll names
+-- none, and its old arms answer it until the backfill takes it once.
+--
+-- And messages learns whether this release recorded the message in its thread:
+--   threads_recorded   true for every row this release writes (api's createStoredMessage,
+--                      writeBroadcast and insertSessionReply, the seed), which recorded the
+--                      message's participation, deliveries and user_threads rows, and a session's
+--                      reply's clear of its root's Agent dismissals, in the transaction that wrote
+--                      it (inboxwrite.Record), or, for a message whose row names no node, its
+--                      user_threads rows and that clear alone, as the trigger bodies would have
+--                      (inboxwrite's Write.Unstored); and true of a row an older build wrote past
+--                      the store's bound once the backfill marks it, the triggers having recorded
+--                      it when that build wrote it (graphcensus's pastBoundRowsPass).
+-- The triggers user_threads_message and user_agent_thread_dismissed_clear pass a row that names
+-- its node or holds this column (migration 20261116160001), and the root's drop of those triggers
+-- reads the same test: a message whose replies_to end is past the store's
+-- address bound names no node, and without this column would stand unmarked for good. Nothing
+-- else reads it, so the root drops it with the triggers. A row an older build inserts takes the
+-- default, false, a constant, so adding the column is a catalog change too: every stored row reads
+-- false and none is rewritten.
+--
+-- The two node columns are nullable, and nothing fills them for a row already stored: the writers
+-- of this release set them in the insert that writes the row, which is where every trigger on that
+-- insert sees them. The foreign key is not deferrable, so Postgres checks it inside that insert,
+-- and the node is written before the row (api's planMessageNode). The key is added NOT VALID, so
+-- the ALTER reads no row of messages: a composite key is MATCH SIMPLE, which holds no row where a
+-- column is null, and both node columns are null in every row messages holds, so a validation could
+-- only find what it cannot look at. NOT VALID says nothing about a row written from here on, which
+-- Postgres checks from the moment the constraint exists.
+--
+-- The ALTER holds ACCESS EXCLUSIVE on messages for the rest of this transaction and then takes
+-- SHARE ROW EXCLUSIVE on graph_nodes for its key. A message write of the release still serving
+-- takes the other order: it writes the message's node (ROW EXCLUSIVE on graph_nodes) and then
+-- inserts the messages row, so the two can each hold what the other waits for. Half a second,
+-- shorter than deadlock_timeout (1 s by default), makes this migration give up first, as
+-- 20261116102800 does for the same cycle over the attempt tables: it fails with 55P03 having
+-- applied nothing, the write finishes, and the runner applies it again
+-- (pgmigrate.LockTimeoutAttempts).
+set local lock_timeout = '500ms';
+
+alter table messages add column node_kind text, add column node_address text,
+  -- kept for one release: user-threads-triggers
+  add column threads_recorded boolean not null default false,
+  add constraint messages_node foreign key (node_kind, node_address) references graph_nodes (kind, id) not valid;

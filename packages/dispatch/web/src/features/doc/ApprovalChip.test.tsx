@@ -9,8 +9,10 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { meInboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { oneReadAnswer } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -377,8 +379,9 @@ test("a refused reason shows the server's message", async () => {
 });
 
 // Dispatch made the review and lost its answer (`409 KEY_COMMITTED`): a landing, not a refusal.
-// The dialog closes with no refusal, the reviews are read again, and a second press is a fresh
-// open of the dialog rather than a second review of the reason already sent.
+// The dialog closes with no refusal, the reviews are read again - and the one read, which the
+// Inbox draws the reader's own approval asks from - and a second press is a fresh open of the
+// dialog rather than a second review of the reason already sent.
 test("a change request made with its answer lost closes the dialog, refuses nothing and reads again", async () => {
   const user = userEvent.setup();
   const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
@@ -389,6 +392,7 @@ test("a change request made with its answer lost closes the dialog, refuses noth
   });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   queryClient.setQueryData(["artifact-reviews", "artifact-1"], []);
+  queryClient.setQueryData(meInboxQuery().queryKey, oneReadAnswer([]));
   const view = render(
     <QueryClientProvider client={queryClient}>
       <ApprovalChip
@@ -408,6 +412,7 @@ test("a change request made with its answer lost closes the dialog, refuses noth
     );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(queryClient.getQueryState(["artifact-reviews", "artifact-1"])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(meInboxQuery().queryKey)?.isInvalidated).toBe(true);
     expect(createArtifactReview).toHaveBeenCalledTimes(1);
   } finally {
     createArtifactReview.mockRestore();

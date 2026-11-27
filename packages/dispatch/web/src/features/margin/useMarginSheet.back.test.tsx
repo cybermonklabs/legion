@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
+import { openAsksQuery } from "../../api/queries";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -29,7 +30,7 @@ const stoppedText = new SendStoppedError().message;
 /** The issue's margin on a phone, over the one comment thread `comment` roots, in `queryClient`. */
 function phoneMargin(queryClient: QueryClient): () => void {
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);

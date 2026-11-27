@@ -87,7 +87,7 @@ repliesList(
     );
     await expect(page.locator('[data-inbox-filter-token="type:reply"]')).toHaveAttribute(
       "aria-label",
-      "Remove filter Type: Reply"
+      "Remove filter Type: Threads"
     );
     const rows = page.locator("[data-inbox-row]");
     await expect(rows).toHaveCount(2);
@@ -146,20 +146,23 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
   };
   expect((await counted("Question")) + (await counted("Decision"))).toBe(3);
   expect(await counted("Approval")).toBe(2);
-  expect(await counted("Reply")).toBe(4);
+  expect(await counted("Threads")).toBe(4);
   expect(await counted("Agent message")).toBe(3);
 
   // The search box narrows the values the popover lists.
   const search = page.getByRole("combobox", { name: "Search type" });
-  await search.fill("rep");
+  await search.fill("thr");
   await expect(options.getByRole("option")).toHaveCount(1);
-  await expect(options.getByRole("option").first()).toHaveAttribute("aria-label", "Reply, 4 rows");
+  await expect(options.getByRole("option").first()).toHaveAttribute(
+    "aria-label",
+    "Threads, 4 rows"
+  );
   await search.fill("");
 
   // Each value alone lists only its own rows.
   for (const [value, name, count] of [
     ["approval", "Approval", 2],
-    ["reply", "Reply", 4],
+    ["reply", "Threads", 4],
     ["agent", "Agent message", 3],
   ] as const) {
     await options.getByRole("option", { name: new RegExp(`^${name}, `) }).click();
@@ -171,7 +174,7 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
 
   // Two values together are the union, and a reload keeps what the reader chose.
   await options.getByRole("option", { name: /^Approval, / }).click();
-  await options.getByRole("option", { name: /^Reply, / }).click();
+  await options.getByRole("option", { name: /^Threads, / }).click();
   await expect(rows).toHaveCount(6);
   await expect(page).toHaveURL(/type=approval%2Creply/);
   await page.reload();

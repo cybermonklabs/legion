@@ -142,8 +142,10 @@ func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 type CommentWrite struct {
 	Nodes  []graphstore.Node
 	Tuples []graphstore.Tuple
-	// ids are the comments the write names the nodes of. A comment's node address is its own id.
-	ids []string
+	// ids are the comments the write names the nodes of, in id order, and causes the event that
+	// stored each, beside it. A comment's node address is its own id.
+	ids    []string
+	causes []int64
 	// baseAttributes is how many base attributes the store write states of the comment nodes it
 	// makes: each one's visibility and state, and its project or its parties where it belongs to
 	// one.
@@ -152,6 +154,10 @@ type CommentWrite struct {
 
 // Comments is how many comments rows the write names the nodes of.
 func (w CommentWrite) Comments() int { return len(w.ids) }
+
+// Written is each comment the write names the node of, in id order, beside the event that stored
+// it, which is the cause of what the write states of it.
+func (w CommentWrite) Written() (ids []string, causes []int64) { return w.ids, w.causes }
 
 // BaseAttributes is how many base attributes the store write states of the comment nodes it makes,
 // which the writer does not state itself: every comment it reads names no node yet, so its insert
@@ -175,7 +181,8 @@ func (w CommentWrite) Queue(b *store.WriteBatch) {
 // commentWriteOf builds the write of one batch of comments rows (CommentWrite). One write writes
 // a node once, so an author several comments of the batch name is made by the first of them.
 func commentWriteOf(batch []commentRow) CommentWrite {
-	write := CommentWrite{Nodes: make([]graphstore.Node, 0, 2*len(batch)), ids: make([]string, 0, len(batch))}
+	write := CommentWrite{Nodes: make([]graphstore.Node, 0, 2*len(batch)), ids: make([]string, 0, len(batch)),
+		causes: make([]int64, 0, len(batch))}
 	written := map[[2]string]struct{}{}
 	for _, row := range batch {
 		// A comment any of whose relation ends is past the store's address bound is left whole
@@ -198,7 +205,7 @@ func commentWriteOf(batch []commentRow) CommentWrite {
 			}
 			write.Tuples = append(write.Tuples, facts...)
 		}
-		write.ids = append(write.ids, row.id)
+		write.ids, write.causes = append(write.ids, row.id), append(write.causes, row.event)
 		write.baseAttributes += 2
 		if row.project != "" || len(row.parties) > 0 {
 			write.baseAttributes++

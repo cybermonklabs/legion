@@ -8,7 +8,7 @@
  */
 import { expect, type Page } from "@playwright/test";
 
-import type { InboxRow } from "../web/src/api/types";
+import type { OpenAskRow } from "../web/src/api/types";
 import { LIMIT_MS } from "../web/src/features/doc/refocus-when-settled";
 import {
   answerAsk,
@@ -20,7 +20,7 @@ import {
   createProjectDocument,
   disconnectLiveSockets,
   editArtifact,
-  getInbox,
+  listOpenAsks,
   patchIssue,
   requestApproval,
   withOpenedAsk,
@@ -113,11 +113,11 @@ const RUNBOOK_HEADING = "Mirror runbook";
 const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
-  let found: InboxRow | undefined;
+async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
+  let found: OpenAskRow | undefined;
   await expect
     .poll(async () => {
-      found = (await getInbox()).find(match);
+      found = (await listOpenAsks()).find(match);
       return found !== undefined;
     }, INDEX_PROBE)
     .toBe(true);

@@ -12,15 +12,21 @@ import userEvent from "@testing-library/user-event";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
-import type { InboxRow, Issue } from "../../api/types";
+import type { Issue, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { replyRow } from "../threads/replies-fixture";
-import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import {
+  installInboxApiMocks,
+  issueAsk,
+  mockAskReads,
+  mockInboxReads,
+  refetchInboxReads,
+} from "./inbox-fixture";
 import {
   address,
   headings,
-  holdThreadsRead,
+  holdOneRead,
   inboxIssue,
   mockIssueReads,
   movableReadingPaneWidth,
@@ -46,7 +52,7 @@ test("below 1280 px the page lists short rows, and a row the reader opens is rea
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   // A page under the Inbox in the history, so an entry the Inbox control wrote of its own
@@ -86,7 +92,7 @@ test("below 1280 px the page lists short rows, and a row the reader opens is rea
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -97,7 +103,7 @@ test("below 1280 px the browser's Back and Escape leave the reading view for the
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -126,7 +132,7 @@ test("below 1280 px the browser's Back and Escape leave the reading view for the
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -140,7 +146,7 @@ test("below 1280 px an answer given in the reading view reads the next row, and 
     options: [{ label: "Markdown" }, { label: "PDF" }],
   });
   let served = [first, second];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
   const answerAsk = spyOn(api, "answerAsk").mockImplementation(async (id, input) => {
@@ -185,7 +191,7 @@ test("below 1280 px an answer given in the reading view reads the next row, and 
     unmount();
     answerAsk.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -196,8 +202,8 @@ test("below 1280 px a snooze from the reading view's head reads the next row, an
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
@@ -230,7 +236,7 @@ test("below 1280 px a snooze from the reading view's head reads the next row, an
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
   }
@@ -242,7 +248,7 @@ test("below 1280 px a short row's checkbox marks the row without opening it, and
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -265,7 +271,7 @@ test("below 1280 px a short row's checkbox marks the row without opening it, and
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -276,7 +282,7 @@ test("below 1280 px Escape in the reading view's answer box is the box's, and le
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -311,7 +317,7 @@ test("below 1280 px Escape in the reading view's answer box is the box's, and le
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -330,7 +336,7 @@ test("below 1280 px Assign to me in the reading view's head PATCHes the viewer's
     null
   );
   const rows = [orphan];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const save = Promise.withResolvers<Issue>();
@@ -357,7 +363,7 @@ test("below 1280 px Assign to me in the reading view's head PATCHes the viewer's
     unmount();
     patchIssue.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -369,7 +375,7 @@ test("below 1280 px a row the column chose by itself is no row the reader opened
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -397,7 +403,7 @@ test("below 1280 px a row the column chose by itself is no row the reader opened
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -409,7 +415,7 @@ test("below 1280 px the way back from an opened row stays on the Inbox after a B
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox(["/agents", "/"]);
@@ -439,7 +445,7 @@ test("below 1280 px the way back from an opened row stays on the Inbox after a B
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -450,7 +456,7 @@ test("below 1280 px a reload onto an opened row keeps its way back: the Inbox co
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   // The history a reload keeps: the entry the open pushed holds its mark, the Inbox remounts.
@@ -469,7 +475,7 @@ test("below 1280 px a reload onto an opened row keeps its way back: the Inbox co
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -481,7 +487,7 @@ test("below 1280 px Escape on an answer option steps out to the view and keeps t
       options: [{ label: "Ship" }, { label: "Hold" }],
     }),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -507,7 +513,7 @@ test("below 1280 px Escape on an answer option steps out to the view and keeps t
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -518,7 +524,7 @@ test("below 1280 px Enter that opens a row leaves the focus where the next Enter
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -534,7 +540,7 @@ test("below 1280 px Enter that opens a row leaves the focus where the next Enter
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -545,7 +551,7 @@ test("below 1280 px `h` on a focused ask row opens its view at the head's Snooze
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -569,7 +575,7 @@ test("below 1280 px `h` on a focused ask row opens its view at the head's Snooze
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -580,8 +586,8 @@ test("below 1280 px a row the column handed its own pick on to is no row the rea
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { queryClient, unmount } = renderInbox();
@@ -590,9 +596,9 @@ test("below 1280 px a row the column handed its own pick on to is no row the rea
     await screen.findByTestId("inbox-pane");
     await waitFor(() => expect(address()).toBe("/?item=ask-a"));
     // The column's own pick leaves without the reader doing anything: the next row is shown.
-    served = [rows[1] as InboxRow];
+    served = [rows[1] as OpenAskRow];
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      await refetchInboxReads(queryClient);
     });
     await waitFor(() => expect(address()).toBe("/?item=ask-b"));
 
@@ -604,7 +610,7 @@ test("below 1280 px a row the column handed its own pick on to is no row the rea
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -612,8 +618,8 @@ test("below 1280 px a row the column handed its own pick on to is no row the rea
 test("below 1280 px when the open row leaves an empty list, the list is back and its keys work", async () => {
   const user = userEvent.setup();
   const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { queryClient, unmount } = renderInbox(["/agents", "/"]);
@@ -627,7 +633,7 @@ test("below 1280 px when the open row leaves an empty list, the list is back and
     // The server takes the last row away while it is open.
     served = [];
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      await refetchInboxReads(queryClient);
     });
     await waitFor(() => expect(address()).toBe("/"));
     expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
@@ -640,7 +646,7 @@ test("below 1280 px when the open row leaves an empty list, the list is back and
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -653,7 +659,7 @@ test("below 1280 px `1`-`9` and `y` on a focused ask row open it and act in its 
     }),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -681,7 +687,7 @@ test("below 1280 px `1`-`9` and `y` on a focused ask row open it and act in its 
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -697,7 +703,8 @@ test("below 1280 px the reader's own Assign to me under Unassigned moves the vie
     orphan("ask-oa", "CORE-3", "First orphan?"),
     orphan("ask-ob", "CORE-4", "Second orphan?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const save = Promise.withResolvers<Issue>();
@@ -712,16 +719,16 @@ test("below 1280 px the reader's own Assign to me under Unassigned moves the vie
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-3", { assignee: "alice" }, keyedAttempt)
     );
-    getInbox.mockResolvedValue([
+    served = [
       {
-        ...(rows[0] as InboxRow),
+        ...(rows[0] as OpenAskRow),
         issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
         waiting_on_person: "alice",
       },
-      rows[1] as InboxRow,
-    ]);
+      rows[1] as OpenAskRow,
+    ];
     await act(async () => {
-      save.resolve(narrowIssueOf(rows[0] as InboxRow, "alice"));
+      save.resolve(narrowIssueOf(rows[0] as OpenAskRow, "alice"));
       await save.promise;
     });
 
@@ -734,7 +741,7 @@ test("below 1280 px the reader's own Assign to me under Unassigned moves the vie
     unmount();
     patchIssue.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -745,8 +752,8 @@ test("below 1280 px an open row that only leaves the list's filter goes back to 
     inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
     inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 1 }),
   ];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { queryClient, unmount } = renderInbox("/?priority=P1");
@@ -758,9 +765,9 @@ test("below 1280 px an open row that only leaves the list's filter goes back to 
     await user.unhover(shortRow("ask-a"));
 
     // Somebody else moves the issue to P2: the question is still the reader's, out of P1.
-    served = [{ ...(rows[0] as InboxRow), priority: 2 }, rows[1] as InboxRow];
+    served = [{ ...(rows[0] as OpenAskRow), priority: 2 }, rows[1] as OpenAskRow];
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      await refetchInboxReads(queryClient);
     });
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(address()).toBe("/?priority=P1");
@@ -768,7 +775,7 @@ test("below 1280 px an open row that only leaves the list's filter goes back to 
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -780,7 +787,7 @@ test("a search typed beside the column keeps the column's own pick, so narrowing
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -803,7 +810,7 @@ test("a search typed beside the column keeps the column's own pick, so narrowing
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -815,7 +822,7 @@ test("a search typed over a row opened below 1280 px keeps its way back: the Inb
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox(["/agents", "/"]);
@@ -839,7 +846,7 @@ test("a search typed over a row opened below 1280 px keeps its way back: the Inb
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -850,7 +857,7 @@ test("below 1280 px Escape on the view head's Snooze goes back to the list, at t
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -869,7 +876,7 @@ test("below 1280 px Escape on the view head's Snooze goes back to the list, at t
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -880,8 +887,8 @@ test("below 1280 px an open row that leaves on its own brings the list back at i
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { queryClient, unmount } = renderInbox(["/agents", "/"]);
@@ -893,9 +900,9 @@ test("below 1280 px an open row that leaves on its own brings the list back at i
     await user.unhover(shortRow("ask-a"));
 
     // The server takes the open question away; the reader did nothing to it.
-    served = [rows[1] as InboxRow];
+    served = [rows[1] as OpenAskRow];
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      await refetchInboxReads(queryClient);
     });
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(address()).toBe("/");
@@ -906,7 +913,7 @@ test("below 1280 px an open row that leaves on its own brings the list back at i
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -922,8 +929,8 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
     orphan("ask-oa", "CORE-3", "First orphan?"),
     orphan("ask-ob", "CORE-4", "Second orphan?"),
   ];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const save = Promise.withResolvers<Issue>();
@@ -942,14 +949,14 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
     );
     served = [
       {
-        ...(rows[0] as InboxRow),
+        ...(rows[0] as OpenAskRow),
         issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
         waiting_on_person: "alice",
       },
-      rows[1] as InboxRow,
+      rows[1] as OpenAskRow,
     ];
     await act(async () => {
-      save.resolve(narrowIssueOf(rows[0] as InboxRow, "alice"));
+      save.resolve(narrowIssueOf(rows[0] as OpenAskRow, "alice"));
       await save.promise;
     });
     // The question the reader took stays in their list, and open.
@@ -960,9 +967,9 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
 
     // The agent then withdraws it. The reader's write is over, so this is the server's move: the
     // list comes back and says so, rather than the view swapping in a question they never opened.
-    served = [rows[1] as InboxRow];
+    served = [rows[1] as OpenAskRow];
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      await refetchInboxReads(queryClient);
     });
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(address()).toBe("/?assignee=everyone");
@@ -971,7 +978,7 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
     unmount();
     patchIssue.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -984,8 +991,8 @@ test("below 1280 px the line saying the open row left is a live region that is a
     inboxIssue("ask-b", "CORE-2", "Which format?"),
     inboxIssue("ask-c", "CORE-3", "Which owner?"),
   ];
-  let served: InboxRow[] = rows;
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { queryClient, unmount } = renderInbox();
@@ -996,7 +1003,7 @@ test("below 1280 px the line saying the open row left is a live region that is a
     await user.unhover(shortRow(id));
     served = served.filter((row) => row.id !== id);
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      await refetchInboxReads(queryClient);
     });
     await waitFor(() => expect(line()?.textContent).toBe("This item left your Inbox."));
   };
@@ -1021,7 +1028,7 @@ test("below 1280 px the line saying the open row left is a live region that is a
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -1031,7 +1038,7 @@ test("below 1280 px `h` on a snoozed row opens nothing, and leaves no Snooze for
   const open = inboxIssue("ask-a", "CORE-1", "Which approach?");
   const later = inboxIssue("ask-later", "CORE-2", "Which format?", { snoozed_until: soon() });
   const rows = [open, later];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
@@ -1053,7 +1060,7 @@ test("below 1280 px `h` on a snoozed row opens nothing, and leaves no Snooze for
   } finally {
     unmount();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -1065,7 +1072,7 @@ test("beside the column, Back over a row opened below 1280 px goes back past it"
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox(["/agents", "/"]);
@@ -1089,19 +1096,18 @@ test("beside the column, Back over a row opened below 1280 px goes back past it"
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });
 
-test("below 1280 px a reload onto a thread row whose read lands after the asks' opens that row, with its way back", async () => {
+test("below 1280 px a reload onto a thread row opens that row once the one read lands, with its way back", async () => {
   const user = userEvent.setup();
   const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const listComments = spyOn(api, "listComments").mockResolvedValue([]);
-  const threads = holdThreadsRead();
+  const oneRead = holdOneRead();
   // The history a reload keeps: the entry the open pushed over the list's own names the thread.
   const { unmount } = renderInbox([
     "/agents",
@@ -1110,12 +1116,14 @@ test("below 1280 px a reload onto a thread row whose read lands after the asks' 
   ]);
 
   try {
-    // The asks' read has landed and the list draws its row; the threads' read is still out, so
-    // the row the address names is not listed yet - which is no row that left.
-    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    // The one read, which lists the ask and the thread the address names, is still out: the
+    // page draws no row yet, so the row the address names is not listed - which is no row that
+    // left.
+    await waitFor(() => expect(api.getMeInboxPage).toHaveBeenCalledWith({ state: "inbox" }));
+    expect(rowIds()).toEqual([]);
     expect(address()).toBe("/?item=reply:c1");
 
-    await threads.land([replyRow("c1")]);
+    await oneRead.land({ asks: rows, threads: [replyRow("c1")] });
     const view = await screen.findByTestId("inbox-reading-view");
     expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c1");
     expect(address()).toBe("/?item=reply:c1");
@@ -1127,10 +1135,9 @@ test("below 1280 px a reload onto a thread row whose read lands after the asks' 
     expect(address()).toBe("/agents");
   } finally {
     unmount();
-    threads.restore();
+    oneRead.restore();
     listComments.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
     getIssue.mockRestore();
   }
 });
@@ -1142,7 +1149,7 @@ test("below 1280 px clearing the agent filter beside the column keeps a row's wa
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
     inboxIssue("ask-b", "CORE-2", "Which format?"),
   ];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const listOpenAsks = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
   const { unmount } = renderInbox(["/agents", "/?agent=session-1"]);
@@ -1181,7 +1188,7 @@ test("below 1280 px clearing the agent filter beside the column keeps a row's wa
     unmount();
     width.restore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
     getIssue.mockRestore();
   }
 });

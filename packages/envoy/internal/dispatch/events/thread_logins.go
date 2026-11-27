@@ -8,14 +8,18 @@ import (
 )
 
 // ThreadLogins is the thread_logins an event names: every login with a Replies row
-// (user_threads, migrations 0095-0097) on threadID, sorted. The rows are kept by triggers on the
-// comment, message and ask writes, so a writer reads this in its own transaction after the write,
-// and the list says whose Replies count the write can have moved. It is never nil, so a thread
-// nobody has a row on is named as [] rather than left out. threadID is the thread as the
-// triggers key it: an ask's id; a comment's ask, else the root it replies to, else itself; an
-// issue message's root up in_reply_to. A writer whose write phase is one batch has the event's
-// insert read them instead (ThreadLoginsOf). A direct (issue-less) message keeps no row here,
-// and names its thread root's author instead (api/thread_logins.go, directThreadLogins).
+// (user_threads, migrations 0095-0097) on threadID, sorted. The rows are kept by the one writer of
+// a thread, inboxwrite.Record, which each comment, message, ask and answer write of this release
+// runs after its event, and, for a write an older build makes, by the triggers of 0095-0097. So
+// the list names the rows the thread held before the write, and the writer adds the one row its
+// own write is about to keep (inboxwrite.Write.ThreadLogins): the list says whose Replies count
+// the write can have moved. It is never nil, so a thread nobody has a row on is named as []
+// rather than left out. threadID is the thread as Record and the triggers key it: an ask's id; a
+// comment's ask, else the root it replies to, else itself; an issue message's root up
+// in_reply_to. A writer whose write phase is one batch has the event's insert read them instead
+// (ThreadLoginsOf), the writer's own row named beside them. A direct (issue-less) message keeps
+// no row here, and names its thread root's author instead (api/thread_logins.go,
+// directThreadLogins).
 func ThreadLogins(ctx context.Context, q Queryer, threadID string) ([]string, error) {
 	logins := []string{}
 	if err := q.QueryRow(ctx, threadLoginsQuery("$1"), threadID).Scan(&logins); err != nil {
@@ -24,9 +28,20 @@ func ThreadLogins(ctx context.Context, q Queryer, threadID string) ([]string, er
 	return logins, nil
 }
 
+// threadLoginsFrom is the user_threads rows of the thread the parameter param names, which
+// threadLoginsQuery aggregates and threadLoginsRows answers.
+func threadLoginsFrom(param string) string {
+	return `from user_threads where thread_id = ` + param + `::uuid`
+}
+
 // threadLoginsQuery is ThreadLogins' query, its thread id the parameter param.
 func threadLoginsQuery(param string) string {
-	return `select coalesce(array_agg(login order by login), '{}') from user_threads where thread_id = ` + param + `::uuid`
+	return `select coalesce(array_agg(login order by login), '{}') ` + threadLoginsFrom(param)
+}
+
+// threadLoginsRows is the rows threadLoginsQuery aggregates, one login each.
+func threadLoginsRows(param string) string {
+	return `select login ` + threadLoginsFrom(param)
 }
 
 // issueLoginsQuery is the status half of an issue event's thread_logins, for an event that
@@ -48,11 +63,19 @@ func threadLoginsQuery(param string) string {
 // wherever its issue goes, so no assignee move touches its row; the hand-on itself names the two
 // people instead (api/ask_asked_of.go, over api/thread_logins.go's movedLogins).
 func issueLoginsQuery(param string) string {
-	return `
-		select coalesce(array_agg(distinct u.login order by u.login), '{}')
-		from user_threads u
-		where u.thread_id in (select a.id from asks a where a.issue_key = ` + param + ` and a.state = 'open')
-	`
+	return `select coalesce(array_agg(distinct u.login order by u.login), '{}') ` + issueLoginsFrom(param)
+}
+
+// issueLoginsRows is the rows issueLoginsQuery aggregates, a login once for each of its rows.
+func issueLoginsRows(param string) string {
+	return `select u.login ` + issueLoginsFrom(param)
+}
+
+// issueLoginsFrom is the user_threads rows of the open asks of the issue the parameter param
+// names, which issueLoginsQuery aggregates and issueLoginsRows answers.
+func issueLoginsFrom(param string) string {
+	return `from user_threads u
+		where u.thread_id in (select a.id from asks a where a.issue_key = ` + param + ` and a.state = 'open')`
 }
 
 // Logins is the thread_logins an event's payload carries, read by the event's own insert
@@ -62,28 +85,33 @@ func issueLoginsQuery(param string) string {
 // the writer already knows, unioned into what the query reads.
 type Logins struct {
 	query func(param string) string
+	rows  func(param string) string
 	key   string
 	also  []string
 }
 
 // SQL is the expression reading the logins, its first parameter $first, with the arguments those
-// parameters take. The logins the writer already knows are unioned in and the whole is sorted and
-// deduplicated, so the event names each login once however it was found.
+// parameters take. The logins the writer already knows are unioned into the rows the query reads,
+// and the whole is sorted once: the union drops a login both name, so the event names each login
+// once however it was found. Aggregating the rows first and unnesting the array again cost a
+// thousand-login thread three to five milliseconds on 2026-11-21.
 func (l *Logins) SQL(first int) (string, []any) {
-	query := l.query(fmt.Sprintf("$%d", first))
 	args := []any{any(l.key)}
 	if len(l.also) == 0 {
-		return query, args
+		return l.query(fmt.Sprintf("$%d", first)), args
 	}
 	return fmt.Sprintf(`
-		select coalesce(array_agg(distinct login order by login), '{}')
-		from (select unnest((%s)) as login union all select unnest($%d::text[])) as named
-	`, query, first+1), append(args, l.also)
+		select coalesce(array_agg(login order by login), '{}')
+		from (%s union select unnest($%d::text[])) as named(login)
+	`, l.rows(fmt.Sprintf("$%d", first)), first+1), append(args, l.also)
 }
 
-// ThreadLoginsOf is ThreadLogins of threadID, read by the event's insert.
-func ThreadLoginsOf(threadID string) *Logins {
-	return &Logins{query: threadLoginsQuery, key: threadID}
+// ThreadLoginsOf is ThreadLogins of threadID, read by the event's insert. also is the logins the
+// writer already knows its write keeps a row of, which no row holds yet when the event is
+// inserted: the writer's own, for a write whose row inboxwrite.Record keeps after the event
+// (inboxwrite.Write.KeptLogins), unioned into what the query reads.
+func ThreadLoginsOf(threadID string, also ...string) *Logins {
+	return &Logins{query: threadLoginsQuery, rows: threadLoginsRows, key: threadID, also: also}
 }
 
 // IssueLoginsOf is the logins of issueKey's open asks (issueLoginsQuery), read by the event's
@@ -93,7 +121,7 @@ func ThreadLoginsOf(threadID string) *Logins {
 // issue holds nobody (api/issue_patch.go, over api/thread_logins.go's movedLogins), unioned into
 // them.
 func IssueLoginsOf(issueKey string, also ...string) *Logins {
-	return &Logins{query: issueLoginsQuery, key: issueKey, also: also}
+	return &Logins{query: issueLoginsQuery, rows: issueLoginsRows, key: issueKey, also: also}
 }
 
 // withThreadLogins is payload, the payload of an event that names thread_logins, carrying logins.

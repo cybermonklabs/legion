@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { Actor, InboxRow, Message } from "../web/src/api/types";
+import type { Actor, Message, OpenAskRow } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   acceptAgentDelivery,
@@ -12,7 +12,7 @@ import {
   createIssue,
   createMessage,
   createProject,
-  getInbox,
+  listOpenAsks,
   patchIssue,
   replyToMessageDelivery,
   requestApproval,
@@ -404,11 +404,16 @@ export interface Twelve {
 }
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
-  await expect.poll(async () => (await getInbox()).some(match)).toBe(true);
-  const row = (await getInbox()).find(match);
-  if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
-  return row;
+async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
+  let found: OpenAskRow | undefined;
+  await expect
+    .poll(async () => {
+      found = (await listOpenAsks()).find(match);
+      return found !== undefined;
+    })
+    .toBe(true);
+  if (found === undefined) throw new Error("the seeded question was never listed");
+  return found;
 }
 
 /**

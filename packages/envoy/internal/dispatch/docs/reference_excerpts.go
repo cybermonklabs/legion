@@ -313,7 +313,7 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 // (refs.Replacement.SettlingForms); whether excerpts is nil decides only whether the excerpts are
 // stored or marked owed.
 func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt, blocksIndexed bool) (model.ReferenceChanges, error) {
-	replacement, err := planReplacement(ctx, tx, "artifact", artifactID, text.Refs(located), &versionAt)
+	replacement, err := planReplacement(ctx, tx, "artifact", artifactID, text.Refs(located), &versionAt, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -450,44 +450,96 @@ func versionWriterOf(ctx context.Context, tx pgx.Tx, artifactID string, version 
 // planReplacement plans the reconciliation of fromKind/fromID's references with found, a new edge
 // dated insertedAt (nil: the transaction's time), against the source's edges as the transaction's
 // own queued reconciliation of it leaves them, when there is one, else as read in tx, and records
-// what this one leaves.
-func planReplacement(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) (refs.Replacement, error) {
-	return planReplacementOver(ctx, tx, fromKind, fromID, found, insertedAt, nil, false)
+// this one for the next. A comment's, a message's or an ask's is planned with the item's
+// citations (planItemReplace) under scope, the item's node as the calling write queued it
+// (refs.WrittenItem), or nil to read it; a second one of the same item in this transaction is
+// planned against the rows the first leaves, each with the tuples_stored it holds then
+// (refs.Replacement.PlanItemAfter), so it retracts the citations the first stated of the rows it
+// drops and states those of the rows it adds.
+func planReplacement(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, scope *refs.ItemScope) (refs.Replacement, error) {
+	return planReplacementOver(ctx, tx, fromKind, fromID, found, insertedAt, scope, nil)
 }
 
-// planReplacementOver is planReplacement given what an earlier read of this transaction found
-// the source's edges to be (stored, with read true): the transaction's own queued reconciliation
-// of the source still comes first, then that read, and only with neither a read of its own in tx.
-func planReplacementOver(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, stored []refs.Target, read bool) (refs.Replacement, error) {
+// planReplacementOver is planReplacement given index, the item index of the source an earlier
+// read of this transaction made (planAskPartIndex): the transaction's own queued reconciliation
+// of the source still comes first, then the source's own refs rows that read found, each with its
+// kind and tuples_stored (refs.ItemIndex.PlanOwnRefs), and only with neither a read of its own in
+// tx. index is nil where no such read was made.
+func planReplacementOver(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, scope *refs.ItemScope, index *refs.ItemIndex) (refs.Replacement, error) {
 	ledger := queueFor(ctx, tx)
 	source := refs.Target{Kind: fromKind, ID: fromID}
-	var replacement refs.Replacement
-	held, known := stored, read
+	var replacement, earlier refs.Replacement
+	known := false
 	if ledger != nil {
-		if queued, ok := ledger.referenced[source]; ok {
-			held, known = queued, true
-		}
+		earlier, known = ledger.referenced[source]
 	}
-	if known {
-		replacement = refs.PlanReplaceFrom(held, fromKind, fromID, found, insertedAt)
-	} else {
-		var err error
-		if replacement, err = refs.PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt); err != nil {
-			return refs.Replacement{}, err
-		}
+	var err error
+	switch kind := refs.ItemKind(fromKind); {
+	case kind == refs.ItemAsk || kind == refs.ItemComment || kind == refs.ItemMessage:
+		replacement, err = planItemReplace(ctx, tx, kind, fromID, found, insertedAt, scope, earlier, known, index)
+	case known:
+		replacement = refs.PlanReplaceFrom(earlier.Held(), fromKind, fromID, found, insertedAt)
+	default:
+		replacement, err = refs.PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
+	}
+	if err != nil {
+		return refs.Replacement{}, err
 	}
 	if ledger != nil {
 		if ledger.referenced == nil {
-			ledger.referenced = make(map[refs.Target][]refs.Target)
+			ledger.referenced = make(map[refs.Target]refs.Replacement)
 		}
-		ledger.referenced[source] = replacement.Held()
+		ledger.referenced[source] = replacement
 	}
 	return replacement, nil
 }
 
+// planItemReplace plans the reconciliation of item itemID's references with found together with
+// the item's citations (refs.PlanItemReplace), which every writer of an item's refs rows states,
+// so no row is written holding tuples_stored without the tuple it says the store holds. scope is
+// the item's node as the calling write queued it with the item's insert, which no read finds yet
+// (refs.WrittenItem); nil reads it from the store (refs.ReadItemScope). Where this transaction
+// has queued a reconciliation of the item already (known), it is planned against the rows that
+// one leaves, under its scope (refs.Replacement.PlanItemAfter); else, where index, the item's
+// index this transaction read, holds the item's own refs rows, against those under the index's
+// scope (refs.ItemIndex.PlanOwnRefs), with no read of its own. The rows it inserts and the
+// citations they stand for are dated insertedAt, or where that is nil the transaction's now(), the
+// created_at a new row takes by default.
+func planItemReplace(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID string, found []text.Ref, insertedAt *time.Time, scope *refs.ItemScope, earlier refs.Replacement, known bool, index *refs.ItemIndex) (refs.Replacement, error) {
+	var at time.Time
+	if insertedAt != nil {
+		at = *insertedAt
+	} else {
+		var err error
+		if at, err = transactionNow(ctx, tx); err != nil {
+			return refs.Replacement{}, err
+		}
+	}
+	if known {
+		return earlier.PlanItemAfter(found, at), nil
+	}
+	if index != nil {
+		if replacement, read := index.PlanOwnRefs(found, at); read {
+			return replacement, nil
+		}
+	}
+	var itemScope refs.ItemScope
+	if scope != nil {
+		itemScope = *scope
+	} else {
+		var err error
+		if itemScope, err = refs.ReadItemScope(ctx, tx, kind, itemID); err != nil {
+			return refs.Replacement{}, err
+		}
+	}
+	return refs.PlanItemReplace(ctx, tx, itemScope, kind, itemID, found, at)
+}
+
 // planReplaceCounted is the read half of a reconciliation this package writes: it plans the
-// reconciliation of fromKind/fromID's references with found (planReplacement), resolves the
-// counted targets it and moved move, and returns those with the step that writes it.
+// reconciliation of fromKind/fromID's references with found (planReplacement, under scope),
+// resolves the counted targets it and moved move, and returns those with the step that writes it
+// and what it states in the node and tuple store (refs.Replacement.Cited), held for the event of
+// the write, which the caller queues with graphstore.QueueCaused right after that event.
 func planReplaceCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -495,19 +547,20 @@ func planReplaceCounted(
 	found []text.Ref,
 	insertedAt *time.Time,
 	moved []refs.Target,
-) (model.ReferenceChanges, WriteStep, error) {
-	replacement, err := planReplacement(ctx, tx, fromKind, fromID, found, insertedAt)
+	scope *refs.ItemScope,
+) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	replacement, err := planReplacement(ctx, tx, fromKind, fromID, found, insertedAt, scope)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	changes, err := refs.CountedChanges(ctx, tx, slices.Concat(replacement.Changed(), moved))
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	return changes, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
 		return nil
-	}, nil
+	}, replacement.Cited(), nil
 }
 
 // planAskPartIndex plans the parts the ask's row holds at `at` - its question, its options and
@@ -517,8 +570,11 @@ func planReplaceCounted(
 // same ask leave it, when there is one, else as read in tx; and it records what this one leaves
 // for a later plan of the same ask. A version write that moves an open approval request and then
 // answers it plans the one ask's parts twice, and the answer takes a revision of its own because
-// it runs against the move's rows rather than the stored ones.
-func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.Ask, at time.Time) (refs.ItemIndexing, refs.ItemIndex, error) {
+// it runs against the move's rows rather than the stored ones. scope is the ask's node as the
+// calling write queued it with the ask's insert (refs.WrittenItem), which a read of the index
+// finds no row of yet, so the parts are planned under it, as the stored ask's are under the node
+// the store holds of it; nil for an ask whose row is stored.
+func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.Ask, at time.Time, scope *refs.ItemScope) (refs.ItemIndexing, refs.ItemIndex, error) {
 	ledger := queueFor(ctx, tx)
 	index, held := refs.ItemIndex{}, false
 	if ledger != nil {
@@ -528,6 +584,9 @@ func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.
 		var err error
 		if index, err = refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID); err != nil {
 			return refs.ItemIndexing{}, refs.ItemIndex{}, fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+		}
+		if scope != nil {
+			index = index.Scoped(*scope)
 		}
 	}
 	indexing, err := refs.PlanAskParts(index, r, ask, at)
@@ -547,13 +606,14 @@ func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.
 // write of its parts alone queues after them, a new edge dated at, settling the forms queue in
 // the statement that settles the whole grammar's (refs.Replacement.SettlingForms): the question
 // is the rest of the ask's text, so with it the write has indexed the whole of it, after every
-// delete that index made. It plans against the question's edges as the transaction's own queued
-// reconciliation of them leaves them, when there is one, else as the read of the ask's part index
-// found them (refs.ItemIndex.HeldRefs), which costs the write no read of its own, else as read in
-// tx (planReplacementOver).
-func planAskQuestionAfterParts(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.Ask, at time.Time, index refs.ItemIndex) (refs.Replacement, error) {
-	held, read := index.HeldRefs()
-	replacement, err := planReplacementOver(ctx, tx, "ask", ask.ID, text.Refs(r.Mentions(ask.Question)), &at, held, read)
+// delete that index made. It is the ask's reconciliation with its citations, as every writer of
+// the ask's refs rows plans it (planItemReplace), under scope as planAskPartIndex took it. It
+// plans against the question's edges as the transaction's own queued reconciliation of them
+// leaves them, when there is one, else as index, the read of the ask's part index, found them,
+// each with its kind and tuples_stored (refs.ItemIndex.PlanOwnRefs), which costs the write no read
+// of its own, else as read in tx (planReplacementOver).
+func planAskQuestionAfterParts(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.Ask, at time.Time, scope *refs.ItemScope, index refs.ItemIndex) (refs.Replacement, error) {
+	replacement, err := planReplacementOver(ctx, tx, "ask", ask.ID, text.Refs(r.Mentions(ask.Question)), &at, scope, &index)
 	if err != nil {
 		return refs.Replacement{}, fmt.Errorf("index ask %s: %w", ask.ID, err)
 	}
@@ -561,13 +621,16 @@ func planAskQuestionAfterParts(ctx context.Context, tx pgx.Tx, r *refs.Reader, a
 }
 
 // planAskPartsCounted is the counted index of an ask's parts as this package makes its writes: it
-// plans them (planAskPartIndex), resolves the counted targets they move and merges them into
-// beside, what the same write moved elsewhere, and returns those with the step that writes the
-// parts. The step is queued after the statements that leave the row as the plan reads it, since a
-// part row names its ask; the plan itself runs in the read phase, where the counts the event
-// carries are worked out. The parts are read through r, the Reader of the write that holds the
-// ask's text, so a write that reconciles the ask's question as well passes the one reader to
-// both and the database answers it once per kind.
+// plans them (planAskPartIndex, under scope), resolves the counted targets they move and merges
+// them into beside, what the same write moved elsewhere, and returns those with the step that
+// writes the parts and what the parts state in the node and tuple store - their block nodes, their
+// part_of and their links (refs.ItemIndexing.Stated) - held for the event of the write, which the
+// caller queues with graphstore.QueueCaused right after that event. The step is queued after the
+// statements that leave the row as the plan reads it, since a part row names its ask; the plan
+// itself runs in the read phase, where the counts the event carries are worked out. The parts are
+// read through r, the Reader of the write that holds the ask's text, so a write that reconciles
+// the ask's question as well passes the one reader to both and the database answers it once per
+// kind.
 //
 // The parts are the rest of the ask's text beside its question, so the step is where the write
 // settles what the forms queue holds for the ask (refs.RefsFormsOwed). questionReconciled says
@@ -575,8 +638,8 @@ func planAskQuestionAfterParts(ctx context.Context, tx pgx.Tx, r *refs.Reader, a
 // planEditedAskReferences), counted in beside: the step then settles that queue in the
 // statement that ends the parts' index (refs.ItemIndexing.SettlingForms). A write that holds the
 // parts alone - an answer, a restoration - passes false, and the step reconciles the question's
-// references after the parts as well, counted with them (planAskQuestionAfterParts), which
-// settles both queues after both deletes.
+// references after the parts as well, counted with them and its citations stated beside theirs
+// (planAskQuestionAfterParts), which settles both queues after both deletes.
 func planAskPartsCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -585,49 +648,53 @@ func planAskPartsCounted(
 	at time.Time,
 	questionReconciled bool,
 	beside model.ReferenceChanges,
-) (model.ReferenceChanges, WriteStep, error) {
-	indexing, index, err := planAskPartIndex(ctx, tx, r, ask, at)
+	scope *refs.ItemScope,
+) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	indexing, index, err := planAskPartIndex(ctx, tx, r, ask, at, scope)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	if questionReconciled {
 		indexing = indexing.SettlingForms()
 		counted, err := refs.CountedChanges(ctx, tx, indexing.Moved())
 		if err != nil {
-			return model.ReferenceChanges{}, nil, err
+			return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 		}
-		return refs.MergeChanges(beside, counted), func(b *store.WriteBatch) error {
-			indexing.Queue(b)
-			return nil
-		}, nil
+		return refs.MergeChanges(beside, counted), indexing.Queue, indexing.Stated(), nil
 	}
-	question, err := planAskQuestionAfterParts(ctx, tx, r, ask, at, index)
+	question, err := planAskQuestionAfterParts(ctx, tx, r, ask, at, scope, index)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	counted, err := refs.CountedChanges(ctx, tx, slices.Concat(indexing.Moved(), question.Changed()))
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
+	stated := indexing.Stated()
+	stated.Tuples = slices.Concat(stated.Tuples, question.Cited().Tuples)
 	return refs.MergeChanges(beside, counted), func(b *store.WriteBatch) error {
-		indexing.Queue(b)
+		if err := indexing.Queue(b); err != nil {
+			return err
+		}
 		question.Queue(b)
 		return nil
-	}, nil
+	}, stated, nil
 }
 
 // planAskReferences is planReplaceCounted for ask askID, whose references are the ones its
-// question cites, read with the whole grammar through r (refs.Reader.Mentions).
-func planAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, question string) (model.ReferenceChanges, WriteStep, error) {
-	return planReplaceCounted(ctx, tx, "ask", askID, text.Refs(r.Mentions(question)), nil, nil)
+// question cites, read with the whole grammar through r (refs.Reader.Mentions), under scope, the
+// ask's node as the calling write queued it (nil for a stored ask's). It returns the ask's
+// citations beside the step, held for the write's event.
+func planAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, question string, scope *refs.ItemScope) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
+	return planReplaceCounted(ctx, tx, "ask", askID, text.Refs(r.Mentions(question)), nil, nil, scope)
 }
 
-// planEditedAskReferences is planAskReferences for an edit of the ask's question from previous:
-// it also counts every target the question still cites when the edit moves the head of its text,
-// which each of the ask's edges shows, cut against r's deployment (refs.EditedTargets).
-func planEditedAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, previous, question string) (model.ReferenceChanges, WriteStep, error) {
+// planEditedAskReferences is planAskReferences for an edit of a stored ask's question from
+// previous: it also counts every target the question still cites when the edit moves the head of
+// its text, which each of the ask's edges shows, cut against r's deployment (refs.EditedTargets).
+func planEditedAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, previous, question string) (model.ReferenceChanges, WriteStep, graphstore.Uncaused, error) {
 	found := text.Refs(r.Mentions(question))
-	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.ServerURL(), found))
+	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.ServerURL(), found), nil)
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an

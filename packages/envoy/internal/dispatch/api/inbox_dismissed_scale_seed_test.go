@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // How a14's three shapes are built: the seeding statements, the counts every shape is held to
@@ -18,15 +21,18 @@ import (
 // the database when it did reads this one. Both run only under LEGION_SCALE_TEST, since nothing
 // here is called unless TestDismissedScaleHoldsTheInboxsReads runs.
 
-// seedDismissedScale builds one shape: a server on a database of its own, whose every connection
-// records what a marked request sends (dismissedScaleTrace), the pile it was asked for, the 600 undismissed threads with 300 unread among them, and the 1,000 unread threads the
-// mark-all works over. It asserts every count before the caller times anything, because a
-// measurement over a seed that did not land is worse than none.
+// seedDismissedScale builds one shape: a server on a database of its own with JIT off
+// (jitOffStore), whose every connection records what a marked request sends (dismissedScaleTrace),
+// the pile it was asked for, the 600 undismissed threads with 300 unread among them, and the 1,000
+// unread threads the mark-all works over. It asserts every count before the caller times anything,
+// because a measurement over a seed that did not land is worse than none.
 func seedDismissedScale(t *testing.T, name string, replies, agents int) *dismissedScaleShape {
 	t.Helper()
 	started := time.Now()
 	trace := &dismissedScaleTrace{}
-	handler, database, _ := newTestServer(t, testServerOptions{tracer: trace})
+	handler, database, _ := newTestServer(t, testServerOptions{
+		store: jitOffStore(t, "the "+name+" shape's database", storetest.Open(t)), tracer: trace,
+	})
 	issue := createInteractionIssue(t, handler, "SCALE", "A pile of dismissed threads", "A spec")
 	shape := &dismissedScaleShape{
 		name: name, handler: handler, database: database, trace: trace, issue: issue.Key,
@@ -265,22 +271,34 @@ func assertDismissedScaleSeed(t *testing.T, shape *dismissedScaleShape) {
 	}
 	// The routes' own reading of the same seed, both halves together: what each state answers is
 	// what the measurement then times.
-	for _, state := range []struct {
-		query string
+	for _, read := range []struct {
+		query url.Values
 		total int
 	}{
-		{"?kind=reply,agent&state=inbox", dismissedScaleInboxRows()},
-		{"?kind=reply,agent&state=unread&limit=1", dismissedScaleUnreadRows()},
-		// The Dismissed view answers no count of the pile: its total is the page it holds, and the
-		// pile itself is asserted above, in the tables the marks live in.
-		{"?kind=reply,agent&state=dismissed",
-			min(shape.dismissedReplies+shape.dismissedAgents, myRepliesDismissedPage)},
+		{url.Values{"state": {"inbox"}}, dismissedScaleInboxRows()},
+		{url.Values{"state": {"unread"}}, dismissedScaleUnreadRows()},
+		// The Dismissed view is read a page at a time, as the measurement reads it; the pile itself
+		// is asserted above, in the tables the marks live in.
+		{url.Values{"state": {"dismissed"}, "limit": {fmt.Sprint(dismissedScalePage)}},
+			min(shape.dismissedReplies+shape.dismissedAgents, dismissedScalePage)},
 	} {
-		page := getMyReplies(t, shape.handler, dismissedScaleLogin, state.query)
-		if page.Total != state.total {
-			t.Fatalf("%s on %s answered total=%d, want %d", state.query, shape.name, page.Total, state.total)
+		if rows := dismissedScaleRows(t, shape, read.query); rows != read.total {
+			t.Fatalf("%s on %s answered %d rows, want %d", read.query.Encode(), shape.name, rows, read.total)
 		}
 	}
+}
+
+// dismissedScaleRows is how many Thread and Agent rows the one read answers the seeded person
+// under query: with no limit, every row of its state, as the Inbox page draws them.
+func dismissedScaleRows(t *testing.T, shape *dismissedScaleShape, query url.Values) int {
+	t.Helper()
+	rows := 0
+	for _, entry := range readMeInboxAs(t, shape.handler, dismissedScaleLogin, query).Entries {
+		if entry.Thread != nil || entry.Agent != nil {
+			rows++
+		}
+	}
+	return rows
 }
 
 // dismissedScaleDismissTargets is the 120 rows one dismissal names: threads the seed marked read
@@ -333,25 +351,25 @@ func dismissedScaleUnreadAgentReplies(t *testing.T, shape *dismissedScaleShape) 
 }
 
 // dismissedScaleDeepCursor is the cursor a page 50,000 rows deep resumes from: the row at that
-// depth of the merged order both halves answer in, read the way the route merges them - newest
-// dismissal first, ties by id descending.
+// depth of the order the Dismissed view draws its rows in - newest dismissal first, then the
+// root's id, as a uuid, descending (meInboxOrder) - written as the one read writes its next_cursor
+// (meInboxCursor).
 func dismissedScaleDeepCursor(t *testing.T, shape *dismissedScaleShape) string {
 	t.Helper()
-	var at time.Time
-	var id string
+	var cursor meInboxCursor
 	if err := shape.database.Pool.QueryRow(context.Background(), `
-		select at, id from (
-			select dismissed_at as at, thread_id::text as id from user_threads
+		select at, kind, id from (
+			select dismissed_at as at, kind, thread_id::text as id from user_threads
 			where login = $1 and dismissed_at is not null
 			union all
-			select dismissed_at, message_id::text from user_agent_thread_dismissed where login = $1
+			select dismissed_at, 'message', message_id::text from user_agent_thread_dismissed where login = $1
 		) dismissed
-		order by at desc, id desc
+		order by at desc, id::uuid desc
 		offset $2::int limit 1
-	`, dismissedScaleLogin, dismissedScaleCursorDepth-1).Scan(&at, &id); err != nil {
+	`, dismissedScaleLogin, dismissedScaleCursorDepth-1).Scan(&cursor.moment, &cursor.kind, &cursor.id); err != nil {
 		t.Fatalf("read the cursor %d deep: %v", dismissedScaleCursorDepth, err)
 	}
-	return at.UTC().Format(time.RFC3339Nano) + "," + id
+	return url.QueryEscape(cursor.String())
 }
 
 func dismissedScaleStrings(t *testing.T, shape *dismissedScaleShape, statement string, args ...any) []string {

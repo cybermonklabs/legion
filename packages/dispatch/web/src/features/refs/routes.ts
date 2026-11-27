@@ -1164,11 +1164,10 @@ function filterVocabulary(field: InboxFilterField): readonly string[] | undefine
 }
 
 /**
- * The page's `?assignee=` deliberately spells its default the opposite way round from the
- * server's own `?assignee=` on `GET /api/v1/inbox`
- * (`packages/envoy/internal/dispatch/api/inbox.go`), where an absent parameter means everybody:
- * here absent means the reader alone and `assignee=everyone` means everybody, so the same name
- * now means different things on the two sides and neither reads the other's URL.
+ * The page's `?assignee=` is the page's own word: absent, it means the reader alone, and
+ * `assignee=everyone` means everybody. No server parameter reads it: the list is drawn from the
+ * one read, which is the reader's alone, and from the open asks (`GET /api/v1/asks/open`), which
+ * the page narrows on the client.
  *
  * Every other field is absent while it holds its default, so the Inbox as it opens is `/` and a
  * link says only what the reader changed. A value this build does not know - an older link, a

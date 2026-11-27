@@ -724,31 +724,40 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
-// answers arm among them, and the one arm over the store's current tuples that migration adds.
-// 20261125163554_graph_edges_asks_and_tuple_arm_filter, the last migration to restate
-// graph_edges, keeps that list, with 20261125163553's tests on the asks and ask_followers arms
-// and 20261120122700's filter of the tuple arm. Each of the seven arms over a kind the store now
-// writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those seven answer nothing here (armGatedPerRow).
-const graphArmCount = 28
+// 20261126045005_graph_edges_identity_and_tuple_arm_filter, the last migration to restate
+// graph_edges: the 27 arms 20261105014808 restated it with, the comment answers arm among them,
+// the one arm over the store's current tuples 20261109215947 adds, the arm over a message's reply
+// to a message's block that 20261126045001 adds, the two arms over a comment's reply to a comment's
+// block and to an ask's part that 20261126045002 adds, the one arm over every item's blocks, a
+// comment's, a message's and an ask's, that 20261126045003 adds, and the identity arm over a
+// mention of a person, a session or a role that 20261126045004 adds. 20261125163553 adds none, and
+// 20261126045005 adds none either: it keeps 20261126045004's list and carries 20261120122700's
+// filter of the tuple arm, as 20261125163554 carries it over 20261125163553's. Each of the fifteen
+// arms over a kind the store now writes answers only the rows of its table that name no node, each
+// of the five over what a comment answers only the rows whose pointers are no tuples, and the refs
+// arm only the rows that hold no tuples_stored; the seed names the node of every row it writes but
+// an ask's and an ask follower's, states every comment's pointers and every item's citations, so
+// an arm of those may answer nothing here (armGatedPerRow). The identity arm answers the first
+// message's mention of a session (messageMention), which the item index states.
+const graphArmCount = 33
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
 	armToKindLiteral = regexp.MustCompile(`'([a-z_]+)'::text AS to_kind`)
 )
 
-// armGatedPerRow matches one of the seven arms over a kind the node and tuple store writes: the
-// test that keeps it to the rows of its own table that name no node.
-var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+// armGatedPerRow matches one of the arms over a kind the node and tuple store writes: the test
+// that keeps it to the rows of its own table that name no node, or, over what a comment answers
+// and over refs, to the rows whose tuples_stored is false.
+var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL|\bNOT (?:[a-z_]+\.)?tuples_stored\b`)
 
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
 // count in the view itself. The arms come from pg_get_viewdef, the view's own text, not from a
 // list in this test and not from the seed's fixture: an arm a later migration adds is covered the
-// day it lands. One of the four arms the store answers for may hold no row of its own, since
-// every row the seed writes names its node; its pair is still held to a count in the view,
-// which is where the store's arm answers those rows.
+// day it lands. An arm the store answers for may hold no row of its own, since every row the seed
+// writes names its node and every comment it writes holds its pointers as tuples; its pair is still
+// held to a count in the view, which is where the store's arm answers those rows.
 func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -758,7 +767,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migration 20261126045005 restates it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -771,7 +780,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		switch {
 		case rows > 0:
 		case armGatedPerRow.MatchString(arm):
-			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
+			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table the store does not hold, and the seed writes every row into the store, so the store's own arm answers them:\n%s",
 				index+1, arm)
 		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)

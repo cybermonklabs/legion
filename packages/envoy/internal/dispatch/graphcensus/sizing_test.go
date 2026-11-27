@@ -486,13 +486,13 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
 // table a term counts: a mention of the comment that resolved to a session and its attempt, which
 // the listener took, two body blocks of the comment of which one is removed, a link out of the
-// live one, a child issue that waits on its parent, a failed result with two screenshots and its
-// retraction, a Keep, two components of one imported snapshot, one under and depending on the
-// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, her snooze
-// of an ask the session ses_asker opened before the window, so that inside the window the snooze
-// is the one write of it a term counts, a copy in the spec of an ask block of a document written
-// before the window, and an answered ask asked before the window whose block, Dropped, the spec's
-// second version took out.
+// live one and the comment's citation of the issue it names, a child issue that waits on its
+// parent, a failed result with two screenshots and its retraction, a Keep, two components of one
+// imported snapshot, one under and depending on the other, with CORE-1 affecting the first,
+// alice's dismissal of the message's thread, her snooze of an ask the session ses_asker opened
+// before the window, so that inside the window the snooze is the one write of it a term counts, a
+// copy in the spec of an ask block of a document written before the window, and an answered ask
+// asked before the window whose block, Dropped, the spec's second version took out.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -525,6 +525,8 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		{"write the body block's link", `
 			insert into comment_block_refs (comment_id, block_id, from_node, to_kind, to_id)
 			values ($1::uuid, 'b1', 'b1', 'issue', 'CORE-1')`, []any{comment}},
+		{"write the comment's citation", `
+			insert into refs (from_kind, from_id, to_kind, to_id) values ('comment', $1, 'issue', 'CORE-1')`, []any{comment}},
 		{"write the child issue and its wait", `
 			with child as (
 				insert into issues (key, project_key, number, title, created_by, rank, parent_key)
@@ -874,17 +876,18 @@ func seededDrives(database *store.Store) []StoreDrive {
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
-// (graphstoreDrives), the boot step's ask passes (askBackfillDrives), the seed (seedRunDrives), and
-// the drives of the sites whose packages import this one, which this package's external test
-// registers (ImportedDrives). It holds them to driving every site the register of the store's
-// writers lists (requireEveryListedSiteDriven). Each drive is the writer itself and not a copy of
-// what it writes. It answers how many tuples of each kind each drive appended, read off
-// graph_tuples by the sequences the drive's tuples took, and the terms each drive says count each
-// kind it appends; and it logs, for every listed site, what each drive that runs it appended.
+// (graphstoreDrives), the boot step's ask passes (askBackfillDrives), the inbox's own writers
+// (inboxDrives), the seed (seedRunDrives), and the drives of the sites whose packages import this
+// one, which this package's external test registers (ImportedDrives). It holds them to driving
+// every site the register of the store's writers lists (requireEveryListedSiteDriven). Each drive
+// is the writer itself and not a copy of what it writes. It answers how many tuples of each kind
+// each drive appended, read off graph_tuples by the sequences the drive's tuples took, and the
+// terms each drive says count each kind it appends; and it logs, for every listed site, what each
+// drive that runs it appended.
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
-	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), askBackfillDrives(t), seedRunDrives(t))
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), askBackfillDrives(t), inboxDrives(t), seedRunDrives(t))
 	if ImportedDrives == nil {
 		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
 	} else {
@@ -1134,9 +1137,10 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	want := map[string]sizedTerm{
 		"comment": {tuples: 3, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
 		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1},
-		// The mention's attempt to ses_sized, the comment.created the bus delivered to the role
-		// sizer, and the copy the fallback pass published to ses_copy.
-		"delivery": {tuples: 1, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
+		// The mention's attempt to ses_sized, whose two delivered_to are the attempt's and the
+		// comment's, the comment.created the bus delivered to the role sizer, and the copy the
+		// fallback pass published to ses_copy.
+		"delivery": {tuples: 2, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
 		// Five blocks are new at version 1 and one at version 2; version 2 drops one and rewrites
 		// the callout, and version 3 brings the dropped one back, so eight rows of the window hold
 		// a text.
@@ -1152,15 +1156,17 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"page": {tuples: 3, writes: 1},
 		// The comment and the message each move alice's read_through on their thread (migrations
 		// 0095 and 0097's triggers), so she takes part in two threads and each is a read mark; the
-		// reply, a session's, reaches her in the message's thread, and the ask opened reaches the
-		// person it waits on.
+		// reply, a session's, reaches her in the message's thread and is ses_sized's part in it, the
+		// third participation, and the ask opened reaches the person it waits on.
 		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
-		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
+		"dismissal": {tuples: 2, writes: 1}, "snooze": {tuples: 1, writes: 1},
 		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
 		"reply": {tuples: 2, writes: 1},
-		// The mention is one tuple to its role and one to the session the role resolved to.
-		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
-		"ask_asked_of": {tuples: 4, writes: 1}, "body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
+		// The mention is one tuple to its role, one to the session the role resolved to and the
+		// comment's delivery value. The comment's one refs row is its citation.
+		"mention": {tuples: 1, writes: 3}, "participation": {tuples: 1, writes: 3}, "person_delivery": {tuples: 1, writes: 2},
+		"citation": {tuples: 2, writes: 1}, "ask_asked_of": {tuples: 4, writes: 1},
+		"body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
 		// The attempts are the mention's and the message's.
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
 		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.

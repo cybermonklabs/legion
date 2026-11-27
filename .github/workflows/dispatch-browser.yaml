@@ -78,7 +78,8 @@ jobs:
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          commit=$(git rev-parse HEAD)
+          CGO_ENABLED=0 go build -ldflags "-s -w -X main.buildCommit=$commit" -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
           CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
@@ -339,7 +340,9 @@ jobs:
         working-directory: packages/contracts
       - name: Build the Dispatch server
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-the-dispatch-server-itself
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          commit=$(git rev-parse HEAD)
+          go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # why: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
@@ -420,7 +423,9 @@ jobs:
         working-directory: packages/contracts
       - name: Build the Dispatch server for the embedder lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          commit=$(git rev-parse HEAD)
+          go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # Browsers only, no apt: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is

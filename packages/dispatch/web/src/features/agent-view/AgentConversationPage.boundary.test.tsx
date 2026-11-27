@@ -50,7 +50,7 @@ const agent: Agent = {
 // renders a conversation.
 const spies = [
   spyOn(api, "listAgents"),
-  spyOn(api, "listAgentMessages"),
+  spyOn(api, "getAgentConversation"),
   spyOn(api, "getMyAgentState"),
   spyOn(conversation, "toThreadMessages"),
 ];
@@ -93,7 +93,7 @@ function renderPage() {
 
 test("a conversation the runtime cannot convert costs the thread, not the page around it", async () => {
   spyOn(api, "listAgents").mockResolvedValue([agent]);
-  spyOn(api, "listAgentMessages").mockResolvedValue([]);
+  spyOn(api, "getAgentConversation").mockResolvedValue([]);
   spyOn(api, "getMyAgentState").mockResolvedValue({});
   // The tab's socket never opens: this test is about rendering, and a session's answer is not
   // needed to build the runtime.

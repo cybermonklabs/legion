@@ -87,6 +87,10 @@ type routeShape struct {
 	// OpaqueRequest is why this route's body carries no schema, for a route that reads the bytes
 	// whole rather than modelling them; empty for every other route, and never beside Request.
 	OpaqueRequest string
+	// RefusesUndeclared is a route that refuses every query key its Params does not declare by
+	// name, the `session` every other operation carries among them (GET /api/v1/me/inbox, which
+	// answers for the credential's own person alone), so the document gives it no `session`.
+	RefusesUndeclared bool
 }
 
 // --- the query-parameter structs -------------------------------------------------------------
@@ -95,10 +99,11 @@ type routeShape struct {
 // it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
 // are named by no struct here. `session` is read by actingPerson (server.go) on every route that
 // resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
-// and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
+// emitter adds it everywhere but on the one route that refuses it (RefusesUndeclared); the
+// delivery facet of the same name is left out with it. `cursor` on GET /api/v1/issues is read
+// only to refuse it (400 INVALID_QUERY, issue_page.go), and naming it would offer a client a
+// parameter that cannot work. No struct here is ever a request body, and the emitter reads only
+// each field's `query` and `enum` tags and the Go type it carries.
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
@@ -341,6 +346,7 @@ type postHistoryQuery struct {
 }
 
 // inboxQuery is GET /api/v1/inbox's query.
+// kept for one release: inbox-old-reads
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
 	Project string `query:"project"`
@@ -362,6 +368,7 @@ type myAnswersQuery struct {
 
 // myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
 // them in, the page that state takes, and the one thread owner it may be narrowed to.
+// kept for one release: inbox-old-reads
 type myRepliesQuery struct {
 	// Kind is the kinds of row answered, as one comma list of reply and agent (`reply`,
 	// `agent`, `reply,agent`); an absent one reads reply alone, and any other value is
@@ -381,6 +388,34 @@ type myRepliesQuery struct {
 	Issue string `query:"issue"`
 	// Artifact narrows the rows to one document's threads, by document id.
 	Artifact string `query:"artifact"`
+}
+
+// meInboxQuery is GET /api/v1/me/inbox's query, the whole of it: the route refuses any other key
+// by name (parseMeInboxRequest, over meInboxQueryKeys, which
+// TestTheOneReadsDeclaredKeysAreItsParamsStruct holds to these tags), so it is the one row of the
+// document that takes no `session` (RefusesUndeclared).
+type meInboxQuery struct {
+	// Limit is the page size, 1 to 200; an absent one is every entry, but under state=dismissed one
+	// page of 200.
+	Limit int `query:"limit"`
+	// Offset is where that page starts.
+	Offset int `query:"offset"`
+	// Kind narrows the entries to those of these relation kinds, as a comma list that may be
+	// repeated; it widens nothing, and a kind no tuple holds answers no entry.
+	Kind string `query:"kind"`
+	// State is the page's own narrowing: unread, inbox or dismissed. With none the entries are
+	// the walk of the tuples.
+	State string `query:"state" enum:"unread,inbox,dismissed"`
+	// Cursor resumes after the last entry of the page before it: that page's next_cursor.
+	Cursor string `query:"cursor"`
+	// Issue keeps the rows the page draws of one issue and no other entry, since no attribute
+	// every node carries says which issue it belongs to; with Artifact it is 400 INVALID_QUERY.
+	Issue string `query:"issue"`
+	// Artifact keeps the rows the page draws of one document, by document id, and no other entry.
+	Artifact string `query:"artifact"`
+	// Project narrows every entry to the nodes of one project, by the node's own project; a
+	// node the store holds no project of is in no answer under it.
+	Project string `query:"project"`
 }
 
 // searchRouteQuery is GET /api/v1/search's query. The name carries `route` because search.go
@@ -531,12 +566,15 @@ type artifactVersionQuery struct {
 	Blocks bool `query:"blocks"`
 }
 
-// openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
+// openAsksQuery is GET /api/v1/asks/open's query: at most one of the two scopes, neither being
+// every project.
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
 	AuthorSession string `query:"author_session"`
 	// Project lists every open ask on a project's issues and documents.
 	Project string `query:"project"`
+	// WaitingOn narrows to the asks that wait on one person, a login of a person who has signed in.
+	WaitingOn string `query:"waiting_on"`
 	// Since lists the asks opened at or after this one RFC3339 time.
 	Since string `query:"since"`
 }

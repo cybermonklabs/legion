@@ -50,9 +50,9 @@ const OWNED_BY_THE_SPLIT: Record<string, true> = {
   AskApprovalDocument: true,
   AskBlockArtifact: true,
   AskOption: true,
+  AskOwnerDocument: true,
   BlockPathEntry: true,
   ExternalLink: true,
-  InboxDocument: true,
   ReplyBlock: true,
   Suggestion: true,
 };

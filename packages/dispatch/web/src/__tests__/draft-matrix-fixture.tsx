@@ -18,6 +18,7 @@ import { type ReactNode, useEffect } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
+import { openAsksQuery } from "../api/queries";
 import type {
   Actor,
   Agent,
@@ -390,7 +391,7 @@ export async function openMarginThread(user: UserEvent, id: string): Promise<voi
 export function marginClient(comments: readonly Comment[]): QueryClient {
   const queryClient = newQueryClient();
   queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(openAsksQuery().queryKey, []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], comments);

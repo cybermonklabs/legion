@@ -2364,7 +2364,12 @@ CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
-DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch"
+DISPATCH_SERVER_BUILD = 'flock ./.dispatch-e2e.lock go build -ldflags "-X main.buildCommit=$build_commit" -o ./dispatch-e2e ./cmd/dispatch'
+# The step that builds run-server.sh's binary ahead of the harness's boot, in each job that runs
+# that script's own build: stamped with the checkout's commit as that build is, so it finds the
+# binary current and links nothing.
+DISPATCH_E2E_BUILD = 'go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch'
+DISPATCH_E2E_BUILD_SCRIPT = f"commit=$(git rev-parse HEAD)\n{DISPATCH_E2E_BUILD}"
 # The three commands of the real broker's harness rows, and the Dispatch server with them: the
 # binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
 # them in a container and so run no go command of their own (that file says why).
@@ -2373,7 +2378,8 @@ BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciph
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+commit=$(git rev-parse HEAD)
+CGO_ENABLED=0 go build -ldflags "-s -w -X main.buildCommit=$commit" -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
@@ -2611,16 +2617,17 @@ def browser_gate(filter, job):
                             (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
-        # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
+        # The script reads the commit it stamps the build with into a variable and its build
+        # line has an `-o`, neither of which this check reduces, so the entry pins the whole
         # script and names the one package it compiles - which is the closure run-server.sh
         # compiles in that same job.
-        pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
-            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, DISPATCH_E2E_BUILD_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], DISPATCH_E2E_BUILD, {"mode": "build"}),
         ], workflow=BROWSER_SITE),
         # The embedder job builds it once for the same reason, and names its step for its own
         # lane because this check looks a step up by name across the workflow.
-        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
-            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, DISPATCH_E2E_BUILD_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], DISPATCH_E2E_BUILD, {"mode": "build"}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "

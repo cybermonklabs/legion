@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 
-import type { Agent, InboxRow } from "../../api/types";
+import type { Agent, OpenAskRow } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
 import { AGENTS_MACHINE_PARAM, AGENTS_ROLE_PARAM } from "../refs/routes";
 import type { AgentGroup } from "./agent-groups";
@@ -83,8 +83,8 @@ export function searchWords(search: string): readonly string[] {
 /** The text a session's search words match against: its title, directory, machine, session id,
  *  and the key of every issue one of its OPEN asks names - once, lowercased, so a session with
  *  no open-ask issue still matches on the other four. An issue the session answered or that
- *  closed since drops out of this list with the ask (the inbox read this comes from is open asks
- *  only), so a search by that issue's key stops finding the session. */
+ *  closed since drops out of this list with the ask (the read of the open asks this comes from
+ *  holds open asks only), so a search by that issue's key stops finding the session. */
 function searchHaystack(agent: Agent, issueKeys: readonly string[]): string {
   return [agent.title, agent.dir, agent.host, agent.session_id, ...issueKeys]
     .join(" ")
@@ -152,12 +152,11 @@ export function filterOptions(
 }
 
 /** Every issue key an OPEN ask by each session names, keyed by session id - the search box's
- *  "issue key" field. `rows` is the inbox read the page already fetches for its `needsYou`
- *  counts (`GET /api/v1/inbox`, open asks only: `inbox.go`'s `where a.state = 'open'`), so this
- *  costs no network call of its own, and a session's answered or resolved asks name no issue
- *  here. */
+ *  "issue key" field. `rows` is the read of the open asks the page already fetches for its
+ *  `needsYou` counts (`GET /api/v1/asks/open`, open asks only), so this costs no network call of
+ *  its own, and a session's answered or resolved asks name no issue here. */
 export function sessionIssueKeys(
-  rows: readonly InboxRow[]
+  rows: readonly OpenAskRow[]
 ): ReadonlyMap<string, readonly string[]> {
   const keys = new Map<string, Set<string>>();
   for (const ask of rows) {

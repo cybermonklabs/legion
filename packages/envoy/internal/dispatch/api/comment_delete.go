@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -176,7 +177,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deletedAt = deletedAt.UTC()
-	referenceChanges, clear, err := s.clearDeletedPostBody(
+	referenceChanges, clear, cleared, err := s.clearDeletedPostBody(
 		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, quoteIsBody, comment.Author, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -250,13 +251,22 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events := make([]*model.Event, 0, len(receipts)+1)
-	for _, receipt := range receipts {
+	for index, receipt := range receipts {
 		appended, err := s.queueEvent(ledger, receipt)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		events = append(events, appended)
+		// What the settle left on the attempt's row, under its receipt (graphstore.QueueAttempted).
+		key := graphstore.CommentAttempt(comment.ID, pending[index].Target, pending[index].Attempt)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueAttempted(b, comment.Author, graphstore.LatestEvent, key)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// Every fallback copy of the comment not yet settled (comment_fallback_copies, migration
 	// 20261101180039) is settled with nothing published, and no fallback pass claims a settled
@@ -294,6 +304,15 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
+	// What the empty body's index takes out of the store (clearDeletedPostBody), under the
+	// comment.deleted that records it, queued right after that event.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, cleared, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The settled version's artifact.version follows the delete's own event, as the settlement's
 	// would have, and carries no diff, as the settlement's carries none.
 	if settled != nil {

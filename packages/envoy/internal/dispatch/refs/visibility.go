@@ -77,13 +77,14 @@ func init() {
 		"ask_block":     loadAskBlockNodes,
 		"comment_block": loadCommentBlockNodes,
 		"message_block": loadMessageBlockNodes,
-		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its three
+		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its four
 		// siblings, loadStoreNodes). None of them carries a `dispatch://` address, so the
 		// artifact's address rewrite does not reach them.
-		graphstore.KindPerson:  loadStoreNodes,
-		graphstore.KindSession: loadStoreNodes,
-		graphstore.KindRole:    loadStoreNodes,
-		graphstore.KindPage:    loadStoreNodes,
+		graphstore.KindPerson:          loadStoreNodes,
+		graphstore.KindSession:         loadStoreNodes,
+		graphstore.KindRole:            loadStoreNodes,
+		graphstore.KindPage:            loadStoreNodes,
+		graphstore.KindDeliveryAttempt: loadStoreNodes,
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, so neither has a loader; but they are nodes of the store like

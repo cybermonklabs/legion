@@ -541,7 +541,7 @@ test.describe("agents page pins", () => {
       const refetched = page.waitForResponse(
         (response) =>
           response.request().method() === "GET" &&
-          new URL(response.url()).pathname === `/api/v1/agents/${stale.session_id}/messages`
+          new URL(response.url()).pathname === `/api/v1/agents/${stale.session_id}/conversation`
       );
       await replyToMessageDelivery(second.id, { attempt: 1, body: "Second answer" }, actor);
       await refetched;

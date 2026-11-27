@@ -8,6 +8,7 @@ import { answerIssuePatches } from "./__tests__/send-answers";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import { AuthGate } from "./app";
+import { answerOpenAsks } from "./features/inbox/inbox-fixture";
 import type { UnsentChange } from "./features/shell/sign-in-channel";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -54,7 +55,7 @@ export function renderApp({
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
   ];
   // A write this tab keeps is resumed from its stored request through `api.send`, which no spy
   // above covers. It is answered here as alice's own attempts answer: failing at the connection,

@@ -1139,7 +1139,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "artifacts-reference-name",
   },
   // A person's page: each node they wrote or that reached them, by the first line of its text,
-  // which the person nodes read cuts and sends with no tree of it.
+  // which the person nodes read cuts and sends with a tree of it.
   {
     files: ["packages/dispatch/web/src/features/people/PersonPage.tsx"],
     proof: {

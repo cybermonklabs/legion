@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import type { CredentialPendingRow, OpenAskRow } from "../../api/types";
 import { BlockedOnYou } from "./BlockedOnYou";
 import { withWaitingOnPerson } from "./inbox-fixture";
 
@@ -20,8 +20,8 @@ function request(record_id: string, requested_at: string): CredentialPendingRow 
  *  (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, through `withWaitingOnPerson`), so
  *  an override that moves the issue's assignee, or hands the ask to somebody, moves that person
  *  with it. */
-function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
-  const row: InboxRow = {
+function ask(id: string, overrides: Partial<OpenAskRow> = {}): OpenAskRow {
+  const row: OpenAskRow = {
     anchor: null,
     answer: null,
     artifact_id: null,

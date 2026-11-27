@@ -31,16 +31,17 @@ import type {
   Agent,
   BroadcastCreated,
   CreateBroadcastInput,
-  InboxRow,
   IssueSummary,
   Message,
   MessageDelivery,
   MessageDeliveryMode,
   MessageRead,
+  OpenAskRow,
   UserAgentState,
   UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
 // The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
@@ -163,7 +164,7 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 // The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
 // on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
 // on whose issue is theirs.
-let inbox: InboxRow[];
+let inbox: OpenAskRow[];
 beforeEach(() => {
   inbox = [1, 2].map((number) => ({
     anchor: null,
@@ -246,7 +247,7 @@ function renderAgents({
   messages = [],
 }: {
   agentState?: UserAgentStates;
-  inboxRows?: InboxRow[];
+  inboxRows?: OpenAskRow[];
   initialEntry?: string;
   listedAgents?: Agent[];
   issues?: IssueSummary[];
@@ -257,9 +258,9 @@ function renderAgents({
     kind: "user",
     login: "alice",
   });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
+  const listOpenAsks = answerOpenAsks(inboxRows);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue(listedAgents);
-  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
+  const getAgentConversation = spyOn(api, "getAgentConversation").mockResolvedValue(messages);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
   // A box with no issue offers everyone who has signed in instead of an issue's people.
@@ -371,7 +372,7 @@ function renderAgents({
     createMessageDelivery,
     createMessage,
     getBroadcast,
-    getInbox,
+    listOpenAsks,
     getMyAgentState,
     /** Holds every agent-state read from here on, and answers the function that lets them go:
      *  it answers each with the state as it stands then, inside an awaited `act`, since each
@@ -385,7 +386,7 @@ function renderAgents({
           for (const answer of answers) answer();
         });
     },
-    listAgentMessages,
+    getAgentConversation,
     listAgents,
     listIssues,
     listProjects,
@@ -408,9 +409,9 @@ function renderAgents({
       getArchitecture.mockRestore();
       listUsers.mockRestore();
       listIssues.mockRestore();
-      listAgentMessages.mockRestore();
+      getAgentConversation.mockRestore();
       listAgents.mockRestore();
-      getInbox.mockRestore();
+      listOpenAsks.mockRestore();
       whoAmI.mockRestore();
     },
     view,
@@ -636,7 +637,7 @@ test("Agents collapses every card by default and expands each one independently"
     expect(
       within(region).queryByRole("textbox", { hidden: true, name: "Comment" })
     ).not.toBeInTheDocument();
-    expect(page.listAgentMessages).not.toHaveBeenCalled();
+    expect(page.getAgentConversation).not.toHaveBeenCalled();
     const planner = card(region, "Planner");
     const toggle = within(planner).getByRole("button", { name: "Planner" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -644,7 +645,7 @@ test("Agents collapses every card by default and expands each one independently"
     await expand(user, planner, "Planner");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(within(planner).getByRole("textbox", { name: "Comment" })).toBeTruthy();
-    await waitFor(() => expect(page.listAgentMessages).toHaveBeenCalledWith("planner-session"));
+    await waitFor(() => expect(page.getAgentConversation).toHaveBeenCalledWith("planner-session"));
     const reviewer = card(region, "Reviewer");
     expect(
       within(reviewer).queryByRole("textbox", { hidden: true, name: "Comment" })
@@ -676,7 +677,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
     session_id: "builder-session",
     title: "Builder",
   };
-  const builderAsk = (overrides: Partial<InboxRow>): InboxRow => ({
+  const builderAsk = (overrides: Partial<OpenAskRow>): OpenAskRow => ({
     ...inbox[0],
     author: { id: "builder-session", kind: "session" },
     ...overrides,
@@ -3984,7 +3985,7 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
       createdAt: "2026-09-14T01:05:00Z",
       unread: true,
     });
-    page.listAgentMessages.mockResolvedValue([
+    page.getAgentConversation.mockResolvedValue([
       {
         ...answered,
         replies: (answered.replies ?? []).map((reply) => ({
@@ -4913,7 +4914,7 @@ test("a reply refused before a reload quotes no word of its message until the co
   const after = renderAgents();
   // The session's conversation is read only once the row opens, and that read is held.
   const conversation = Promise.withResolvers<MessageRead[]>();
-  after.listAgentMessages.mockReturnValue(conversation.promise);
+  after.getAgentConversation.mockReturnValue(conversation.promise);
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");

@@ -46,17 +46,19 @@ const storeStepWait = 30 * time.Second
 //     phase, the document's fence row (lockSettlementFence), the block index as the tick runs it,
 //     the artifact.version event, and then what the index stated under it (appendEvents);
 //   - a settlement that opens an ask a session wrote as a block (createAskBlock, then
-//     appendEvents): the owner lock, the fence row, the ask's node and its asker's node, the
-//     session's, in one statement in ascending (kind, id) and marked for their cause before the
-//     asks row that carries the ask's id (graphstore.AskFacts, which states the ask's author beside
-//     it), that row, the session's follow of the ask, which finds the session's node there
-//     (asks.PlanFollowNewAsk), the ask.opened event, and then both nodes moved onto that event with
-//     what each node write stated appended under it (graphstore.QueueCaused). The edit that wrote
-//     the block wrote its version too, as an agent's edit through the API does, so the settlement
-//     writes no version, which the run reads back;
+//     appendEvents): the owner lock, the fence row, the document's asks rows in ascending id
+//     (lockAskBlocksForWrite), the ask's node and its asker's node, the session's, in one statement in
+//     ascending (kind, id) and marked for their cause before the asks row that carries the ask's id
+//     (graphstore.AskFacts, which states the ask's author beside it), that row, the session's
+//     follow of the ask, which finds the session's node there (asks.PlanFollowNewAsk), the
+//     ask.opened event, and then both nodes moved onto that event with what each node write stated
+//     appended under it (graphstore.QueueCaused). The edit that wrote the block wrote its version
+//     too, as an agent's edit through the API does, so the settlement writes no version, which the
+//     run reads back;
 //   - a settlement that does both: it opens the ask of a block a session wrote in a live edit and
 //     writes the version holding it, so the ask's node, its asker's node and its row come before
-//     the block index's, and the fence row comes before all of them.
+//     the block index's, and the fence row and then the document's asks rows come before all of
+//     them.
 //   - the block-index tick's read of the events after its build's cursor (readEventsAfterCursor),
 //     which takes, in its read phase, the owner lock of each comment the events name whose row
 //     names no node (refs.LockCommentOwners), and in its write phase its build's cursor
@@ -72,8 +74,9 @@ const storeStepWait = 30 * time.Second
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads, as api's
 // TestEveryApiStoreWriterTakesTheStoreLockOrder holds its writers to it: the owner lock first, a
 // node's row before the projection row naming it, the event before the tuples it causes, several
-// node rows in ascending (kind, id), and a writer under the revision fence taking the document's
-// document_block_versions row before any node, tuple or projection row it writes. Each path lists
+// node rows in ascending (kind, id), a writer under the revision fence taking the document's
+// document_block_versions row before any node, tuple or projection row it writes, and the stored
+// rows of the items a write moves before the items' own store writes. Each path lists
 // the steps it takes in the order it takes them, and a path that takes fewer steps than the order
 // lists declares only those; the list is checked against the order (requireTheDocsOrderAdmits).
 // Then each step is held, with one run of the path per step: another transaction holds what the
@@ -117,6 +120,13 @@ const (
 	// but the owner locks of the comments its events name.
 	docsCursorStep
 	docsFenceStep
+	// docsItemRowsStep is the stored rows of the items a write moves, which it locks before any
+	// store write of those items, the place the writers' lock order gives the item rows: after the
+	// owner, the project and the document's own fence row, before the item's own store writes.
+	// A settlement locks its document's asks rows so, in ascending id (lockAskBlocksForWrite), the order a
+	// move of who open asks wait on locks them in before it writes their tuples
+	// (inboxwrite.QueueMoveWaiting).
+	docsItemRowsStep
 	docsNodeStep
 	docsProjectionStep
 	docsEventStep
@@ -176,6 +186,12 @@ type docsStep struct {
 	// the tick's event cursor row. A write held at the revision fence has locked no row but the
 	// ones the steps before the fence name (requireNothingBetweenTheStepsAndTheFence).
 	row docsRowLock
+	// holdsFound is, for a step that locks every row of a table the run found there before it
+	// began - a settlement's document's asks rows (docsItemRowsStep) - that table. Once the step
+	// has run, a later step's check of the same table leaves those rows out (docsRun.found) and
+	// reads the rows the run did not find, so a row the path writes before its step still fails
+	// it.
+	holdsFound string
 }
 
 // docsWriter is one write path under test: the steps it takes, in the order it takes them, and
@@ -200,6 +216,9 @@ type docsRun struct {
 	// write runs the path to its commit and answers how it ended. It runs off the test's
 	// goroutine, so it answers its failures rather than failing the test.
 	write func() error
+	// found is the rows of the table a step of the path locks as it found them
+	// (docsStep.holdsFound), read before the run starts, and none for a path with no such step.
+	found []docsRowLock
 }
 
 // The statement heads a step is read at, lower-cased with their whitespace folded.
@@ -224,6 +243,9 @@ const (
 	docsBlockRowStatement = "insert into document_blocks ("
 	// docsAskRowStatement is createAskBlock's insert of the asks row of a new ask block.
 	docsAskRowStatement = "insert into asks ("
+	// docsAskRowsStatement is a settlement's lock of its document's asks rows in ascending id, the
+	// statement lockAskBlocksForWrite queues ahead of every write of them.
+	docsAskRowsStatement = "select 1 from asks a where a.block_artifact_id = $1 and a.block_id is not null order by a.id for no key update"
 	// docsEventStatement is events.Broker's append, after its owner row's lock.
 	docsEventStatement = "with appended as ( insert into events ("
 	// docsTupleStatement is graphstore's tuple append for a write that wrote nodes, which states
@@ -455,6 +477,7 @@ func (r *docsWriterRig) settledAsk() docsWriter {
 		steps: []docsStep{
 			r.ownerStep(),
 			settlementFenceStep(),
+			docsAskRowsStep(),
 			askNodeStep(),
 			askerNodeStep(),
 			askRowStep(),
@@ -475,6 +498,7 @@ func (r *docsWriterRig) settledAsk() docsWriter {
 			return docsRun{
 				document: r.asked,
 				made:     graphstore.SessionNode(session, asker, time.Now().UTC(), graphstore.NoEvent),
+				found:    r.askRowsOf(t, ctx, r.asked),
 				write: func() error {
 					if err := r.settle(ctx, r.asked); err != nil {
 						return err
@@ -495,20 +519,22 @@ func (r *docsWriterRig) settledAsk() docsWriter {
 // writes the ask's node with its asker's and then its row, follows the ask for that session, and
 // then writes the version, whose block index writes the block's node: the ask's node, the
 // session's and the ask's row come before the block's, and the settlement takes the fence row
-// before all of them (lockSettlementFence). The ask's node and its row are the settlement's first
-// writes of graph_nodes and of asks, so each is held as its table. The session's node and the ask
-// block's node come after the ask's, and are each held as a new row another transaction inserted
-// and has not committed: the block's address is the document's ref_key and the block's own id,
-// both known before the run. The block rows, the event and the tuple append are held as their
-// tables, so the run stops at the first of each: the version's artifact.version and the tuples
-// under it. The ask.opened and the follow's tuples after them are the steps the path without a
-// version holds.
+// before all of them (lockSettlementFence) and its document's asks rows, the asks the earlier runs
+// opened, between the fence and the first of them (docsAskRowsStep). The ask's node and its row are
+// the settlement's first writes of graph_nodes and of asks, so each is held as its table. The
+// session's node and the ask block's node come after the ask's, and are each held as a new row
+// another transaction inserted and has not committed: the block's address is the document's
+// ref_key and the block's own id, both known before the run. The block rows, the event and the
+// tuple append are held as their tables, so the run stops at the first of each: the version's
+// artifact.version and the tuples under it. The ask.opened and the follow's tuples after them are
+// the steps the path without a version holds.
 func (r *docsWriterRig) settledAskAndVersion() docsWriter {
 	return docsWriter{
 		name: "appendEvents beside commitVersion",
 		steps: []docsStep{
 			r.ownerStep(),
 			settlementFenceStep(),
+			docsAskRowsStep(),
 			askNodeStep(),
 			askerNodeStep(),
 			askRowStep(),
@@ -539,6 +565,7 @@ func (r *docsWriterRig) settledAskAndVersion() docsWriter {
 			return docsRun{
 				document: r.askedLive,
 				made:     graphstore.SessionNode(session, asker, at, graphstore.NoEvent),
+				found:    r.askRowsOf(t, ctx, r.askedLive),
 				block: graphstore.Node{
 					Kind: refs.BlockNodeKind, ID: r.askedLiveRefKey + "#" + block, Supertag: refs.BlockSupertag,
 					Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
@@ -609,6 +636,24 @@ func settlementFenceStep() docsStep {
 	}
 }
 
+// docsAskRowsStep is the document's asks rows, which a settlement locks `for no key update` in
+// ascending id in its write phase, after the fence row and before any store write (lockAskBlocksForWrite).
+// It belongs to the path as the item rows of the writers' lock order, which come after the owner,
+// the project and the document's fence row and before the items' own store writes: a move of who
+// open asks wait on locks the asks it may move in ascending id and only then writes their tuples
+// (inboxwrite.QueueMoveWaiting), and takes no document's lock, so a settlement that wrote two of
+// those asks in another order could hold one the move waits for while it waits for the other. The
+// rows the run found, the asks the earlier runs opened, are held `for no key update` (docsRun.found,
+// holdDocsFoundAsks), so the write waits at its lock of them; the step locks them all, so a later
+// step's check of asks reads only the rows the run did not find (docsStep.holdsFound).
+func docsAskRowsStep() docsStep {
+	return docsStep{
+		name: "the document's asks rows", order: docsItemRowsStep, fenced: true, holdsFound: "asks",
+		hold: holdDocsFoundAsks, at: docsAskRowsStatement,
+		takes: []docsTableLock{{"asks", docsRowShareMode}},
+	}
+}
+
 // askNodeStep is the node of the ask a settlement opens for a new ask block (createAskBlock),
 // marked for its cause before the asks row that carries its id. The ask's id is drawn in that
 // call, so no hold can name the node's row before the run; the write is the settlement's first of
@@ -624,8 +669,8 @@ func askNodeStep() docsStep {
 
 // askRowStep is the asks row of that ask, the row naming the ask's node by its id: asks carries no
 // foreign key into graph_nodes, but its id is the node's address, and createAskBlock writes the
-// node first. The settlement reads its document's asks `for no key update` before it
-// (loadAskBlocks), a row share lock the table hold does not conflict with, and writes no ask
+// node first. The settlement locks its document's asks `for no key update` before it
+// (docsAskRowsStep), a row share lock the table hold does not conflict with, and writes no ask
 // before this insert, so the table is held.
 func askRowStep() docsStep {
 	return docsStep{
@@ -701,6 +746,28 @@ func holdFenceRow(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun)
 	holdDocsRow(t, ctx, holder, `select 1 from document_block_versions where artifact_id = $1::uuid for no key update`, run.document)
 }
 
+// holdDocsFoundAsks holds the asks rows the run found on its document (docsRun.found)
+// `for no key update`, the level the settlement locks them at, so its lock of them waits. A run
+// that found none has nothing the step can be held by, which the path's earlier runs, each opening
+// an ask on the document, rule out.
+func holdDocsFoundAsks(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun) {
+	t.Helper()
+	if len(run.found) == 0 {
+		t.Fatalf("the run found no ask on document %s to hold its rows by", run.document)
+	}
+	ids := make([]string, len(run.found))
+	for index, row := range run.found {
+		ids[index] = row.key
+	}
+	tag, err := holder.Exec(ctx, `select 1 from asks where id = any($1::uuid[]) order by id for no key update`, ids)
+	if err != nil {
+		t.Fatalf("hold the asks rows %v: %v", ids, err)
+	}
+	if tag.RowsAffected() != int64(len(ids)) {
+		t.Fatalf("hold the asks rows %v: it locked %d rows, want %d", ids, tag.RowsAffected(), len(ids))
+	}
+}
+
 // holdDocsTableWrites holds a table in share mode, which conflicts with the row exclusive lock
 // every insert, update and delete takes and with no read and no row lock, so the write stops at
 // its first write of the table and nowhere before it.
@@ -738,16 +805,18 @@ func holdDocsBlockNode(t *testing.T, ctx context.Context, holder pgx.Tx, run doc
 // naming it, the event before every step appending tuples that carry it, and the revision fence's
 // row before every step of the block statement it guards, and before every write of a comment the
 // block-index tick's events name. The tick's own event cursor row, which the invariants do not
-// name, comes before every other step of its path but the owner lock. A path skips the steps it
-// does not take, and is checked on the order of those it does. Several nodes of one write in
-// ascending (kind, id) is graphstore's own (queueNodes, WriteArms): every node step here is one
-// statement. A step of a path that appends several events names the one its tuples carry
-// (docsStep.cause), and a step of a path that writes several documents the fence it is under
-// (docsStep.fence); a step that names none is held to the path's one event or fence.
+// name, comes before every other step of its path but the owner lock. The rows of the items a
+// write moves come before every node step of its path, the item's own store writes
+// (docsItemRowsStep). A path skips the steps it does not take, and is checked on the order of
+// those it does. Several nodes of one write in ascending (kind, id) is graphstore's own
+// (queueNodes, WriteArms): every node step here is one statement. A step of a path that appends
+// several events names the one its tuples carry (docsStep.cause), and a step of a path that writes
+// several documents the fence it is under (docsStep.fence); a step that names none is held to the
+// path's one event or fence.
 func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
-	event, fence := -1, -1
+	event, fence, items := -1, -1, -1
 	for index, step := range writer.steps {
 		position[step.name] = index
 		switch step.order {
@@ -755,6 +824,10 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 			event = index
 		case docsFenceStep:
 			fence = index
+		case docsItemRowsStep:
+			if items < 0 {
+				items = index
+			}
 		}
 	}
 	// named is where the step a step names stands, which has to be a step of order want; a step
@@ -776,6 +849,10 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 		}
 		if step.order == docsCursorStep && index != 0 && (index != 1 || writer.steps[0].order != docsOwnerStep) {
 			t.Errorf("%s takes %s as its step %d: it comes first but for the owner lock", writer.name, step.name, index+1)
+		}
+		if step.order == docsNodeStep && items > index {
+			t.Errorf("%s takes %s before %s, the rows of the items it moves, which come before their store writes",
+				writer.name, step.name, writer.steps[items].name)
 		}
 		if step.order == docsProjectionStep && step.names != "" {
 			if node, ok := named(step, step.names, docsNodeStep, -1); ok && node > index {
@@ -815,6 +892,16 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 	}
 	for index, step := range writer.steps {
 		run := writer.ready(t, ctx)
+		// The rows the run found of a table a step up to this one locks as it found them
+		// (docsStep.holdsFound), which a later step's check of that table leaves out.
+		taken := map[docsRowLock]bool{}
+		for _, earlier := range writer.steps[:index+1] {
+			for _, row := range run.found {
+				if earlier.holdsFound != "" && row.table == earlier.holdsFound {
+					taken[row] = true
+				}
+			}
+		}
 		holder, release := rig.beginHolder(t, ctx)
 		step.hold(t, ctx, holder, run)
 		done := make(chan error, 1)
@@ -846,7 +933,9 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 						t.Errorf("%s held at %s already holds %s, which %s takes, a later step: it took %s before %s (it holds %v)",
 							writer.name, step.name, lock, other.name, other.name, step.name, held)
 					}
-					if locked := rig.rowsLocked(t, ctx, backend, []string{lock.table}); len(locked) > 0 {
+					locked := rig.rowsLocked(t, ctx, backend, []string{lock.table})
+					locked = slices.DeleteFunc(locked, func(row docsRowLock) bool { return taken[row] })
+					if len(locked) > 0 {
 						t.Errorf("%s held at %s has locked %v, which %s takes, a later step: it took %s before %s",
 							writer.name, step.name, locked, other.name, other.name, step.name)
 					}
@@ -1094,6 +1183,26 @@ func (r *docsWriterRig) versionsOf(ctx context.Context, document string) (int, e
 		return 0, fmt.Errorf("count the versions of %s: %w", document, err)
 	}
 	return versions, nil
+}
+
+// askRowsOf is the asks rows of document's ask blocks, each named as rowsLocked names a row of
+// asks: the rows a settlement of the document locks before it writes the store (docsAskRowsStep).
+func (r *docsWriterRig) askRowsOf(t *testing.T, ctx context.Context, document string) []docsRowLock {
+	t.Helper()
+	rows, err := r.database.Pool.Query(ctx,
+		`select id::text from asks where block_artifact_id = $1 and block_id is not null order by id`, document)
+	if err != nil {
+		t.Fatalf("read the asks of document %s: %v", document, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the asks of document %s: %v", document, err)
+	}
+	found := make([]docsRowLock, len(ids))
+	for index, id := range ids {
+		found[index] = docsRowLock{table: "asks", key: id}
+	}
+	return found
 }
 
 // beginHolder opens a transaction to hold a step in, and the call that lets it go. The release

@@ -88,7 +88,7 @@ import type {
 } from "../../api/types";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { plannerAgentRow } from "../threads/replies-fixture";
+import { plannerAgentRow, withConversation } from "../threads/replies-fixture";
 import { installInboxApiMocks } from "./inbox-fixture";
 import { threadSendKey } from "./ThreadBody";
 
@@ -192,19 +192,22 @@ function plannerMessage(id: string, body: string, overrides: Partial<Message> = 
 }
 
 /** The Planner's answers to the reader's message-1, newest last. */
-function plannerThread(replies: readonly string[]): MessageRead[] {
-  return [
-    {
-      message: plannerMessage("message-1", "Have a look at the build"),
-      replies: replies.map((id, index) =>
-        plannerMessage(id, `Answer ${id}`, {
-          author: { id: "planner", kind: "session" },
-          created_at: `2026-10-12T0${index + 1}:00:00Z`,
-          in_reply_to: "message-1",
-        })
-      ),
-    },
-  ];
+function plannerThread(replies: readonly string[]): MessageRead {
+  return {
+    message: plannerMessage("message-1", "Have a look at the build"),
+    replies: replies.map((id, index) =>
+      plannerMessage(id, `Answer ${id}`, {
+        author: { id: "planner", kind: "session" },
+        created_at: `2026-10-12T0${index + 1}:00:00Z`,
+        in_reply_to: "message-1",
+      })
+    ),
+  };
+}
+
+/** The Planner's Agent row, carrying its thread with `replies` as the one read answers it. */
+function plannerRow(replies: readonly string[]): MyReplyRow {
+  return withConversation(plannerAgentRow(), plannerThread(replies));
 }
 
 /** A reply of `BODY` from the first comment thread's box, and from the Planner thread's box. */
@@ -227,10 +230,8 @@ const agentReply = sentRequest(
 );
 
 interface Column {
-  readonly client: QueryClient;
   readonly createAgentMessage: Mock<typeof api.createAgentMessage>;
   readonly createComment: Mock<typeof api.createComment>;
-  readonly listAgentMessages: Mock<typeof api.listAgentMessages>;
   /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
   readonly move: (row: MyReplyRow) => void;
   /** Ends the page as a reload does and loads it again over the same tab on `row`, signed in as
@@ -272,9 +273,6 @@ async function openColumn(
     ]),
     spyOn(api, "listAgents").mockResolvedValue([planner]),
   ];
-  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(
-    plannerThread(["reply-1"])
-  );
   const createComment = spyOn(api, "createComment");
   const createAgentMessage = spyOn(api, "createAgentMessage");
   if (stopped !== undefined) {
@@ -284,19 +282,14 @@ async function openColumn(
   createAgentMessage.mockRejectedValue(REFUSAL);
   const column = drawInboxColumn(client, row, commentsClient);
   return {
-    get client() {
-      return column.client;
-    },
     createAgentMessage,
     createComment,
-    listAgentMessages,
     move: column.move,
     reload: column.reload,
     restore: () => {
       column.unmount();
       createComment.mockRestore();
       createAgentMessage.mockRestore();
-      listAgentMessages.mockRestore();
       for (const read of reads) read.mockRestore();
     },
     user,
@@ -334,14 +327,14 @@ const stoppedAgent = (held: Held) =>
 // and the box drawn when the column comes back shows it, and no other thread's box does.
 for (const held of HELD) {
   test(`${HOST} · the column moves to another row, then back · an Agent row's box · ${held}`, async () => {
-    const column = await openColumn(plannerAgentRow(), stoppedAgent(held));
+    const column = await openColumn(plannerRow(["reply-1"]), stoppedAgent(held));
     try {
       await holdInInboxBox(column.user, held, "Comment");
       column.move(firstRow);
       const other = (
         await within(inboxPane()).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" })
       ).value;
-      column.move(plannerAgentRow());
+      column.move(plannerRow(["reply-1"]));
       const field = await within(inboxPane()).findByRole<HTMLTextAreaElement>("textbox", {
         name: "Comment",
       });
@@ -355,10 +348,10 @@ for (const held of HELD) {
   });
 }
 
-/** The Planner's thread moved on: a newer answer has come since the box's reply was refused. */
+/** The Planner's thread moved on: a newer answer has come since the box's reply was refused, and
+ *  the one read's row carries it. */
 async function newerAnswer(column: Column): Promise<void> {
-  column.listAgentMessages.mockResolvedValue(plannerThread(["reply-1", "reply-2"]));
-  await act(() => column.client.invalidateQueries());
+  act(() => column.move(plannerRow(["reply-1", "reply-2"])));
   await within(inboxPane()).findByText(MOVED_ON);
 }
 
@@ -368,7 +361,7 @@ async function newerAnswer(column: Column): Promise<void> {
 for (const held of ["refused", "stopped"] as const) {
   test(`${HOST} · host moves it over a refusal (elsewhere) · ${held}`, async () => {
     const column = await openColumn(
-      plannerAgentRow(),
+      plannerRow(["reply-1"]),
       held === "stopped" ? { key: threadSendKey("message-1"), request: agentReply } : undefined
     );
     try {
@@ -391,7 +384,7 @@ for (const held of ["refused", "stopped"] as const) {
 // the screen, so the cell checks the return alone: coming back to the thread finds it, and the
 // refusal comes back with the box as well.
 test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmounts · refused`, async () => {
-  const column = await openColumn(plannerAgentRow());
+  const column = await openColumn(plannerRow(["reply-1"]));
   const typed = "Reply meant for the newer answer";
   try {
     await holdInInboxBox(column.user, "refused", "Comment");
@@ -401,7 +394,8 @@ test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmo
     await column.user.paste(typed);
     column.move(firstRow);
     await within(inboxPane()).findByRole("textbox", { name: "Reply" });
-    column.move(plannerAgentRow());
+    // The one read still answers the row with the newer answer in its conversation.
+    column.move(plannerRow(["reply-1", "reply-2"]));
     await within(inboxPane()).findByRole("textbox", { name: "Comment" });
     const back = screen
       .getAllByRole<HTMLTextAreaElement>("textbox")
@@ -451,7 +445,7 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Clo
 });
 
 test(`${HOST} · Agents pick · cannot make: an Agent row's box draws no issue picker`, async () => {
-  const column = await openColumn(plannerAgentRow());
+  const column = await openColumn(plannerRow(["reply-1"]));
   try {
     await holdInInboxBox(column.user, "typed", "Comment");
     expect(within(inboxPane()).queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
@@ -485,10 +479,10 @@ for (const held of HELD) {
 
 for (const held of HELD) {
   test(`${HOST} · the page reloaded, then back · an Agent row's box · ${held}`, async () => {
-    const column = await openColumn(plannerAgentRow(), stoppedAgent(held));
+    const column = await openColumn(plannerRow(["reply-1"]), stoppedAgent(held));
     try {
       await holdInInboxBox(column.user, held, "Comment");
-      column.reload(plannerAgentRow());
+      column.reload(plannerRow(["reply-1"]));
       const field = await within(
         await screen.findByTestId("inbox-pane")
       ).findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });

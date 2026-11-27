@@ -1,6 +1,7 @@
 package graphstore
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -55,6 +56,114 @@ const (
 func RolePageID(role string) string { return KindRole + "/" + role }
 
 func SessionPageID(session string) string { return KindSession + "/" + session }
+
+// ClaimedRoles is the role the store holds each of sessions in now, in one statement, by session:
+// the role whose current held_by points at the session, else the role the session is currently
+// part_of, and no entry for a session that claimed none. The part_of outlives the claim - a
+// session is part_of the role it claimed while it ran - so a session whose claim has since ended
+// still reads as one that claimed that role. Each relation is read as the current read of it reads
+// it (CurrentIn for the held_by into the session, CurrentOut for its part_of), and of several roles
+// the first in id order, as those reads answer them.
+//
+// It is the one rule of whose page a session is on (R14): a session that claimed a role carries
+// no page of its own, the role's page being its page, and a session that claimed none carries the
+// page SessionPageID names. The publisher reads it before it writes a session's page
+// (outbox.sessionsInARole) and a message to a session reads it for the page the message hangs
+// from (AgentPages), so the two cannot hang one session's things from two pages.
+func ClaimedRoles(ctx context.Context, q Queryer, sessions []string) (map[string]string, error) {
+	roles := make(map[string]string, len(sessions))
+	if len(sessions) == 0 {
+		return roles, nil
+	}
+	rows, err := q.Query(ctx, `
+		select s.session, coalesce(held.role, part.role)
+		from unnest($1::text[]) as s(session)
+		left join lateral (
+			select current.from_id as role from (
+				`+CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
+		`t.to_kind = '`+KindSession+`' and t.to_id = s.session and t.to_kind <> '`+KindValue+`' and t.kind = '`+TupleHeldBy+`'`)+`
+			) current
+			where current.asserted and current.from_kind = '`+KindRole+`'
+			order by current.from_id
+			limit 1
+		) held on true
+		left join lateral (
+			select current.to_id as role from (
+				`+CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+KindSession+`' and t.from_id = s.session and t.to_kind <> '`+KindValue+`' and t.kind = '`+TuplePartOf+`'`)+`
+			) current
+			where current.asserted and current.to_kind = '`+KindRole+`'
+			order by current.to_id
+			limit 1
+		) part on true
+		where coalesce(held.role, part.role) is not null
+	`, sessions)
+	if err != nil {
+		return nil, fmt.Errorf("read the roles %d session claimed: %w", len(sessions), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var session, role string
+		if err := rows.Scan(&session, &role); err != nil {
+			return nil, fmt.Errorf("read the role a session claimed: %w", err)
+		}
+		roles[session] = role
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the roles %d session claimed: %w", len(sessions), err)
+	}
+	return roles, nil
+}
+
+// AgentPage is the page the store gives the agent a message's target routes to (`role:<topic>`
+// or `session:<id>`): a role's own page, and for a session the page of the role it claimed or,
+// where it claimed none, its own (ClaimedRoles). ok is false for a target that names no node the
+// store can key (routeNode) and for a page id past the store's address bound. It is AgentPages of
+// the one target.
+func AgentPage(ctx context.Context, q Queryer, target string) (page string, ok bool, err error) {
+	pages, err := AgentPages(ctx, q, []string{target})
+	if err != nil {
+		return "", false, err
+	}
+	page, ok = pages[target]
+	return page, ok, nil
+}
+
+// AgentPages is AgentPage of each of targets, with every session among them read in one statement
+// (ClaimedRoles), and none for targets that name no session: the page of each target, by target,
+// and no entry for a target AgentPage answers no page.
+func AgentPages(ctx context.Context, q Queryer, targets []string) (map[string]string, error) {
+	routes := make(map[string]model.Route, len(targets))
+	var sessions []string
+	for _, target := range targets {
+		route, routed := routeNode(target)
+		if !routed {
+			continue
+		}
+		routes[target] = route
+		if route.Kind == KindSession {
+			sessions = append(sessions, route.ID)
+		}
+	}
+	roles, err := ClaimedRoles(ctx, q, sessions)
+	if err != nil {
+		return nil, fmt.Errorf("read the roles of the sessions %s route to: %w", strings.Join(sessions, ", "), err)
+	}
+	pages := make(map[string]string, len(routes))
+	for target, route := range routes {
+		page := RolePageID(route.ID)
+		if route.Kind == KindSession {
+			page = SessionPageID(route.ID)
+			if role, claimed := roles[route.ID]; claimed {
+				page = RolePageID(role)
+			}
+		}
+		if AddressFits(page) {
+			pages[target] = page
+		}
+	}
+	return pages, nil
+}
 
 // PersonNode, SessionNode, RoleNode and PageNode are the four nodes this store holds of people
 // and agents, as the write that first records one makes it: project-visible, live, carrying no

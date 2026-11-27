@@ -259,7 +259,7 @@ func (f *seedLockFixture) nextBatch() (lower, upper graphstore.Node) {
 		}
 	}
 	f.run.plan.comments = []commentPlan{comment(2 * f.batches), comment(2*f.batches - 1)}
-	nodes, _ := f.run.commentStoreWrite(0, len(f.run.plan.comments))
+	nodes, _, _, _ := f.run.commentStoreWrite(0, len(f.run.plan.comments), true)
 	return nodes[1], nodes[0]
 }
 

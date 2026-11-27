@@ -301,7 +301,8 @@ func seedReadCostHistory(t *testing.T, arm *costArm) *readCostShape {
 }
 
 // costUploadDocumentAs writes one version of a document as another person, so a corpus can hold
-// history that is not the person's whose page is read, and answers its artifact id.
+// history that is not the person's whose page is read, and answers its artifact id. An upload of a
+// name the issue holds replaces that document's version, so it names that version's token.
 func costUploadDocumentAs(t *testing.T, arm *costArm, login, issue, name, content string) string {
 	t.Helper()
 	body := arm.server.documentUpload(t, issue, name, content, login)

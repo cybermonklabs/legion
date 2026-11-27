@@ -99,7 +99,7 @@ func expectSameCallersAsConversationRead(t *testing.T, rig *brokerTokenRig, what
 	admitted := 0
 	for name, pair := range answers {
 		if pair[0] != pair[1] {
-			t.Errorf("%s: the conversation read answers %+v and %s %+v, want the same", name, pair[0], what, pair[1])
+			t.Errorf("%s: the messages read answers %+v and %s %+v, want the same", name, pair[0], what, pair[1])
 		}
 		if pair[0].status == http.StatusOK {
 			admitted++
@@ -107,7 +107,7 @@ func expectSameCallersAsConversationRead(t *testing.T, rig *brokerTokenRig, what
 	}
 	// The comparison proves nothing if every caller is refused both reads, or admitted to both.
 	if admitted == 0 || admitted == len(answers) {
-		t.Fatalf("the conversation read admits %d of %d callers, want some admitted and some refused: %+v",
+		t.Fatalf("the messages read admits %d of %d callers, want some admitted and some refused: %+v",
 			admitted, len(answers), answers)
 	}
 }

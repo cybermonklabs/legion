@@ -13,8 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // INFRA-450's a14: what the Inbox's reads cost once a person has dismissed a very great many
@@ -162,8 +167,13 @@ type dismissedScaleRun func(context.Context, *testing.T, *dismissedScaleShape) t
 // TestDismissedScaleHoldsTheInboxsReads is a14 itself: it seeds the three shapes, asserts each
 // one's counts before it measures anything, sends each of the six operations' requests once and
 // counts the work of every statement the request sent, explaining each at the pile's own size,
-// times the six operations 20 runs each, and holds each operation's work to its bound
-// (dismissedScaleBounds). The times are printed; no verdict reads them.
+// holds the one read's Dismissed pages to their cut under both its plans
+// (explainDismissedScaleOneRead), times the six operations 20 runs each, and holds each
+// operation's work to its bound (dismissedScaleBounds). The times are printed; no verdict reads
+// them.
+//
+// Every shape's database runs with jit = off (jitOffStore), read back on a new session of each
+// before the first request and printed above the table (turnJITOff says why).
 //
 // It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
@@ -176,6 +186,11 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	loaded := seedDismissedScale(t, "loaded", dismissedScaleReplyPile, dismissedScaleAgentPile)
 	none := seedDismissedScale(t, "no dismissed", 0, 0)
 	onePage := seedDismissedScale(t, "one page dismissed", dismissedScalePageReplies, dismissedScalePageAgents)
+	shapes := []*dismissedScaleShape{loaded, none, onePage}
+	var jit []string
+	for _, shape := range shapes {
+		jit = append(jit, shape.name+": "+requireJITOff(t, "the "+shape.name+" shape's database", shape.database.Pool.Config().ConnString()))
+	}
 
 	// What each operation's request sends, recorded on one untimed request of each: every
 	// statement the server ran for it, whatever sent it (dismissedScaleTrace). The two write
@@ -207,7 +222,7 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 			sent[measured.operation+" @ "+shape.name] = statements
 		}
 	}
-	for _, shape := range []*dismissedScaleShape{loaded, none, onePage} {
+	for _, shape := range shapes {
 		if _, err := shape.database.Pool.Exec(context.Background(), "vacuum analyze"); err != nil {
 			t.Fatalf("vacuum %s after the recorded requests: %v", shape.name, err)
 		}
@@ -222,6 +237,9 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 			key := measured.operation + " @ " + shape.name
 			work[key] = explainDismissedScale(t, shape, measured.operation, sent[key], shape == loaded)
 		}
+	}
+	for _, shape := range shapes {
+		explainDismissedScaleOneRead(t, shape, shape == loaded)
 	}
 
 	// The readings, each the p50 and p95 of 20 runs, for the reader: what the operations took on
@@ -249,7 +267,9 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	// The table, in one block, which is what goes in the pull request's comment: each operation's
 	// work at the pile against its baseline's under both plans, the statements it sent and the
 	// rows those that are not reads changed or locked, the bound it is held to, and the two times
-	// beside them.
+	// beside them. The line above it says what each shape's database read on a new session before
+	// the first request.
+	t.Logf("the shapes' databases, each read on a new session: %s", strings.Join(jit, "; "))
 	t.Log("operation	plan	at the pile	at the baseline	rows x	buffer accesses x	statements	rows changed or locked	bound	p50 ms	p95 ms	baseline p50 ms")
 	for _, held := range dismissedScaleBounds() {
 		pile, ok := work[held.operation+" @ loaded"]
@@ -384,18 +404,23 @@ func dismissedScaleOver(ratio, bound float64) bool {
 // read request sends the caller's identity upsert (`insert into people … on conflict do nothing`,
 // counted as a change), `select now()` and the read of the page's session names
 // (nameAgentSessions: 126 rows and 18 accesses at the pile, 60 and 20 at one page dismissed).
+// The four reads' figures were counted over GET /api/v1/me/replies (listMyReplies), the route the
+// bounds were set on; the four ask the one read here (meInboxStatement), which the bounds hold to
+// the same multiples, and a run prints its counts in the table.
 //
 //   - state=inbox: 1.10x and 1.38x (1.09x and 1.34x), held to twice in both.
 //   - The Inbox count: 1.06x and 1.55x to 1.57x (1.05x and 1.90x), held to twice in both. Its
-//     time ratio was recorded and not bounded, at 1.96x to 2.57x, because its Agent half reads an
+//     time ratio was recorded and not bounded, at 1.96x to 2.57x, because its Agent half read an
 //     index entry for each of the person's 10,060 one-off roots at the pile against 60 at the
-//     baseline: by count that pass is about 460 more buffer accesses over 935. Under the generic
-//     plan the Reply count reads user_threads_unread and each row it matches, 500 accesses at the
-//     pile against 52. The shape this change replaced, which asked each dismissed thread its own
-//     question, is the negative control (dismissedScaleNegativeControl). With its unread roots
-//     walking every dismissed root's thread as well (myAgentUnreadRoots without
-//     myAgentDismissedRoot, which answers the same rows), it counts 71.01x the buffer accesses at
-//     1.96x the rows, which is why buffer accesses are held as well as rows.
+//     baseline: by count that pass was about 460 more buffer accesses over 935. It reads the 60
+//     live roots alone since messages_direct_roots_live (migration 20261125053341, myAgentLiveRoot)
+//     left the dismissed ones out. Under the generic plan the Reply count reads
+//     user_threads_unread and each row it matches, 500 accesses at the pile against 52. The shape
+//     this change replaced, which asked each dismissed thread its own question, is the negative
+//     control (dismissedScaleNegativeControl). With its unread roots walking every dismissed
+//     root's thread as well (myAgentUnreadRoots without its dismissal test, which answers the same
+//     rows), it counts 71.01x the buffer accesses at 1.96x the rows, which is why buffer accesses
+//     are held as well as rows.
 //   - The first Dismissed page and the page 50,000 deep: 0.69x and 2.21x (0.68x and 1.98x to
 //     2.00x), held to twice in rows and dismissedScaleDismissedPages in buffer accesses, for the
 //     page's composition and not the pile. Each half reads up to a full page before the route
@@ -434,7 +459,7 @@ func dismissedScaleBounds() []dismissedScaleHeld {
 func runDismissedScaleInbox(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=inbox", nil)
+		"/api/v1/me/inbox?state=inbox", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if len(page.Rows) != dismissedScaleInboxRows() {
 		t.Fatalf("state=inbox answered %d rows, want the %d the seed holds", len(page.Rows), dismissedScaleInboxRows())
@@ -445,7 +470,7 @@ func runDismissedScaleInbox(ctx context.Context, t *testing.T, shape *dismissedS
 func runDismissedScaleUnreadCount(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil)
+		"/api/v1/me/inbox?state=unread&limit=1", nil)
 	page := decodeDismissedScaleReplies(t, response)
 	if page.Total != dismissedScaleUnreadRows() {
 		t.Fatalf("the Inbox count read answered total=%d, want %d", page.Total, dismissedScaleUnreadRows())
@@ -456,9 +481,9 @@ func runDismissedScaleUnreadCount(ctx context.Context, t *testing.T, shape *dism
 func runDismissedScaleFirstPage(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=dismissed", nil)
+		"/api/v1/me/inbox?state=dismissed&limit="+fmt.Sprint(dismissedScalePage), nil)
 	page := decodeDismissedScaleReplies(t, response)
-	want := min(shape.dismissedReplies+shape.dismissedAgents, myRepliesDismissedPage)
+	want := min(shape.dismissedReplies+shape.dismissedAgents, dismissedScalePage)
 	if len(page.Rows) != want {
 		t.Fatalf("the first Dismissed page answered %d rows, want %d", len(page.Rows), want)
 	}
@@ -468,9 +493,9 @@ func runDismissedScaleFirstPage(ctx context.Context, t *testing.T, shape *dismis
 func runDismissedScaleDeepPage(ctx context.Context, t *testing.T, shape *dismissedScaleShape) time.Duration {
 	t.Helper()
 	taken, response := timeDismissedScaleRequest(ctx, t, shape, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=dismissed&cursor="+shape.deepCursor, nil)
+		"/api/v1/me/inbox?state=dismissed&limit="+fmt.Sprint(dismissedScalePage)+"&cursor="+shape.deepCursor, nil)
 	page := decodeDismissedScaleReplies(t, response)
-	if len(page.Rows) != myRepliesDismissedPage {
+	if len(page.Rows) != dismissedScalePage {
 		t.Fatalf("the page %d deep answered %d rows, want a full page",
 			dismissedScaleCursorDepth, len(page.Rows))
 	}
@@ -561,11 +586,29 @@ func timeDismissedScaleRequest(
 	return taken, response
 }
 
-func decodeDismissedScaleReplies(t *testing.T, response *httptest.ResponseRecorder) model.MyRepliesResponse {
+// dismissedScalePage is how many rows one Dismissed page draws: the page the Dismissed view reads
+// again from the cursor.
+const dismissedScalePage = 200
+
+// dismissedScalePageRows is one answer of the one read cut to what a14 reads of it: the Thread and
+// Agent rows it draws, its total and its as_of.
+type dismissedScalePageRows struct {
+	Rows  []string
+	Total int
+	AsOf  time.Time
+}
+
+func decodeDismissedScaleReplies(t *testing.T, response *httptest.ResponseRecorder) dismissedScalePageRows {
 	t.Helper()
-	var page model.MyRepliesResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+	var read meInboxResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
 		t.Fatalf("decode the Inbox read: %v", err)
+	}
+	page := dismissedScalePageRows{Total: read.Total, AsOf: read.AsOf}
+	for _, entry := range read.Entries {
+		if entry.Thread != nil || entry.Agent != nil {
+			page.Rows = append(page.Rows, entry.Node.ID)
+		}
 	}
 	return page
 }
@@ -584,7 +627,7 @@ func decodeDismissedScaleCount(t *testing.T, response *httptest.ResponseRecorder
 func dismissedScaleAsOf(t *testing.T, shape *dismissedScaleShape) string {
 	t.Helper()
 	response := dispatchRequest(t, shape.handler, http.MethodGet,
-		"/api/v1/me/replies?kind=reply,agent&state=unread&limit=1", nil, dismissedScaleLogin)
+		"/api/v1/me/inbox?state=unread&limit=1", nil, dismissedScaleLogin)
 	if response.Code != http.StatusOK {
 		t.Fatalf("read as_of on %s: status=%d body=%s", shape.name, response.Code, response.Body.String())
 	}
@@ -604,8 +647,13 @@ func dismissDismissedScaleRestore(t *testing.T, shape *dismissedScaleShape, rows
 
 // unmarkDismissedScale puts every read mark one Mark all read moved back where it was, off the
 // clock: each Reply thread's mark to the minute before its newest reply, which is where the
-// trigger left it, and the Agent threads' replies unread by deleting the rows the mark-all wrote
-// by id. The dismissed pile's own read rows are named here one by one, so they stay.
+// trigger left it, and the Agent threads' replies unread, the way the prune of a row ends a reply
+// read by its id (prunedAgentReplies, api/state.go): the rows the mark-all wrote, deleted by id,
+// and in the same transaction the retraction of the reply_read tuple each of those rows' marks
+// stated. That tuple is what an Agent row's unread test reads (replyReadByID,
+// api/unread_replies.go), so a put-back that deleted the rows alone would leave every Agent reply
+// read, and every Mark all read after the first would mark the Reply threads alone: 1,270 of the
+// 1,300. The dismissed pile's own read rows are named here one by one, so they stay.
 func unmarkDismissedScale(t *testing.T, shape *dismissedScaleShape) {
 	t.Helper()
 	ctx := context.Background()
@@ -619,15 +667,24 @@ func unmarkDismissedScale(t *testing.T, shape *dismissedScaleShape) {
 	if tag.RowsAffected() != int64(len(shape.unreadThreads)) {
 		t.Fatalf("put back %d thread marks, want %d", tag.RowsAffected(), len(shape.unreadThreads))
 	}
-	deleted, err := shape.database.Pool.Exec(ctx, `
-		delete from user_agent_reply_read where login = $1 and reply_id = any($2::uuid[])
-	`, dismissedScaleLogin, shape.unreadReplies)
-	if err != nil {
-		t.Fatalf("put the agent marks back: %v", err)
-	}
-	if deleted.RowsAffected() != int64(len(shape.unreadReplies)) {
-		t.Fatalf("put back %d agent marks, want %d", deleted.RowsAffected(), len(shape.unreadReplies))
-	}
+	writeInTx(t, shape.database, func(tx pgx.Tx) error {
+		deleted, err := tx.Exec(ctx, `
+			delete from user_agent_reply_read where login = $1 and reply_id = any($2::uuid[])
+		`, dismissedScaleLogin, shape.unreadReplies)
+		if err != nil {
+			return fmt.Errorf("put the agent marks back: %w", err)
+		}
+		if deleted.RowsAffected() != int64(len(shape.unreadReplies)) {
+			return fmt.Errorf("put back %d agent marks, want %d", deleted.RowsAffected(), len(shape.unreadReplies))
+		}
+		at := time.Now().UTC()
+		ended := make([]graphstore.Tuple, 0, len(shape.unreadReplies))
+		for _, reply := range shape.unreadReplies {
+			ended = append(ended, personMark(model.Actor{Kind: "user", ID: dismissedScaleLogin},
+				graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, false, graphstore.NoEvent))
+		}
+		return graphstore.FromPerson(ctx, tx, at, ended)
+	})
 }
 
 // dismissedScaleReading is one operation's 20 runs: the two percentiles and every reading, so a
@@ -675,4 +732,65 @@ func percentileOfDismissedScale(sorted []time.Duration, quantile float64) time.D
 
 func msOf(taken time.Duration) float64 {
 	return float64(taken.Microseconds()) / 1000
+}
+
+// turnJITOff sets jit = off on the database databaseURL names, which a failure calls what: `alter
+// database ... set jit = off`. Every session opened on that database afterwards starts with it,
+// whoever opens it: a pool of this process, or a build's own process given only the URL. A session
+// already open keeps the value it opened with, so a measurement turns JIT off before any pool or
+// process it times opens one.
+//
+// Production's Postgres, Cloud SQL, runs no JIT, and compiling a plan inflates a reading: in a
+// builds Job, whose Postgres compiles by default, JIT took 129 ms in a references read whose
+// median run was 122.5 ms, a read of 25.7 ms at p50 with jit = off.
+func turnJITOff(t *testing.T, what, databaseURL string) {
+	t.Helper()
+	ctx := context.Background()
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s to turn JIT off: %v", what, err)
+	}
+	defer connection.Close(ctx)
+	var name string
+	if err := connection.QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
+		t.Fatalf("read the name of %s: %v", what, err)
+	}
+	if _, err := connection.Exec(ctx, `alter database `+pgx.Identifier{name}.Sanitize()+` set jit = off`); err != nil {
+		t.Fatalf("turn JIT off for %s: %v", what, err)
+	}
+}
+
+// jitOffStore turns JIT off for database's own database (turnJITOff) and answers a store on a pool
+// of its own opened after that, so every session a server built on it reads through, and every
+// pool reopened from it (storetest.Traced), holds jit = off. database's own pool already holds the
+// session store.Open pinged on, opened before the setting, so it is left to its cleanup.
+func jitOffStore(t *testing.T, what string, database *store.Store) *store.Store {
+	t.Helper()
+	turnJITOff(t, what, database.Pool.Config().ConnString())
+	return storetest.Reopened(t, database, func(*pgxpool.Config) {})
+}
+
+// requireJITOff reads current_setting('jit') and pg_jit_available() on a new session of the
+// database databaseURL names, through the URL its measured pool or process was given, and fails
+// naming what unless jit is off. Where pg_jit_available() is false the server cannot compile and
+// the setting is moot, but turnJITOff leaves it off all the same, so one rule holds on every
+// server. It answers both as the readings' lines print them: "jit=off pg_jit_available=false".
+func requireJITOff(t *testing.T, what, databaseURL string) string {
+	t.Helper()
+	ctx := context.Background()
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to %s to read its jit setting: %v", what, err)
+	}
+	defer connection.Close(ctx)
+	var jit string
+	var available bool
+	if err := connection.QueryRow(ctx, `select current_setting('jit'), pg_jit_available()`).Scan(&jit, &available); err != nil {
+		t.Fatalf("read the jit setting of %s: %v", what, err)
+	}
+	if jit != "off" {
+		t.Fatalf("a new session of %s reads jit = %s (pg_jit_available() = %t), want off: its readings would time the "+
+			"plans Postgres compiles, which production's never does (turnJITOff)", what, jit, available)
+	}
+	return fmt.Sprintf("jit=%s pg_jit_available=%t", jit, available)
 }

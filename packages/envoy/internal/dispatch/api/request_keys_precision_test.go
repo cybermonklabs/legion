@@ -8,12 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // INFRA-258. A transaction that only locked rows - a claim's SELECT ... FOR UPDATE - is given a
@@ -129,17 +127,7 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 	}
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	ctx, stop := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil)
-	}()
-	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
-		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0
-	})
-	stop()
-	<-done
+	runOneMaintenancePass(t, rig.database, logs)
 	var keys []string
 	rows, err := rig.database.Pool.Query(context.Background(), `select idempotency_key from request_keys order by 1`)
 	if err != nil {

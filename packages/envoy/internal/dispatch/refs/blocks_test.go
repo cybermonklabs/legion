@@ -147,7 +147,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	`, "The first paragraph.\n\nThe second paragraph.").Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", "", time.Now(), nil, nil); err != nil {
+	if _, _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	// An item's index writes no window (IndexItem): the block-index tick's window arm writes
@@ -196,7 +196,7 @@ func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
 	`, body).Scan(&comment); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
-	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, "", time.Now(), nil, nil); err != nil {
+	if _, _, err := IndexItem(ctx, tx, ItemComment, comment, body, "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `delete from comments where id = $1::uuid`, comment); err != nil {

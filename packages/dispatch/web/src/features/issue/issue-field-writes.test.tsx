@@ -27,14 +27,14 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { issueQuery, projectIssuesQuery } from "../../api/queries";
+import { issueQuery, openAsksQuery, projectIssuesQuery } from "../../api/queries";
 import type { DispatchQueryClient } from "../../api/query-client";
 import type {
-  InboxRow,
   Issue,
   IssueDetails,
   IssuePriority,
   IssueSummary,
+  OpenAskRow,
   Project,
   UpdateIssueInput,
 } from "../../api/types";
@@ -82,7 +82,7 @@ const summary: IssueSummary = {
   title: issue.title,
   updated_at: issue.updated_at,
 };
-const inboxRow: InboxRow = {
+const inboxRow: OpenAskRow = {
   anchor: null,
   answer: null,
   artifact_id: null,
@@ -122,7 +122,7 @@ const inboxRow: InboxRow = {
 
 const detailKey = issueQuery(issue.key).queryKey;
 const listKey = ["issues", "project", issue.project] as const;
-const inboxKey = ["inbox"] as const;
+const inboxKey = openAsksQuery().queryKey;
 
 /** What Dispatch stores of CORE-1 that a pick or a read of it carries. */
 type Stored = Pick<Issue, "assignee" | "priority" | "updated_at">;
@@ -132,7 +132,7 @@ type Stored = Pick<Issue, "assignee" | "priority" | "updated_at">;
  *  (`hold`). */
 interface Reads {
   readonly detail: () => Promise<IssueDetails>;
-  readonly inbox: () => Promise<InboxRow[]>;
+  readonly inbox: () => Promise<OpenAskRow[]>;
   readonly list: () => Promise<IssueSummary[]>;
   /** Holds every read that starts from now on until the returned function lets them answer. */
   readonly hold: () => () => void;
@@ -160,7 +160,7 @@ function dispatchReads(): Reads {
     };
   return {
     detail: read((now): IssueDetails => ({ ...details, ...now })),
-    inbox: read((now): InboxRow[] => [
+    inbox: read((now): OpenAskRow[] => [
       {
         ...inboxRow,
         issue: { assignee: now.assignee, key: issue.key, title: issue.title },
@@ -224,7 +224,7 @@ function renderIn(client: DispatchQueryClient, children: ReactNode): RenderResul
 function cachedPriorities(client: DispatchQueryClient) {
   return {
     detail: client.getQueryData<IssueDetails>(detailKey)?.priority,
-    inbox: client.getQueryData<InboxRow[]>(inboxKey)?.[0]?.priority,
+    inbox: client.getQueryData<OpenAskRow[]>(inboxKey)?.[0]?.priority,
     list: client.getQueryData<IssueSummary[]>(listKey)?.[0]?.priority,
   };
 }
@@ -495,7 +495,7 @@ test("a refused pick shows Dispatch's reason with Retry and puts back the assign
     // issue had before the first pick.
     expect(select().value).toBe("bob");
     expect(client.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
-    const [row] = client.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    const [row] = client.getQueryData<OpenAskRow[]>(inboxKey) ?? [];
     expect([row?.issue?.assignee, row?.waiting_on_person]).toEqual(["bob", "bob"]);
 
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
@@ -2403,7 +2403,7 @@ test("a refused assignee pick puts back the person an Inbox row waited on in Dis
       await gate;
       return answer;
     };
-  const unassigned: InboxRow = {
+  const unassigned: OpenAskRow = {
     ...inboxRow,
     issue: { assignee: null, key: issue.key, title: issue.title },
     waiting_on_person: "dave",
@@ -2430,11 +2430,11 @@ test("a refused assignee pick puts back the person an Inbox row waited on in Dis
   let detail: RenderResult | undefined;
   const seen: string[] = [];
   const see = (step: string) => {
-    const [row] = client.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    const [row] = client.getQueryData<OpenAskRow[]>(inboxKey) ?? [];
     seen.push(`${step}: assignee ${row?.issue?.assignee} waiting on ${row?.waiting_on_person}`);
   };
   try {
-    await waitFor(() => expect(client.getQueryData<InboxRow[]>(inboxKey)).toEqual([unassigned]));
+    await waitFor(() => expect(client.getQueryData<OpenAskRow[]>(inboxKey)).toEqual([unassigned]));
     detail = renderIn(client, <Detail />);
     await waitFor(() => expect(client.getQueryData(detailKey)).toMatchObject({ assignee: null }));
     see("the Inbox read, then the issue");

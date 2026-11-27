@@ -9,12 +9,12 @@ import (
 )
 
 // personNodesMarksRead is GET /api/v1/people/{login}/nodes as this file reads it: each row's
-// title and the marks an edit and a delete leave on it, under the JSON names every other read of
+// first line and the marks an edit and a delete leave on it, under the JSON names every other read of
 // a post answers them by.
 type personNodesMarksRead struct {
 	Rows []struct {
 		ID        string       `json:"id"`
-		Title     string       `json:"title"`
+		FirstLine string       `json:"first_line"`
 		EditedAt  *time.Time   `json:"edited_at"`
 		DeletedAt *time.Time   `json:"deleted_at"`
 		DeletedBy *model.Actor `json:"deleted_by"`
@@ -26,7 +26,7 @@ type personNodesMarksRead struct {
 // dispatch://INFRA-1523: alice writes two comments, edits the first and deletes the second, each
 // as their author, and bob reads her page. The edited comment's row carries the edit's time and
 // its new first line; the deleted comment keeps its row, with the delete's time and actor and an
-// empty title, which gives no part of the body the delete cleared.
+// empty first line, which gives no part of the body the delete cleared.
 func TestAPersonPageMarksAnEditedCommentAndADeletedOne(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -59,7 +59,7 @@ func TestAPersonPageMarksAnEditedCommentAndADeletedOne(t *testing.T) {
 	if editedRow.EditedAt == nil || !editedRow.EditedAt.Equal(editedAt) {
 		t.Errorf("the edited comment's row edited_at = %v, want the edit's time %s", editedRow.EditedAt, editedAt)
 	}
-	if editedRow.Title != "Ship it on Thursday." || editedRow.DeletedAt != nil || editedRow.DeletedBy != nil {
+	if editedRow.FirstLine != "Ship it on Thursday." || editedRow.DeletedAt != nil || editedRow.DeletedBy != nil {
 		t.Errorf("the edited comment's row = %+v, want its new first line standing, with no delete mark", editedRow)
 	}
 
@@ -70,8 +70,8 @@ func TestAPersonPageMarksAnEditedCommentAndADeletedOne(t *testing.T) {
 	if deletedRow.DeletedBy == nil || deletedRow.DeletedBy.Kind != "user" || deletedRow.DeletedBy.ID != person {
 		t.Errorf("the deleted comment's row deleted_by = %+v, want the user %s, who deleted it", deletedRow.DeletedBy, person)
 	}
-	if deletedRow.Title != "" {
-		t.Errorf("the deleted comment's row title = %q, want no part of the body the delete cleared", deletedRow.Title)
+	if deletedRow.FirstLine != "" {
+		t.Errorf("the deleted comment's first line = %q, want no part of the body the delete cleared", deletedRow.FirstLine)
 	}
 	if deletedRow.EditedAt != nil {
 		t.Errorf("the deleted comment's row edited_at = %v on a comment nobody edited", deletedRow.EditedAt)

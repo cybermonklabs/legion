@@ -39,6 +39,12 @@ import (
 // it inserts at source_event 0 fall under no unique key, so a second run would append them again.
 // TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs those over a store the
 // backfill filled.
+//
+// A type migration that only adds nodes and tuples moves nothing the second run puts back, and is
+// not listed here either: 20261116102759 (the delivery_attempt attributes) and 20261120090002 (the
+// comment's delivery attribute) are two, numbered below backfillVersion, so openAtTheBackfill
+// applies each once before the second run. The second run holds for the node store's own type
+// migrations only.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
@@ -76,12 +82,16 @@ const backfillVersion = 20261121060636
 // first holds: a v34.11.x store meets it after its backfill all the same.
 var unreleasedVersionsBelowTheBackfill = []int{
 	20261110224508, 20261116015042, 20261116015056, 20261116015736, 20261116035709, 20261116081157,
-	20261116085957, 20261116232217, 20261117002006, 20261117002045, 20261117025900, 20261117025901,
-	20261117025902, 20261117025903, 20261117025904, 20261117025905, 20261117025906, 20261117025907,
-	20261117025908, 20261117025909, 20261117025910, 20261117093337, 20261117100008, 20261117100010,
-	20261117100015, 20261117100016, 20261118161237, 20261118181230, 20261119020700, 20261119020800,
-	20261119020900, 20261119021000, 20261120020130, 20261120023712, 20261120131444, 20261120150130,
-	20261120204136, 20261121043859,
+	20261116085957, 20261116102759, 20261116102800, 20261116102801, 20261116102802, 20261116114515,
+	20261116114516, 20261116124447, 20261116135959, 20261116140000, 20261116140001, 20261116140002,
+	20261116140003, 20261116140004, 20261116140005, 20261116140006, 20261116140007, 20261116150000,
+	20261116160000, 20261116160001, 20261116170000, 20261116232217, 20261117002006, 20261117002045,
+	20261117025900, 20261117025901, 20261117025902, 20261117025903, 20261117025904, 20261117025905,
+	20261117025906, 20261117025907, 20261117025908, 20261117025909, 20261117025910, 20261117093337,
+	20261117100008, 20261117100010, 20261117100015, 20261117100016, 20261117132340, 20261118161237,
+	20261118181230, 20261119020700, 20261119020800, 20261119020900, 20261119021000, 20261120020130,
+	20261120023712, 20261120090000, 20261120090002, 20261120131444, 20261120150130, 20261120204136,
+	20261121043859,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -128,6 +138,49 @@ var closedSupertags = []string{
 	"plan_task", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
+}
+
+// storeTypeAttributes is the attributes of each supertag of the closed list that declares no
+// block type and holds values all the same: a kind a later child moves into the store brings its
+// attributes with it, in a type migration of its own, since 20261109051232 seeds the supertags the
+// block schema does not declare with none. blocks.json says nothing of these, so this is the test's
+// own copy of each, in its type's order, as closedSupertags is of the list, with the document that
+// creates it: an attribute only in the store, or only here, fails, and so does one whose fields
+// differ. The block schema the store builds passes over them (requireTheStoreBuildsTheFilesSchema).
+var storeTypeAttributes = []storeType{{
+	name:     "delivery_attempt",
+	document: "the one inbox's spec, R5",
+	attributes: []pmdoc.BlockAttribute{
+		{Name: "attempt", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "state", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
+			Kind: pmdoc.BlockAttributeEnum, Server: true,
+			Choices: []string{model.DeliveryStatePending, model.DeliveryStateSent, model.DeliveryStateQueued, model.DeliveryStateFailed},
+		}},
+		{Name: "envelope_id", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "error", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "resolve_error", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeString, Server: true}},
+		{Name: "duplicate", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBool, Server: true}},
+		{Name: "claimed_at", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeTimestamp, Server: true}},
+		{Name: "accepted_at", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeTimestamp, Server: true}},
+		{Name: "accepted_as", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
+			Kind: pmdoc.BlockAttributeEnum, Server: true, Choices: []string{"user_turn"},
+		}},
+	},
+}, {
+	name:     "comment",
+	document: "the one inbox's spec, R5",
+	attributes: []pmdoc.BlockAttribute{
+		{Name: "delivery", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
+			Kind: pmdoc.BlockAttributeEnum, Choices: []string{"btw", "aside", "steer"},
+		}},
+	},
+}}
+
+// storeType is one supertag storeTypeAttributes lists: its name, the document that creates its
+// attributes, and those attributes in their order.
+type storeType struct {
+	name, document string
+	attributes     []pmdoc.BlockAttribute
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -673,46 +726,65 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 	}
 	wanted := map[string]struct{}{}
 	for _, typ := range file.Types {
-		tied := map[string]struct{}{}
-		tuples, err := graphstore.CurrentIn(ctx, pool, schemanodes.KindSupertag, typ.Name, []string{schemanodes.TupleAttributeOf})
-		if err != nil {
-			t.Fatalf("read the attributes tied to %q: %v", typ.Name, err)
-		}
-		for _, tuple := range tuples {
-			tied[tuple.FromID] = struct{}{}
-		}
-		for position, declared := range typ.Attributes {
-			id := typ.Name + "/" + schemanodes.StoreName(typ.Name, declared.Name)
-			wanted[id] = struct{}{}
-			if _, tiedToType := tied[id]; !tiedToType {
-				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.Name)
-				drift.add(id)
-			}
-			node, inStore := held[id]
-			if !inStore {
-				t.Errorf("%s declares attribute %q of %q, which the store holds no node for", blockSchemaFile, declared.Name, typ.Name)
-				drift.add(id)
-				continue
-			}
-			requireAttributeNodeCarries(t, node, typ.Name, position, declared, drift)
-		}
-		if len(tied) != len(typ.Attributes) {
-			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d its type declares", typ.Name, len(tied), len(typ.Attributes))
-			drift.add(typ.Name)
-		}
+		requireTypeAttributes(t, ctx, pool, held, wanted, typ.Name, typ.Attributes, blockSchemaFile, drift)
+	}
+	// The attributes of the supertags the block schema declares no type for, held to the test's
+	// own copy of them. A difference there is no drift of the file, so it is not recorded in drift:
+	// the migration that writes those nodes is the type migration of the kind they belong to.
+	for _, typ := range storeTypeAttributes {
+		t.Logf("the store holds the attributes of %q, a supertag the block schema declares no type for, created by %s", typ.name, typ.document)
+		requireTypeAttributes(t, ctx, pool, held, wanted, typ.name, typ.attributes, "storeTypeAttributes", nil)
 	}
 	for id := range held {
 		if _, declared := wanted[id]; !declared {
-			t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
+			t.Errorf("the store holds attribute node %q, which %s declares nowhere and storeTypeAttributes does not list", id, blockSchemaFile)
 			drift.add(id)
 		}
 	}
 }
 
-// requireAttributeNodeCarries holds one attribute node of type typeName to what the file says
+// requireTypeAttributes holds the attribute nodes of supertag name, of held, to attributes as
+// source lists them: each tied to the supertag by its attribute_of, held by the store and carrying
+// what source says of it (requireAttributeNodeCarries), and as many tied to it as source lists.
+// Each attribute's node id goes into wanted, and each type and attribute it fails on is recorded in
+// drift, where the caller keeps one.
+func requireTypeAttributes(t *testing.T, ctx context.Context, pool *store.Pool, held map[string]graphstore.Node, wanted map[string]struct{},
+	name string, attributes []pmdoc.BlockAttribute, source string, drift *schemaDrift) {
+	t.Helper()
+	tied := map[string]struct{}{}
+	tuples, err := graphstore.CurrentIn(ctx, pool, schemanodes.KindSupertag, name, []string{schemanodes.TupleAttributeOf})
+	if err != nil {
+		t.Fatalf("read the attributes tied to %q: %v", name, err)
+	}
+	for _, tuple := range tuples {
+		tied[tuple.FromID] = struct{}{}
+	}
+	for position, declared := range attributes {
+		id := name + "/" + schemanodes.StoreName(name, declared.Name)
+		wanted[id] = struct{}{}
+		if _, tiedToType := tied[id]; !tiedToType {
+			t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, name)
+			drift.add(id)
+		}
+		node, inStore := held[id]
+		if !inStore {
+			t.Errorf("%s lists attribute %q of %q, which the store holds no node for", source, declared.Name, name)
+			drift.add(id)
+			continue
+		}
+		requireAttributeNodeCarries(t, node, name, position, declared, source+"'s", drift)
+	}
+	if len(tied) != len(attributes) {
+		t.Errorf("supertag %q is tied to %d attribute nodes, want the %d %s lists", name, len(tied), len(attributes), source)
+		drift.add(name)
+	}
+}
+
+// requireAttributeNodeCarries holds one attribute node of type typeName to what source says
 // about that attribute: its name and place, the store name schemanodes.StoreName gives it, and
-// each field a BlockAttributeSchema carries. A node that differs is recorded in drift.
-func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
+// each field a BlockAttributeSchema carries. A node that differs is recorded in drift, where the
+// caller keeps one.
+func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, source string, drift *schemaDrift) {
 	t.Helper()
 	carried := node.Attributes
 	if name, _ := carried["name"].(string); name != declared.Name {
@@ -739,10 +811,10 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName st
 	}
 	wanted := map[string]any{}
 	if err := json.Unmarshal(mustMarshal(t, declared.BlockAttributeSchema), &wanted); err != nil {
-		t.Fatalf("read the file's attribute %q: %v", node.ID, err)
+		t.Fatalf("read %s attribute %q: %v", source, node.ID, err)
 	}
 	if string(mustMarshal(t, stored)) != string(mustMarshal(t, wanted)) {
-		t.Errorf("attribute node %q carries %s, want the file's %s", node.ID, mustMarshal(t, stored), mustMarshal(t, wanted))
+		t.Errorf("attribute node %q carries %s, want %s %s", node.ID, mustMarshal(t, stored), source, mustMarshal(t, wanted))
 		drift.add(node.ID)
 	}
 }
@@ -791,8 +863,12 @@ type schemaDrift struct {
 	fileVersion, storeVersion int
 }
 
-// add records one type or attribute, once.
+// add records one type or attribute, once. A nil drift records nothing: the check of an attribute
+// no file declares (storeTypeAttributes) keeps none.
 func (d *schemaDrift) add(name string) {
+	if d == nil {
+		return
+	}
 	if !slices.Contains(d.names, name) {
 		d.names = append(d.names, name)
 	}

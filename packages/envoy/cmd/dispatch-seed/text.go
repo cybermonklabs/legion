@@ -11,8 +11,9 @@ import (
 
 // mentionKinds is every node kind refs/graph.go's nodeRegistry resolves that text can name, in the
 // order the seed cycles them, so `refs` holds mentions to each. The one kind left out, `session`,
-// has no grammar in text/refs.go - no `dispatch://` reference names a session - so the one
-// mention to a session is written into `refs` directly (writeSessionMention).
+// is a party: a reference to one writes no `refs` row (refs.TargetOf names no party), so the one
+// mention of a session is the first message's (messageMention), which the item index states in
+// the store alone.
 var mentionKinds = []string{
 	"issue", "artifact", "ask", "comment", "message", "component", "block", "ask_block",
 	"comment_block", "message_block",
@@ -80,6 +81,26 @@ func (p *seedPlan) mentionText(kindIndex, nth int) string {
 		message := p.messages[nth%len(p.messages)]
 		return "dispatch://" + p.issues[message.Issue].Key + "/message/" + message.ID + "#b-b1"
 	}
+}
+
+// messageMention is the text message index opens with: its planned mention, and, in the first
+// message, the one reference that names a session, an agent's session by its address
+// (`dispatch://agent/<id>`). The item index reads that reference as a mention of an identity and
+// appends a `mentions` tuple out of the message's node to the session (refs.IndexItem), which
+// graph_edges' identity arm answers (migration 20261126045004) and the backlink count of a session
+// reads. A message is where the seed names a party because no other writer of its source owes
+// more: the server delivers a message or a comment to a person it names, and a comment's session
+// or role is a delivery route its comment_mentions row holds, neither of which the seed writes.
+func (p *seedPlan) messageMention(index int) string {
+	message := p.messages[index]
+	var mentions []string
+	if message.MentionTo >= 0 {
+		mentions = append(mentions, p.mentionText(message.MentionTo, message.MentionNth))
+	}
+	if index == 0 {
+		mentions = append(mentions, "dispatch://agent/"+p.sessions[0])
+	}
+	return strings.Join(mentions, " ")
 }
 
 // firstParagraphBlock is the block id of the first paragraph of every latest version. Every

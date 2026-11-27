@@ -115,11 +115,11 @@ export const AskLastReplySchema = z
   .strictObject({ author: ActorSchema, created_at: z.string() })
   .readonly();
 
-export const InboxDocumentSchema = z
+export const AskOwnerDocumentSchema = z
   .strictObject({ project: z.string(), slug: z.string(), name: z.string() })
   .readonly();
 
-export type InboxDocument = z.output<typeof InboxDocumentSchema>;
+export type AskOwnerDocument = z.output<typeof AskOwnerDocumentSchema>;
 
 /** The approval an approval request follows: the version a human approved, when (RFC 3339 UTC,
  *  the review's `created_at`) and who. */
@@ -191,7 +191,7 @@ export const askFields = {
     })
     .readonly()
     .optional(),
-  document: InboxDocumentSchema.optional(),
+  document: AskOwnerDocumentSchema.optional(),
   /** Inbox rows, the issue detail's `open_asks` and the issue ask list: the newest reply in the
    *  ask's thread, or null when nobody has replied. Who spoke last; whose turn it is comes from
    *  `waiting_on`. Absent on every other ask read. */

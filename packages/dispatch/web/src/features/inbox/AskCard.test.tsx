@@ -13,7 +13,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { askThreadQuery, myRepliesOwnerQuery } from "../../api/queries";
+import { askThreadQuery, meInboxOwnerQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
   AnswerAskInput,
@@ -25,7 +25,7 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { replyRow, seedUnread } from "../threads/replies-fixture";
+import { replyRow, seedUnread, unreadSetAnswer } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
 import {
@@ -964,13 +964,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     { login: "bob" },
   ]);
   // The card marks the thread read off its owner's unread set, which holds nothing here.
-  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
-    as_of: "2026-10-08T00:00:00Z",
-    limit: 200,
-    offset: 0,
-    rows: [],
-    total: 0,
-  });
+  const getMeInbox = spyOn(api, "getMeInboxPage").mockResolvedValue(unreadSetAnswer([]));
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {
@@ -989,7 +983,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();
-    listMyReplies.mockRestore();
+    getMeInbox.mockRestore();
     listUsers.mockRestore();
   }
 });
@@ -1064,13 +1058,10 @@ test("an unread reply is never folded away", async () => {
   });
   seedUnread(queryClient, { issue: "CORE-1" }, []);
   // The reader read the thread through its first reply, so replies 2 to 4 are unread.
-  queryClient.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, {
-    as_of: "2026-10-12T00:00:00Z",
-    limit: 200,
-    offset: 0,
-    rows: [replyRow(ask.id, { kind: "ask", read_through: "2026-10-08T01:00:00Z" })],
-    total: 1,
-  });
+  queryClient.setQueryData(
+    meInboxOwnerQuery({ issue: "CORE-1" }).queryKey,
+    unreadSetAnswer([replyRow(ask.id, { kind: "ask", read_through: "2026-10-08T01:00:00Z" })])
+  );
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>

@@ -1,0 +1,34 @@
+-- 20261122075823_comment_block_texts_transaction_start.up.sql
+--
+-- comment_block_texts learns which transaction wrote each of its rows:
+--   transaction_started_at   the start of the transaction that inserted the row, Postgres's now(),
+--                            which the column's default gives it: no writer names the column. Null
+--                            for a row written before this migration.
+--
+-- The keyword fill takes the whole body of a comment whose comment.created event cut it from
+-- revision 1 of the comment's blocks only where the comment's own transaction wrote revision 1
+-- (textversions' firstRevisionBody): a comment is indexed in the transaction that writes it, so
+-- revision 1 is then the body it was written with, while a revision 1 the block index's
+-- reconciliation wrote later, for a comment an older build wrote, is not that write's. The event's
+-- created_at is its transaction's start, and the fill compared it with the block row's created_at,
+-- which held its inserting transaction's start while the row took the column's default. This
+-- release writes a block row's created_at as the moment of the write it indexes (refs'
+-- queueBlocks), so that the part_of graph_edges answers from the row on the release before this one
+-- is the part_of the store dates at that moment. A comment's moment is its created_at, a clock read
+-- taken after its transaction began, and the reconciliation writes the same moment for a comment no
+-- one edited, so neither moment tells the comment's own transaction from a later one. This column
+-- does: revision 1's rows are inserted by the index that writes revision 1, and an update of a
+-- row's text keeps the column, as an update of a block row keeps its created_at.
+--
+-- A nullable column with no default, and then a default for it: each is a catalog change. No stored
+-- row is read or rewritten, and every existing row reads null, which is true of it, since no
+-- transaction start was recorded here before; the fill reads the block row's created_at for such a
+-- row, which the builds before this release left to the column's default. Each ALTER takes ACCESS
+-- EXCLUSIVE on comment_block_texts for its catalog write and no lock on any other table, so it closes
+-- no cycle with a comment write of the release still serving; the runner's lock_timeout bounds its
+-- wait (pgmigrate.LockTimeout), and the runner applies it again on a timeout
+-- (pgmigrate.LockTimeoutAttempts). The release before this one writes and reads comment_block_texts
+-- by naming its columns, so a row it inserts during a roll takes the default too; rolling back past
+-- this migration is an image rollback alone, and the column left behind is read by nothing.
+alter table comment_block_texts add column transaction_started_at timestamptz;
+alter table comment_block_texts alter column transaction_started_at set default now();

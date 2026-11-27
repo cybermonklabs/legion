@@ -2,7 +2,7 @@ import { hashKey, type MutationKey, useQuery, useQueryClient } from "@tanstack/r
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentConversationQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import type { Sending } from "../../hooks/useSending";
 import {
@@ -359,7 +359,7 @@ export function AgentMessageComposer({
           sentJustNow.current = true;
           onCancelReply();
           void queryClient.invalidateQueries({
-            queryKey: agentMessagesQuery(agent.session_id).queryKey,
+            queryKey: agentConversationQuery(agent.session_id).queryKey,
           });
           // Focus went to the document when the field disabled itself; take it back.
           refocusComposer();

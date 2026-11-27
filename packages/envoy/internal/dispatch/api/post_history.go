@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -129,7 +130,9 @@ var errDeleteContended error = &apiError{
 // takes every block out of the post's current revision and every reference out of its edges; and
 // the copies of the body that do not follow the cleared column - each block's stored excerpt,
 // the text each revision recorded of a block and the post's embedding windows - taken out of
-// them (refs.TombstoneItem).
+// them (refs.TombstoneItem). It answers, beside the step, what that index states in the node and
+// tuple store (planEditedItem), for the route to queue under the delete's own event
+// (graphstore.QueueCaused).
 //
 // A comment clears its suggestion with its body, since the suggestion's replacement text is the
 // comment's text too, and a message carries no suggestion: the kind decides which. quoteIsBody
@@ -140,7 +143,7 @@ var errDeleteContended error = &apiError{
 // matching a keyword search. Each form of that update is one literal statement, so every column
 // it sets is read where it is written (api's TestNoProjectionRowIsWrittenWithoutTheStore): none
 // is a column a tuple of the store projects, since the anchor's quote key keeps the artifact its
-// anchored_to tuple names, so the clear writes no node and no tuple. (A delete that rejects a
+// anchored_to tuple names. The update itself writes no node or tuple. (A delete that rejects a
 // pending insert suggestion also settles the document's version in its transaction, which writes
 // the document's block nodes and tuples: comment_delete.go.) The post's embedding
 // windows go in this transaction too (refs.TombstoneItem): the cleared body splits into no block,
@@ -163,7 +166,7 @@ func (s *server) clearDeletedPostBody(
 	quoteIsBody bool,
 	author, actor model.Actor,
 	deletedAt time.Time,
-) (model.ReferenceChanges, docs.WriteStep, error) {
+) (model.ReferenceChanges, docs.WriteStep, graphstore.Uncaused, error) {
 	statement := `update messages set body = '', deleted_at = $3, deleted_by = $2 where id = $1`
 	if kind == refs.ItemComment {
 		statement = `update comments set body = '', suggestion = null, deleted_at = $3, deleted_by = $2 where id = $1`
@@ -176,17 +179,17 @@ func (s *server) clearDeletedPostBody(
 	// kind's table is ever cleared.
 	history, err := postBodyHistoryStep(kind, itemID, previousBody, actor)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	deletedBy, err := encodeJSON(actor)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	// The update that clears the body is queued, so the index is planned from the empty body the
 	// write leaves rather than read back, as an edit's is (planEditedItem).
-	changes, index, err := s.planEditedItem(ctx, tx, author, kind, itemID, previousBody, "", deletedAt, nil)
+	changes, index, stated, err := s.planEditedItem(ctx, tx, author, kind, itemID, previousBody, "", deletedAt, nil)
 	if err != nil {
-		return model.ReferenceChanges{}, nil, err
+		return model.ReferenceChanges{}, nil, graphstore.Uncaused{}, err
 	}
 	return changes, func(b *store.WriteBatch) error {
 		if err := history(b); err != nil {
@@ -197,7 +200,7 @@ func (s *server) clearDeletedPostBody(
 			return err
 		}
 		return refs.TombstoneItem(b, kind, itemID)
-	}, nil
+	}, stated, nil
 }
 
 // pendingAttemptsRead is what a delete's read found of its post's send attempts still pending,

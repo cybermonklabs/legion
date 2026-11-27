@@ -9,12 +9,12 @@ import {
   createMessage,
   createProject,
   createProjectDocument,
-  listAgentMessages,
+  getAgentConversation,
   listAgents,
   listComments,
   listIssueMessages,
-  listMyReplies,
   markThreadRead,
+  meInboxThreads,
   putAgentState,
 } from "./api";
 import { inboxPane } from "./inbox-pane";
@@ -184,13 +184,13 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
       asSession()
     );
   }
-  const listed = await listMyReplies({ state: "unread" });
-  const row = (listed.rows ?? []).find((candidate) => candidate.thread_id === root.id);
+  const listed = await meInboxThreads({ state: "unread" });
+  const row = listed.rows.find((candidate) => candidate.thread_id === root.id);
   expect(row?.unread).toBe(true);
   // Every reply read: the thread leaves the unread list and stays in the Inbox, drawn as read.
   await markThreadRead(root.id, row?.reply.created_at ?? "");
-  expect((await listMyReplies({ state: "unread" })).total).toBe(0);
-  expect((await listMyReplies({ state: "inbox" })).total).toBe(1);
+  expect((await meInboxThreads({ state: "unread" })).total).toBe(0);
+  expect((await meInboxThreads({ state: "inbox" })).rows.length).toBe(1);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -272,17 +272,17 @@ async function seedThreeShapes(): Promise<{
     (read) => read.message.id === message.id
   );
   await markThreadRead(message.id, (messages?.replies ?? [])[2]?.created_at ?? "");
-  const exchange = (await listAgentMessages(THREAD_SESSION.session_id)).find(
+  const exchange = (await getAgentConversation(THREAD_SESSION.session_id)).find(
     (read) => read.message.id === agent
   );
   await putAgentState(THREAD_SESSION.session_id, {
     read_replies: (exchange?.replies ?? []).slice(0, 3).map((reply) => reply.id),
   });
 
-  const listed = await listMyReplies({ kind: ["reply", "agent"], state: "unread" });
-  expect(
-    (listed.rows ?? []).map((row) => row.unread_count).sort((left, right) => left - right)
-  ).toEqual([2, 2, 2]);
+  const listed = await meInboxThreads({ state: "unread" });
+  expect(listed.rows.map((row) => row.unread_count).sort((left, right) => left - right)).toEqual([
+    2, 2, 2,
+  ]);
   return { agent, comment: comment.id, message: message.id };
 }
 
@@ -337,7 +337,7 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     delivery: "aside",
     replies: ["Green."],
   });
-  const before = (await listAgentMessages(THREAD_SESSION.session_id)).find(
+  const before = (await getAgentConversation(THREAD_SESSION.session_id)).find(
     (read) => read.message.id === agent
   );
   const live = (await listAgents()).find(
@@ -385,7 +385,7 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     expect(expected.delivery).toBe("aside");
     await expect
       .poll(async () => {
-        const read = (await listAgentMessages(THREAD_SESSION.session_id)).find(
+        const read = (await getAgentConversation(THREAD_SESSION.session_id)).find(
           (candidate) => candidate.message.id === agent
         );
         const sent = (read?.replies ?? []).find(

@@ -5,9 +5,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
-import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
+import type { Agent, IssueDetails, OpenAskRow, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
+import { oneReadReply, openAsksAnswer } from "../features/inbox/inbox-fixture";
+import { replyRow } from "../features/threads/replies-fixture";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
 // The issue page is a lazy route of the app, and the live view's page and the margin lazy parts
@@ -86,17 +88,17 @@ const issue: IssueDetails = {
 
 const originalApi = {
   getAsk: api.getAsk,
-  getInbox: api.getInbox,
+  listOpenAsks: api.listOpenAsks,
+  getMeInboxPage: api.getMeInboxPage,
   getIssue: api.getIssue,
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
-  listAgentMessages: api.listAgentMessages,
+  getAgentConversation: api.getAgentConversation,
   listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
   listIssues: api.listIssues,
-  listMyReplies: api.listMyReplies,
   listProjectArchitectureSources: api.listProjectArchitectureSources,
   listProjects: api.listProjects,
   whoAmI: api.whoAmI,
@@ -117,21 +119,19 @@ function setViewport(width: number): void {
     }) as MediaQueryList) as typeof window.matchMedia;
 }
 
+/** The shell at `width` over `inbox` as every ask the read of the open asks lists, with
+ *  `unreadThreads` of the reader's threads unread. The one read answers every ask of `inbox` as
+ *  well, so the header's count is the shell's own narrowing to the asks that wait on the reader. */
 function renderShellAt(
   width: number,
-  inbox: InboxRow[] = [],
+  inbox: OpenAskRow[] = [],
   unreadThreads = 0,
   listedAgents: Agent[] = []
 ): QueryClient {
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
-  api.listMyReplies = async (query) => ({
-    as_of: "2026-10-12T00:00:00Z",
-    limit: query.limit ?? 0,
-    offset: 0,
-    rows: [],
-    total: unreadThreads,
-  });
+  const threads = Array.from({ length: unreadThreads }, (_, index) => replyRow(`c${index}`));
+  api.getMeInboxPage = async (read) => oneReadReply(read, { asks: inbox, threads });
   api.listIssues = async () => [
     {
       advances: [],
@@ -167,7 +167,7 @@ function renderShellAt(
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   });
   api.getIssue = async () => issue;
-  api.getInbox = async () => inbox;
+  api.listOpenAsks = async () => openAsksAnswer(inbox);
   api.listProjects = async () => [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -469,7 +469,7 @@ test("the shell tells the live-view registry which agents the person pinned", as
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
   // The page of the view the registry mounts reads its session's messages; none are asserted.
-  api.listAgentMessages = async () => [];
+  api.getAgentConversation = async () => [];
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -133,6 +134,48 @@ func (s *server) requireOpenOwnerStatus(ctx context.Context, tx pgx.Tx, owner ow
 	return status, nil
 }
 
+// requireOpenOwnerStatusHoldingDefault is requireOpenOwnerStatus for a write that opens an ask
+// the one writer of its thread delivers (createAskFor, requestArtifactApproval). The owner's
+// locked read also answers the project whose default assignee an ask on that owner falls through
+// to - an issue's while nobody holds it, a project document's - by the rule inboxwrite.HoldDefault
+// reads, and that project's owner lock is then taken shared (inboxwrite.HoldProjectDefault),
+// after the owner's and before anything reads who the ask waits on. An owner whose asks fall
+// through to no default takes no second lock, and the check costs the owner check's round trip
+// alone.
+func (s *server) requireOpenOwnerStatusHoldingDefault(ctx context.Context, tx pgx.Tx, owner owner) (*string, error) {
+	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
+		return nil, ownerInvalid()
+	}
+	var status *string
+	var project string
+	open := true
+	if owner.IssueKey != nil {
+		status = new(string)
+		if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(*owner.IssueKey), issueStatusDefaultRead,
+			[]any{*owner.IssueKey}, status, &open, &project); err != nil {
+			return nil, err
+		}
+	} else if err := refuseMissingArtifact(store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(*owner.ArtifactID),
+		unlinkedArtifactDefaultRead, []any{*owner.ArtifactID}, &project)); err != nil {
+		return nil, err
+	}
+	if err := refuseClosed(open, refusedWhenClosed); err != nil {
+		return nil, err
+	}
+	if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
+		return nil, err
+	}
+	return status, nil
+}
+
+// issueStatusDefaultRead is issueStatusRead with the project an ask on the issue falls through
+// to: the issue's project while nobody holds the issue, and none while somebody does.
+const issueStatusDefaultRead = `select status, closed_at is null, case when assignee is null then coalesce(project_key, '') else '' end from issues where key = $1`
+
+// unlinkedArtifactDefaultRead is unlinkedArtifactRead answering the document's project, whose
+// default an ask on it falls through to.
+const unlinkedArtifactDefaultRead = `select coalesce(project_key, '') from artifacts where id = $1 and issue_key is null`
+
 func ownerInvalid() error {
 	return errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 }
@@ -159,13 +202,14 @@ func pooledOwnerRead(q queryer) ownerRead {
 	}
 }
 
-// ownerStatus is the refusal table an owner gets, spelled once for both the check that decides
-// and the one that only spares work: an owner naming neither an issue nor a document, or a
-// document that does not exist. It answers an issue owner's status and whether that issue is
-// open - a project document is always open - and leaves refusing a closed issue to each write
-// that does. The check that decides reads under the owner's lock (lockedOwnerRead), the one made
-// before any transaction opens reads through the pool (pooledOwnerRead); the two differ in read
-// alone, so both refuse exactly the same.
+// ownerStatus is the refusal table an owner gets, for both the check that decides and the one that
+// only spares work: an owner naming neither an issue nor a document, or a document that does not
+// exist. It answers an issue owner's status and whether that issue is open - a project document
+// is always open - and leaves refusing a closed issue to each write that does. The check that
+// decides reads under the owner's lock (lockedOwnerRead), the one made before any transaction
+// opens reads through the pool (pooledOwnerRead); the two differ in read alone, so both refuse
+// exactly the same. requireOpenOwnerStatusHoldingDefault refuses the same owners over two
+// statements of its own, which also read the project an ask on the owner falls through to.
 func ownerStatus(ctx context.Context, owner owner, read ownerRead) (*string, bool, error) {
 	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
 		return nil, false, ownerInvalid()

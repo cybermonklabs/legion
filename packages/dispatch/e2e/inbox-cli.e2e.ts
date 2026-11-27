@@ -13,7 +13,7 @@ import {
   createProject,
   createProjectDocument,
   getAsk,
-  listMyReplies,
+  meInboxThreads,
   mintAgentToken,
   replyToMessageDelivery,
   requestApproval,
@@ -387,9 +387,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     const unreadThreads = section(sections, "Unread threads").count;
     expect(needsYou).toBe(section(sections, "Needs you").rows.length + pendingRequests.length);
     expect(unreadThreads).toBeGreaterThan(0);
-    expect(unreadThreads).toBe(
-      (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
-    );
+    expect(unreadThreads).toBe((await meInboxThreads({}, { login: "alice" })).total);
     // An Inbox entry the rail has not drawn yet reads as no number, which the poll waits out.
     const inboxEntry = railEntry(page, /^Inbox/);
     await expect
@@ -580,8 +578,8 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
 
     // The threads the server answers this reader, and no others: the comment thread of hers an
     // agent has written in, and the message she sent a session that it answered.
-    const listed = await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" });
-    const listedRowsRead = listed.rows ?? [];
+    const listed = await meInboxThreads({}, { login: "alice" });
+    const listedRowsRead = listed.rows;
     expect(listed.total).toBe(2);
     expect(printedThreads(printed)).toEqual(listedRowsRead.map((row) => row.ref).sort());
 

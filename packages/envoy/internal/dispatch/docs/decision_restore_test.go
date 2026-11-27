@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // The section reader cuts a decisions document as the Decisions read of the release before cut
@@ -1930,5 +1931,96 @@ func TestTheStepCarriesAnApprovalAcrossOnlyTheDecisionsHeadingItMade(t *testing.
 				t.Fatalf("the converted spec holds a Decisions heading %t:\n%s", held, spec)
 			}
 		})
+	}
+}
+
+// The restore of an issue nobody holds takes the owner lock of the project whose default assignee
+// the issue's asks fall through to, shared (inboxwrite.HoldDefault), after the issue's owner lock
+// and before any asks row, as every writer that decides who an ask waits on takes it
+// (api/inbox_read.go's markInboxReadThreads). A move of that default (putProjectDefaultAssignee)
+// takes the lock exclusive and then locks, in ascending id, every open asks row that falls through
+// to the default. The restore runs its writes at once (joinAtOnce), so every asks row it reaches
+// stays locked to its commit: the issue's question asks it reads and the approval request its
+// version moves (moveApprovalAsk), which the carry then answers, reading who takes part in the
+// request's thread under the project's lock (answerApprovalAsk, inboxwrite.HoldAskDefault). Taken
+// first at that answer, the lock comes after the request's row, which the move waits for while it
+// holds the lock the restore waits for.
+//
+// DOC-1, which nobody holds, is in project DOC, whose default is alice. Alice answers the spec's
+// ask and approves the version holding it; the release before's agent drops the ask's block and
+// opens an approval request over the version it wrote, handed to nobody, so it falls through to
+// DOC's default. The issue's owner lock, the project's owner lock, held exclusively as a move of
+// the default holds it, and the request's row, locked `for no key update` as that move locks it,
+// are each held in a transaction of its own while the restore runs on a connection of its own
+// (lockstep.Follow): it must queue behind the issue, then the project, holding no asks row, and
+// only then the request's row. It then restores the ask, carries the approval and answers the
+// request, so the run followed is the one that reached the carry's answer.
+func TestTheRestoreHoldsTheDefaultItsAsksFallThroughToBeforeAnyAsksRow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const head = "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n\n"
+	issue := newRestoreIssue(t, head+":::ask{#q-hold urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
+	issue.answer(issue.spec, "q-hold", "The base release.")
+	approved := issue.approveLatest(issue.spec)
+	issue.replace(issue.spec, head)
+	dropped := latestVersionNumber(t, issue.service, issue.spec)
+	documents := []model.AskApprovalDocument{{ArtifactID: issue.spec, Name: "spec.md", Version: dropped, RequestedVersion: dropped}}
+	approval, err := EncodeApproval(&model.AskApproval{Documents: documents})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request string
+	if err := issue.database.Pool.QueryRow(ctx, `
+		insert into asks (issue_key, author, question, options, urgency, kind, approval)
+		values ('DOC-1', jsonb_build_object('kind', 'session', 'id', $1::text), $2,
+			'[{"label":"Approve"},{"label":"Request changes"}]', 'high', 'approval', $3)
+		returning id::text
+	`, agentOfTheReleaseBefore.ID, ApprovalQuestion(documents, "Ships it."), approval).Scan(&request); err != nil {
+		t.Fatalf("store the approval request of the spec: %v", err)
+	}
+	// The request's node, as the boot step's backfill states a row the release before wrote, so
+	// the carry's answer is stated there.
+	if _, err := graphcensus.BackfillAsks(ctx, issue.database); err != nil {
+		t.Fatalf("state the approval request on its node: %v", err)
+	}
+	work, err := graphcensus.ReadRestoreWork(ctx, issue.database.Pool)
+	if err != nil || len(work) != 1 {
+		t.Fatalf("the finder reads %+v (%v), want the dropped ask", work, err)
+	}
+	runner := storetest.SingleConnection(t, issue.database)
+	step := NewDecisionStep(runner, "", nil)
+	step.UseDocuments(issue.service)
+	pid := backendOf(t, runner)
+
+	owner := lockstep.HoldOwner(t, issue.database, &lockstep.Hold{
+		Name: "issue DOC-1's owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "DOC-1",
+		Statement: lockstep.OwnerLockStatement,
+		Unlocked:  []string{"asks", "graph_nodes", "graph_tuples"},
+	}, store.IssueOwner("DOC-1"))
+	project := lockstep.HoldOwner(t, issue.database, &lockstep.Hold{
+		Name: "project DOC's owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "project", ID: "DOC",
+		Statement: lockstep.OwnersLockSharedStatement,
+		Unlocked:  []string{"asks", "graph_nodes", "graph_tuples"},
+	}, store.ProjectOwner("DOC"))
+	row := lockstep.HoldRow(t, issue.database, &lockstep.Hold{
+		Name: "the approval request's row", Step: lockstep.StepProjection, Taken: true,
+		Statement: "update asks set question = $2, approval = $3, edited_at = $4",
+	}, `select 1 from asks where id = $1::uuid for no key update`, request)
+
+	done := make(chan error, 1)
+	var result DecisionIssue
+	go func() {
+		var err error
+		result, err = step.restoreIssue(ctx, "DOC-1", work, false, false)
+		done <- err
+	}()
+	lockstep.Follow(t, issue.database, "the restore", pid, done, []*lockstep.Hold{owner, project, row})
+
+	if len(result.Restored) != 1 || result.SpecApproval != "carried" {
+		t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d carried", result, approved)
+	}
+	var state string
+	if err := issue.database.Pool.QueryRow(ctx, `select state from asks where id = $1::uuid`, request).Scan(&state); err != nil || state != asks.StateAnswered {
+		t.Fatalf("the approval request reads %q (%v) after the restore, want it answered by the carry", state, err)
 	}
 }

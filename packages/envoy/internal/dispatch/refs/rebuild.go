@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -67,10 +69,10 @@ type Rebuild struct {
 // has just re-read every comment, ask and issue message with this build's grammar itself.
 //
 // It clears the whole grammar's queue (refs_grammar_owed) for every source it re-indexes: each
-// source's own row goes in that source's transaction (replaceRefs), and the `scope` rows, which
-// owe a re-index of the sources around a document rather than one source, are deleted at the end
-// for every row enqueued before the rebuild started. A row a write enqueues while the rebuild runs
-// keeps its place: the rebuild may have read that source already. It settles nothing of the forms
+// source's own row goes in that source's transaction (Replacement.Queue), and the `scope` rows,
+// which owe a re-index of the sources around a document rather than one source, are deleted at
+// the end for every row enqueued before the rebuild started. A row a write enqueues while the
+// rebuild runs keeps its place: the rebuild may have read that source already. It settles nothing of the forms
 // queue (refs_forms_owed, RefsFormsOwed) for a source it re-indexes: it reads a source's own
 // references alone and leaves its blocks to the block index it marks owed, which a process of an
 // older build may take during a roll and write without those forms, so each source stays owed
@@ -269,16 +271,19 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 // read, losing the edit's own index until something re-indexes that source (INFRA-3285). The
 // lock is taken before the read and the read is a statement after it, so a write committed while
 // the rebuild waited is the text it indexes; it is an advisory lock, so it assigns no transaction
-// id, and the edges are planned under it and written last as one batch (replaceRefs). The
-// re-index paths beside this one take the same lock through the same read, for the same reason
-// (ReindexOwed and ReindexScopeSource below). The lock is one owner at a time, held for the
+// id, and the edges are planned under it and written last as one batch (planSourceReplace,
+// Replacement.Queue). The re-index paths beside this one take the same lock through the same
+// read, for the same reason (ReindexOwed and ReindexScopeSource below). The lock is one owner at
+// a time, held for the
 // length of that source's own transaction, so a rebuild still never holds every owner: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // owner for the length of the pass, which is minutes on a large database.
 //
 // It reads the source's own references alone, and its blocks wait for the block index RebuildAll
-// marks owed, so it settles the whole grammar's queue and leaves the forms queue owed
-// (replaceRefs).
+// marks owed, so it settles the whole grammar's queue and leaves the forms queue owed (its
+// replacement is no SettlingForms). An item's citations its reconcile states (planSourceReplace)
+// are queued in the same write phase, at the sentinel (graphstore.NoEvent): a rebuild is no write
+// any event records.
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
 	if err != nil {
@@ -300,8 +305,16 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, fmt.Errorf("read the author of %s %s: %w", fromKind, fromID, err)
 	}
 	located := NewReader(ctx, tx, writer, fromKind, fromID, serverURL).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil, false); err != nil {
+	replacement, err := planSourceReplace(ctx, tx, fromKind, fromID, text.Refs(located), nil, nil)
+	if err != nil {
 		return false, err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		graphstore.QueueCaused(b, replacement.Cited(), graphstore.NoEvent)
+		return nil
+	}); err != nil {
+		return false, fmt.Errorf("reconcile the references of %s %s: %w", fromKind, fromID, err)
 	}
 	return true, tx.Commit(ctx)
 }
@@ -724,8 +737,7 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		QueueSettleOwed(b, source)
-		plan.queue(b)
-		return nil
+		return plan.queue(b)
 	}); err != nil {
 		return false, fmt.Errorf("re-index %s %s with this build's grammar: %w", source.Kind, source.ID, err)
 	}
@@ -757,7 +769,10 @@ type reindexPlan struct {
 // the mentions its blocks hold are read with the same grammar as its own.
 // The reconciliation of its own references is queued after the blocks, so where the plan holds
 // the source's blocks it settles the forms queue too (Replacement.SettlingForms), after both
-// deletes, and the source's row is settled only for its whole text.
+// deletes, and the source's row is settled only for its whole text. What the re-index states in
+// the node and tuple store - the item's block nodes, their part_of and links, and its citations
+// (planSourceReplace) - is queued at the sentinel (graphstore.NoEvent, reindexPlan.queue): the
+// re-index of old text is no write any event records.
 func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL string, author []byte, writtenAt time.Time, found bool) (reindexPlan, error) {
 	plan := reindexPlan{kind: kind, id: id, found: found}
 	if !found {
@@ -769,12 +784,20 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 	}
 	resolve := NewReader(ctx, tx, writer, kind, id, serverURL)
 	located := resolve.Mentions(body)
+	// scope is the item's, as the index of its blocks read it, for the reconciliation of its
+	// citations; nil where no index read it (planSourceReplace reads it then). An indexed ask's
+	// index read its own refs rows too, so its reconciliation is planned against them
+	// (ItemIndex.PlanOwnRefs) rather than a read of its own.
+	var scope *ItemScope
+	var replacement Replacement
+	var planned bool
 	switch itemKind := ItemKind(kind); itemKind {
 	case ItemComment, ItemMessage:
 		index, err := ReadItemIndex(ctx, tx, itemKind, id)
 		if err != nil {
 			return reindexPlan{}, fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
+		scope = &index.scope
 		if plan.indexing, err = PlanItemIndex(index, itemKind, id, body, serverURL, writtenAt, located, nil); err != nil {
 			return reindexPlan{}, fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
@@ -793,15 +816,18 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 			if err != nil {
 				return reindexPlan{}, fmt.Errorf("index the parts of ask %s: %w", id, err)
 			}
+			scope = &index.scope
 			if plan.indexing, err = PlanAskParts(index, resolve, ask, writtenAt); err != nil {
 				return reindexPlan{}, err
 			}
 			plan.indexed = true
+			replacement, planned = index.PlanOwnRefs(text.Refs(located), writtenAt)
 		}
 	}
-	replacement, err := PlanReplace(ctx, tx, kind, id, text.Refs(located), &writtenAt)
-	if err != nil {
-		return reindexPlan{}, fmt.Errorf("index %s %s: %w", kind, id, err)
+	if !planned {
+		if replacement, err = planSourceReplace(ctx, tx, kind, id, text.Refs(located), &writtenAt, scope); err != nil {
+			return reindexPlan{}, fmt.Errorf("index %s %s: %w", kind, id, err)
+		}
 	}
 	if plan.indexed {
 		replacement = replacement.SettlingForms()
@@ -810,26 +836,61 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 	return plan, nil
 }
 
+// planSourceReplace plans the reconciliation of fromKind/fromID's references with found: a
+// comment's, a message's or an ask's under the item's scope with its citations (PlanItemReplace),
+// the scope read where scope is nil, and dated by insertedAt, or where that is nil by the
+// transaction's now(), which a row the reconcile inserts would take as its created_at anyway; any
+// other source's as PlanReplace plans it. Each read is the plan's, made before anything is
+// written.
+func planSourceReplace(ctx context.Context, q Queryer, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, scope *ItemScope) (Replacement, error) {
+	kind := ItemKind(fromKind)
+	if !slices.Contains(itemKinds, kind) {
+		return PlanReplace(ctx, q, fromKind, fromID, found, insertedAt)
+	}
+	if scope == nil {
+		read, err := ReadItemScope(ctx, q, kind, fromID)
+		if err != nil {
+			return Replacement{}, err
+		}
+		scope = &read
+	}
+	var at time.Time
+	if insertedAt != nil {
+		at = *insertedAt
+	} else if err := q.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
+		return Replacement{}, fmt.Errorf("read the time of the references of %s %s: %w", fromKind, fromID, err)
+	}
+	return PlanItemReplace(ctx, q, *scope, kind, fromID, found, at)
+}
+
 // queue queues the plan's writes on a write phase's batch: the source's blocks and the mentions
 // each holds, then the reconciliation of its own references, whose settle of the queues follows
-// both deletes; for a source that is gone, the delete of its edges and then the settle of what
-// it owes the queues, since that delete owes refs_forms_owed the source whose edges it deletes
+// both deletes, and last what the two state in the node and tuple store, at the sentinel
+// (graphstore.NoEvent); for a source that is gone, the delete of its edges and then the settle of
+// what it owes the queues, since that delete owes refs_forms_owed the source whose edges it deletes
 // (migration 20261117025906), and a gone source owes no text. That settle is a statement of its
 // own after the delete: the delete's trigger owes the row at the end of its statement, which a
 // delete of the row in the same statement would not see. The same holds a second time for
 // refs_decisions_forms_owed, whose row the delete from refs_forms_owed relays, so its delete is
 // a statement after that one (queueSettleSourceOwed).
-func (p reindexPlan) queue(b *store.WriteBatch) {
+func (p reindexPlan) queue(b *store.WriteBatch) error {
 	if !p.found {
 		b.Queue(fmt.Sprintf("delete the references of %s %s, which is gone", p.kind, p.id),
 			`delete from refs where from_kind = $1 and from_id = $2`, p.kind, p.id)
 		queueSettleSourceOwed(b, p.kind, p.id, true)
-		return
+		return nil
 	}
+	var stated graphstore.Uncaused
 	if p.indexed {
-		p.indexing.Queue(b)
+		if err := p.indexing.Queue(b); err != nil {
+			return err
+		}
+		stated = p.indexing.Stated()
 	}
 	p.replacement.Queue(b)
+	stated.Tuples = append(stated.Tuples, p.replacement.Cited().Tuples...)
+	graphstore.QueueCaused(b, stated, graphstore.NoEvent)
+	return nil
 }
 
 // ReindexScopeSource re-indexes one comment, ask or issue message whose text belongs to a document
@@ -849,9 +910,9 @@ func (p reindexPlan) queue(b *store.WriteBatch) {
 // statements go as one batch.
 //
 // A text that gains a `#id` between the two reads is indexed by the write that gave it one: a
-// write of this build re-indexes the text it wrote in its own transaction (replaceRefs), reading
-// the question map as it stands after the settlement this scope row was enqueued by, and a write
-// of an older build owes the source its own row (20261103205038-20261103205040), which the drain
+// write of this build re-indexes the text it wrote in its own transaction (Replacement.Queue),
+// reading the question map as it stands after the settlement this scope row was enqueued by, and a
+// write of an older build owes the source its own row (20261103205038-20261103205040), which the drain
 // takes in a later tick. One that loses its `#id` between them is left alone by the locked read,
 // which is what the write that removed it already indexed.
 func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL string) (bool, error) {
@@ -882,10 +943,7 @@ func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL stri
 	if err != nil {
 		return false, err
 	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		plan.queue(b)
-		return nil
-	}); err != nil {
+	if err := store.RunWrite(ctx, tx, plan.queue); err != nil {
 		return false, fmt.Errorf("re-index %s %s against the questions of its document: %w", kind, id, err)
 	}
 	return true, tx.Commit(ctx)

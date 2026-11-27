@@ -13,6 +13,7 @@ import {
   releaseClaim,
 } from "./api";
 import { inboxRow } from "./inbox-pane";
+import { inboxRead } from "./pick-writes";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -261,13 +262,21 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
     const body = (await response.json()) as Record<string, unknown>;
     await route.fulfill({ json: { ...body, ...unknownReach }, response });
   });
-  await page.route("**/api/v1/inbox*", async (route) => {
+  // The reader's own rows come from the one read: its entry of the ask carries the ask's row.
+  await page.route(inboxRead, async (route) => {
     const response = await route.fetch();
-    const rows = (await response.json()) as { id: string; thread: Record<string, unknown> }[];
+    const body = (await response.json()) as {
+      entries?: { ask?: { id: string; thread: Record<string, unknown> } }[] | null;
+    };
     await route.fulfill({
-      json: rows.map((row) =>
-        row.id === ask.id ? { ...row, thread: { ...row.thread, ...unknownReach } } : row
-      ),
+      json: {
+        ...body,
+        entries: (body.entries ?? []).map((entry) =>
+          entry.ask?.id === ask.id
+            ? { ...entry, ask: { ...entry.ask, thread: { ...entry.ask.thread, ...unknownReach } } }
+            : entry
+        ),
+      },
       response,
     });
   });
@@ -409,12 +418,15 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
   const releaseFirst = Promise.withResolvers<void>();
   let staleClaimant: unknown;
   let inboxRequests = 0;
-  await page.route("**/api/v1/inbox*", async (route) => {
+  await page.route(inboxRead, async (route) => {
     inboxRequests += 1;
     if (inboxRequests === 1) {
       const response = await route.fetch();
-      const rows = (await response.json()) as { id: string; thread: { claimant: unknown } }[];
-      staleClaimant = rows.find((row) => row.id === ask.id)?.thread.claimant;
+      const body = (await response.json()) as {
+        entries?: { ask?: { id: string; thread: { claimant: unknown } } }[] | null;
+      };
+      staleClaimant = (body.entries ?? []).find((entry) => entry.ask?.id === ask.id)?.ask?.thread
+        .claimant;
       firstFetched.resolve();
       await releaseFirst.promise;
       await route.fulfill({ response });

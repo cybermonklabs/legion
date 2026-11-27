@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -14,7 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -130,7 +133,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // messageRecovery is the recovery point a keyed message write commits with its message
-// (bindRequestKeyRecovery): the message, and the mode it was sent in, empty for a message that
+// (queueRequestKeyRecovery): the message, and the mode it was sent in, empty for a message that
 // targets nobody.
 type messageRecovery struct {
 	MessageID string `json:"message_id"`
@@ -309,47 +312,151 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
-// planMessageNode reads, in a request's read phase, the scope of message id, which the request
-// is about to store, and answers the write of its node (graphstore.MessageNode), held for the
-// event that records the message: the request queues the node write before the row's insert
-// (graphstore.QueueNodes) and its cause after the event (graphstore.QueueCaused), both in its
-// write phase. A message on an issue is in that issue's project. A message on none is between
-// its thread's parties (graphstore.ThreadParties): those of the root it answers, read up
-// in_reply_to as messageThreadCTE walks it, or, for a message that answers nothing, its own
-// author and target. at is the row's created_at, which the node is dated with.
+// messageStoreWrite is one message's write of the store, from the node written before its row to
+// the facts the message's event causes.
+type messageStoreWrite struct {
+	// node is the message's own node, written before its row.
+	node graphstore.Node
+	// written is the node write, with every fact of the message held for the event that stores
+	// it (graphstore.QueueCaused).
+	written graphstore.Uncaused
+	// projected is false for a message whose replies_to end the store cannot key
+	// (graphstore.MessageFacts): its row names no node and who wrote it is not recorded, so the
+	// old arms over messages answer its edges.
+	projected bool
+	// starter is, for a reply on no issue, the person who started the direct conversation it
+	// joins: who wrote its root, where that root is on no issue, was sent to a session and was
+	// written by a person, by their canonical login; "" for any other message. A session's reply
+	// reaches them (insertSessionReply, inboxwrite.Write.Starter).
+	starter string
+}
+
+// rowNode is the node columns the message's row names in its insert: the message kind and the
+// message's own id, or null and null for a message the store left out (projected).
+func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
+	if !w.projected {
+		return nil, nil
+	}
+	return &w.node.Kind, &w.node.ID
+}
+
+// inbox is message's write in its thread, as inboxwrite.PlanRecord records it, by author: in the
+// project of the issue the message is on, and in none for a message on no issue, whose thread
+// keeps no user_threads row. Every message this release writes carries threads_recorded, which the
+// triggers on messages pass it by (migration 20261116160001), so its writer records it: a message
+// whose row names no node as the trigger bodies would have recorded it, its thread's rows moved
+// and left to the backfill and no tuple stated (inboxwrite.Write.Unstored). The record is planned
+// before the message's replies_to is written, so it names the message this one answers
+// (inboxwrite.Write.RepliesTo), and a message that answers nothing starts its own thread under
+// the id its write drew (inboxwrite.Write.StartsThread).
+func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inboxwrite.Write {
+	write := inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project)
+	if message.InReplyTo != nil {
+		write = write.RepliesTo(graphstore.KindMessage, *message.InReplyTo)
+	} else {
+		write = write.StartsThread()
+	}
+	if !w.projected {
+		write = write.Unstored()
+	}
+	return write
+}
+
+// planMessageNode reads, in a request's read phase, the scope of the message row names, which the
+// request is about to store, with the page it hangs from where it hangs from one, and answers the
+// write of its node (graphstore.MessageNode) held for the event that records the message, every
+// pointer of the row among its facts (graphstore.MessageFacts): the request queues the node write
+// before the row's insert (graphstore.QueueNodes) and its cause after the event
+// (graphstore.QueueCaused), both in its write phase. A message on an issue is in that issue's
+// project. A message on none is between its thread's parties (graphstore.ThreadParties): those of
+// the root it answers, read up in_reply_to as messageThreadCTE walks it, or, for a message that
+// answers nothing, its own author and target. A reply on no issue also learns from that root who
+// started its direct conversation, where it joins one (directStarter). at is the row's
+// created_at, which the node and every fact are dated with.
+//
+// pages is, for a write that stores several messages, the page each of their targets hangs from,
+// which that write resolved and writes before any of them ("" for a target that hangs from none;
+// writeBroadcast): a message whose target pages holds hangs from that page without resolving or
+// writing it again, so the write takes every page once, in ascending (kind, id), rather than one
+// per message in the order it writes them. A write of one message passes nil.
 func planMessageNode(
-	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string, at time.Time,
-) (graphstore.Uncaused, error) {
-	var project string
+	ctx context.Context, tx pgx.Tx, row graphstore.MessageRow, author model.Actor, at time.Time, pages map[string]string,
+) (messageStoreWrite, error) {
+	var project, starter string
 	var parties []string
 	switch {
-	case issueKey != nil:
+	case row.IssueKey != "":
 		var err error
-		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
-			return graphstore.Uncaused{}, err
+		if project, _, err = graphstore.ScopeOf(ctx, tx, &row.IssueKey, nil); err != nil {
+			return messageStoreWrite{}, err
 		}
-	case inReplyTo != nil:
+	case row.InReplyTo != "":
 		var rootAuthor []byte
 		var rootTarget *string
+		var rootIssueless bool
 		if err := tx.QueryRow(ctx, messageThreadCTE+`
-			select m.author, m.target from messages m join thread t on t.id = m.id
+			select m.author, m.target, m.issue_key is null from messages m join thread t on t.id = m.id
 			where t.in_reply_to is null
-		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
-			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		`, row.InReplyTo).Scan(&rootAuthor, &rootTarget, &rootIssueless); err != nil {
+			return messageStoreWrite{}, fmt.Errorf("read the thread root of a reply to message %s: %w", row.InReplyTo, err)
 		}
 		var root model.Actor
 		if err := json.Unmarshal(rootAuthor, &root); err != nil {
-			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+			return messageStoreWrite{}, fmt.Errorf("decode the author of the thread root of message %s: %w", row.InReplyTo, err)
 		}
 		parties = graphstore.ThreadParties(root, rootTarget)
+		starter = directStarter(root, rootTarget, rootIssueless)
 	default:
+		var target *string
+		if row.Target != "" {
+			target = &row.Target
+		}
 		parties = graphstore.ThreadParties(author, target)
 	}
-	return graphstore.PlanUncaused([]graphstore.Node{graphstore.MessageNode(id, project, parties, author, at)}, nil), nil
+	// A message on no issue that answers nothing sits on the page the store gives the agent it
+	// was sent to, which for a session that claimed a role is that role's (graphstore.AgentPage),
+	// the rule the publisher writes a session's page by.
+	pageHeld := false
+	if row.OnAgentPage() {
+		var page string
+		if page, pageHeld = pages[row.Target]; !pageHeld {
+			var err error
+			if page, _, err = graphstore.AgentPage(ctx, tx, row.Target); err != nil {
+				return messageStoreWrite{}, err
+			}
+		}
+		row.Page = page
+	}
+	write := messageStoreWrite{starter: starter}
+	write.node = graphstore.MessageNode(row.ID, project, parties, author, at)
+	nodes, tuples, projected := graphstore.MessageFacts([]graphstore.Node{write.node}, nil, row, author, at, graphstore.NoEvent)
+	if pageHeld {
+		// The page is this transaction's already: MessageFacts' part_of names it, and its node is
+		// not written a second time.
+		nodes = slices.DeleteFunc(nodes, func(node graphstore.Node) bool { return node.Kind == graphstore.KindPage })
+	}
+	write.written, write.projected = graphstore.PlanUncaused(nodes, tuples), projected
+	return write, nil
+}
+
+// directStarter is the person who started a direct conversation, by their canonical login: the
+// author of its root, where that root is on no issue, was sent to a session and was written by a
+// person - the root unreadDirectRepliesCTE's direct_roots reads. "" for any other root.
+func directStarter(root model.Actor, target *string, issueless bool) string {
+	if !issueless || target == nil {
+		return ""
+	}
+	if route, err := model.ParseRoute(*target); err != nil || route.Kind != graphstore.KindSession {
+		return ""
+	}
+	if kind, id, named := graphstore.AuthorOf(root); named && kind == graphstore.KindPerson {
+		return id
+	}
+	return ""
 }
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
-// recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
+// recovery point (queueRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
 // (createAgentMessageInput.ConnectedOnly). chosenID is the id the message is stored under: empty
@@ -444,10 +551,31 @@ func (s *server) createStoredMessage(
 	if input.InReplyTo != nil {
 		eventType = "message.answered"
 	}
-	// An issue message's thread_logins are read by its event's insert, after the message's insert
-	// and the user_threads trigger it fires, on the thread root found here. A direct conversation
-	// keeps no Replies row: its Inbox row is the thread root author's Agent row, read here, since
-	// nothing the insert fires decides it (directThreadLogins).
+	message, err := insertedMessage(messageID, issueKey, author, input, createdAt)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	message.RepliesToBlock = block.nodeID()
+	message.ReplyBlock = block.replyBlock(issueKey, "", "")
+	// The message's node, in its issue's project or between its thread's parties, with its
+	// pointers stated as facts that wait for the event below (graphstore.MessageFacts), read here;
+	// its write goes in before the row's insert. The row names the node in its own insert, which
+	// is the marker every trigger on that insert sees and graph_edges reads: a row that names its
+	// node is answered from its tuples.
+	stored, err := planMessageNode(ctx, tx, graphstore.MessageRow{
+		ID: messageID, IssueKey: deref(issueKey), InReplyTo: deref(input.InReplyTo),
+		RepliesToBlock: deref(block.nodeID()), Target: deref(input.Target),
+	}, actor, createdAt, nil)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	inbox := stored.inbox(message, actor)
+	// An issue message's thread_logins are read by its event's insert, after the message's insert,
+	// on the thread root found here; the message's threads_recorded passes it by the user_threads
+	// trigger, so the event also names the row its writer's record keeps after it
+	// (inboxwrite.Write.KeptLogins). A direct conversation keeps no Replies row: its Inbox row is
+	// the thread root author's Agent row, read here, since nothing the insert fires decides it
+	// (directThreadLogins).
 	var logins *events.Logins
 	var advice *writeAdvice
 	if issueKey != nil {
@@ -455,17 +583,11 @@ func (s *server) createStoredMessage(
 		if err != nil {
 			return model.Message{}, nil, err
 		}
-		logins = events.ThreadLoginsOf(root)
+		logins = events.ThreadLoginsOf(root, inbox.KeptLogins()...)
 		advice = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, adviceAsks{}, status, eventType, false,
 		)
 	}
-	message, err := insertedMessage(messageID, issueKey, author, input, createdAt)
-	if err != nil {
-		return model.Message{}, nil, err
-	}
-	message.RepliesToBlock = block.nodeID()
-	message.ReplyBlock = block.replyBlock(issueKey, "", "")
 	var directLogins []string
 	if issueKey == nil {
 		if directLogins, err = directThreadLogins(ctx, tx, message); err != nil {
@@ -476,36 +598,59 @@ func (s *server) createStoredMessage(
 	// one write (planPendingItem); a direct message, which writes no mention, has its blocks
 	// indexed alone and moves nothing. The message's insert is queued below, so the issue the
 	// row will name is handed over: it gives the document its `#id`s resolve against, its
-	// issue's spec, which no read of the row can answer yet.
-	referenceChanges, indexWrite, err := s.planPendingItem(
-		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+	// issue's spec, which no read of the row can answer yet; and so is the message's node, out of
+	// which the blocks and the citations are stated (refs.WrittenItem).
+	referenceChanges, indexWrite, indexed, err := s.planPendingItem(
+		ctx, tx, actor, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey},
+		refs.WrittenItem(stored.node), createdAt, issueKey != nil,
 	)
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	// The message's node, in its issue's project or between its thread's parties, read here in
-	// the read phase; its write goes in before the row's insert, and what it states waits for the
-	// event below (graphstore.QueueCaused).
-	messageNode, err := planMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target, createdAt)
+	// Who took part in the message's thread and whom it reached, each person its text newly
+	// mentions among them, planned here and queued after its event and every fact it states, its
+	// replies_to among them (inboxwrite.PlanRecord); a message whose row names no node, its
+	// thread's rows alone (inboxwrite.Write.Unstored).
+	recording, err := inboxwrite.PlanRecord(ctx, tx, inbox.ReachesMentioned(indexed))
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	// The parent's lock, the index its blocks owe, the message's node, the insert, the recovery
-	// point, this message's own index, the event, its stamp, what the node write stated and a
+	// A targeted message's first attempt's node, planned here: written before the row that names
+	// it, and it and what the row holds caused by this message's event, as the message's own node
+	// is (graphstore.AttemptOpened, graphstore.QueueAttempted).
+	attemptKey := graphstore.MessageAttempt(messageID, 1)
+	var attemptKind, attemptAddress *string
+	var attemptOpened graphstore.Uncaused
+	if message.Target != nil {
+		attemptKind, attemptAddress, attemptOpened = graphstore.AttemptOpened(attemptKey, actor, createdAt)
+	}
+	// The failure point between the message's node and its row (failpoint.Message), decided
+	// before the batch is sent and queued where it fails.
+	fails := failpoint.Planned(ctx, failpoint.Message)
+	// The thread's root where the message is a session's reply that clears its Agent dismissals
+	// (inboxwrite.Recording.QueueRootLock), the parent's lock, the index its blocks owe, the
+	// message's node, the insert, the recovery point, this message's own index, the event, its
+	// stamp, what the node write and the index stated, its author, its record in its thread and a
 	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
-	// known before the insert runs, and the stamp and the node's cause name the event's id as the
-	// id sequence left it.
+	// known before the insert runs, and the stamp and every cause name the event's id as the id
+	// sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		recording.QueueRootLock(b)
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
-			parentRepair.Queue(b)
+			if err := parentRepair.Queue(b); err != nil {
+				return err
+			}
 		}
-		graphstore.QueueNodes(b, messageNode)
+		graphstore.QueueNodes(b, stored.written)
+		failpoint.Queue(b, fails)
+		nodeKind, nodeAddress := stored.rowNode()
+		// kept for one release: user-threads-triggers
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, createdAt)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at, node_kind, node_address, threads_recorded)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, createdAt, nodeKind, nodeAddress)
 		// The recovery point right after its message and before the event append: a repeat that
 		// took the key over meanwhile refuses it, and this transaction rolls back.
 		if err := queueRequestKeyRecovery(ctx, b, messageRecovery{MessageID: messageID, Delivery: delivery}); err != nil {
@@ -526,7 +671,22 @@ func (s *server) createStoredMessage(
 		}); err != nil {
 			return err
 		}
-		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
+		// What the message's body is in the store, under the same event (planPendingItem).
+		graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+		// Who wrote it, under the same event, as a comment's author is recorded
+		// (graphstore.QueueAuthored), and then its record in its thread. A message whose row
+		// names no node records no author, as a comment left out of the store records none: the
+		// census holds the author of a row that names its node alone to a node; and its record
+		// states nothing but its thread's rows.
+		if stored.projected {
+			if err := graphstore.QueueAuthored(b, graphstore.KindMessage, message.ID, actor, createdAt, graphstore.LatestEvent); err != nil {
+				return err
+			}
+		}
+		if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
+			return err
+		}
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this
@@ -543,11 +703,14 @@ func (s *server) createStoredMessage(
 		// nothing of it. The target is read here and not at validation, since a person's reply
 		// that names none takes its thread root's above.
 		if message.Target != nil {
+			graphstore.QueueNodes(b, attemptOpened)
 			b.Queue("", `
 				insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
-				                                urgency, connected_only)
-				values ($1, 1, $2, '', 'pending', $3, $4, $5)
-			`, messageID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly))
+				                                urgency, connected_only, node_kind, node_address)
+				values ($1, 1, $2, '', 'pending', $3, $4, $5, $6, $7)
+			`, messageID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly), attemptKind, attemptAddress)
+			graphstore.QueueCaused(b, attemptOpened, graphstore.LatestEvent)
+			graphstore.QueueAttempted(b, actor, graphstore.LatestEvent, attemptKey)
 		}
 		return nil
 	}); err != nil {
@@ -1090,7 +1253,28 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
+// listAgentConversation answers GET /api/v1/agents/{session_id}/conversation, the read of one
+// session's conversation: the rows answerAgentConversation answers.
+func (s *server) listAgentConversation(w http.ResponseWriter, r *http.Request) {
+	s.answerAgentConversation(w, r)
+}
+
+// listAgentMessages answers GET /api/v1/agents/{session_id}/messages, which a page of the release
+// before the conversation read calls: the same rows, so that page keeps working through a roll
+// and after a rollback.
+// kept for one release: inbox-old-reads
 func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
+	s.answerAgentConversation(w, r)
+}
+
+// answerAgentConversation is the one body of the two reads of one session's conversation
+// (listAgentConversation and listAgentMessages): every root message that reaches the session,
+// through its own target or through a delivery attempt that names the session, whatever that
+// attempt's state, each with its thread and its attempts, read for the person the credential acts
+// for. No relation of the store decides which messages reach the session: the two branches below
+// read the messages and their attempts, and the store's tuples are read only for the person's own
+// read marks (unreadDirectRepliesCTE).
+func (s *server) answerAgentConversation(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
@@ -1252,10 +1436,26 @@ func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	return message, nil
 }
 
+// messageReplyChainsQuery is every message transitively replying to one of the seeds $1 names
+// (uuid[]), oldest first, each row the reply's messageColumns and then the seed it hangs under.
+// GET /api/v1/me/inbox splices it into its one statement over the roots of its page.
+const messageReplyChainsQuery = `
+		with recursive replies as (
+			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, edited_at, deleted_at, deleted_by, in_reply_to as seed_id
+			from messages where in_reply_to = any($1::uuid[])
+			union all
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by, r.seed_id
+			from messages m join replies r on m.in_reply_to = r.id
+		)
+		select ` + messageColumns + `, seed_id::text
+		from replies
+		order by created_at, id
+	`
+
 // loadMessageReplyChains reads, for each seed message, every message transitively replying to
-// it, oldest first, in one recursive query; each reply carries its own deliveries. A seed with
-// no replies maps to an empty (never nil) slice. Seeds must not be replies of one another: a
-// reply is grouped under exactly one seed.
+// it, oldest first, in one recursive query (messageReplyChainsQuery); each reply carries its own
+// deliveries. A seed with no replies maps to an empty (never nil) slice. Seeds must not be
+// replies of one another: a reply is grouped under exactly one seed.
 func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, seedIDs []string) (map[string][]model.Message, error) {
 	chains := make(map[string][]model.Message, len(seedIDs))
 	for _, id := range seedIDs {
@@ -1264,18 +1464,7 @@ func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, seedIDs 
 	if len(seedIDs) == 0 {
 		return chains, nil
 	}
-	rows, err := q.Query(ctx, `
-		with recursive replies as (
-			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, edited_at, deleted_at, deleted_by, in_reply_to as seed_id
-			from messages where in_reply_to = any($1::uuid[])
-			union all
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by, r.seed_id
-			from messages m join replies r on m.in_reply_to = r.id
-		)
-		select `+messageColumns+`, seed_id::text
-		from replies
-		order by created_at, id
-	`, seedIDs)
+	rows, err := q.Query(ctx, messageReplyChainsQuery, seedIDs)
 	if err != nil {
 		return nil, err
 	}

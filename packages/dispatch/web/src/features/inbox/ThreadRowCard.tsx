@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { myRepliesKey } from "../../api/queries";
+import { meInboxKey } from "../../api/queries";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -61,7 +61,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       if (state !== null && state !== undefined && read.kind === "agent") {
         storeAgentState(queryClient, read.session.id, state);
       }
-      return queryClient.invalidateQueries({ queryKey: myRepliesKey });
+      return queryClient.invalidateQueries({ queryKey: meInboxKey });
     },
   });
   const row = { kind: "thread", thread } as const;

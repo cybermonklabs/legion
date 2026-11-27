@@ -251,7 +251,7 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 //
 // One comment node is seeded as #3178's comment writer left it: live, under its comment.created
 // event, naming no project and no parties, with the comments row that names it. The issue's node
-// is written by a backfill run before the comment exists, so the run the test follows writes
+// is written by a backfill run before the comment exists, so the pass the test follows writes
 // nothing but the fill. The comment's issue row, its project's row and its comments row are held
 // throughout, and the fill must queue behind none of them.
 func requireTheCommentScopeBatchLockOrder(t *testing.T) {
@@ -304,7 +304,13 @@ func requireTheCommentScopeBatchLockOrder(t *testing.T) {
 		At: at, Who: alice, SourceEvent: created, Asserted: true,
 	}})
 
-	report := followTheBackfill(t, database, "writeScopeBatch", []*lockstep.Hold{owner, project, row, nodeRow, tuple})
+	// The scope pass is followed alone (followTheRun): the inbox passes Backfill runs after it take
+	// this comment's comments row, which an older build's comment owes its pointers from, a step
+	// of theirs and not of this batch.
+	report := followTheRun(t, database, "writeScopeBatch", func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+		done, err := backfillScopes(ctx, database)
+		return BackfillReport{Kinds: done}, err
+	}, []*lockstep.Hold{owner, project, row, nodeRow, tuple})
 
 	requireScopeFilledUnder(t, database, graphstore.KindComment, comment, "SCOP", created)
 	if done := reportedKind(t, report, graphstore.KindComment+"_project"); done.Rows != 1 || done.Nodes != 1 || done.Tuples != 1 || !done.Complete {

@@ -74,6 +74,7 @@ import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { IssuePage } from "../issue-page/IssuePage";
 import { MarginProvider } from "../margin/margin-context";
 import {
@@ -167,7 +168,7 @@ async function openIssuePage(
       key === otherIssue.key ? otherIssue : issue
     ),
     spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": state, "CORE-2": state }),
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),

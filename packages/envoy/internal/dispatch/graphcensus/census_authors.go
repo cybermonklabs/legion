@@ -3,12 +3,12 @@ package graphcensus
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -104,6 +104,12 @@ func provedSessionOwner(actor string) string {
 // graphstore.AuthorFacts) and needs no pass of its own for them: a row names its author to that
 // pass.
 //
+// A message whose row names its node names people too: its author, read as a comment's is, and
+// the owner the server proved of a session that wrote it. A message's author is recorded from this
+// release on (graphstore.QueueAuthored, api's createStoredMessage), by the write that names the
+// message's node on its row, so only a messages row whose node_kind is set names anybody here: an
+// older build's row recorded no author.
+//
 // An ask whose row names its node names people too: its author, read as a
 // comment's is (graphstore.AskFacts states its authored_by), and the person whose answer it holds,
 // whose node its answered_by and decided_by point at (asks.Settle). A node is history and never
@@ -121,7 +127,65 @@ func provedSessionOwner(actor string) string {
 // relation authors names: censusAuthors where the census binds what it read once, inlineAuthors
 // where a statement reads it itself), and so does the owner the server proved of each such writer
 // that is a session (storedOwners).
+//
+// A row of the one inbox names people too: this release's writers state
+// what each such row says as a tuple to or from the person's node, and make that node in the same
+// statement, so the person a row marked by them names is a node the store must hold. They are the
+// login of each user_threads row the one writer of a thread marked (marked_seq set,
+// inboxwrite.Record through graphstore.ToPerson, which states the row's participates_in and
+// delivered_to); the login of each row of the five read-state tables whose mark the store holds
+// (tuples_stored_at set, graphstore.FromPerson, which states read_through, cleared, reply_read,
+// dismissed or snoozed from the person's node); and the person each open ask this release's
+// writer stated (tuples_stored_at set) waits on, read through the one rule for that person
+// (asks.AskedOfPersonExpression), to whom its create and each move of it state a participates_in,
+// and a delivered_to but where that person made the move themselves (inboxwrite.Record and
+// inboxwrite.QueueMoveWaiting, through graphstore.ToPerson, which makes the node either way),
+// within the store's bound, past which ToPerson states nothing. A row an older build wrote is
+// unmarked and names nobody here until the backfill marks it.
+//
+// Those rows name a person only while they stand as they were marked: an ask that closes, is
+// answered by someone else or moves to another person no longer waits on the first, whose node
+// its create made all the same, and a mark a later write ends leaves its person's node behind. A
+// node is history and never goes, so every person a delivered_to or a mentions ever reached, and
+// every person a participates_in or a mark ever came from, asserted or retracted since, is read
+// too, off the store's log (reachedHistory, through storedAuthors): the people ToPerson and
+// FromPerson make a node of, in the statement that states the tuple.
+//
+// The arms that read a messages row's node, a user_threads row's mark, a read-state row's or an
+// ask's tuples_stored_at name columns this release's migrations add, which every database the
+// census reads holds: the census reads no kind of a database not migrated to this build
+// (storeAbsence).
 func commentPeople(authors string) string {
+	thisRelease := `
+		union all
+		select case
+			when m.author->>'kind' = 'user' and coalesce(m.author->>'id', '') <> '' then m.author->>'id'
+			when m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> '' then null
+			when coalesce(m.author->>'owner', '') <> '' then m.author->>'owner'
+		end
+		from messages m where ` + MessagesNameTheirNode + `
+		union all
+		select m.author->>'owner'
+		from messages m
+		where ` + MessagesNameTheirNode + ` and ` + provedSessionOwner("m.author") + `
+		union all
+		select t.login from user_threads t where t.marked_seq is not null
+		union all
+		select r.login from user_agent_read r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_agent_state r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_agent_reply_read r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_agent_thread_dismissed r where r.tuples_stored_at is not null
+		union all
+		select r.login from user_ask_snooze r where r.tuples_stored_at is not null
+		union all
+		select waiting.login
+		from asks a` + asks.AskedOfPersonJoins + `
+		cross join lateral (select ` + asks.AskedOfPersonExpression + ` as login) waiting
+		where a.tuples_stored_at is not null and a.state = '` + asks.StateOpen + `'
+		  and octet_length(user_threads_login(waiting.login)) <= ` + addressBound
 	return `
 	select distinct user_threads_login(author.login) as login
 	from (
@@ -145,7 +209,7 @@ func commentPeople(authors string) string {
 		union all
 		select stored.id from ` + authors + ` where stored.kind = '` + graphstore.KindPerson + `'
 		union all
-		select owner.login from (` + storedOwners(authors) + `) owner
+		select owner.login from (` + storedOwners(authors) + `) owner` + thisRelease + `
 	) author (login)
 	where author.login is not null and user_threads_login(author.login) <> ''`
 }
@@ -192,7 +256,9 @@ var storedAuthors = `
 	union all
 	` + writtenHistory + `
 	union all
-	` + answeredHistory
+	` + answeredHistory + `
+	union all
+	` + reachedHistory
 
 // censusAuthors is storedAuthors as the census binds it into the names of the person and session
 // kinds, the kinds, ids and times readStoredAuthors read as $1, $2 and $3 (projection.authored),
@@ -214,6 +280,32 @@ var answeredHistory = `select answered.kind, answered.id, answered.made_at from 
 			where t.to_kind = answered.kind and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = answered.id
 			  and t.kind in ('` + graphstore.TupleAnsweredBy + `', '` + graphstore.TupleDecidedBy + `', '` + graphstore.TupleRemovedBy + `')
 			  and t.from_kind = '` + graphstore.KindAsk + `')`
+
+// reachedHistory is every person the store's log names on the end graphstore.ToPerson or
+// graphstore.FromPerson keeps a person on, asserted or retracted since, as (kind, id, at)
+// (storedAuthors): the far end of a delivered_to or a mentions, through graph_tuples_as_of_in, the
+// index led by the far end and the kind, and the near end of a participates_in or of a mark
+// (read_through, cleared, reply_read, dismissed, snoozed), through graph_tuples_current, whose
+// partial predicate those literal kinds prove where that index leaves the delivery kind out. Each
+// probe states the person's kind as a literal rather than through its join: the two probes sit
+// in one OR, which the planner may read as a hashed subplan, and that subplan's one scan of
+// graph_tuples keys an index's first column only where the probe states it, as `person` -
+// joined, it would read every delivered_to and mentions through graph_tuples_as_of_in by kind
+// alone. Each of those writers makes the person's node in the statement that states the tuple, so
+// each such person is a node the store must hold, whatever row named them when the tuple was
+// written: the person an ask waited on before it closed or moved, a person whose row a removal
+// deleted.
+var reachedHistory = `select reached.kind, reached.id, reached.made_at from graph_nodes reached
+		where reached.kind = '` + graphstore.KindPerson + `' and (exists (
+			select 1 from graph_tuples t
+			where t.to_kind = '` + graphstore.KindPerson + `' and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = reached.id
+			  and t.kind in ('` + graphstore.TupleDeliveredTo + `', '` + graphstore.TupleMentions + `')
+		) or exists (
+			select 1 from graph_tuples t
+			where t.from_kind = '` + graphstore.KindPerson + `' and t.from_id = reached.id and t.to_kind <> '` + graphstore.KindValue + `'
+			  and t.kind in ('` + graphstore.TupleParticipatesIn + `', '` + graphstore.TupleReadThrough + `', '` +
+	graphstore.TupleCleared + `', '` + graphstore.TupleReplyRead + `', '` + graphstore.TupleDismissed + `', '` +
+	graphstore.TupleSnoozed + `')))`
 
 // writtenHistory is every person and session a block's decided_by or authored_by ever named, and
 // every person a decision's kept_by ever named, asserted or retracted since, as (kind, id, at)
@@ -269,7 +361,9 @@ func storedOwners(authors string) string {
 // recordedSessions are the sessions a row of the store names or an event of the log has named,
 // each once, with the first event that named it (null for a session only a row names) and the
 // earliest time a row or an event names it. They are every write R14 records a session from: a
-// comment a session wrote (graphstore.AuthorOf), as its row names it (commentWriters); every
+// comment a session wrote (graphstore.AuthorOf), as its row names it (commentWriters), and a
+// message one wrote whose row names its node, which is the write that records its author
+// (commentPeople says why only those); every
 // session a delivery reached - a comment mention's and a targeted message's attempt alike,
 // whether the outbox's record states it (outbox.deliveredGraph) or the attempt's own settle does
 // (graphstore.QueueReached), and a fallback copy the outbox published to a session's own topic
@@ -306,12 +400,21 @@ func storedOwners(authors string) string {
 // census holds to one, as addressedRoles is for roles. authors is the relation storedAuthors is
 // read as: the census binds what it read once (censusAuthors), the backfill reads it in its own
 // statement (inlineAuthors).
-func recordedSessions(authors string) string {
+//
+// messagesNamed is the predicate that says a messages row names its node, which this release's
+// column pair holds (MessagesNameTheirNode). The sizing reads this on a database this branch's
+// migrations have not reached, where that column does not exist and no statement may name it, and
+// passes `false` there (readStoreKinds): a row of such a database names no node, so the arm
+// answers the same sessions either way.
+func recordedSessions(authors, messagesNamed string) string {
 	return `
 	select id, min(event) as event, min(at) as at from (
 		select written.actor->>'id' as id, null::bigint as event, written.at
 		from (` + commentWriters + `) written
 		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
+		union all
+		select m.author->>'id', null, m.created_at from messages m
+		where ` + messagesNamed + ` and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
@@ -319,7 +422,7 @@ func recordedSessions(authors string) string {
 		select d.session_id, null, d.created_at from message_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
 		union all
-		select substring(f.destination from ` + strconv.Itoa(len(contracts.AgentTopicPrefix)+1) + `), null, f.created_at
+		select substring(f.destination from ` + agentTopicFrom + `), null, f.created_at
 		from comment_fallback_copies f
 		where f.published and f.destination like '` + contracts.AgentTopicPrefix + `%'
 		union all
@@ -339,6 +442,27 @@ func recordedSessions(authors string) string {
 	) sessions
 	where id is not null and id <> ''
 	group by id`
+}
+
+// MessagesNameTheirNode is the predicate over a messages row m that says the row names its node,
+// the column pair migration 20261116114515 adds: what every reader of this release binds, and what
+// no reader of a database before that migration may name (recordedSessions).
+const MessagesNameTheirNode = `m.node_kind is not null`
+
+// readMessagesNamed reads whether messages holds the column pair MessagesNameTheirNode names,
+// which this release's migrations add beside the inbox's other columns. The sizing is taken on a
+// database those migrations have not reached as well (R4), where no statement may name one, so it
+// asks this once, in its snapshot, and reads around them where it is false (readStoreKinds). The
+// census itself reads no kind of such a database (storeAbsence), so its row sides name the pair
+// always.
+func readMessagesNamed(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var named bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from pg_attribute
+		where attrelid = to_regclass('messages') and attname = 'node_kind' and not attisdropped)`).Scan(&named); err != nil {
+		return false, fmt.Errorf("read whether messages names its node yet: %w", err)
+	}
+	return named, nil
 }
 
 // addressedRoles are the roles a row of the store addresses now or an event of the log has ever

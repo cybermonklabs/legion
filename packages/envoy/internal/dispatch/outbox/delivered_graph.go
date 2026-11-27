@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -60,10 +61,28 @@ type resolvedRole struct {
 //
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
-// batch reached is stated whatever node that session has yet. Only a comment's delivery is
-// recorded from the near end today (deliveredItem), so an event that delivered anything else
-// appends no tuple at all. An issue, a document, an ask and a message are nodes of their project
-// from their own create on, but the change that records their deliveries is a later one.
+// batch reached is stated whatever node that session has yet. Its near end is the item the event
+// is about (deliveredItem): a comment, or a message, whose node the message's own writer writes.
+// So an event about either appends one tuple for each session or role it reached, and an event
+// about anything else - an issue, an ask, a document, a project - appends none here.
+//
+// That arm is what events.published_destinations projects (R2's session half). The record that
+// adds an event's reached topics to the array (recordBatch) appends, in the same statement, one
+// delivered_to tuple from the event's item to the node each of those topics names
+// (nodeOfSubject), caused by that event. So for an event deliveredItem names an item of, the
+// session and role topics of its array are exactly the far ends of the delivered_to tuples this
+// writer appended under it. The array holds two kinds of topic no tuple projects, each told apart
+// by what it is, so neither reads as a difference: an owner topic (the issue's, the project's or
+// the document's family, contracts.Envelope.Topic), which names no node and so starts with
+// neither contracts.AgentTopicPrefix nor contracts.RoleTopicPrefix; and every session and role
+// topic of an event deliveredItem names no item of, told by its type. Two deliveries this writer
+// appends are no topic of any array, and rows of their own project them: a mention attempt the
+// listener took (mentionReached), caused by its comment.delivery receipt, which is published to
+// its owner topic alone and whose comment_deliveries row is that delivery's attempt; and a
+// fallback copy (fallbackDelivered), caused by the comment.created event it is a copy of, whose
+// destination that event never lists, since a destination a fallback row owns is no destination
+// of the event (destinations.addDestination), and whose comment_fallback_copies row says it was
+// published.
 //
 // A delivery is a destination this batch reached, and a mention attempt the listener took. A
 // mention's is recorded under the comment.delivery receipt its settle appended (mentionReached),
@@ -297,17 +316,20 @@ func nodeOfSubject(subject string) (kind, id string, ok bool) {
 	return "", "", false
 }
 
-// deliveredItem is the node an event delivered, as the store records a delivery today: a
-// comment, the one thing a delivery is recorded from (mentionReached is the other reading of it),
-// whose id its payload carries. An event about anything else reaches its destinations all the
-// same: an issue, an ask and a message are nodes of their project, and the tuple that records
-// their delivery waits for the later change that records it.
+// deliveredItem is the node an event delivered: the comment or the message the event is about,
+// which the event's payload names as `id` - a comment's event and a message's create and answer
+// carry the item itself - or, on a delivery receipt and a message's acceptance, as
+// `comment_id` or `message_id`. mentionReached is the other reading of a comment's receipt. An
+// event about anything else reaches its destinations all the same and is recorded by no tuple of
+// this writer (deliveredGraph).
 func deliveredItem(event model.Event) (kind, id string, ok bool) {
-	if !strings.HasPrefix(event.Type, "comment.") {
-		return "", "", false
+	switch {
+	case strings.HasPrefix(event.Type, "comment."):
+		kind, id = graphstore.KindComment, cmp.Or(payloadString(event.Payload, "id"), payloadString(event.Payload, "comment_id"))
+	case strings.HasPrefix(event.Type, "message."):
+		kind, id = graphstore.KindMessage, cmp.Or(payloadString(event.Payload, "id"), payloadString(event.Payload, "message_id"))
 	}
-	id = payloadString(event.Payload, "id")
-	return graphstore.KindComment, id, id != ""
+	return kind, id, id != ""
 }
 
 // mentionReached is the delivery a comment.delivery receipt states: the comment its attempt
@@ -329,17 +351,13 @@ func mentionReached(event model.Event) (comment, session string, ok bool) {
 }
 
 // sessionsInARole are the sessions the mention receipts among events reached, the attempts the
-// listener took (mentionReached), that the store
-// already holds in a role: a role's current held_by into the session, or the session's current
-// part_of a role, each read as every current read reads a relation (graphstore.CurrentIn,
-// graphstore.CurrentOut). A session that claimed a role carries no page of its own
-// (deliveredGraph), and the batch that records a receipt commonly resolves no role, so its own
-// resolution cannot say. The part_of outlives the claim - a session is part_of the role it
-// claimed while it ran - so a session whose claim has since ended still reads as one that
-// claimed a role. The reads run under the statement gate the batch's other statements take
-// (lanes.statement), and a read that fails fails the record: a page written or left out on a
-// guess would stand for good, while a record that fails leaves its events to be read and
-// recorded again.
+// listener took (mentionReached), that the store already holds in a role (graphstore.ClaimedRoles,
+// the one rule a message to a session reads its page by too, of every such session in one
+// statement). A session that claimed a role carries no page of its own (deliveredGraph), and the
+// batch that records a receipt commonly resolves no role, so its own resolution cannot say. The
+// read runs under the statement gate the batch's other statements take (lanes.statement), and a
+// read that fails fails the record: a page written or left out on a guess would stand for good,
+// while a record that fails leaves its events to be read and recorded again.
 func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[string]struct{}, error) {
 	var sessions []string
 	for _, event := range events {
@@ -350,37 +368,17 @@ func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[
 	if len(sessions) == 0 {
 		return nil, nil
 	}
-	inARole := map[string]struct{}{}
+	var roles map[string]string
 	if err := deps.lanes.statement(func() error {
-		for _, session := range sessions {
-			claimed, err := claimedARole(ctx, deps.Store.Pool, session)
-			if err != nil {
-				return err
-			}
-			if claimed {
-				inARole[session] = struct{}{}
-			}
-		}
-		return nil
+		var err error
+		roles, err = graphstore.ClaimedRoles(ctx, deps.Store.Pool, sessions)
+		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read whether the sessions a mention reached claimed a role: %w", err)
 	}
+	inARole := make(map[string]struct{}, len(roles))
+	for session := range roles {
+		inARole[session] = struct{}{}
+	}
 	return inARole, nil
-}
-
-// claimedARole reports whether the store holds session in a role now: a role's held_by into it,
-// or its part_of a role.
-func claimedARole(ctx context.Context, q graphstore.Queryer, session string) (bool, error) {
-	held, err := graphstore.CurrentIn(ctx, q, graphstore.KindSession, session, []string{graphstore.TupleHeldBy})
-	if err != nil {
-		return false, err
-	}
-	if slices.ContainsFunc(held, func(claim graphstore.Tuple) bool { return claim.FromKind == graphstore.KindRole }) {
-		return true, nil
-	}
-	parts, err := graphstore.CurrentOut(ctx, q, graphstore.KindSession, session, []string{graphstore.TuplePartOf})
-	if err != nil {
-		return false, err
-	}
-	return slices.ContainsFunc(parts, func(part graphstore.Tuple) bool { return part.ToKind == graphstore.KindRole }), nil
 }

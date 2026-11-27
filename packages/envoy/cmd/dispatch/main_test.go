@@ -1803,7 +1803,7 @@ func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
 	}
-	if !strings.Contains(output.String(), "dispatch.server_url is required") {
+	if !strings.Contains(output.String(), "DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json) is required") {
 		t.Fatalf("rebuild-refs refusal = %q", output.String())
 	}
 	output.Reset()

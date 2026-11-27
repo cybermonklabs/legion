@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -189,8 +190,9 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // as it does today, and the block-index reconciliation then writes all three for it - proven by
 // killing the tick's transaction and finding none of them. The tick takes the document's owner
 // lock and then its owed row before it writes either, in that order. The item block pass writes
-// no row of the store. The rebuild writes refs and marks work owed and writes no row of
-// document_blocks, block_refs or comments.
+// one block node per block of an item the store holds, with its part_of and its links, and no row
+// of the store for an item the store does not hold. The rebuild writes refs and marks work owed
+// and writes no row of document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	t.Parallel()
 	requireEveryPassReadsItsSource(t)
@@ -267,7 +269,7 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	}
 
 	requireTheTickLocksTheOwnerThenTheOwedRow(t, database, service)
-	requireTheItemBlockPassWritesNoStoreRow(t, database, service)
+	requireTheItemBlockPassWritesTheItemsBlockNodes(t, database, service)
 	requireTheRebuildWritesRefsAndNoProjectedRow(t, database, document)
 }
 
@@ -402,51 +404,120 @@ func requireTheOtherLock(t *testing.T, database *store.Store, document, waitingA
 	}
 }
 
-// requireTheItemBlockPassWritesNoStoreRow runs the item block pass (refs.IndexOwedItemBlocks,
-// the tick's third batch) over a comment owed the index of its own blocks, and holds the pass to
-// writing no row of graph_nodes and no row of graph_tuples: this child moves no body block of a
-// comment, a message or an ask into the store. Every document is indexed first, so the tick
-// that runs the pass has no document of its own to write, and a row of either table that moved
-// is the pass's.
-func requireTheItemBlockPassWritesNoStoreRow(t *testing.T, database *store.Store, service *Service) {
+// requireTheItemBlockPassWritesTheItemsBlockNodes runs the item block pass
+// (refs.IndexOwedItemBlocks, the tick's third batch) over two comments owed the index of their
+// own blocks, each of two paragraphs, the second citing an issue. One is an older build's: the row
+// alone, which names no node, and the pass writes no row of graph_nodes or graph_tuples for it,
+// since a block node's part_of names an item node the store must hold. The other is this build's,
+// whose row names its node: the pass writes a `block` node for each of its blocks, each row
+// naming it, a part_of from each to the comment, and the second block's link to the issue, all at
+// the sentinel, since the pass records no event. Every document is indexed first, so the tick that
+// runs the pass has no document of its own to write, and a row of either table that moved is the
+// pass's.
+func requireTheItemBlockPassWritesTheItemsBlockNodes(t *testing.T, database *store.Store, service *Service) {
 	t.Helper()
 	ctx := context.Background()
 	drainBlockIndex(t, service, "every document before the item block pass")
-	// A comment of an older build: the row alone, which migration 0143's trigger leaves owed
-	// a block index (comment_block_state.owed_at). Two paragraphs, one citing an issue, so the
-	// pass has blocks and a block reference to write.
-	var comment string
+	const body = "One.\n\nTwo cites dispatch://CORE-2."
+	// An older build's comment: migration 0143's trigger leaves it owed a block index
+	// (comment_block_state.owed_at).
+	var older string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)
-		values ('CORE-1', '{"kind":"user","id":"alice"}', E'One.\n\nTwo cites dispatch://CORE-2.')
+		values ('CORE-1', '{"kind":"user","id":"alice"}', $1)
 		returning id::text
-	`).Scan(&comment); err != nil {
-		t.Fatalf("write the owed comment: %v", err)
+	`, body).Scan(&older); err != nil {
+		t.Fatalf("write the older build's owed comment: %v", err)
 	}
 	nodes, tuples := tableFingerprint(t, database, "graph_nodes"), tableFingerprint(t, database, "graph_tuples")
 	tick := reconcileBlockIndex(t, service, "")
 	if tick.ItemBlocks != 1 || tick.Documents != 0 {
 		t.Fatalf("the tick indexed the blocks of %d items and %d documents, want the owed comment's alone", tick.ItemBlocks, tick.Documents)
 	}
-	var blocks int
-	if err := database.Pool.QueryRow(ctx,
-		`select count(*) from comment_blocks where comment_id = $1::uuid`, comment).Scan(&blocks); err != nil {
-		t.Fatalf("count the comment's blocks: %v", err)
-	}
-	if blocks != 2 {
-		t.Fatalf("the item block pass wrote %d blocks of the two-paragraph comment, want 2: it ran over nothing", blocks)
+	if blocks := countItemBlocks(t, database, older, false); blocks != 2 {
+		t.Fatalf("the item block pass wrote %d blocks of the older build's two-paragraph comment, want 2: it ran over nothing", blocks)
 	}
 	// A fingerprint is the row count, then every row's xmin: the message prints the counts,
 	// since a table of the store holds thousands of rows by now.
 	rowsOf := func(fingerprint string) string { return strings.SplitN(fingerprint, "|", 2)[0] }
 	if now := tableFingerprint(t, database, "graph_nodes"); now != nodes {
-		t.Errorf("the item block pass wrote graph_nodes: it held %s rows and left %s, or rewrote one, want no row of the store written",
+		t.Errorf("the item block pass wrote graph_nodes for a comment the store holds no node of: it held %s rows and left %s, or rewrote one, want none written",
 			rowsOf(nodes), rowsOf(now))
 	}
 	if now := tableFingerprint(t, database, "graph_tuples"); now != tuples {
-		t.Errorf("the item block pass wrote graph_tuples: it held %s rows and left %s, or rewrote one, want no row of the store written",
+		t.Errorf("the item block pass wrote graph_tuples for a comment the store holds no node of: it held %s rows and left %s, or rewrote one, want none written",
 			rowsOf(tuples), rowsOf(now))
 	}
+
+	// This build's comment: its node first, then the row naming it, which the same trigger leaves
+	// owed its block index.
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of this build's comment: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var marked string
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&marked); err != nil {
+		t.Fatalf("pick the comment's id: %v", err)
+	}
+	node, _ := graphstore.CommentFacts(nil, marked, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(),
+		graphstore.NoEvent, "", "", "CORE", nil)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		t.Fatalf("write the comment's node: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, node_kind, node_address, tuples_stored)
+		values ($1::uuid, 'CORE-1', '{"kind":"user","id":"alice"}', $2, $3, $4, true)
+	`, marked, body, graphstore.KindComment, marked); err != nil {
+		t.Fatalf("write this build's owed comment: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit this build's comment: %v", err)
+	}
+	before := highestTuple(t, database)
+	if tick := reconcileBlockIndex(t, service, ""); tick.ItemBlocks != 1 || tick.Documents != 0 {
+		t.Fatalf("the tick indexed the blocks of %d items and %d documents, want this build's owed comment alone", tick.ItemBlocks, tick.Documents)
+	}
+	if blocks := countItemBlocks(t, database, marked, true); blocks != 2 {
+		t.Fatalf("the item block pass wrote %d blocks of this build's comment naming their nodes, want 2", blocks)
+	}
+	var blockNodes int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = $1 and id like $2`,
+		refs.BlockNodeKind, graphstore.KindComment+"/"+marked+"#%").Scan(&blockNodes); err != nil {
+		t.Fatalf("count the comment's block nodes: %v", err)
+	}
+	if blockNodes != 2 {
+		t.Errorf("the item block pass wrote %d block nodes of this build's two-paragraph comment, want 2", blockNodes)
+	}
+	var partOf, links, caused int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) filter (where kind = $3 and to_kind = $4 and to_id = $5),
+			count(*) filter (where kind = 'mentions' and to_kind = 'issue' and to_id = 'CORE-2'),
+			count(*) filter (where source_event <> $6)
+		from graph_tuples
+		where seq > $1 and from_kind = $2 and from_id like $7 and asserted
+	`, before, refs.BlockNodeKind, graphstore.TuplePartOf, graphstore.KindComment, marked, graphstore.NoEvent,
+		graphstore.KindComment+"/"+marked+"#%").Scan(&partOf, &links, &caused); err != nil {
+		t.Fatalf("read the tuples the item block pass appended: %v", err)
+	}
+	if partOf != 2 || links != 1 || caused != 0 {
+		t.Errorf("the item block pass appended %d part_of, %d links and %d tuples under an event, want 2, 1 and none: the pass records no event",
+			partOf, links, caused)
+	}
+}
+
+// countItemBlocks is how many block rows of comment hold a position, and of those, where
+// naming is set, how many name their node.
+func countItemBlocks(t *testing.T, database *store.Store, comment string, naming bool) int {
+	t.Helper()
+	var blocks int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from comment_blocks
+		where comment_id = $1::uuid and position is not null and (not $2 or node_kind is not null)
+	`, comment, naming).Scan(&blocks); err != nil {
+		t.Fatalf("count the blocks of comment %s: %v", comment, err)
+	}
+	return blocks
 }
 
 // requireTheRebuildWritesRefsAndNoProjectedRow holds refs.RebuildAll to what it is: a writer of
@@ -542,6 +613,17 @@ var indexPasses = map[string]string{
 	// keys kept. No column it sets is one the store projects (censustest.ProjectedColumns), and
 	// it reads no side of a projection to write the other.
 	"api/post_history.go#clearDeletedPostBody": "the delete request and the post it deletes, which its caller locked",
+	// An author's edit of an issue message and delete of a comment or an issue message (main's
+	// #3512) each append what the index of the body it writes, or clears, stated under its own
+	// event (graphstore.QueueCaused). The edit then states each person its text newly mentions taking
+	// part in the message's thread (graphstore.QueueToPerson), from the mentions its own index
+	// states and the thread root it read; a delete states, under each receipt, what its settle left
+	// on the row of each pending send it settled (graphstore.QueueAttempted), as every write of an
+	// attempt's row does (below). Each reads the request and the post it locked, never one side of a
+	// projection to mend the other: the clear of the post's row is clearDeletedPostBody's, above.
+	"api/message_corrections.go#editMessage":   "the edit request's own body, the message it locked, the root of that message's thread and the message.edited it appended",
+	"api/message_corrections.go#deleteMessage": "the delete request, the message it locked and its pending sends, and the receipts and the message.deleted it appended",
+	"api/comment_delete.go#deleteComment":      "the delete request, the comment it locked and its pending sends, and the receipts and the comment.deleted it appended",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
@@ -597,9 +679,10 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
 	// A settlement states right after each event it appends what waited for it: its version's
 	// block index after the artifact.version, and each ask it opened, its node and its follow,
-	// after that ask's ask.opened, with those asks' ties and the answer states it wrote
-	// (graphstore.QueueCaused, causedByEvent).
-	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes, ties and follows and its answer states stated and the events it appended after them",
+	// after that ask's ask.opened, with what the index of each ask it opened, restored or reworded
+	// stated, those asks' ties and the answer states it wrote (graphstore.QueueCaused,
+	// causedByEvent).
+	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes, indexes, ties and follows and its answer states stated and the events it appended after them",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
@@ -607,7 +690,11 @@ var indexPasses = map[string]string{
 	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
-	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
+	"api/broadcasts.go#queueBroadcastCopy":       "each copy the broadcast stores, the event it appended for it and the copy's first delivery attempt",
+	// A broadcast's recipients' pages, each written once before any copy's node and caused by the
+	// event of the first copy that hangs from it.
+	"api/broadcasts.go#queue":      "the pages of the broadcast's recipients its read phase planned",
+	"api/broadcasts.go#queueCause": "the page a copy hangs from and the event of that copy",
 	// A document's retirement states its artifact node gone, keeping every other fact of the
 	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
 	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
@@ -629,8 +716,9 @@ var indexPasses = map[string]string{
 	// version's index pass (removalsOf), and queued on their own for a version no pass plans.
 	"docs/removed_by.go#queueRemovals": "the answered asks a person's own write took the blocks of out and the person it was made for",
 	// The removal of an untouched document states its node gone before its row goes, caused by
-	// the artifact.removed event it appends.
-	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
+	// the artifact.removed event it appends; and the Inbox rows its own delete removed state, as a
+	// person's read state does, the marks they held (graphstore.FromPerson).
+	"api/artifact_removal.go#removeArtifact": "the document the request removes, the Inbox rows its own delete removed and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.
@@ -750,6 +838,107 @@ var indexPasses = map[string]string{
 	// node's stored values and authors only to state what moved.
 	"refs/decision_nodes.go#Queue": "the version's render and the credential its write proved",
 	"refs/refs.go#queueStamp":      "the event that recorded the write",
+	// Every write of a delivery attempt's row states what that row now holds
+	// (graphstore.QueueAttempted), and an insert writes the attempt's node before it, planned with
+	// the row it names (graphstore.AttemptOpened) and caused by the insert's event. Each reads the
+	// attempt row its own statement wrote, under the lock that statement holds, and what the store
+	// holds of that one node to append only what moved, the way a node write reads the row it
+	// moves (queueNodes): it never reads one side of a projection to mend the other.
+	"api/comment_delivery.go#openCommentDeliveryAttempt":      "the attempt the retry opens",
+	"api/comment_delivery.go#take":                            "the attempt the claim takes",
+	"api/comment_delivery.go#standDown":                       "the attempt whose claim the sender gives back",
+	"api/comment_delivery.go#supersedeCommentDelivery":        "the attempt a later one superseded",
+	"api/comment_delivery.go#recordCommentDeliveryResolution": "the resolution the sender recorded on its attempt",
+	"api/comment_delivery.go#holdCommentDeliveryClaim":        "the claim the sender renews after the copy rule",
+	"api/comment_mention_claims.go#refreshMentionClaims":      "the claims the mention sender wrote again",
+	"api/comment_mention_claims.go#releaseMentionClaims":      "the claims the mention sender gave back",
+	"api/comment_mention_claims.go#claimQueuedMention":        "the claim a keyed repeat takes",
+	"api/delivery_sweep.go#settleUndeliverableMention":        "the attempt the sweep settles undeliverable",
+	"api/message_delivery.go#acceptDelivery":                  "the attempt the session accepts",
+	"api/message_delivery.go#recordPendingMessageDelivery":    "the stranded attempt a retry in another mode settles",
+	"api/message_delivery.go#claimAttempt":                    "the attempt a claim's own statement takes",
+	"api/message_delivery.go#insertMessageDeliveryAttempt":    "the attempt the send opens",
+	"api/message_delivery.go#replyMessage":                    "the reply callback and the attempt it settles",
+	"outbox/mentions.go#settleAbandoned":                      "the abandoned attempts the outbox settles",
+	"graphstore/delivery_attempt.go#QueueAttempted":           "the attempt rows its caller names, as its own statement reads them, and what the store holds of each one's node",
+	// The backfill of every kind the child that moves the inbox, the messages and the read state
+	// moves but the identity mentions of a text. Each batch reads the rows of its own kind that its
+	// marker test passes - the rows an older build wrote, which name no node, hold no tuples_stored
+	// or no tuples_stored_at, or carry no marked_seq - and writes into the store what each such row's own
+	// content says, under the event that recorded the write, then sets the row's marker. It reads
+	// no marked row: an item's block node, which a link and its maker hang from, and the placement
+	// a block's part_of would repeat, are read off the store, and a row's marker only ever as the
+	// test that passes it. So it never reads one side of a projection to mend the other.
+	"graphcensus/backfill_inbox.go#writeMessages":            "each messages row that names no node, and the page its target hangs from",
+	"graphcensus/backfill_inbox.go#writeCommentPointers":     "each comments row whose tuples_stored is false",
+	"graphcensus/backfill_inbox.go#writeBlocks":              "each item block row that names no node, its item's node, and where the store places that block now",
+	"graphcensus/backfill_inbox.go#writeLinks":               "each item link row that names no node out of a block whose node the store holds, that node's maker, and the event that recorded the row's item",
+	"graphcensus/backfill_inbox.go#writeRelations":           "the citations its caller read off refs rows that hold no tuples_stored, the delivery routes it read off comment_mentions rows that hold none, and the sessions and roles it read off the published_destinations of events that hold no delivered_to to them",
+	"graphcensus/backfill_inbox.go#writeAttempts":            "each attempt row that names no node, and what the store holds of the node it writes for it",
+	"graphcensus/backfill_inbox_threads.go#writeUserThreads": "each user_threads row that carries no marked_seq, the event of its last reply, and whether its person's participates_in and dismissed into its thread stand, so it states what the row says and retracts a dismissal the row no longer holds",
+	"graphcensus/backfill_inbox_threads.go#writeMarks":       "each read-state row whose tuples_stored_at is null",
+	"inboxwrite/older.go#RecordOlder":                        "the write an older build made and the event that recorded it, the person an ask it created waits on, who wrote in its thread before it - the store's authored_by and head pointer tuples, the log's ask.answered events and the rows the marker test passes - and the dismissals into the thread the store holds",
+	// The index of an item's body, planned in its write's read phase and queued on its batch
+	// (refs.ItemIndexing.Queue): its blocks' nodes, their part_of and links, and the item's
+	// citations, read off the item's text and compared with what the store holds of its blocks'
+	// placement alone (readItemBlockPlaces), as the plan of the block parents compares a
+	// document's.
+	"refs/item_blocks.go#Queue":   "the item's text",
+	"refs/reply_blocks.go#Queue":  "the item's stored text, read from its own row",
+	"refs/rebuild.go#queue":       "the source's stored text",
+	"refs/rebuild.go#replaceInTx": "the source's stored text",
+	// Each site that appends what an item's index stated under the event of the write that
+	// indexed it (graphstore.QueueCaused, graphstore.Caused). The ask transition, the reopen's
+	// restore, the approval carry's answer and the settlement, listed above, are such sites too.
+	"api/asks.go#editAsk":                              "the edit request and the ask.edited it appended",
+	"docs/approval_ask.go#rewriteApprovalAsk":          "the rewording a request or a version move wrote and the ask.edited it appended",
+	"docs/decided_wording.go#restoreWordings":          "the decided wording the restore wrote back",
+	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "the seed's own plan",
+	// The one writer of the threads a person takes part in and of what reaches them there: it reads
+	// the write its caller stored, the thread that write's head pointer tuples name, and who takes
+	// part in that thread - the participates_in tuples into its root, and the login of each
+	// user_threads row of it the marker test passes - and, for an ask's create, the person the ask
+	// waits on (asks.AskedOfPersonExpression over the ask's own row and its issue's and project's,
+	// or as the create read them) - and appends the participation and the deliveries of that one
+	// write, through graphstore.QueueToPerson. An answer's catch-up reads its ask's own row and refs
+	// rows while their markers are null, which is the marker test passing. It reads no marked row's
+	// columns to decide what to write, so it mends nothing and is no repair. The read mark its
+	// writer's own row stands at once its upsert ran is that write's own result, which the same
+	// statement states as the writer's read_through (graphstore.MarkArm), as a route states the
+	// mark its statement stored.
+	"inboxwrite/record.go#Queue":        "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, the read mark its own upsert left its writer's row at, and the mentions tuples its caller's index states",
+	"inboxwrite/thread.go#queueKeepRow": "the writer's own row of the thread, as its own upsert leaves it, and the read mark that row stands at",
+	// The clear of the Agent dismissals a session's reply ends, as migration 20261105093507's
+	// trigger ends them: it takes the root the reply climbed to `for key share`, then reads the
+	// people whose dismissal row names that root as the rows stand once it holds the root, and the
+	// dismissed marks of theirs into it the store holds, retracts those marks and deletes the rows.
+	// What it ends is what the reply's own write ends, so it states that write and mends nothing.
+	"inboxwrite/thread.go#queueAgentDismissalsClear": "the root message its caller's session reply climbed to, the people whose dismissal row names it once the root is held, and the dismissed marks of theirs into it the store holds",
+	// The move of the person open asks wait on: it locks the asks the write that changed who they
+	// wait on may have moved, and reads of each who it waits on now and, in the store, whom its arm
+	// stands to - each person whose delivery stands, or whose participation their own move of the
+	// ask onto themselves stated, which it tells by that move's event and the ask's row
+	// (inboxwrite.OwnMove), and what else holds them there - and appends the participation of the
+	// person it waits on, with their delivery unless they made the move, and the retractions of the
+	// others' through graphstore.ToPersonArms. It reads the store and the log to state what the
+	// store holds next, never a projection to mend it, so it is no repair.
+	"inboxwrite/waiting.go#QueueMoveWaiting": "the asks its caller's write may have moved, who each waits on, the tuples of whom its arm stands to, and the event and the ask's row that tell a person's own move of the ask",
+	// The statements those writers queue to reach a person: the tuples to a person its caller
+	// works out in SQL, with the person nodes they name (ToPersonArms), and a person's own marks -
+	// the read_through an upsert of their row states in the same statement (MarkArm), and the
+	// retraction of the marks of theirs that stand (QueueMarksEnded). Each reads the rows its own
+	// statement works out and, for an end, the marks the store holds, to state what moved.
+	"graphstore/to_person.go#ToPersonArms":      "the rows its caller's statement works out, each a tuple to a person, and the person nodes they name",
+	"graphstore/from_person.go#MarkArm":         "the rows its caller's upsert moved and the read mark each now stands at",
+	"graphstore/from_person.go#QueueMarksEnded": "the people and the thread its caller names, and the marks of theirs into it the store holds asserted",
+	// The routes that write a person's read state: each states, through graphstore.FromPerson and
+	// under the event it appends, the marks its own statement stored, read back from that
+	// statement - the rows it moved and the moment each now holds - so each tuple is the
+	// request's own write, never a projection read to mend the store.
+	"api/replies.go#putThreadRead":        "the read mark the request carries and the row its own update moved",
+	"api/inbox_read.go#commitInboxMarks":  "the marks its route's own statements stored and the events it appends for them",
+	"api/state.go#putUserAgentState":      "the Clear, the read mark and the replies the request carries, as its own statements stored them",
+	"api/ask_snooze.go#announceAskSnooze": "the snooze or the unsnooze its route's own statement stored and the event it appends",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the

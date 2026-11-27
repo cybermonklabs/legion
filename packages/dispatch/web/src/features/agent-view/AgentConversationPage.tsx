@@ -4,7 +4,7 @@ import { type ReactNode, useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
-import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
+import { agentConversationQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
 import { ContextRing } from "../../components/ContextRing";
 import { PinButton } from "../../components/PinButton";
@@ -305,7 +305,7 @@ export function AgentConversationPage({
   // them with a `dispatch message` command, which the stream shows only as a `bash` tool call whose
   // arguments hold that command. Without these the thread would show replies to messages the human
   // cannot see, and no replies at all.
-  const stored = useQuery(agentMessagesQuery(sessionId));
+  const stored = useQuery(agentConversationQuery(sessionId));
   // Seeing them is reading them, so only the view the person is looking at marks them read, as
   // the Agents page's collapsed row does.
   useMarkRepliesRead(sessionId, front ? stored.data : undefined);
@@ -332,7 +332,7 @@ export function AgentConversationPage({
         : `Switch ${label}'s thinking level to ${request.value}`,
     onSuccess: (_message, { session }) => {
       if (session === sessionId) setOwnSendCount((previous) => previous + 1);
-      void queryClient.invalidateQueries({ queryKey: agentMessagesQuery(session).queryKey });
+      void queryClient.invalidateQueries({ queryKey: agentConversationQuery(session).queryKey });
     },
     target: ({ session }) => `session:${session}`,
     request: ({ request, session }) => agentMessageRequest(session, switchMessageInput(request)),

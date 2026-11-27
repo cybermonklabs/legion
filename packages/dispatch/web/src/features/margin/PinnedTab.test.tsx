@@ -11,6 +11,7 @@ import { api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { whoAmIQuery } from "../../api/queries";
 import type { Comment, DispatchEvent, MessageWithTrees } from "../../api/types";
+import { answerOpenAsks } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { comment as commentFixture } from "./margin-fixture";
 import { PinnedTab } from "./PinnedTab";
@@ -378,7 +379,7 @@ function openPinnedTab(pins: readonly string[], events: readonly DispatchEvent[]
       return answer;
     };
   const stubs = [
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    answerOpenAsks([]),
     spyOn(api, "getMyState").mockResolvedValue({
       "CORE-1": {
         dismissed: pins.map((pin) => `pinned_items:${pin}`),

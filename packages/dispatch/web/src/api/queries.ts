@@ -1,4 +1,4 @@
-import { INBOX_THREAD_KINDS } from "@legion/contracts";
+import { INBOX_DISMISSED_PAGE, meInboxAsks } from "@legion/contracts";
 
 import {
   infiniteQueryOptions,
@@ -13,16 +13,21 @@ import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "./client";
+import {
+  api,
+  REFERENCE_TARGETS_MAX,
+  REFERENCE_TARGETS_MAX_QUERY_CHARS,
+  refusesOpenAsksWithNoNarrowing,
+} from "./client";
 import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
-  InboxRow,
   IssueDetails,
-  MyRepliesResponse,
+  MeInboxResponse,
+  OpenAskRow,
   ReferenceTarget,
 } from "./types";
 
@@ -37,15 +42,35 @@ export const whoAmIQuery = () =>
     queryFn: () => api.whoAmI(),
   });
 
-/** Every ask the viewer can see, as the Inbox lists them. */
-export const inboxQuery = () =>
+/** The prefix of every read of the open asks (`openAsksQuery`), each project's its own entry
+ *  under it beside the read of every project: one invalidation of it refreshes them all, and every
+ *  optimistic write over the open asks patches each read under it as a list of rows. */
+export const openAsksKey = ["open-asks"] as const;
+
+/** The open asks the viewer can see (`GET /api/v1/asks/open`), as their rows: every one of every
+ *  project by default, which the Inbox reads for every person's asks but the reader's own, and the
+ *  margin, the Agents page and the Machines page read too; one project's (`project`) for its page.
+ *  A Dispatch process of the release before refuses the read of every project, and while one
+ *  serves, those rows are read as the page of that release read them
+ *  (`openAsksOfTheReleaseBefore`); any other failure is the read's own, and nothing else is read.
+ *  An Inbox card mounts its thread from these rows, so the read's requests count in the
+ *  generations an ask event in flight marks (`ask-thread-freshness.ts`). */
+export const openAsksQuery = (project?: string) =>
   queryOptions({
-    queryKey: ["inbox"],
+    queryKey: [...openAsksKey, { project }],
     queryFn: async ({ client }) => {
-      const fetch = beginInboxFetch(client);
-      let asks: InboxRow[] | undefined;
+      const fetch = beginInboxFetch(client, "open-asks");
+      const query = project === undefined ? {} : { project };
+      let asks: OpenAskRow[] | undefined;
       try {
-        asks = await api.getInbox();
+        asks = await api.listOpenAsks(query).then(
+          (answer) => answer.asks ?? [],
+          // kept for one release: open-asks-scopeless-fallback
+          (refusal: unknown) => {
+            if (!refusesOpenAsksWithNoNarrowing(refusal)) throw refusal;
+            return api.openAsksOfTheReleaseBefore(query);
+          }
+        );
         return asks;
       } finally {
         finishInboxFetch(client, fetch, asks);
@@ -232,9 +257,11 @@ export const userAgentStateQuery = () =>
     queryFn: () => api.getMyAgentState(),
   });
 
-/** The prefix every thread query shares: the Inbox's own rows, the unread count, and each
- *  owner's unread set. One invalidation of it refreshes them all. */
-export const myRepliesKey = ["me", "replies"] as const;
+/** The prefix of every read of the one read, `GET /api/v1/me/inbox`: the Inbox's own rows, its
+ *  unread count, what the reader has dismissed and each owner's unread set. One invalidation of it
+ *  refreshes them all; what refreshes the open asks or an Agent row's conversation reaches it
+ *  through `event-refresh.ts`, since it holds the reader's half of those as well. */
+export const meInboxKey = ["me", "inbox"] as const;
 
 /** One Inbox thread's ask, with its replies and its answer: the row's body in the list and in
  *  the reading pane read the one copy under this key. It never goes stale on its own - an event
@@ -246,63 +273,75 @@ export const askThreadQuery = (threadId: string) =>
     staleTime: Number.POSITIVE_INFINITY,
   });
 
-/** The viewer's count of unread threads, from the one-row page's `total`: the sidebar's and the
- *  compact header's one Inbox number counts it beside the work waiting on them. One request per
- *  page load, never the unpaged read below. */
-export const myRepliesCountQuery = () =>
+/** Every row of the reader's own Inbox from the one read, in one unpaged read of its `inbox`
+ *  state: the open asks that wait on them, and their Reply and Agent rows, read or not, less what
+ *  they have dismissed. The page, its drawer, the sidebar and the Needs-you count read this one
+ *  key. The reader's own ask cards mount their threads from its asks, so its requests count in the
+ *  generations an ask event in flight marks (`ask-thread-freshness.ts`), as the open asks' do. */
+export const meInboxQuery = () =>
   queryOptions({
-    queryKey: [...myRepliesKey, "count"],
-    queryFn: async () => (await api.listMyReplies({ kind: INBOX_THREAD_KINDS, limit: 1 })).total,
+    queryKey: [...meInboxKey, "inbox"],
+    queryFn: async ({ client }) => {
+      const fetch = beginInboxFetch(client, "one-read");
+      let answer: MeInboxResponse | undefined;
+      try {
+        // kept for one release: inbox-page-fallback
+        answer = await api.getMeInboxPage({ state: "inbox" });
+        return answer;
+      } finally {
+        finishInboxFetch(client, fetch, answer === undefined ? undefined : meInboxAsks(answer));
+      }
+    },
   });
 
-/** The prefix both of the Inbox's thread reads share - its own list and what the reader has
- *  dismissed out of it: what a refresh rule tests the listed rows under, whichever view the page
- *  is on (`api/event-refresh.ts`). */
-export const inboxThreadsKey = [...myRepliesKey, "inbox"] as const;
-
-/** Every thread row in the reader's Inbox, in one unpaged read: the Reply and Agent rows of the
- *  list, read or not, less what they have dismissed. A thread stays here until it is dismissed,
- *  so reading one leaves its row where it is. The Inbox page and its drawer read this and
- *  nothing else does - a surface that wants one owner's unread set reads `myRepliesOwnerQuery`
- *  below. */
-export const inboxThreadsQuery = () =>
+/** The reader's count of unread threads, the `total` of the one read's `unread` state on a
+ *  one-entry page: the sidebar's and the compact header's one Inbox number counts it beside the
+ *  work waiting on them. A small read of its own rather than a count over the unpaged read above,
+ *  which every page makes as well (`useNeedsYouCount`): the number does not wait on that read to
+ *  show the unread threads. */
+export const meInboxCountQuery = () =>
   queryOptions({
-    queryKey: [...inboxThreadsKey, "inbox"],
-    queryFn: () => api.listMyReplies({ kind: INBOX_THREAD_KINDS, state: "inbox" }),
+    queryKey: [...meInboxKey, "count"],
+    // kept for one release: inbox-page-fallback
+    queryFn: async () => (await api.getMeInboxPage({ limit: 1, state: "unread" })).total,
   });
 
-/** What the reader has dismissed out of their Inbox, newest dismissal first, which the View
- *  menu's **Dismissed** draws: `INBOX_DISMISSED_PAGE` rows a page, each next page read from the
- *  last one's `next_cursor` by the list's own **Show more**. */
-export const dismissedThreadsQuery = () =>
+/** What the reader has dismissed out of their Inbox, from the one read's `dismissed` state, newest
+ *  dismissal first, which the View menu's **Dismissed** draws: `INBOX_DISMISSED_PAGE` entries a
+ *  page, each next page read from the last one's `next_cursor` by the list's own **Show more**. */
+export const meInboxDismissedQuery = () =>
   infiniteQueryOptions({
-    queryKey: [...inboxThreadsKey, "dismissed"],
+    queryKey: [...meInboxKey, "dismissed"],
+    // kept for one release: inbox-page-fallback
     queryFn: ({ pageParam }) =>
-      api.listMyReplies({
-        kind: INBOX_THREAD_KINDS,
+      api.getMeInboxPage({
+        limit: INBOX_DISMISSED_PAGE,
         state: "dismissed",
         ...(pageParam === undefined ? {} : { cursor: pageParam }),
       }),
     initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last: MyRepliesResponse) => last.next_cursor,
+    getNextPageParam: (last: MeInboxResponse) => last.next_cursor,
   });
 
-/** One owner's unread threads, which every thread mounted on that owner's page reads to learn
- *  whether it is unread: one request however many threads the page shows. */
-export const myRepliesOwnerQuery = (
+/** One owner's unread threads, from the one read's `unread` state narrowed to that issue or
+ *  document, which every thread mounted on that owner's page reads to learn whether it is unread:
+ *  one request however many threads the page shows. */
+export const meInboxOwnerQuery = (
   owner: { readonly issue: string } | { readonly artifact: string }
 ) =>
   queryOptions({
-    queryKey: [...myRepliesKey, owner],
-    queryFn: () => api.listMyReplies({ ...owner, limit: 200 }),
+    queryKey: [...meInboxKey, owner],
+    // kept for one release: inbox-page-fallback
+    queryFn: () => api.getMeInboxPage({ ...owner, limit: 200, state: "unread" }),
   });
 
-/** One session's stored conversations: the direct messages and issue messages sent to it, with
- *  their replies. The Agents page row and the live view read this one key. */
-export const agentMessagesQuery = (sessionId: string) =>
+/** One session's conversation for the reader (`GET /api/v1/agents/{session_id}/conversation`):
+ *  the direct messages and issue messages that reach it, with their replies. The Agents page row,
+ *  the live view and an Agent row's reading pane read this one key. */
+export const agentConversationQuery = (sessionId: string) =>
   queryOptions({
-    queryKey: ["agents", sessionId, "messages"],
-    queryFn: () => api.listAgentMessages(sessionId),
+    queryKey: ["agents", sessionId, "conversation"],
+    queryFn: () => api.getAgentConversation(sessionId),
   });
 
 /** Every native project, shared by the shell, project routes, and settings. */
