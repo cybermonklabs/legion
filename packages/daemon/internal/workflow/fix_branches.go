@@ -127,7 +127,7 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 		}
 		branch := start.PushBranch
 		if branch != "" {
-			pushes[role] = supervise.UpdatePush{Branch: branch}
+			pushes[RoleFor(at)] = supervise.UpdatePush{Branch: branch}
 		}
 	}
 	if fix == nil {
