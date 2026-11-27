@@ -243,6 +243,7 @@ packages/envoy:
       - internal/cipher/netaddr
       - cipherclient
       - internal/cipher/ciphertest/requestseed
+      - internal/cipher/ciphertest/podclient
       - internal/cipher/dispatchread
       - internal/cipher/groups/groupstest
       - internal/cipher/placeholder
@@ -421,6 +422,7 @@ packages/envoy:
       - internal/clock
       - internal/clock/clocktest
       - internal/shapetest
+      - testpool
   # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
   # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
   envoy-go-race:

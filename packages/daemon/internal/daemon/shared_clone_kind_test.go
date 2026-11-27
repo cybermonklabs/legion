@@ -43,9 +43,10 @@ const sharedCloneLiveResources = `    resources:
 
 // The shared clone proof's legion.yaml passes the daemon's loader, holds the issue pod's small
 // reservation, and builds its runtime, with the proof's repository as the cache set, through
-// sandboxOptions and sandbox.New against an API server standing in for the kind cluster; both of
-// its root launches pass the spawn-spec checks. Every step is the one the driver takes before it
-// reaches the cluster.
+// sandboxOptions and sandbox.New against an API server standing in for the kind cluster; the
+// providers Secret the driver creates holds the key the file names, the runtime's reader of the
+// leak check serves a check a pod's launcher installs, and both of its root launches pass the
+// spawn-spec checks. Every step is the one the driver takes before it reaches the cluster.
 func TestTheSharedCloneKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -67,15 +68,18 @@ func TestTheSharedCloneKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, reservation, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger(), sharedCloneLiveRepository)
+	_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), sharedCloneLiveRepository)
 	if err != nil {
 		t.Fatalf("the proof's runtime: %v", err)
 	}
+	reservation := opts.Resources.Issue
 	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "2Gi", corev1.ResourceEphemeralStorage: "2Gi"} {
 		if got := reservation.Requests[kind]; got.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the proof's issue pod requests %s %s, want %s", kind, got.String(), want)
 		}
 	}
+	requireLiveProvidersSecret(t, cfg)
+	requireLiveLeakCheckInstalls(t, opts.LeakCheck)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
