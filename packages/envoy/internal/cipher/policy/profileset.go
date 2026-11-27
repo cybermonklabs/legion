@@ -224,12 +224,12 @@ func scopedOnlyByProxy(secretType string) bool {
 // source; or it does not fit Cipher's proxy (proxied).
 func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	profile := &p.list[i]
-	if profile.Proxy != nil && profile.Proxy.Kind == BlockKindDPoP {
+	if profile.Proxy != nil {
 		// Proxy configuration for a capability the broker mints for a grant of its own and holds:
 		// no stored secret is ever its value, so a stored secret of its name is not served
 		// through it, and nothing of it can be requested or approved. This branch goes with the
 		// dpop block, once the minted capabilities are a kind of the file.
-		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + BlockKindDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
+		return Secret{}, Refusal{Reason: ReasonProfileMinted, Detail: "a profile of kind " + ProxyBlockKindDPoP + " is a capability the broker mints and holds, never a secret the policy serves"}
 	}
 	source, ok := set.Secrets[profile.Source]
 	if !ok {

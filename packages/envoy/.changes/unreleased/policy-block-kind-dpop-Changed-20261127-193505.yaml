@@ -1,4 +1,4 @@
-kind: Fixed
+kind: Changed
 body: |-
   A profile's proxy block kind and the airlock way its binding takes are separate identifiers in
   the broker. The policy's reading of a dpop block, the refusals that hold one at start, and

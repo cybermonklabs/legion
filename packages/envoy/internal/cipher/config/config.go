@@ -2649,22 +2649,22 @@ func MintedEntryRules(rules proxyrules.Rules) error {
 		}
 		switch {
 		case len(block.Hosts) != 1 || strings.HasPrefix(block.Hosts[0], "*."):
-			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, policy.BlockKindDPoP, block.Hosts)
+			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, block.Hosts)
 		case len(block.Allow) == 0:
-			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, policy.BlockKindDPoP)
+			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP)
 		}
 		for _, allow := range block.Allow {
 			if allow.PathPrefix == "" || allow.PathPrefix == "/" {
-				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, policy.BlockKindDPoP, allow.Method, allow.PathPrefix)
+				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, allow.Method, allow.PathPrefix)
 			}
 		}
 		if headers := block.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, policy.BlockKindDPoP, headers)
+			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, headers)
 		}
 		host := fold.ASCII(block.Hosts[0])
 		for _, kind := range rules.Kinds {
 			if proxyrules.HostBound(kind.Hosts, host) {
-				return fmt.Errorf("the kind %s of %s binds %s, the host of the profile %s of kind %s: no kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", kind.Name, profilesFileSetting, host, entry.Name, policy.BlockKindDPoP)
+				return fmt.Errorf("the kind %s of %s binds %s, the host of the profile %s of kind %s: no kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", kind.Name, profilesFileSetting, host, entry.Name, policy.ProxyBlockKindDPoP)
 			}
 		}
 	}
@@ -2699,15 +2699,15 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 		host := fold.ASCII(entry.Inline.Hosts[0])
 		if _, named := bound[host]; !named {
 			if len(upstreams) == 0 {
-				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, policy.BlockKindDPoP, host, privateUpstreamSetting)
+				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, host, privateUpstreamSetting)
 			}
-			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, policy.BlockKindDPoP, host, privateUpstreamSetting)
+			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, host, privateUpstreamSetting)
 		}
 		bound[host] = true
 	}
 	for _, upstream := range upstreams {
 		if !bound[upstream.Host] {
-			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, policy.BlockKindDPoP)
+			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, policy.ProxyBlockKindDPoP)
 		}
 	}
 	return nil

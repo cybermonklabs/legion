@@ -86,16 +86,27 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
 	}
 }
 
-// TestProfilesCheckSaysADPoPProfileIsBehindItsDPoPBlock: a file of a dpop block, compared with
-// itself and with a store of one unrelated secret, lists its name as served behind its dpop block,
-// the words the report keeps for a block of the dpop block kind, and not behind a proxy block,
-// which is an old file's block of another kind.
-func TestProfilesCheckSaysADPoPProfileIsBehindItsDPoPBlock(t *testing.T) {
-	profiles := mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"})
-	store := `[{"name": "projects/example/secrets/agent-secrets-other-token", "annotations": {}}]`
-	code, stdout, stderr := checkProfiles(t, profiles, "--against", profilesFile(t, profiles),
-		"--secrets-json", writeTempFile(t, "secrets.json", []byte(store)))
-	if code != 0 || !slices.Contains(strings.Split(stdout, "\n"), `served "FIRST_TOKEN": behind its dpop block`) {
-		t.Fatalf("profiles check of a dpop block against itself = exit %d, stdout %q, stderr %q; want exit 0 and the line served \"FIRST_TOKEN\": behind its dpop block", code, stdout, stderr)
+// TestProfilesCheckSaysWhichBlockANameIsServedBehind: a file compared with itself, with a store
+// that holds what its profile needs, lists each name behind a block with the block it is served
+// behind - a dpop block's as behind its dpop block, the words the report keeps for a block of kind
+// dpop, and an old file's block of no kind as behind its proxy block - so a report that called
+// every block the one or the other fails a row. A dpop block is made from no stored secret, so its
+// store holds an unrelated one; an old block is its source's, so its store holds that source.
+func TestProfilesCheckSaysWhichBlockANameIsServedBehind(t *testing.T) {
+	for _, c := range []struct{ name, profiles, store, line string }{
+		{"a dpop block", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}),
+			`[{"name": "projects/example/secrets/agent-secrets-other-token", "annotations": {}}]`,
+			`served "FIRST_TOKEN": behind its dpop block`},
+		{"an old file's block of no kind", `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}]}`,
+			`[{"name": "projects/example/secrets/agent-secrets-token", "annotations": {"tier": "agent"}}]`,
+			`served "TOKEN": behind its proxy block`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, stdout, stderr := checkProfiles(t, c.profiles, "--against", profilesFile(t, c.profiles),
+				"--secrets-json", writeTempFile(t, "secrets.json", []byte(c.store)))
+			if code != 0 || !slices.Contains(strings.Split(stdout, "\n"), c.line) {
+				t.Fatalf("profiles check of %s against itself = exit %d, stdout %q, stderr %q; want exit 0 and the line %s", c.name, code, stdout, stderr, c.line)
+			}
+		})
 	}
 }
