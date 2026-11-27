@@ -300,11 +300,18 @@ jobs:
 
       # envoy-go's set, its natslive step's five packages among it, each binary built and started
       # as envoy-go's go test does; `-run '^$'` runs no test, so no Postgres or image is needed.
+      # Then agent-secrets for the three targets cmd/cipher's
+      # TestTheAgentSecretsBinaryBuildsWithoutThePrompt builds it for, as cmdtest builds it: no
+      # test binary holds those targets' objects, which envoy-go's run of that test would otherwise
+      # compile from nothing.
       # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-starts-each-test-binary
       - name: Build and start the test binary of every package of the envoy module, running no test
         run: |
           go test -count=1 -run '^$' ./...
           go test -count=1 -run '^$' -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/cipher/natscallout/ ./natsgrant/ ./cmd/listener/
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o /dev/null ./cmd/cipher
+          CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -buildvcs=false -o /dev/null ./cmd/cipher
+          CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -buildvcs=false -o /dev/null ./cmd/cipher
         working-directory: packages/envoy
 
       - name: Delete the build cache's entries neither envoy build used, and the module zips

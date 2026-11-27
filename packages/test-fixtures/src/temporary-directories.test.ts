@@ -4,11 +4,13 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statfsSync,
   statSync,
   symlinkSync,
+  watch,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -162,7 +164,12 @@ test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
       at,
     }),
     withRoom: memoryRoot({ need: 1, mountinfo: mountinfo(mountAt(at, "rw")), at }),
-  }).toEqual({ alone: at, overNoexec: at, withRoom: at });
+    // A mount with no optional fields before the separator.
+    noOptionalFields: memoryRoot({
+      mountinfo: mountinfo(`32 28 0:26 / ${at} rw,relatime - tmpfs tmpfs rw`),
+      at,
+    }),
+  }).toEqual({ alone: at, overNoexec: at, withRoom: at, noOptionalFields: at });
 });
 
 test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
@@ -277,7 +284,7 @@ describe("a pathological prefix", () => {
     const made = trimmed();
     expect(basename(made)).toStartWith("prefix-");
     expect(basename(made)).not.toContain("--");
-  }, 5_000);
+  });
 });
 
 /**
@@ -429,4 +436,65 @@ test("makes three and seals the root", () => {
     }
     expect(run.exitCode).not.toBe(0);
   });
+});
+
+/**
+ * `removeInBackground` hands the removal to a process of its own that the `afterAll` starts and
+ * does not wait for: the run passes, and the directory is gone soon after, removed by that process
+ * even when the `bun test` process has already exited. Read from a `bun test` of its own, since the
+ * removal may finish after the last line a test file can run. That no hook waits for it is shown
+ * by a removal made slow on purpose (round 5's evidence of the pull request that added it), which a
+ * test here cannot plant without a seam in the code under test.
+ */
+describe("a directory removed in the background", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-background");
+
+  test("is made for its scope and gone soon after the run that reserved it", async () => {
+    const work = makeDirectory("run");
+    const root = join(work, "root");
+    mkdirSync(root);
+    const recorded = join(work, "reserved.txt");
+    writeFileSync(
+      join(work, "background.test.ts"),
+      `import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { temporaryDirectory } from ${JSON.stringify(join(import.meta.dir, "temporary-directories"))};
+
+describe("the scope that reserves it", () => {
+  const at = temporaryDirectory("background", { root: ${JSON.stringify(root)}, removeInBackground: true });
+  test("makes it", () => {
+    mkdirSync(join(at, "cache", "download"), { recursive: true });
+    writeFileSync(join(at, "cache", "download", "kept.txt"), "kept");
+    expect(existsSync(at)).toBe(true);
+    writeFileSync(${JSON.stringify(recorded)}, at);
+  });
+});
+`
+    );
+    const run = Bun.spawnSync([process.execPath, "test", "./background.test.ts"], {
+      cwd: work,
+      env: { ...process.env },
+    });
+    const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+    expect({ exitCode: run.exitCode, recorded: existsSync(recorded) }, output).toEqual({
+      exitCode: 0,
+      recorded: true,
+    });
+    const reserved = readFileSync(recorded, "utf8");
+    expect(dirname(reserved)).toBe(root);
+    expect(basename(reserved)).toStartWith("background-");
+    // The removal is another process's, which hands this test nothing to await but the entry
+    // leaving its root: watch the root first (fs.watch starts at the call), then read the path,
+    // and again on each change, so a removal that ends between the two is not missed. The test's
+    // own limit ends a removal that never comes.
+    const { promise: gone, resolve } = Promise.withResolvers<void>();
+    const watcher = watch(root, () => {
+      if (!existsSync(reserved)) resolve();
+    });
+    if (!existsSync(reserved)) resolve();
+    await gone;
+    watcher.close();
+    expect(existsSync(reserved)).toBe(false);
+  }, 60_000);
 });
