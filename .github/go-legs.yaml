@@ -86,6 +86,7 @@ packages/daemon:
       - internal/testbin
       - internal/backoff
       - internal/clock/clocktest
+      - internal/checkstatetest
       - internal/experiment
       - internal/ompdirs
       - internal/omplaunch
