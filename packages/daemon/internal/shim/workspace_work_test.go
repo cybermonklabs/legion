@@ -135,6 +135,47 @@ func TestWorkspaceWorkReadsTheIssuePodLayout(t *testing.T) {
 	}
 }
 
+// A pod is released, or replaced by an update round, only once the workspace read finds no work,
+// and a fix works in a second working copy of the clone beside the issue's, workspace.FixDir. An
+// edit the fix's agent made after its last jj command is in no commit until a jj command run in
+// that copy snapshots it, and when the fix resumes in a new pod its copy is made again from the
+// fix's branch, so a read that counted only the issue's own working copy let a release delete that
+// edit. The read snapshots the fix's copy too, and counts the edit: the fix's working copy holding
+// fix-wip.txt, with no jj command after it, reads as one work commit, the fix's working copy itself,
+// so the release is declined. A fix's copy with no edit reads as no work, as the issue's own does:
+// the copy alone keeps no pod.
+func TestAReleaseKeepsTheRunningFixsCopy(t *testing.T) {
+	f := newWorkFixture(t)
+	fix := f.ws + "-fix"
+	// The adoption makes the fix's copy so: a workspace of the clone, named for its directory, at
+	// the commit the fix starts from.
+	f.jj(f.ws, "workspace", "add", "--name", filepath.Base(fix), "-r", "main", fix, "-R", f.ws)
+	if clean := f.read(); !clean.OK || clean.Changed || clean.Count != 0 {
+		t.Fatalf("the read of a workspace beside a fix's copy with no edit = %+v, want no work", clean)
+	}
+
+	// The fix's agent edits a file and runs no jj command after it: nothing has recorded the edit.
+	f.writeIn(fix, "fix-wip.txt")
+	got := f.read()
+	if !got.OK {
+		t.Fatalf("the shim refused the read: %s", got.Error)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	at := f.jj(fix, "log", "-R", fix, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+	if got.Count != 1 || !slices.Equal(got.Commits, []string{at}) {
+		t.Fatalf("the read of a fix's copy holding an edit no jj command recorded lists %v and counts %d, want the fix's working copy %s: the release would delete the edit",
+			got.Commits, got.Count, at)
+	}
+	if files := f.jj(fix, "diff", "-R", fix, "--ignore-working-copy", "-r", at, "--name-only"); files != "fix-wip.txt" {
+		t.Fatalf("the fix's working copy %s the read counted changes %q, want the fix's edit fix-wip.txt", at, files)
+	}
+	if head := f.commit("@"); got.Head != head || got.Changed {
+		t.Fatalf("the read names the issue's working copy %s changed %v, want %s unchanged: the edit is the fix's", got.Head, got.Changed, head)
+	}
+}
+
 // A workspace-work frame the shim cannot decode is refused, and one with no id to answer is
 // logged and answered nothing: the daemon is the frame's only sender, so Oh My Pi, which would
 // refuse it as an unknown command, never reads either.
