@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // wantHandshake holds the handshake the machine keeps and the one the store holds to want, so a
@@ -263,5 +264,49 @@ func TestADeathTakesTheHandshakesConfirmationBackOnlyWhileItIsInDoubt(t *testing
 		h.restart()
 		h.wantHandshake("after a restart read the claim back,",
 			EntryHandshake{Entry: 1, Generation: 7, QueuedAt: queued, ConfirmedAt: confirmed})
+	})
+
+	// The result can be read before the outcome of the prompt's send, which reaches the machine
+	// on the send's own goroutine. The send is still in flight then, and its answer has come all
+	// the same (sendUnanswered): the result says a turn ran the prompt, so the death takes nothing
+	// of the confirmation back.
+	t.Run("once the prompt's result came, its send still in flight", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		gated := newGatedConn()
+		h.conns.Register(testToken, gated)
+		// Handle, not must: must waits for the send, which the gate is holding.
+		if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:40", Row: 40,
+			Phase: phase.Implementing, Generation: 7, Entry: 1}); err != nil {
+			t.Fatal(err)
+		}
+		inFlight := testwait.Receive(t, "the send", gated.entered)
+		for _, ev := range []Event{
+			StreamTurnStart{Claim: testToken},
+			StreamPromptResult{Claim: testToken, DeliveryID: inFlight, AgentInvoked: true},
+		} {
+			if err := h.m.Handle(h.ctx, ev); err != nil {
+				t.Fatalf("handle %T: %v", ev, err)
+			}
+		}
+		p := h.claim().Pending
+		if p == nil || p.ID != inFlight || p.ConfirmedAt.IsZero() || h.state() != StateWorking {
+			t.Fatalf("after the prompt's result in its turn the claim is %s holding %+v, want it working with the delivery %s confirmed: this test proves nothing",
+				h.state(), p, inFlight)
+		}
+		kept := EntryHandshake{Entry: 1, Generation: 7, QueuedAt: p.QueuedAt, ConfirmedAt: p.ConfirmedAt}
+
+		gone := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}
+		if err := h.m.Handle(h.ctx, RuntimeObservation{Observation: gone}); err != nil {
+			t.Fatal(err)
+		}
+
+		tookBack(t, h)
+		h.wantHandshake("after the death took the task back once its prompt's result had come, its send still in flight,", kept)
+		gated.release <- struct{}{}
+		h.m.Wait()
+		h.wantHandshake("after the send of the dead process answered,", kept)
+		h.restart()
+		h.wantHandshake("after a restart read the claim back,", kept)
 	})
 }

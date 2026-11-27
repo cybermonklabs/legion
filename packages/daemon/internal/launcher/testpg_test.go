@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // stubTestPG puts a `legion-testpg` on PATH that appends one line per call — the subcommand, the
@@ -54,6 +56,7 @@ func (g *rig) toldTestPG(generation uint64, env []string) string {
 // the log at, under the fixed root, over whatever its environment carried, and a launcher that
 // serves none tells its generation of no log.
 func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
+	t.Parallel()
 	// What a daemon of another build sends: the database every image's server serves. No daemon
 	// sends the log's path; a value a start command carried all the same is replaced by this
 	// launcher's own, or dropped, as the DSN is.
@@ -85,6 +88,7 @@ func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
 // log in it, which is a file before the first `ensure` runs: every role started after it has the
 // log to bind, whatever that `ensure` came to.
 func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.T) {
+	// Not parallel: it writes the package variable testPGInterval, which parallel tests read.
 	calls := stubTestPG(t)
 	testPGInterval = 20 * time.Millisecond
 	t.Cleanup(func() { testPGInterval = 15 * time.Second })
@@ -103,19 +107,18 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 	if string(first) != want {
 		t.Errorf("the first call is %q, want %q", first, want)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		again, err := os.ReadFile(calls)
-		if err == nil && strings.Count(string(again), "ensure ") > 1 {
-			if got := strings.ReplaceAll(string(again), want, ""); got != "" {
-				t.Errorf("a later call is %q, want every call to be %q", got, want)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher asked once and never again: %q", again)
-		}
-		time.Sleep(5 * time.Millisecond)
+	// The second call comes on the ticker, every 20 ms; how soon it comes is not the claim, so the
+	// wait is for it under the test's hang guard.
+	var again []byte
+	if !testwait.Holds(beforeDeadline(t), 5*time.Millisecond, func() bool {
+		var err error
+		again, err = os.ReadFile(calls)
+		return err == nil && strings.Count(string(again), "ensure ") > 1
+	}) {
+		t.Fatalf("the launcher asked once and never again: %q", again)
+	}
+	if got := strings.ReplaceAll(string(again), want, ""); got != "" {
+		t.Errorf("a later call is %q, want every call to be %q", got, want)
 	}
 }
 
@@ -124,6 +127,7 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 // logged and nothing else, as a script that fails is: the script still runs, and the pod still
 // runs its roles.
 func TestATestDatabaseLogIsKeptAndOneThatCannotBeMadeOnlyLogs(t *testing.T) {
+	// Not parallel: it writes the package variable testPGInterval, which parallel tests read.
 	calls := stubTestPG(t)
 	testPGInterval = time.Hour
 	t.Cleanup(func() { testPGInterval = 15 * time.Second })
@@ -171,6 +175,7 @@ func TestATestDatabaseLogIsKeptAndOneThatCannotBeMadeOnlyLogs(t *testing.T) {
 // runs its roles, where a launcher that failed its container would cost the issue every role it
 // serves.
 func TestATestDatabaseThatCannotStartOnlyLogs(t *testing.T) {
+	// Not parallel: it writes the package variable testPGInterval, which parallel tests read.
 	calls := stubTestPG(t)
 	if err := os.WriteFile(filepath.Join(filepath.Dir(calls), "exit"), []byte("1\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -192,6 +197,7 @@ func TestATestDatabaseThatCannotStartOnlyLogs(t *testing.T) {
 // The guard holds a running child out of the reaper's pass and forgets it once its own wait has
 // read its exit, so nothing of the launcher's own is left in the skip list between calls.
 func TestTheGuardForgetsAChildOnceItsWaitHasRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stubTestPG).
 	calls := stubTestPG(t)
 	guard := &pidGuard{}
 	if err := runTestPG(context.Background(), Config{RolesDir: t.TempDir(), TestPostgres: true}, &roleLog{}, guard, "ensure"); err != nil {
@@ -209,6 +215,7 @@ func TestTheGuardForgetsAChildOnceItsWaitHasRead(t *testing.T) {
 // costs a pod one wait and a log line, not its whole boot: the launcher's first `ensure` runs
 // before any role starts, inside the daemon's boot timeout.
 func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	dir := t.TempDir()
 	script := "#!/bin/sh\nsleep 30\n"
 	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
@@ -232,6 +239,7 @@ func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
 // leaves nothing running. A step that fails is answered with its output, and the server is stopped
 // all the same.
 func TestCheckTestPostgresRunsEveryStepAndStopsTheServer(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
 	for _, program := range []string{testPGProgram, "psql"} {

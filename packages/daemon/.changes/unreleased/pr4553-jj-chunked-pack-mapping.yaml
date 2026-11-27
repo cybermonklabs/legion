@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The worker image's jj is v0.46.0-sami.20261120-120102, the release of sjawhar/jj#3: jj 0.46 with
+    a gix-pack that maps each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks
+    reads mark within 512 MiB (`JJ_PACK_MAPPED_LIMIT` sets another budget), so under gVisor one jj
+    command on a large pack no longer fills an issue pod.
+time: 2026-11-20T12:18:46Z
+custom:
+    Issue: pr4553

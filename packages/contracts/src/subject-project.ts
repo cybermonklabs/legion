@@ -67,8 +67,8 @@ function roleLaneProject(rest: readonly string[]): string {
 }
 
 export interface SubjectProject {
-  /** The project, `NO_PROJECT` for a name of none, and "" for a GitHub name, whose project is the
-   * one its repository is mapped to. */
+  /** The project, `NO_PROJECT` for a name of none, and "" for a GitHub name, which names a
+   * repository and no project. */
   readonly project: string;
   /** A GitHub name's repository, `owner/name` as the name writes both (sanitized), else "". */
   readonly repo: string;
@@ -121,7 +121,7 @@ const SUBJECT_PROJECT_ROWS: readonly SubjectProjectRow[] = [
     family: "notifications.legion.>",
     read: (rest) => ({ project: rest.length >= 2 ? legionTokenProject(rest[0]) : NO_PROJECT }),
   },
-  // A repository's events: the project is the one Dispatch maps the repository to.
+  // A repository's events: the name holds no project, so the reader gets the repository alone.
   {
     family: "notifications.github.>",
     read: (rest) => ({
@@ -153,10 +153,15 @@ const SUBJECT_PROJECT_ROWS: readonly SubjectProjectRow[] = [
   },
   // Where a deleted session consumer stopped, which names a session and no project.
   { family: "notifications.envoy.resume.>", read: none },
-  // A role a session took from another: the role's own project, as its kept lane reads it.
+  // A role a session took from another, named by its claim's key before the previous holder and
+  // the attempt: a key of one token, a role's bare name, works for the role's own project, and a
+  // key of two, a free-form role under a project, for the project it names first, as its kept
+  // lane reads it.
   {
     family: "notifications.envoy.takeover.>",
-    read: (rest) => ({ project: roleProject(rest[0] ?? "") }),
+    read: (rest) => ({
+      project: rest.length === 4 ? projectOfToken(rest[0]) : roleProject(rest[0] ?? ""),
+    }),
   },
 ];
 
@@ -351,11 +356,10 @@ export function roleClaimKey(project: string, role: string): string {
 
 /**
  * The project a claim of `role` works for, given the project the claim requested (`undefined` or
- * `""` for none), or an `Error` for a request the rule refuses, once a claim keys on its project.
- * Nothing calls it in this slice: while every claim keys on its bare role name, the listener's
- * `POST /v1/roles/set` refuses any new-form role whose project is not `roleProject(role)`, so for a
- * free-form role under a project (`PRIV.lead-reviewer`) the route answers 400 where this answers
- * `PRIV`. Plan C's t-c-8 wires it into the route, and t-c-6 reads Dispatch's claims through it.
+ * `""` for none), or an `Error` for a request the rule refuses. The listener's `POST /v1/roles/set`
+ * asks its Go twin of a role named in the new form and refuses a claim it refuses; a claim it
+ * allows is keyed by `roleClaimKey` of that project, so a free-form role under a project
+ * (`PRIV.lead-reviewer`) is that project's own claim beside the claim of the same name under none.
  *
  * A Legion role token (`legion-<token>-…`) works for the project its own name gives
  * (`roleProject`), whatever the claim asks for, and a request naming another project is refused

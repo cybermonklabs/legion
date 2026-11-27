@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext, useState } from "react";
 
-import type { Actor } from "../../api/types";
+import type { Actor, DisplayTree } from "../../api/types";
+import type { TextSource } from "../refs/text-references";
 import type { NodeType } from "./page-words";
 
 /**
@@ -24,10 +25,19 @@ export interface FocusedNode {
    *  what references it is read under that address, in Details
    *  (`node-references/NodeReferences.tsx`). */
   readonly reference?: string;
+  /** The record the node's words are, whose issue reads each role in them (`TreeNode.source`). */
+  readonly source?: TextSource;
   /** How it stands, as the page's own word for that state, where its type has one. */
   readonly state?: string;
-  /** The node's own first line, or an issue's title: the author's words. */
-  readonly title: string;
+  /** The node's own words as the tree holds them (`TreeNode.text`), or an issue's title: the
+   *  author's words, which the panel names the node by as every place that names a node by its
+   *  one line does - projected by the shared plain-text projection, each reference in them read
+   *  as its target's current name (R8), and the page's word for the node's kind where they hold
+   *  none (`node-line.tsx`'s `useNodeLine`, `lineOrKindWord`). They are handed whole rather than
+   *  as a line cut from them, since only a draw can read a reference's name. */
+  readonly text: string;
+  /** The server's reading of `text` (`TreeNode.tree`), where the node has one. */
+  readonly tree?: DisplayTree;
   readonly type: NodeType;
 }
 

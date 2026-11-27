@@ -9,7 +9,10 @@
  * was counted from: one `GET /api/v1/issues` with no query (every issue of every project, closed
  * issues too, in one unpaged read), then `GET /api/v1/issues/{key}/comments` for each issue, then
  * each comment whose author kind is `user` and whose `created_at` is in the window. No
- * `updated_since` is sent, because a comment need not move the `updated_at` of its issue.
+ * `updated_since` is sent, because a comment need not move the `updated_at` of its issue. A
+ * comment of that set its author deleted is left out, and stdout counts it: Dispatch serves a
+ * deleted comment with no body, so the judge would label an empty comment and not the words the
+ * person wrote.
  *
  * Each comment gets one model call to claude-sonnet-5-5. The call is the call of the judge that
  * made the baseline labels: Oh My Pi's text judge (`judge_batch` with eleven `bool` questions), as
@@ -25,7 +28,7 @@
  * again. The key goes in the `x-api-key` header. --key-file is a 0600 file that holds an Anthropic
  * key, read again for each call, and the call goes to https://api.anthropic.com. --key-command is a
  * program that prints the gateway key, run again for each call, and the call goes to
- * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait.
+ * <gateway>/v1/messages. An outage (`outage`: a 5xx, a 408 or a 429) is tried again after a wait.
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
@@ -37,6 +40,7 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
+import { outage } from "@legion/contracts/http-status";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   backoffMs,
@@ -52,7 +56,6 @@ import {
   processIo,
   resolveDispatch,
   type Sleep,
-  transient,
 } from "./production-dispatch";
 
 /** The eleven questions of the labels artifact, word for word, in its order. */
@@ -296,7 +299,7 @@ async function label(
     }
     if (!response.ok) {
       last = modelError(response.status, text);
-      if (transient(response.status)) {
+      if (outage(response.status)) {
         wait = retryAfterMs(response);
         continue;
       }
@@ -387,8 +390,9 @@ function isoWeek(createdAt: string): string {
   return `${day.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-/** The stdout lines: counts only. No person is named and no comment is quoted. */
-export function summary(rows: readonly LabelRow[]): string[] {
+/** The stdout lines: counts only. No person is named and no comment is quoted. `deleted` is how
+ * many comments of the set were left out because their author deleted them. */
+export function summary(rows: readonly LabelRow[], deleted: number): string[] {
   const share = (count: number) =>
     rows.length === 0 ? "" : ` (${((count / rows.length) * 100).toFixed(1)}%)`;
   const yes = (key: QuestionKey, of: readonly LabelRow[] = rows) =>
@@ -401,6 +405,7 @@ export function summary(rows: readonly LabelRow[]): string[] {
   }
   return [
     `comments: ${rows.length}`,
+    `deleted comments left out: ${deleted} (Dispatch serves a deleted comment with no body, so there is nothing of it to label)`,
     `first created_at: ${rows[0]?.created_at ?? "none"}`,
     `last created_at: ${rows.at(-1)?.created_at ?? "none"}`,
     `writing complaints (about_doc_writing yes): ${writing} of ${rows.length}${share(writing)}`,
@@ -497,7 +502,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   if (outside !== undefined) return refuse(outside);
   let dispatch: ProductionDispatch;
   try {
-    dispatch = new ProductionDispatch(resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
+    dispatch = new ProductionDispatch(await resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
   } catch (error) {
     return refuse(messageFor(error));
   }
@@ -513,10 +518,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     const perIssue = await mapLimit(issues, CONCURRENCY, async ({ key }) =>
       (await dispatch.comments(key)).map((comment) => ({ issue: key, comment }))
     );
-    const set = perIssue
+    const people = perIssue
       .flat()
       .filter(({ comment }) => comment.author.kind === "user")
-      .filter(({ comment }) => inWindow(window, comment.created_at))
+      .filter(({ comment }) => inWindow(window, comment.created_at));
+    const set = people
+      .filter(({ comment }) => comment.deleted_at == null)
       .toSorted((a, b) => byCreatedAt(a.comment, b.comment));
 
     const outcomes = await mapLimit(set, CONCURRENCY, async (item) => {
@@ -554,7 +561,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     }
     writeFileSync(partial, rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
     renameSync(partial, file);
-    for (const line of summary(rows)) io.out(line);
+    for (const line of summary(rows, people.length - set.length)) io.out(line);
     return 0;
   } catch (error) {
     io.err(`label-comments: ${messageFor(error)}`);

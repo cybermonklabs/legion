@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A connection that is reconnecting reports no server version ((*nats.Conn).ConnectedServerVersion
@@ -27,13 +28,15 @@ import (
 // serverDefaultsAnUnsetCap of what the reconnecting connection reports is false, the older
 // server's answer, on a server that caps such a stream.
 func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -60,13 +63,8 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 	go func() { ensured <- client.ensureStreamOn(context.Background(), conn) }()
 	time.Sleep(300 * time.Millisecond)
 	server.Start(t)
-	select {
-	case err := <-ensured:
-		if err == nil || !strings.Contains(err.Error(), "not connected") {
-			t.Fatalf("the ensure hook on a reconnecting connection answered %v, want an error that the connection is not connected: it decided on, or waited for, a version the connection had not reported", err)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("the ensure hook across a reconnect did not return within 60s")
+	if err := testwait.Receive(t, "the ensure hook across a reconnect to return", ensured); err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("the ensure hook on a reconnecting connection answered %v, want an error that the connection is not connected: it decided on, or waited for, a version the connection had not reported", err)
 	}
 	waitConnected(t, conn)
 	info, err := js.StreamInfo(Stream)
@@ -123,48 +121,28 @@ func TestAFlapRunsTheSecondDisconnectHookAtOnce(t *testing.T) {
 	t.Cleanup(func() { connectedVersion = read })
 
 	server.Stop(t)
-	select {
-	case <-disconnects:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first disconnect hook did not run within 10s of the server stopping")
-	}
+	testwait.Receive(t, "the first disconnect hook to run once the server stopped", disconnects)
 	armed.Store(true)
 	server.Start(t)
-	var down time.Time
-	select {
-	case down = <-secondOutage:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect's ensure did not read the server version within 30s of the restart")
-	}
-	select {
-	case ran := <-disconnects:
-		if late := ran.Sub(down); late > 2*time.Second {
-			t.Fatalf("the second disconnect hook ran %s after the second outage began, want at once: the ensure hook held nats.go's callback goroutine", late)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second disconnect hook did not run within 10s of the second outage: the ensure hook held nats.go's callback goroutine waiting for a server version")
+	down := testwait.Receive(t, "the reconnect's ensure to read the server version", secondOutage)
+	if late := testwait.Receive(t, "the second disconnect hook to run", disconnects).Sub(down); late > 2*time.Second {
+		t.Fatalf("the second disconnect hook ran %s after the second outage began, want at once: the ensure hook held nats.go's callback goroutine", late)
 	}
 	server.Start(t)
 }
 
 func waitNotConnected(t *testing.T, conn *nats.Conn) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for conn.IsConnected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection still reports connected 5s after its server stopped")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the connection to report not connected after its server stopped", func() (bool, bool) {
+		connected := conn.IsConnected()
+		return connected, !connected
+	})
 }
 
 func waitConnected(t *testing.T, conn *nats.Conn) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for conn.Status() != nats.CONNECTED {
-		if time.Now().After(deadline) {
-			t.Fatalf("the connection is %v 30s after its server started, want connected", conn.Status())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the connection to report connected after its server started", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.CONNECTED
+	})
 }

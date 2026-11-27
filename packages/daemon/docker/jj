@@ -1,13 +1,15 @@
 #!/bin/sh
 # The jj first on a pod's PATH, /opt/legion/bin/jj (worker.Dockerfile). Every command runs the
-# real jj, /usr/local/bin/jj. What this wrapper adds is that jj's push reaches the remote only
-# through Legion's git wrapper.
+# real jj, /usr/local/bin/jj, a `jj git push` through `legion jj --real` (below). What this wrapper
+# adds is that jj's push reaches the remote only through Legion's git wrapper, and that a commit
+# a `jj git push` sends gets the author of the role its Legion-Role trailer names, where
+# packages/daemon/cmd/legion/jj.go's rules let it.
 #
 # jj makes a push by shelling out to a git (`git -c core.fsmonitor=false … --git-dir <dir> push
-# --porcelain --no-verify …`, measured with jj 0.45.1-sami): the `git` on its PATH, or the
-# `git.executable-path` its configuration names. Legion's git wrapper is what puts the leak
-# guard's pre-push hook in front of jj's push as well as a role's own. So this wrapper does three
-# things:
+# --porcelain --no-verify …`, measured with jj 0.45.1-sami and 0.46.0-sami): the `git` on its
+# PATH, or the `git.executable-path` its configuration names. Legion's git wrapper is what puts
+# the leak guard's pre-push hook in front of jj's push as well as a role's own. So this wrapper
+# does four things:
 #   - it gives every jj it runs `--config=git.executable-path="<the git wrapper>"`, in front of
 #     the command line as a layer of its own, and, after a command it reads as a push, once more
 #     as the last layer of the command line: a configuration jj reads for one command alone (a
@@ -16,9 +18,15 @@
 #   - before a push, it reads the git jj's configuration names, and refuses another git by name,
 #     in the shared check's own setup-error words and with its status;
 #   - it reads the command line as jj does, aliases and the default command expanded, and runs
-#     the line it read. What it cannot read it refuses.
-# It reads no ref, no commit and no other text: jj hands git exact refspecs, and the git wrapper
-# does the whole job from there.
+#     the line it read. What it cannot read it refuses;
+#   - it hands a line it read as a `jj git push` to `legion jj --real /usr/local/bin/jj`, which
+#     runs the push step and then the real jj with that line, but for a revision argument whose
+#     meaning the step's rewrite changed, which then names the commits it named before the step,
+#     as the step left them, and with --ignore-working-copy after the step's snapshot (legion
+#     jj's jjStep.snapshotted): the step sets the author of a commit the push sends from that
+#     commit's Legion-Role trailer, where packages/daemon/cmd/legion/jj.go's rules let it.
+# This wrapper itself reads no ref, no commit and no other text: jj hands git exact refspecs, and
+# the git wrapper does the whole job of the leak guard from there.
 #
 # A command is a push when jj runs it as `git push` or `gerrit upload` (which pushes to
 # refs/for/<branch>), and that is more than those words: jj puts an alias's words in place of the
@@ -34,6 +42,7 @@ set -u
 
 real=/usr/local/bin/jj
 wrapper=/opt/legion/bin/git
+legion=/opt/legion/bin/legion
 
 # Shell completion: jj runs no command while COMPLETE names a shell (clap's CompleteEnv; measured
 # in jj 0.45.1-sami and 0.46.0-sami, `COMPLETE=bash jj git push` prints the completion script and
@@ -52,6 +61,119 @@ force="--config=git.executable-path=\"$wrapper\""
 # after it ends that layer, and a caller's `--config 'git={…}'` starts a layer of its own.
 run() {
   exec "$real" "$force" --config-file=/dev/null "$@"
+}
+
+# once_only [error] copies its standard input, what jj printed on standard error for one of this
+# wrapper's own reads, to its standard output, but for the warnings jj prints on every command: the
+# command the wrapper runs after its reads prints those itself, so each prints as often as jj alone
+# prints it for that command. They are, in jj's cli/src/cli_util.rs and cli/src/config.rs of all
+# three versions: an alias that has the name of a built-in command, the name in quotes; an alias
+# of an alias table that does not load, the table's name, `aliases` or one or more of a-z then
+# `-aliases`, right after the backtick; a setting jj migrates, the name of its source one or more
+# of A-Z, a-z and `-`; aliases that -R, --config or --config-file would define; and a trunk() that
+# does not resolve, with its hint. Their first lines are those that jjEveryCommand in legion jj
+# matches, and no others. Each goes with the lines that jj prints as its parts, with no heading:
+# those of a parse error or of jj 0.46's causes, which are blank or start with a space, a digit or
+# `Caused by:`, trunk()'s second line, and the `Example: jj config set …` and `For details, see: …`
+# lines of jj 0.38's deprecation of git.auto-local-bookmark and git.push-new-bookmarks. jj's note
+# of a key that a read names and no configuration sets, `No matching config key for: <key>` (with
+# no colon in jj 0.38), is left out as well: only a read prints it, and jj alone prints none for
+# the command the wrapper runs. Every other line goes through: a warning that jj prints for the
+# first command in its state and never again, such as `Your repo appears to have been copied`
+# (lib/src/secure_config.rs), which a read may be, and a line after a dropped warning that is no
+# part of it, such as a snapshot's `Rebased 1 descendant commits`. Without the argument `error`,
+# jj's error, which jj prints last, and every line after it, its causes and hints, are left out
+# too: the refusal after such a read says that the read failed. jj prints its warnings of aliases
+# before it reads --color, so where ui.color is always, they hold jj's colours under a read's
+# --color=never too: each line is matched with jj's colours left out (ESC `[`, digits and `;`,
+# then `m`), as jjOnceOnly in legion jj matches it, and printed as it came.
+once_only() {
+  # esc is the escape character, which starts each of jj's colours.
+  esc=$(printf '\033')
+  part=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$part" != error ] || continue
+    # plain is the line with jj's colours left out.
+    plain='' rest=$line
+    while :; do
+      case "$rest" in
+        *"$esc["*) ;;
+        *) break ;;
+      esac
+      plain=$plain${rest%%"$esc["*}
+      rest=${rest#*"$esc["}
+      sgr=${rest%%m*}
+      case "$sgr" in
+        "$rest" | *[!0-9\;]*) plain=$plain$esc[ ;;
+        *) rest=${rest#*m} ;;
+      esac
+    done
+    plain=$plain$rest
+    if [ "$part" = more ]; then
+      case "$plain" in
+        '' | [\ 0-9]* | 'Caused by:'* | 'The `trunk()` alias is temporarily set to '* | 'Example: jj config set '* | 'For details, see: '*) continue ;;
+      esac
+    fi
+    part=''
+    # every is whether the line is the first line of a warning jj prints on every command.
+    every=''
+    case "$plain" in
+      "Warning: Cannot define an alias that overrides the built-in command '"* | \
+        'Warning: Failed to load `aliases.'* | \
+        'Warning: Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments'* | \
+        'Warning: Failed to resolve `revset-aliases.trunk()`: '* | \
+        'Hint: Use `jj config edit --repo` to adjust the `trunk()` alias'*)
+        every=1
+        ;;
+      'Warning: Failed to load `'*'-aliases.'*)
+        # name is what stands between the backtick and the first `-aliases.`.
+        name=${plain#'Warning: Failed to load `'}
+        name=${name%%-aliases.*}
+        case "$name" in
+          '' | *[!a-z]*) ;;
+          *) every=1 ;;
+        esac
+        ;;
+      'Warning: Deprecated '*' config: '*)
+        # name is what stands between `Deprecated ` and the first ` config: `.
+        name=${plain#'Warning: Deprecated '}
+        name=${name%%' config: '*}
+        case "$name" in
+          '' | *[!A-Za-z-]*) ;;
+          *) every=1 ;;
+        esac
+        ;;
+    esac
+    if [ -n "$every" ]; then
+      part=more
+      continue
+    fi
+    case "$plain" in
+      'Warning: No matching config key for'[:\ ]*) continue ;;
+      'Error: '* | 'Config error: '* | 'Internal error: '*)
+        if [ "${1-}" != error ]; then
+          part=error
+          continue
+        fi
+        ;;
+    esac
+    printf '%s\n' "$line"
+  done
+}
+
+# read_jj <mode> <argument>… runs the real jj with the arguments as one of this wrapper's reads, in
+# a command substitution: what jj prints on standard output and its exit status are the read's, and
+# what it prints on standard error goes, once jj exits, through `once_only <mode>` to this
+# wrapper's, its trailing blank lines kept by the `.` after it. No file is written.
+read_jj() {
+  mode=$1
+  shift
+  { err=$("$real" "$@" 2>&1 1>&3 3>&-; s=$?; echo .; exit "$s"); s=$?; } 3>&1
+  err=${err%.}
+  [ -z "$err" ] || once_only "$mode" >&2 <<EOF
+${err%"$nl"}
+EOF
+  return "$s"
 }
 
 # The commands jj has built in, by clap's own names: each command's name and every other name
@@ -202,7 +324,8 @@ fi
 # --config/--config-file arguments"). So these reads run in the working directory with none of the
 # caller's options, and with `--include-defaults`: jj's defaults hold aliases of their own (`st`,
 # `b`, `ci`, `desc` in all three versions), which `jj config list` leaves out without it ("No
-# matching config key"), and which an alias of the same name in a file replaces.
+# matching config key"), and which an alias of the same name in a file replaces. Each read prints
+# on standard error `once_only` of what jj prints there (read_jj).
 #
 # One read a key, through a template that prints the key's own entry and nothing else: `D`, the
 # number of words and one word a line for a list, or for a table's `definition`; `E` and the value
@@ -271,7 +394,7 @@ while :; do
   fi
 
   template='if(name == "'"$key"'" || name == "'"$key"'.definition", "D\n" ++ value.as_string_list().len() ++ "\n" ++ value.as_string_list().join("\n") ++ "\n", if(name == "'"$key"'.enabled", "E\n" ++ value ++ "\n", ""))'
-  got=$("$real" --ignore-working-copy config list "$key" --include-defaults -T "$template" 2>/dev/null && echo .) ||
+  got=$(read_jj '' --ignore-working-copy --color=never config list "$key" --include-defaults -T "$template" && echo .) ||
     refuse "jj could not read $key (\`jj config list $key\` says why), so this wrapper cannot tell whether this command is a push"
   got=${got%.}
   state='' defs=0 count=0 n=0 words='' disabled=''
@@ -318,7 +441,7 @@ $got
 EOF
   if [ "$state" = notlist ] && [ "$key" = ui.default-command ]; then
     # ui.default-command may be one string, which jj runs as one command word.
-    words=$("$real" --ignore-working-copy config get ui.default-command 2>/dev/null) ||
+    words=$(read_jj '' --ignore-working-copy --color=never config get ui.default-command) ||
       refuse "jj could not read ui.default-command, so this wrapper cannot tell whether this command is a push"
     case "$words" in
       *"$nl"*) refuse "ui.default-command holds a line break, which this wrapper does not read" ;;
@@ -408,8 +531,15 @@ if [ "$final" = push ]; then
   #
   # jj answers `git` when nothing sets the value, its own default: `jj config get
   # git.executable-path` prints `git` and exits 0 with no configuration at all. So a read that fails
-  # is an error, a `-R` naming no repository for one, and never an unset value. It is refused, after
-  # jj's own error, because a read that answered nothing cannot vouch for the git the push would run.
+  # is an error, a `-R` naming no repository for one, and never an unset value. It is refused after
+  # jj's own error, which the read prints (once_only error), because a read that answered nothing
+  # cannot vouch for the git the push would run.
+  #
+  # This read loads the configuration of the repository the push loads, so where no read before it
+  # took a warning that jj prints once, such as `Your repo appears to have been copied`, it takes
+  # it, and once_only prints it: legion jj's step, which runs next, would otherwise take it with a
+  # read that prints nothing of its standard error. Under tmux, where this wrapper does not run,
+  # legion jj makes a read of the same configuration before its step (jjStep.readConfiguration).
   configured=$(
     kept=''
     for entry in $occ; do
@@ -423,7 +553,7 @@ if [ "$final" = push ]; then
       kept="$kept$refs"
     done
     eval "set -- $kept"
-    exec "$real" --ignore-working-copy "$@" config get git.executable-path
+    read_jj error --ignore-working-copy --color=never "$@" config get git.executable-path
   ) || refuse "jj could not read the git.executable-path this push would use, so it cannot be shown to be git or Legion's git wrapper $wrapper, and $how could reach the remote with no leak check"
   case "$configured" in
     git | "$wrapper") ;;
@@ -482,4 +612,9 @@ while [ "$k" -lt "$#" ]; do
 done
 [ "$before" -gt 0 ] || argv="$argv$last"
 eval "set -- $argv"
+# A line read as a `jj git push` goes to legion jj, with the git wrapper in front of it as run puts
+# it there; a `jj gerrit upload`, and a line jj may still expand, run the real jj here.
+if [ "$final" = push ] && [ "$word" = git ]; then
+  exec "$legion" jj --real "$real" -- "$force" --config-file=/dev/null "$@"
+fi
 run "$@"

@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `envoy_send`, `envoy_publish` and `envoy-send` report the Envoy listener's `503` that says the
+  message was not sent, given while the deployed stream does not capture the topic, as during a
+  hub move, as that answer: nothing was stored, so the message may be sent again later. Before,
+  they said the send was not confirmed delivered and might have arrived. An `envoy-send` run with
+  no `--idempotency-key` now prints `Claude Envoy send failed:` and the listener's sentence and
+  exits 1, as for a refusal, where it exited 75 and printed a resend under a key. Both tool
+  descriptions say so too.
+time: 2026-11-22T13:48:26Z
+custom:
+    Issue: pr4973

@@ -1,6 +1,8 @@
 package specgraph
 
 import (
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -92,8 +94,23 @@ func goTestName(name string) bool {
 	return name != "Test" && topLevelTestName.MatchString(name)
 }
 
-// slug is an id's form: lower-case letters and digits, in words joined by single hyphens.
-var slug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+// slug is an id's form: lower-case letters and digits, in words joined by single hyphens. It is
+// compiled from the pattern of the schema's id ($defs/id), the one source of the rule, so the
+// schema and Go refuse one set of values. A schema with no such pattern, or with one that Go cannot
+// compile, is a fault of the build: it panics.
+var slug = func() *regexp.Regexp {
+	var schema struct {
+		Defs struct {
+			ID struct {
+				Pattern string `json:"pattern"`
+			} `json:"id"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil || schema.Defs.ID.Pattern == "" {
+		panic(fmt.Sprintf("specgraph: the node schema gives no pattern of $defs/id: %v", err))
+	}
+	return regexp.MustCompile(schema.Defs.ID.Pattern)
+}()
 
 // positionWord is a word that states a position: digits alone ("step-3") or one letter and digits
 // ("s3", "r12"). A word such as "oauth2" or "ipv6" does not.

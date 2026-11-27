@@ -1,6 +1,6 @@
-// The listener's check of whether a session's plugin still holds a NATS connection: the two words
-// an answer gives for a session, and the one core request the send route makes for it, on the
-// session's own relay subject.
+// The listener's check of whether a session's plugin still holds a NATS connection: the three
+// words a send's answer gives for a session, and the one core request the send route makes for
+// it, on the session's own relay subject.
 
 package main
 
@@ -15,16 +15,20 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// The two words the send route's state and GET /v1/registry/<session_id>?include=…,stopped give
-// for a session. Connected is a session whose relay subject a subscriber holds - its probe was
-// answered or met silence - one whose entry records no consumer delivery, and one this listener
-// could not ask about; stopped is a session Envoy knows whose relay subject nobody holds, or one
-// it knows only by its known-session record. Neither is a session.State: StateOf, the reapers, role
+// The three words the send route's state gives for a session; GET
+// /v1/registry/<session_id>?include=…,stopped gives the second. Connected is a session whose relay
+// subject a subscriber holds - its probe was answered or met silence - one whose entry records no
+// consumer delivery, and one this listener could not ask about; stopped is a session Envoy knows
+// whose relay subject nobody holds, or one it knows only by its known-session record. no_receiver
+// is a session whose probe passed but whose entry advertises no delivery mode, as a Claude Code
+// terminal does while no mod is connected to it: the session runs, but nothing writes a message
+// into its conversation now. None of the three is a session.State: StateOf, the reapers, role
 // resolution and the session list never see them, and a session neither store knows is the 404
 // both routes answer.
 const (
-	sessionStateConnected = "connected"
-	sessionStateStopped   = "stopped"
+	sessionStateConnected  = "connected"
+	sessionStateStopped    = "stopped"
+	sessionStateNoReceiver = "no_receiver"
 )
 
 // connectionProbeTimeout bounds the one core request the send route makes on a target's relay
@@ -46,9 +50,9 @@ const connectionProbeTimeout = 1 * time.Second
 // (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply subject of
 // its own that names the session (bus.SessionReplySubject under a new inbox of the client's
 // connection, which an edge listener names under its machine's prefix), so its answer never
-// reaches the relay's reply handler, and the session may still answer it once natsgrant.Session
+// reaches the relay's reply handler, and a session on its own grant (natsgrant.Session), which
 // publishes bus.SessionReplies, its replies under its own id alone, in place of every _INBOX.
-// subject.
+// subject, answers it.
 //
 // Only NATS's no-responders status (nats.ErrNoResponders) is stopped: no subscription on this
 // server's cluster holds the subject, which is what a plugin whose connection closed leaves. A

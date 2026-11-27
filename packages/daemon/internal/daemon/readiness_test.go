@@ -23,6 +23,7 @@ func fastReadiness(t *testing.T, retry bootprobe.Retry) {
 // end, through a real dispatch.HTTPClient and a real daemon.Run(); this proves the adapter's own
 // three-way logic in isolation.
 func TestReadinessAttempt(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name        string
 		unreachable func(error) bool

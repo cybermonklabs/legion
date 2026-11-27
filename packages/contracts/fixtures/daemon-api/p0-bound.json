@@ -1,0 +1,13 @@
+{
+  "bound": 2,
+  "configured": 3,
+  "live": {
+    "bound": 2,
+    "setBy": {
+      "kind": "controller",
+      "session": "ses_controller"
+    },
+    "setAt": "2026-11-24T06:00:00Z",
+    "reason": "the P0 issues outran the gateway"
+  }
+}

@@ -30,6 +30,10 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 
 // resolveIssueRef resolves an existing native key or external GitHub link.
 // Creating a missing external issue is the responsibility of POST /issues.
+//
+// An external reference finds a link stored under either name of its repository's rename pair
+// (refs.Renames.URLSpellings), so `sjawhar/legion#1955` and `cybermonklabs/legion#1955` reach
+// the same issue, whichever name its link was stored under.
 func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if issueKeyPattern.MatchString(ref) {
@@ -44,9 +48,13 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 	if err != nil {
 		return "", err
 	}
+	var urls []string
+	for _, link := range externalURLs(repo, number) {
+		urls = append(urls, s.deps.Renames.URLSpellings(link)...)
+	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select distinct issue_key from issue_external_links where url = any($1) order by issue_key
-	`, externalURLs(repo, number))
+	`, urls)
 	if err != nil {
 		return "", err
 	}

@@ -7,11 +7,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // SIGTERM, flags every ready Sandbox pod one of whose containers' command, args or env values
 // carries a value of its Sandbox's Secrets. A role Secret holds the role's launcher token
 // (LAUNCHER_TOKEN, names.go) and its gh bundle (`github-hosts-<owner>`, `github-config-<owner>`),
-// and since #2008 also `github-default`, the bundle's default owner — a plain name every issue
-// pod's workspace-fetch and workspace-init args carry as `<owner>/<repo>`. The run at 90a60026
-// failed pod-shape on that: 19 ready pods × 6 role Secrets = 114 leaks, every one the owner name,
-// none a credential. The check must judge only the values that are secret: a pod carrying the owner
-// name in plain text is clean, and one carrying a launcher token or a hosts.yml is a leak.
+// including `github-default`, the bundle's default owner. The owner name is plain text in every
+// issue pod's workspace-init `--repo <owner>/<repo>` argument, so the check judges only the values
+// that are secret: a pod carrying that name is clean, and one carrying a launcher token or hosts.yml
+// is a leak.
 //
 // The script is driven as the stage drives it: a stub kubectl answers the Secret list from a
 // fixture and holds the watch open, the pod watch is a fixture file, SIGTERM makes it judge.
@@ -70,8 +69,9 @@ function secretListing(pod: string) {
   return JSON.stringify({ metadata: { resourceVersion: "1" }, items });
 }
 
-// One ready issue pod as the pod watch records it: workspace-fetch and workspace-init carry the
-// repository `<owner>/<repo>` and the cache URL naming the owner; its one `roles` container ready.
+// One ready issue pod as the pod watch records it: workspace-init carries the repository
+// `<owner>/<repo>` in its args and the cache URL naming the owner in its environment, and its one
+// `roles` container is ready.
 function podEvent(pod: string, uid: string, extraArgs: string[] = []) {
   return JSON.stringify({
     type: "MODIFIED",
@@ -85,19 +85,28 @@ function podEvent(pod: string, uid: string, extraArgs: string[] = []) {
       spec: {
         initContainers: [
           {
-            name: "workspace-fetch",
+            name: "workspace-init",
             args: [
               "workspace-init",
-              "fetch",
+              "provision",
+              "--issue",
+              "LEGSMOKE-1",
               "--repo",
               `${owner}/legion-smoke`,
-              "--cache-url",
-              `http://legion-legsmoke-cache-${owner}-legion-smoke-6687cbae.legion.svc:8418`,
+              "--default-branch",
+              "master",
+              "--root",
+              "/legion",
+              "--credential-helper",
+              "!legion git-credential",
+              ...extraArgs,
             ],
-          },
-          {
-            name: "workspace-init",
-            args: ["workspace-init", "provision", "--repo", `${owner}/legion-smoke`, ...extraArgs],
+            env: [
+              {
+                name: "LEGION_REPOSITORY_CACHE_URL",
+                value: `http://legion-legsmoke-cache-${owner}-legion-smoke-6687cbae.legion.svc:8418`,
+              },
+            ],
           },
         ],
         containers: [
@@ -166,7 +175,7 @@ describe("secret-leaks judges only the values that are secret", () => {
   const pod = "legion-legsmoke-legsmoke-1";
   const uid = "2b1c3c03-5708-431f-90d7-a9210d596d1f";
 
-  test("a pod whose args carry the default owner's name, as every issue pod's workspace-fetch and workspace-init do, is no leak", async () => {
+  test("a pod whose args carry the default owner's name, as every issue pod's workspace-init does, is no leak", async () => {
     const got = await verdictFor(podEvent(pod, uid), secretListing(pod));
     expect(got.unreadable).toBe(0);
     expect(got.unseen).toEqual([]);

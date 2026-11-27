@@ -36,16 +36,21 @@ func lastRelease(t *testing.T, capture *logtest.Recorder, grantID string) map[st
 }
 
 // TestAReleaseBodyNamesTheCommandItStarts: POST /v1/grants/{id}/values takes the command the
-// release starts as "command", beside a github_app narrowing or alone, and the reason the
-// session's own call gave as "reason", and the broker logs both with the reason the grant's
-// request gave, every value of 8 bytes or more the release handed out replaced by "[redacted]".
-// A command that is not a list of strings refuses the whole body, as any field of the wrong shape
-// does, and releases nothing.
+// release starts as "command", for a stored secret's grant and a GitHub profile's alike, and the
+// reason the session's own call gave as "reason", and the broker logs both with the reason the
+// grant's request gave, every value of 8 bytes or more the release handed out replaced by
+// "[redacted]". A command that is not a list of strings refuses the whole body, 400
+// INVALID_RELEASE, as any field of the wrong shape does, and releases nothing.
 func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	s := newNarrowingServer(t)
-	plain := s.grant(t, "PLAIN_KEY")
+	s := newProfileServer(t, minting)
+	app := s.grant(t)
+	worker := s.requestAs(t, s.key, s.enrollmentID, "WORKER_TOKEN")
+	if worker.GrantID == nil {
+		t.Fatalf("POST /v1/requests for WORKER_TOKEN = %+v, want an automatic grant", worker)
+	}
+	plain := *worker.GrantID
 
 	for _, row := range []struct {
 		name       string
@@ -54,8 +59,8 @@ func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
 		command    []string
 		callReason string
 	}{
-		{"alone", plain, map[string]any{"command": []string{"sh", "-c", "echo plain-v1"}}, []string{"sh", "-c", "echo [redacted]"}, ""},
-		{"beside a narrowing", s.grantID, map[string]any{"github_app": map[string]any{"owner": "ada"}, "command": []string{"gh", "pr", "list"}}, []string{"gh", "pr", "list"}, ""},
+		{"alone", plain, map[string]any{"command": []string{"sh", "-c", "echo worker-v1"}}, []string{"sh", "-c", "echo [redacted]"}, ""},
+		{"of a GitHub profile", app, map[string]any{"command": []string{"gh", "pr", "list"}}, []string{"gh", "pr", "list"}, ""},
 		{"with its call's own reason", plain, map[string]any{"command": []string{"sh", "-c", "true"}, "reason": "renew the deploy key"}, []string{"sh", "-c", "true"}, "renew the deploy key"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -71,10 +76,10 @@ func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
 	}
 
 	status, body := s.values(t, plain, map[string]any{"command": "sh -c true"})
-	if reply := decode[wireError](t, body); status != http.StatusBadRequest || reply.Code != "INVALID_NARROWING" || !strings.Contains(reply.Error, "command") {
-		t.Fatalf("POST values with a command that is no list = %d %s, want 400 INVALID_NARROWING naming command", status, body)
+	if reply := decode[wireError](t, body); status != http.StatusBadRequest || reply.Code != "INVALID_RELEASE" || !strings.Contains(reply.Error, "command") {
+		t.Fatalf("POST values with a command that is no list = %d %s, want 400 INVALID_RELEASE naming command", status, body)
 	}
-	if strings.Contains(string(body), "plain-v1") {
+	if strings.Contains(string(body), "worker-v1") {
 		t.Fatalf("the refused body answered the stored value: %s", body)
 	}
 }

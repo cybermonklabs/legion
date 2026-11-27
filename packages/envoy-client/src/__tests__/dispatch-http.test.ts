@@ -11,8 +11,10 @@ import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
+  CREDENTIAL_ECHOED,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
+  DispatchCredentialEchoError,
   DispatchGatewayError,
   DispatchNoRouteError,
   DispatchWriteUnsettledError,
@@ -838,12 +840,13 @@ describe("DispatchClient", () => {
     expect(await read()).toBe("");
   });
 
-  // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
-  // a retry there can post a message twice: the write is told to check what took effect. A 408 or
-  // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
-  // write never reached Dispatch and a retry may succeed. Any other status still gets the same
-  // advice as a read, since the request never got past the gateway either. Each status is one
-  // write's last attempt here; how the attempts before it are made is dispatch-keyed-writes.test.ts.
+  // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, and so can a
+  // 408, which a gateway can send when its own timeout runs out after it forwarded the request, so
+  // advising a retry there can post a message twice: the write is told to check what took effect.
+  // A 429 is the gateway's own rate limit, sent before it forwards the request, so the write never
+  // reached Dispatch and a retry may succeed. Any other status still gets the same advice as a
+  // read, since the request never got past the gateway either. Each status is one write's last
+  // attempt here; how the attempts before it are made is dispatch-keyed-writes.test.ts.
   test("tells a write a gateway answered whether it may have reached Dispatch", async () => {
     const page = (status: number, statusText: string) =>
       new Response(`<html><body><h1>${status} ${statusText}</h1></body></html>`, {
@@ -874,37 +877,199 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
-    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
-    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
-    const badGateway = await refusal();
-    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(badGateway.message).toBe(
-      `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
-        "it may or may not have taken effect. Dispatch finishes an attempt it received whatever this " +
-        "command does, so read the write back before you send it again: a new command sends it under a new key."
-    );
-    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ mayHaveReachedDispatch: true })
-    );
+    // A 502 or a 408 can come after Dispatch committed the write, so with no ask left the write
+    // ends unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     for (const [status, statusText] of [
+      [502, "Bad Gateway"],
       [408, "Request Timeout"],
-      [429, "Too Many Requests"],
     ] as const) {
-      const refused = await refusal();
-      expect(refused.message).toBe(
+      const unsettled = await refusal();
+      expect(unsettled).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect(unsettled.message).toBe(
         `${request}${status} ${statusText} with a body that is not Dispatch's error JSON ` +
-          `("${status} ${statusText}")${gateway}, so the write did not reach Dispatch, and a ` +
-          "retry may succeed."
+          `("${status} ${statusText}")${gateway} (its only attempt), and an attempt of the write ` +
+          "may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an " +
+          "attempt it received whatever this command does, so read the write back before you send " +
+          "it again: a new command sends it under a new key."
       );
-      expect(refused).toEqual(
-        expect.objectContaining({ transient: true, mayHaveReachedDispatch: false })
+      expect((unsettled as DispatchWriteUnsettledError).last).toEqual(
+        expect.objectContaining({ mayHaveReachedDispatch: true })
       );
     }
+    const tooMany = await refusal();
+    expect(tooMany.message).toBe(
+      `${request}429 Too Many Requests with a body that is not Dispatch's error JSON ` +
+        `("429 Too Many Requests")${gateway}, so the write did not reach Dispatch, and a retry ` +
+        "may succeed."
+    );
+    expect(tooMany).toEqual(
+      expect.objectContaining({ transient: true, mayHaveReachedDispatch: false })
+    );
     expect((await refusal()).message).toBe(
       `${page404}${gateway}, so a retry gets the same answer until the Dispatch URL, or whatever ` +
         "answers in its place, is fixed."
     );
+  });
+
+  // `dispatch api`'s routes: a 2xx is the route's own answer. Dispatch's JSON (typed JSON that
+  // parses, carrying no attachment disposition) is its payload; every other 2xx comes back as the
+  // bytes that came, with its Content-Type where it names one: a body that is not JSON (a file
+  // version's bytes, a document's Markdown download), typed JSON that does not parse, a bodiless
+  // 204's no bytes, and an attachment, which is stored content and is never parsed whatever its
+  // type, its disposition read in any case and with or without parameters (RFC 6266). A non-2xx
+  // page is still the gateway's error.
+  test("readRoute and sendRoute give every 2xx but Dispatch's JSON back as its bytes, an attachment unparsed, and still refuse a page", async () => {
+    const png = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe);
+    // A stored file's JSON, which a parse would change: an integer past 2^53 and a trailing zero.
+    const stored = '{"id":12345678901234567890,"ratio":1.10}';
+    const typed = (disposition: string): Response =>
+      new Response(stored, {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": disposition,
+        },
+      });
+    const { fetchImpl } = fakeFetch([
+      new Response(png, { status: 200, headers: { "Content-Type": "image/png" } }),
+      new Response("accepted", { status: 201 }),
+      new Response('{"cut', { status: 200, headers: { "Content-Type": "application/json" } }),
+      jsonResponse({ id: 7 }),
+      new Response(null, { status: 204 }),
+      typed(`attachment; filename="data.json"; filename*=UTF-8''data.json`),
+      typed("ATTACHMENT"),
+      typed(' Attachment ;filename="data.json"'),
+      typed('inline; filename="data.json"'),
+      new Response("<html>502 Bad Gateway</html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    const path = "/api/v1/artifacts/a1/versions/1";
+
+    expect(await client.readRoute(path)).toEqual({ body: png, type: "image/png" });
+    const accepted = await client.sendRoute("POST", "/api/v1/accepted", "{}");
+    expect(accepted).toEqual({ body: new TextEncoder().encode("accepted"), type: undefined });
+    expect(await client.sendRoute("PATCH", path, "{}")).toEqual({
+      body: new TextEncoder().encode('{"cut'),
+      type: "application/json",
+    });
+    expect(await client.readRoute(path)).toEqual({ payload: { id: 7 } });
+    expect(await client.readRoute(path)).toEqual({ body: new Uint8Array(), type: undefined });
+    for (let attachment = 0; attachment < 3; attachment++) {
+      expect(await client.readRoute(`${path}?download=true`)).toEqual({
+        body: new TextEncoder().encode(stored),
+        type: "application/json; charset=utf-8",
+      });
+    }
+    // Inline is no attachment: the same body is Dispatch's JSON, parsed.
+    expect(await client.readRoute(path)).toEqual({ payload: JSON.parse(stored) });
+    const page = await client.readRoute(path).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (error: unknown) => error
+    );
+    expect(page).toBeInstanceOf(DispatchGatewayError);
+    expect(page).toEqual(expect.objectContaining({ status: 502 }));
+  });
+
+  // No route of Dispatch's answers the caller's own credential, so a 2xx whose body holds what the
+  // request presented is something in Dispatch's place echoing it: the token (the one presented
+  // lately as well as the one held now, as `SentTokens` keeps them) or the request's DPoP proof,
+  // in a body that is not JSON, in Dispatch-shaped JSON, or in an attachment's bytes beside bytes
+  // no UTF-8 text holds. None of the body comes back, and the refusal names the status and that a
+  // write may have been made, to a read as to a write, and never that a retry may succeed.
+  test("readRoute and sendRoute refuse a 2xx whose body holds the token or the DPoP proof the request presented", async () => {
+    const tokens = [fixtureSecret("old"), fixtureSecret("live")];
+    const proofs = [fixtureSecret("proofa"), fixtureSecret("proofb")];
+    let presented = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        const at = Math.min(presented++, 1);
+        return { Authorization: `DPoP ${tokens[at]}`, DPoP: proofs[at] ?? "" };
+      },
+      secret: () => tokens[1] ?? "",
+    };
+    const live = tokens[1] ?? "";
+    const proof = proofs[1] ?? "";
+    const escapedProof = `\\u0070${proof.slice(1)}`; // Escape the "p" in the fixture prefix.
+    const { fetchImpl } = fakeFetch([
+      new Response("{}", { headers: { "Content-Type": "application/json" } }),
+      new Response(`you sent Authorization: DPoP ${live}`, { status: 200 }),
+      new Response(`{"headers":{"Dpop":["${escapedProof}"]}}`, {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+      new Response(`an echo of ${tokens[0]}`, { status: 200 }),
+      new Response(
+        Buffer.concat([
+          Buffer.from([0x89, 0x50, 0xff, 0xfe]),
+          Buffer.from(live),
+          Buffer.from([0xff]),
+        ]),
+        { headers: { "Content-Type": "image/png", "Content-Disposition": "attachment" } }
+      ),
+    ]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+    // The first request presents the old token, which `SentTokens` keeps after the renewal.
+    expect(await client.readRoute("/api/v1/whoami")).toEqual({ payload: {} });
+    const refusals = [
+      await client.readRoute("/api/v1/echo").catch((error: unknown) => error),
+      await client.sendRoute("POST", "/api/v1/echo", "{}").catch((error: unknown) => error),
+      await client.sendRoute("DELETE", "/api/v1/echo").catch((error: unknown) => error),
+      await client.readRoute("/api/v1/artifacts/a1/versions/1").catch((error: unknown) => error),
+    ];
+    const statuses = [200, 201, 200, 200];
+    refusals.forEach((refusal, index) => {
+      expect(refusal).toBeInstanceOf(DispatchCredentialEchoError);
+      expect(refusal).toEqual(
+        expect.objectContaining({
+          code: CREDENTIAL_ECHOED,
+          status: statuses[index],
+          fromDispatch: false,
+          message: `The answer had HTTP status ${statuses[index]} (2xx), so a write may have been made. The body held a credential this command presented. It is not printed. Something in Dispatch's place appears to have echoed the request. Check whether any write took effect before sending it again.`,
+        })
+      );
+    });
+  });
+
+  test("readRoute refuses a 2xx that echoes the proof of the stale attempt of the same call", async () => {
+    const oldProof = fixtureSecret("proofa");
+    const liveProof = fixtureSecret("proofb");
+    const oldToken = fixtureSecret("old");
+    const liveToken = fixtureSecret("live");
+    let renewed = false;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => ({
+        Authorization: `DPoP ${renewed ? liveToken : oldToken}`,
+        DPoP: renewed ? liveProof : oldProof,
+      }),
+      secret: () => (renewed ? liveToken : oldToken),
+      stale: () => {
+        renewed = true;
+      },
+    };
+    const { fetchImpl, requests } = fakeFetch([
+      jsonResponse({ code: "BROKER_TOKEN_NOT_ACTIVE", error: "not live" }, 401),
+      new Response(`echoed proof: ${oldProof}`, { status: 206 }),
+    ]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    await expect(client.readRoute("/api/v1/echo")).rejects.toMatchObject({
+      code: CREDENTIAL_ECHOED,
+      status: 206,
+    });
+    expect(requests.map(({ init }) => new Headers(init.headers).get("DPoP"))).toEqual([
+      oldProof,
+      liveProof,
+    ]);
   });
 
   // The excerpt and the reason phrase are text a gateway chose, and a misconfigured one can echo
@@ -1518,6 +1683,7 @@ test("createProject posts the key, name and actor and answers the created projec
     default_assignee: "alice@example.com",
     created_at: "2026-10-11T00:00:00Z",
     gated_steps: [],
+    proven_sessions: false,
   };
   const { fetchImpl, requests } = fakeFetch([jsonResponse(project, 201)]);
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl);

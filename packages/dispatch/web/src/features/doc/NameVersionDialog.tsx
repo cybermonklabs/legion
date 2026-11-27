@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop40,
   card,
@@ -27,10 +28,9 @@ export interface NameVersionDialogProps {
 
 /**
  * The "Name version" toolbar action's confirmation dialog — an in-app dialog rather than
- * `window.prompt`, matching the app's own focus-trap/Escape/backdrop dialog
- * convention (see ReferencePicker for the same shape). Unmounts entirely while closed so
- * `useDialog`'s `open` effect (focus trap, Escape, scroll lock) only ever runs while a caller
- * actually wants it showing.
+ * `window.prompt`, matching the app's own focus-trap/Escape/backdrop dialog convention
+ * (`useDialog`). Unmounts entirely while closed so `useDialog`'s `open` effect (focus trap,
+ * Escape, scroll lock) only ever runs while a caller actually wants it showing.
  */
 export function NameVersionDialog({
   error,
@@ -57,7 +57,10 @@ export function NameVersionDialog({
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+    // The Enter that ends an input method's composition takes the word composed, and is no
+    // Enter of the reader's: it saves nothing. Safari sends it after its compositionend, with
+    // `isComposing` false and keyCode 229 (`inputMethodKey`).
+    if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) {
       return;
     }
     event.preventDefault();

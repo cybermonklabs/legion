@@ -325,6 +325,44 @@ func TestARoleTopicInEitherFormNamesItsRole(t *testing.T) {
 	}
 }
 
+// A free-form role under a project key is that project's own claim, keyed <project>.<role>
+// (contracts.RoleClaimKey), whether a claim (ClaimedRole), a publish or a holder lookup (ReadRole)
+// or a lane topic names it; every other name keeps the bare key every claim had before, byte for
+// byte.
+func TestAFreeFormRoleUnderAProjectKeysOnThatProject(t *testing.T) {
+	for role, want := range map[string]string{
+		"lead-reviewer":                      "lead-reviewer",
+		"_.lead-reviewer":                    "lead-reviewer",
+		"PRIV.lead-reviewer":                 "PRIV.lead-reviewer",
+		"legion-priv-priv-1-architect":       "legion-priv-priv-1-architect",
+		"PRIV.legion-priv-priv-1-architect":  "legion-priv-priv-1-architect",
+		"INFRA.legion-priv-priv-1-architect": "legion-priv-priv-1-architect",
+		"priv.lead":                          "priv.lead",
+	} {
+		if got := RoleClaimKeyOf(role); got != want {
+			t.Errorf("RoleClaimKeyOf(%q) = %q, want %q", role, got, want)
+		}
+		if got, _ := (&Registry{}).ClaimedRole(role); got != want {
+			t.Errorf("ClaimedRole(%q) = %q, want %q", role, got, want)
+		}
+		if got, _ := (&Registry{}).ReadRole(role, func(string) bool { return true }); got != want {
+			t.Errorf("ReadRole(%q) = %q, want %q", role, got, want)
+		}
+	}
+	for topic, want := range map[string]string{
+		contracts.RoleSubject("PRIV", "lead-reviewer"):              "PRIV.lead-reviewer",
+		contracts.RoleSubject(contracts.NoProject, "lead-reviewer"): "lead-reviewer",
+		"notifications.role.lead-reviewer":                          "lead-reviewer",
+	} {
+		if got, ok := roleOfTopic(topic); got != want || !ok {
+			t.Errorf("roleOfTopic(%q) = %q, %v; want %q", topic, got, ok, want)
+		}
+	}
+	if got := rolesOfTopics([]string{"notifications.role.lead-reviewer", contracts.RoleSubject("PRIV", "lead-reviewer")}); !slices.Equal(got, []string{"PRIV.lead-reviewer", "lead-reviewer"}) {
+		t.Errorf("rolesOfTopics of the two projects' lanes = %q, want each project's own claim", got)
+	}
+}
+
 // What the rename leaves alone behaves as it did at the merge base: a registration naming only
 // topics in the new form or of a family the rename does not move is named in no warning and counted
 // nowhere, and the record stores each topic as the caller wrote it, whatever its form, as the merge

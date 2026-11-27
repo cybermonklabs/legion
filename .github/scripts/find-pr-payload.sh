@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The pull request payload a check of a pull request's text reads, as a file: its path on stdout.
-# ci.yaml's `pr-title` job hands that path to check-pr-text.sh as GITHUB_EVENT_PATH, because one
+# `.github/workflows/ci.yaml#pr-title` job hands that path to check-pr-text.sh as GITHUB_EVENT_PATH, because one
 # of the events that job runs on, a merge group, carries no pull request. pr-title.yaml runs on
 # an edit alone, whose payload carries it, so that workflow reads the run's own
 # GITHUB_EVENT_PATH and calls nothing here.
@@ -10,14 +10,20 @@
 # request, only the queue branch the group runs on,
 # refs/heads/gh-readonly-queue/<base>/pr-<number>-<head sha>, so the script reads the pull request
 # that branch names and writes it under RUNNER_TEMP in the shape check-pr-text.sh reads,
-# {pull_request: <the pull request>, number: <its number>}; a branch that names none is refused
-# rather than guessed at, since a group checked against the wrong pull request would report a
-# `pr-title` about somebody else's text.
+# {pull_request: {number, base: {sha}, head: {sha}}, number: <its number>}, the three things that
+# script reads of a payload; a branch that names none is refused rather than guessed at, since a
+# group checked against the wrong pull request would report a `pr-title` about somebody else's
+# text. It reads them through GitHub's GraphQL API, whose budget is its own, as check-pr-text.sh
+# reads the rest (that script's header says why); an answer that names no base and head sha is
+# refused.
 #
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
 #   GITHUB_EVENT_PATH  the payload Actions wrote for that event.
-#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request.
+#   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request,
+#                      through gh-read.sh's gh_wait_reset, which waits out a spent API budget
+#                      (GraphQL's here) within the job's JOB_TIMEOUT_MINUTES and fails by name
+#                      past it; the request is a file, so the call after a wait sends it again.
 #   GITHUB_REPOSITORY  owner/repo, as Actions sets it. merge_group only.
 #   RUNNER_TEMP        where the payload it writes lands. merge_group only.
 #
@@ -28,6 +34,8 @@
 # Its tests are in find-pr-payload.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
+# shellcheck source=.github/scripts/gh-read.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the event payload}
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
@@ -44,8 +52,20 @@ fi
 number=${BASH_REMATCH[2]}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must name the repository as owner/repo}
 temp=${RUNNER_TEMP:?RUNNER_TEMP must name the temporary directory of the runner}
-pull="$temp/pull-request.json"
 payload="$temp/pull-request-event.json"
-gh api "repos/$repository/pulls/$number" > "$pull"
-jq --argjson number "$number" '{pull_request: ., number: $number}' "$pull" > "$payload"
+answer="$temp/pull-request.json"
+request="$temp/pull-request-request.json"
+# shellcheck disable=SC2016 # $owner, $repo and $number are GraphQL's and jq's variables
+jq -n --arg owner "${repository%%/*}" --arg repo "${repository#*/}" --argjson number "$number" '{
+  operationName: "QueuedPull",
+  query: "query QueuedPull($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { number baseRefOid headRefOid } } }",
+  variables: {owner: $owner, repo: $repo, number: $number}}' > "$request"
+gh_wait_reset gh api graphql --input "$request" > "$answer"
+if ! jq -e --argjson number "$number" '.data.repository.pullRequest
+    | {pull_request: {number, base: {sha: .baseRefOid}, head: {sha: .headRefOid}}, number: $number}
+    | select((.pull_request.base.sha | type) == "string" and (.pull_request.head.sha | type) == "string")' \
+  "$answer" > "$payload"; then
+  echo "::error::GitHub's GraphQL API answered no base and head sha for #$number, the pull request $head_ref names" >&2
+  exit 1
+fi
 echo "$payload"

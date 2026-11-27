@@ -86,6 +86,12 @@ type Options struct {
 	LauncherWait time.Duration
 	// Log receives the listener's lines; nil is slog.Default().
 	Log *slog.Logger
+	// Listen takes the listener for the address Listen was given, as net.Listen takes network and
+	// address; nil binds it (listen). It is nil in production: the daemon passes its
+	// overrides.streamListen, which Run never sets. A test that must keep a fixed port across two
+	// listeners hands over one of a socket it holds for its whole run, so no other program can take
+	// the port between them (the daemon test's controllerSandboxRig).
+	Listen func(network, address string) (net.Listener, error)
 }
 
 // Listener accepts shim connections and keeps the live one for each claim. Its life is the
@@ -128,8 +134,8 @@ type Listener struct {
 	wg sync.WaitGroup
 }
 
-// Listen binds addr — "unix:///<absolute path>" or "tcp://<host>:<port>" — and serves it until
-// ctx ends.
+// Listen binds addr — "unix:///<absolute path>" or "tcp://<host>:<port>" — or takes it from
+// opts.Listen, and serves it until ctx ends.
 //
 // A unix path whose socket a dead listener left behind (a daemon killed before it could unlink)
 // is taken over; one a live listener still serves, or a path that is not a socket, is refused.
@@ -141,7 +147,12 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 	if err != nil {
 		return nil, err
 	}
-	ln, err := listen(network, address, opts.RPCTimeout)
+	var ln net.Listener
+	if opts.Listen != nil {
+		ln, err = opts.Listen(network, address)
+	} else {
+		ln, err = listen(network, address, opts.RPCTimeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("worker stream %s is unavailable: %w", addr, err)
 	}

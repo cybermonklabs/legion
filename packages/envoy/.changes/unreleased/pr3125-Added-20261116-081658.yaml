@@ -1,0 +1,5 @@
+kind: Added
+body: 'For a caller that sends `Dispatch-Trees: 1`, `GET /api/v1/references` answers each edge''s excerpt with the display tree of its text (`excerpt.text_tree`); the `409 ID_AMBIGUOUS` answer to an id written short gives each candidate''s first line its tree (`first_line_tree`), except a document''s, whose first line is its file''s name; and `GET /api/v1/handoffs/{id}` and `GET /api/v1/issues/{key}/handoffs/{phase}/latest` give the tree of each string the body''s fields hold, keyed by its JSON Pointer into the body (`field_trees`: `/summary` for a field, `/proof/0` for a `proof` entry, a `~` or `/` in a field''s name written `~0` or `~1`), or of the whole body under `""` when the body is not a JSON object. An edge without the header is written field for field as before.'
+time: 2026-11-16T08:16:58.401591476Z
+custom:
+    Issue: pr3125

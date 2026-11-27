@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`subjectProject` reads a takeover record''s subject (`notifications.envoy.takeover.<role>.<previous>.<attempt>`) for the project of the role''s claim key: a free-form role claimed under a project, `notifications.envoy.takeover.PRIV.lead-reviewer.<previous>.<attempt>`, is that project''s, where it read as no project''s before. A bare role name still reads as its own project''s.'
+time: 2026-11-21T12:21:36Z
+custom:
+    Issue: pr4810

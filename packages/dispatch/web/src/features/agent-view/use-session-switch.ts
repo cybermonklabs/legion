@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { CreateAgentMessageInput, Message, MessageRead } from "../../api/types";
+import type { CreateAgentMessageInput, DisplayTree, Message, MessageRead } from "../../api/types";
 import { rowAnsweredWithError } from "../conversation/delivery";
 import { storedMessages } from "./stored-messages";
 
@@ -43,6 +43,18 @@ export function switchMessageInput(request: SwitchRequest): CreateAgentMessageIn
  *  (`ended`). Only `posting` and `waiting` hold the pickers and Send. */
 type SwitchPhase = "posting" | "waiting" | "unanswered" | "ended";
 
+/** The line the header shows about a switch: the page's own words, and after them the session's
+ *  reply where the line quotes one. The reply is a stored message, so the line carries it as a
+ *  part the one reader draws (`SessionSwitchLines`) rather than as the text it stores. */
+export interface SwitchStatus {
+  readonly words: string;
+  readonly reply?: {
+    readonly body: string;
+    readonly id: string;
+    readonly tree: DisplayTree | undefined;
+  };
+}
+
 interface SwitchState {
   /** Which switch this is, so a send that answers after a newer one began changes nothing. */
   readonly id: number;
@@ -50,7 +62,7 @@ interface SwitchState {
   /** The stored message the switch is, once Dispatch answered its send. */
   readonly messageId?: string;
   readonly phase: SwitchPhase;
-  readonly status: string;
+  readonly status: SwitchStatus;
 }
 
 export interface SessionSwitch {
@@ -58,7 +70,7 @@ export interface SessionSwitch {
    *  it and the deadline has not passed. */
   readonly pending: boolean;
   /** The line the header shows about the latest switch, or undefined before any. */
-  readonly status: string | undefined;
+  readonly status: SwitchStatus | undefined;
   /**
    * Starts a switch whose send is `post`, and resolves with Dispatch's answer to it - `null` for a
    * switch Dispatch made and has no answer to give for, whose reply the thread shows when it
@@ -77,19 +89,19 @@ const ANSWER_LOST =
   "The switch was sent, but Dispatch lost its answer; the session's reply shows in the thread. The header shows the model and thinking level the session last reported.";
 
 /**
- * The session's answer to the switch `messageId`, as the stored thread holds it: its reply, quoted
- * exactly, or, while the switch still waits, its latest attempt failing with an error. A failed
- * attempt is the session's answer only when the session's own error reply failed it
- * (`rowAnsweredWithError`); one Dispatch failed itself means no answer came. A delivery the session
- * accepted as its user's turn has not failed, whatever a later send recorded. Undefined while there
- * is neither.
+ * The session's answer to the switch `messageId`, as the stored thread holds it: its reply, which
+ * the line quotes as the one reader draws it, or, while the switch still waits, its latest
+ * attempt failing with an error. A failed attempt is the session's answer only when the session's
+ * own error reply failed it (`rowAnsweredWithError`); one Dispatch failed itself means no answer
+ * came. A delivery the session accepted as its user's turn has not failed, whatever a later send
+ * recorded. Undefined while there is neither.
  */
 function storedAnswer(
   stored: readonly MessageRead[],
   sessionId: string,
   messageId: string,
   waiting: boolean
-): string | undefined {
+): SwitchStatus | undefined {
   const messages = storedMessages(stored);
   const reply = messages.find(
     (message) =>
@@ -97,7 +109,12 @@ function storedAnswer(
       message.author.kind === "session" &&
       message.author.id === sessionId
   );
-  if (reply !== undefined) return `The session answered: ${reply.body}`;
+  if (reply !== undefined) {
+    return {
+      reply: { body: reply.body, id: reply.id, tree: reply.body_tree },
+      words: "The session answered: ",
+    };
+  }
   if (!waiting) return undefined;
   const switched = messages.find((message) => message.id === messageId);
   if (switched === undefined) return undefined;
@@ -105,9 +122,11 @@ function storedAnswer(
   if (deliveries.some((attempt) => attempt.accepted_as === "user_turn")) return undefined;
   const attempt = deliveries.at(-1);
   if (attempt?.state !== "failed" || attempt.error === null) return undefined;
-  return rowAnsweredWithError(attempt)
-    ? `The session answered: ${attempt.error}`
-    : `No answer came from the session: ${attempt.error}`;
+  return {
+    words: rowAnsweredWithError(attempt)
+      ? `The session answered: ${attempt.error}`
+      : `No answer came from the session: ${attempt.error}`,
+  };
 }
 
 /**
@@ -168,10 +187,12 @@ export function useSessionSwitch(
         id,
         phase: "posting",
         sessionId,
-        status:
-          request.kind === "model"
-            ? `Switching model to ${request.value}…`
-            : `Switching thinking level to ${request.value}…`,
+        status: {
+          words:
+            request.kind === "model"
+              ? `Switching model to ${request.value}…`
+              : `Switching thinking level to ${request.value}…`,
+        },
       });
       let answer: Message | null;
       try {
@@ -182,7 +203,9 @@ export function useSessionSwitch(
       }
       if (answer === null) {
         setCurrent((previous) =>
-          previous?.id === id ? { ...previous, phase: "ended", status: ANSWER_LOST } : previous
+          previous?.id === id
+            ? { ...previous, phase: "ended", status: { words: ANSWER_LOST } }
+            : previous
         );
         return answer;
       }
@@ -195,7 +218,7 @@ export function useSessionSwitch(
                 ...previous,
                 messageId: answer.id,
                 phase: "ended",
-                status: `No answer came from the session: ${reason}`,
+                status: { words: `No answer came from the session: ${reason}` },
               }
             : previous
         );
@@ -207,7 +230,7 @@ export function useSessionSwitch(
       deadline.current = window.setTimeout(() => {
         setCurrent((previous) =>
           previous?.id === id && previous.phase === "waiting"
-            ? { ...previous, phase: "unanswered", status: NO_ANSWER }
+            ? { ...previous, phase: "unanswered", status: { words: NO_ANSWER } }
             : previous
         );
       }, SWITCH_ANSWER_DEADLINE_MS);

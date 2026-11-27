@@ -28,7 +28,11 @@ const (
 	// daemon holds the claim's next task from this moment. The round ends when every claim of
 	// the round has answered, no turn runs and no claim's activity report holds it
 	// (internal/daemon's roundEnd.holding), or at its bound, whichever comes first. Then the
-	// daemon replaces the process.
+	// daemon reads the pod's workspace and replaces the pod. Where that read finds work that no
+	// branch or tag on origin holds, or cannot be made, over a drift the pod's roles can keep
+	// working under, the round ends with no replacement instead: the daemon releases the held
+	// task, and the process works on in the kept pod (R7 of #5285,
+	// internal/daemon's roundKeeps).
 	UpdateStateAnswered UpdateState = "answered"
 )
 
@@ -46,8 +50,8 @@ const (
 //   - Everything left is `open`.
 //
 // A claim that answered and reported no head reads `answered` like any other. That is the case
-// `updateHead` alone cannot tell from a claim nobody ever asked, because a planner before its
-// first push answers with an empty head (supervise.Claim.UpdateHead).
+// `updateHead` alone cannot tell from a claim nobody ever asked, because a planner step that runs
+// before the branch's first push answers with an empty head (supervise.Claim.UpdateHead).
 func UpdateStateOf(c supervise.Claim) UpdateState {
 	switch {
 	case c.UpdateSignalledAt != nil:

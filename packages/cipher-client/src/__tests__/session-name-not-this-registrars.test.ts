@@ -61,15 +61,18 @@ async function refusalOf400(session: string, description: string): Promise<Broke
 test.each([
   ["another daemon holds", "ses_held", notThisRegistrars],
   ["bound to no daemon", "ses_unbound", boundToNone],
-] as const)("the refusal of a session name %s prints whole, and no trade cures it", async (_, session, refusalFor) => {
-  const refusal = await refusalOf400(session, refusalFor(session));
-  expect(refusal.said).toBe(refusalFor(session));
-  expect(refusal.message).toBe(
-    `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${refusalFor(session)}`
-  );
-  expect(refusal.podSessionUnregistered).toBe(false);
-  expect(isFinalRefusal(refusal)).toBe(true);
-});
+] as const)(
+  "the refusal of a session name %s prints whole, and no trade cures it",
+  async (_, session, refusalFor) => {
+    const refusal = await refusalOf400(session, refusalFor(session));
+    expect(refusal.said).toBe(refusalFor(session));
+    expect(refusal.message).toBe(
+      `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${refusalFor(session)}`
+    );
+    expect(refusal.podSessionUnregistered).toBe(false);
+    expect(isFinalRefusal(refusal)).toBe(true);
+  }
+);
 
 test("the same refusal naming a session the trade did not send is withheld", async () => {
   const refusal = await refusalOf400("ses_held", notThisRegistrars("ses_other"));

@@ -18,7 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -27,10 +27,11 @@ import (
 // whose characters past the prefix hold digits, from the first on and further in, and realValue a
 // value a swap puts in, built from parts so that no scanner reads it as a key.
 var (
-	held         = requests.PlaceholderPrefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
-	other        = requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
-	digitsFirst  = requests.PlaceholderPrefix + "0123AbCd4567EfGh89IjKlMnOpQrStUv"
-	digitsInside = requests.PlaceholderPrefix + "AbCd0123EfGh4567IjKl89MnOpQrStUv"
+	held         = placeholder.Prefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
+	other        = placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
+	digitsFirst  = placeholder.Prefix + "0123AbCd4567EfGh89IjKlMnOpQrStUv"
+	digitsInside = placeholder.Prefix + "AbCd0123EfGh4567IjKl89MnOpQrStUv"
+	mintedHeld   = placeholder.MintedPrefix("approve") + "RrEeSsUuLlTtGgRrAaNnTt0123456789"
 	realValue    = strings.Join([]string{"sk", "live", "REAL", "VALUE", "7f3c9a1e5b2d"}, "-")
 	at           = time.Date(2026, 11, 18, 21, 0, 0, 0, time.UTC)
 )
@@ -52,7 +53,7 @@ func holdsPlaceholder(text string) bool {
 // case, and false where text opens with no prefix.
 func prefixAt(text string) (int, bool) {
 	n := 0
-	for _, want := range requests.PlaceholderPrefix {
+	for _, want := range placeholder.Prefix {
 		r, size := utf8.DecodeRuneInString(text[n:])
 		if size == 0 || !strings.EqualFold(string(r), string(want)) {
 			return 0, false
@@ -62,18 +63,18 @@ func prefixAt(text string) (int, bool) {
 	return n, true
 }
 
-// tailsAfterPrefix is each run of requests.PlaceholderLength characters of the alphabet the broker
-// mints from (requests.PlaceholderAlphabet) that text writes right after a prefix, with how many
+// tailsAfterPrefix is each run of placeholder.Length characters of the alphabet the broker
+// mints from (placeholder.Alphabet) that text writes right after a prefix, with how many
 // times it is written there: what follows the prefix of a placeholder written whole.
 func tailsAfterPrefix(text string) map[string]int {
 	tails := map[string]int{}
 	for i := range text {
 		n, ok := prefixAt(text[i:])
-		if !ok || len(text)-i-n < requests.PlaceholderLength {
+		if !ok || len(text)-i-n < placeholder.Length {
 			continue
 		}
-		tail := text[i+n : i+n+requests.PlaceholderLength]
-		if !strings.ContainsFunc(tail, func(r rune) bool { return !strings.ContainsRune(requests.PlaceholderAlphabet, r) }) {
+		tail := text[i+n : i+n+placeholder.Length]
+		if !strings.ContainsFunc(tail, func(r rune) bool { return !strings.ContainsRune(placeholder.Alphabet, r) }) {
 			tails[tail]++
 		}
 	}
@@ -106,10 +107,10 @@ func isSubsequence(sub, s string) bool {
 }
 
 // tailRune is whether r is a character of a placeholder past its prefix: one of the alphabet the
-// broker mints from (requests.PlaceholderAlphabet), or a letter Unicode's simple folding reads as
+// broker mints from (placeholder.Alphabet), or a letter Unicode's simple folding reads as
 // one of it, as the prefix is read.
 func tailRune(r rune) bool {
-	for _, c := range requests.PlaceholderAlphabet {
+	for _, c := range placeholder.Alphabet {
 		if strings.EqualFold(string(r), string(c)) {
 			return true
 		}
@@ -148,14 +149,14 @@ func runsAfterMarks(text string) map[string]int {
 
 // leftPastPlaceholders is each run of tail characters a string that came in may have written
 // right after a Mark once its placeholders are masked: for each prefix, the run that follows the
-// requests.PlaceholderLength tail characters after it, up to the next prefix, and for each Mark
+// placeholder.Length tail characters after it, up to the next prefix, and for each Mark
 // the string wrote itself, the run after it (runsAfterMarks).
 func leftPastPlaceholders(text string) map[string]int {
 	left := runsAfterMarks(text)
 	for i := range text {
 		if n, ok := prefixAt(text[i:]); ok {
 			rest := text[i+n:]
-			left[tailRun(rest[len(tailRun(rest, requests.PlaceholderLength)):], -1)]++
+			left[tailRun(rest[len(tailRun(rest, placeholder.Length)):], -1)]++
 		}
 	}
 	return left
@@ -238,11 +239,12 @@ func tokensOf(line string) ([]span, error) {
 // what comes before it; and a line that held none is written as it came. Each string that held one
 // is a string, after the same separator, that holds no prefix and holds Mark where a placeholder
 // was; with each Mark taken out it is a subsequence of the string that came in, shorter by at most
-// a prefix and requests.PlaceholderLength characters for each Mark; no run of the minted alphabet
-// the string wrote right after a prefix (tailsAfterPrefix) is written more often than the string
-// wrote it with no prefix before it; and no Mark is followed by any run of a placeholder's
-// characters (tailRune) but one the string itself wrote past a placeholder's
-// requests.PlaceholderLength or after a Mark of its own (leftPastPlaceholders). So a caller's text
+// the longest opening a minted kind's prefix gives and placeholder.Length characters for each
+// Mark; no run of the minted alphabet the string wrote right after a prefix (tailsAfterPrefix) is
+// written more often than the string wrote it with no prefix before it; and no Mark is followed
+// by any run of a placeholder's characters (tailRune) but one the string itself wrote past a
+// placeholder's placeholder.Length or after a Mark of its own (leftPastPlaceholders). So a
+// caller's text
 // changes no token but its own, the mask takes out no more than the placeholders, and no
 // placeholder's characters are left in clear. It reads no pattern of the mask's. It answers how
 // many strings the mask wrote again, or why the masked line breaks the claim.
@@ -275,9 +277,9 @@ func maskedAsClaimed(plain, masked string) (int, error) {
 		if !isSubsequence(rest, before[i].text) {
 			return 0, fmt.Errorf("the masked string %q, with each %s taken out, is no subsequence of %q: the mask wrote text the string did not hold", after[i].text, Mark, before[i].text)
 		}
-		most := marks * (utf8.RuneCountInString(requests.PlaceholderPrefix) + requests.PlaceholderLength)
+		most := marks * (utf8.RuneCountInString(placeholder.Prefix) + placeholder.MaxMintedWord + 1 + placeholder.Length)
 		if removed := utf8.RuneCountInString(before[i].text) - utf8.RuneCountInString(rest); removed > most {
-			return 0, fmt.Errorf("the mask took %d characters out of %q for %d marks; want at most %d, a prefix and %d characters for each: %q", removed, before[i].text, marks, most, requests.PlaceholderLength, after[i].text)
+			return 0, fmt.Errorf("the mask took %d characters out of %q for %d marks; want at most %d, the longest minted opening and %d characters for each: %q", removed, before[i].text, marks, most, placeholder.Length, after[i].text)
 		}
 		for tail, afterPrefix := range tailsAfterPrefix(before[i].text) {
 			if written, own := countOverlapping(after[i].text, tail), countOverlapping(before[i].text, tail)-afterPrefix; written > own {
@@ -287,7 +289,7 @@ func maskedAsClaimed(plain, masked string) (int, error) {
 		left := leftPastPlaceholders(before[i].text)
 		for run, written := range runsAfterMarks(after[i].text) {
 			if run != "" && written > left[run] {
-				return 0, fmt.Errorf("the masked string %q writes %q right after %s %d times; want at most %d, the times %q writes it past a placeholder's %d characters or after a %s of its own: a placeholder's characters are left in clear", after[i].text, run, Mark, written, left[run], before[i].text, requests.PlaceholderLength, Mark)
+				return 0, fmt.Errorf("the masked string %q writes %q right after %s %d times; want at most %d, the times %q writes it past a placeholder's %d characters or after a %s of its own: a placeholder's characters are left in clear", after[i].text, run, Mark, written, left[run], before[i].text, placeholder.Length, Mark)
 			}
 		}
 	}
@@ -523,7 +525,7 @@ func TestTheMaskMasksEveryPlaceAPlaceholderReachesALine(t *testing.T) {
 // placeholder is, and none of them leaves the characters of the placeholder after it in clear;
 // letters past the minted length are no placeholder's, and are written as they came.
 func TestTheMaskMasksEachPlaceholderOfARun(t *testing.T) {
-	prefix := requests.PlaceholderPrefix
+	prefix := placeholder.Prefix
 	for _, c := range []struct{ name, text, want string }{
 		{"two placeholders written together", held + other, Mark + Mark},
 		{"two placeholders in upper case written together", strings.ToUpper(held + other), Mark + Mark},
@@ -536,6 +538,12 @@ func TestTheMaskMasksEachPlaceholderOfARun(t *testing.T) {
 		// A placeholder's characters are digits as well as letters, from the first on or further in.
 		{"a placeholder whose characters start with digits", "from " + digitsFirst + " on", "from " + Mark + " on"},
 		{"a placeholder whose characters hold digits further in", "from " + digitsInside + " on", "from " + Mark + " on"},
+		// A minted grant's placeholder opens with the prefix, its kind's word and a hyphen, which
+		// no minted character is: its 32 characters are masked with it, in any case.
+		{"a minted grant's placeholder", "from " + mintedHeld + " on", "from " + Mark + " on"},
+		{"a minted grant's placeholder in upper case", "from " + strings.ToUpper(mintedHeld) + " on", "from " + Mark + " on"},
+		{"a minted grant's placeholder beside a release's", mintedHeld + held, Mark + Mark},
+		{"a minted grant's placeholder of another kind's word", "from " + placeholder.MintedPrefix("result") + "RrEeSsUuLlTtGgRrAaNnTt0123456789 on", "from " + Mark + " on"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			plain, masked := brokerLines(t, nil, "a line", "v", c.text)
@@ -588,7 +596,7 @@ func TestTheMaskReadsTheLineAReplaceAttrWrote(t *testing.T) {
 // a placeholder after such a byte is masked as decoded, the line stays one JSON object and
 // DEEL_API_KEY stays as it was written.
 func TestTheMaskKeepsARefusalsOtherNames(t *testing.T) {
-	for _, name := range []string{"\x1agent-secrets-placeholder-", "\x1a" + requests.PlaceholderPrefix, "\x1a" + held, "\x00" + held, "a\\" + held, "a\"" + held} {
+	for _, name := range []string{"\x1agent-secrets-placeholder-", "\x1a" + placeholder.Prefix, "\x1a" + held, "\x00" + held, "a\\" + held, "a\"" + held} {
 		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
 			var names answer.SecretNames
 			names.Note("DEEL_API_KEY", name)
@@ -610,10 +618,10 @@ func TestTheMaskKeepsARefusalsOtherNames(t *testing.T) {
 // (checkMasked). Its seeds run as rows of every go test.
 func FuzzTheMaskKeepsALineOneJSONObject(f *testing.F) {
 	for _, seed := range []string{
-		"\x1agent-secrets-placeholder-", "\x1a" + requests.PlaceholderPrefix, "%1A" + requests.PlaceholderPrefix, "\x1a" + held, held, strings.ToUpper(held),
-		`\u0061gent-secrets-placeholder-x`, "\"" + held + "\"", "\\" + held, requests.PlaceholderPrefix[:10], "agent-secrets-placehold",
+		"\x1agent-secrets-placeholder-", "\x1a" + placeholder.Prefix, "%1A" + placeholder.Prefix, "\x1a" + held, held, strings.ToUpper(held),
+		`\u0061gent-secrets-placeholder-x`, "\"" + held + "\"", "\\" + held, placeholder.Prefix[:10], "agent-secrets-placehold",
 		"\xff\xfe" + held, "\x00\x01\x1f\x7f", "\u2028\u2029", "<b>&amp;" + held, "", "a\nb" + held, strings.Repeat(held, 3),
-		held + other, requests.PlaceholderPrefix + held, "from " + digitsFirst + " on", "from " + digitsInside + " on",
+		held + other, placeholder.Prefix + held, "from " + digitsFirst + " on", "from " + digitsInside + " on",
 	} {
 		f.Add(seed)
 	}
@@ -639,7 +647,7 @@ func FuzzTheMaskWritesEachLineAsOneJSONObject(f *testing.F) {
 	for _, seed := range []string{
 		line.String(), strings.ReplaceAll(line.String(), held, "clean"), line.String() + line.String(),
 		`{"m":"\u0061gent-secrets-placeholder-x"}`, `{"` + held + `":1}`, `{"m":"` + held + other + `"}`,
-		`{"m":"` + requests.PlaceholderPrefix + held + `"}`, `{"m":"\ud800` + held + `"}`, "{\"m\":\"\xff" + held + "\xfe\"}",
+		`{"m":"` + placeholder.Prefix + held + `"}`, `{"m":"\ud800` + held + `"}`, "{\"m\":\"\xff" + held + "\xfe\"}",
 		`{"m":"from ` + digitsFirst + ` on"}`, `{"m":"from ` + digitsInside + ` on"}`,
 		`{"m":"agent-ſecrets-placeholder-x"}`, `{"m":"a\"b\\c\/d\u2028","n":[1,-2.5e3,true,null,{"o":"p"}]}`,
 		`{"m":"<&>` + held + `"}`, `["` + held + `"]`, `"` + held + `"`, "level=INFO msg=" + held, "", "\n", "\n\n",
@@ -728,11 +736,11 @@ func TestAWriteOfManyLinesKeepsEachLineAndTheCallersBytes(t *testing.T) {
 		{"placeholder", `{"severity":"INFO","message":"a call","path":"/v1/` + held + `"}`, `{"severity":"INFO","message":"a call","path":"/v1/` + Mark + `"}`},
 		{"placeholder", `{"` + held + `":1,"m":"` + strings.ToUpper(other) + ` and <&>` + digitsFirst + `"}`, `{"` + Mark + `":1,"m":"` + Mark + ` and <&>` + Mark + `"}`},
 	}
-	tail := held[len(requests.PlaceholderPrefix):]
+	tail := held[len(placeholder.Prefix):]
 	escaped := []line{
 		{"\\u-escaped placeholder", `{"m":"\u0061gent-secrets-placeholder-` + tail + `"}`, `{"m":"` + Mark + `"}`},
 		{"\\u-escaped placeholder", `{"` + escapedEach(held) + `":"v","n":2}`, `{"` + Mark + `":"v","n":2}`},
-		{"\\u-escaped placeholder", `{"m":"a\"` + requests.PlaceholderPrefix + tail[:4] + escapedEach(tail[4:8]) + tail[8:] + `\n"}`, `{"m":"a\"` + Mark + `\n"}`},
+		{"\\u-escaped placeholder", `{"m":"a\"` + placeholder.Prefix + tail[:4] + escapedEach(tail[4:8]) + tail[8:] + `\n"}`, `{"m":"a\"` + Mark + `\n"}`},
 	}
 	for _, in := range []string{"level=INFO msg=" + held, `["` + held + `"]`, `{"message":"` + held, `{"m":"x"} {"n":"y"}`, "", `{"m":"\q"}`} {
 		notJSON = append(notJSON, line{"not-JSON", in, NotJSON})

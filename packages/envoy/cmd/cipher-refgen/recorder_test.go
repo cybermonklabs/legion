@@ -1,5 +1,9 @@
 package main
 
+//ci:reads packages/envoy/internal/cipher/api/*.go !**/*_test.go TestARefusalIsWrittenOnlyThroughARegisteredWriter checkRefusalWrites(repo root) parses it
+//ci:reads packages/envoy/internal/cipher/approval/*.go !**/*_test.go TestARefusalIsWrittenOnlyThroughARegisteredWriter checkRefusalWrites(repo root) parses it
+//ci:reads packages/envoy/internal/cipher/proxy/*.go !**/*_test.go TestARefusalIsWrittenOnlyThroughARegisteredWriter checkRefusalWrites(repo root) parses it
+
 import (
 	"fmt"
 	"maps"
@@ -26,6 +30,8 @@ func writeError(w http.ResponseWriter, status int, code, msg string) { w.WriteHe
 func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL string) {
 	writeError(w, status, code, msg)
 }
+
+func writeHoldRefusal(w http.ResponseWriter, status int, code, msg string) { writeJSON(w, status) }
 
 func writeJSON(w http.ResponseWriter, status int) { w.WriteHeader(status) }
 

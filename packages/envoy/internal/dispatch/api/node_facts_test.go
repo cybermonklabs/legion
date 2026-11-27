@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // nodeFacts is a node's six facts as a test compares them: each actor as "kind:id", each time as
@@ -80,6 +81,17 @@ func requireFacts(t *testing.T, what string, node model.GraphNode, want nodeFact
 		!reflect.DeepEqual(got.Parent, want.Parent) || !reflect.DeepEqual(got.ParentVersion, want.ParentVersion) {
 		t.Fatalf("%s facts = %s, want %s", what, got, want)
 	}
+}
+
+// requireMessageFacts fails unless node, a message's or a block of one, carries want's facts
+// other than parent_version. A message records no revisions and its blocks belong to it, so
+// neither loader of their nodes sets a version (loadMessageNodes in refs/graph.go,
+// loadMessageBlockNodes in refs/item_block_nodes.go), and a check that it is null could never
+// fail. The parent the check keeps, the issue or the message, is what has no version.
+func requireMessageFacts(t *testing.T, what string, node model.GraphNode, want nodeFacts) {
+	t.Helper()
+	want.ParentVersion = node.ParentVersion
+	requireFacts(t, what, node, want)
 }
 
 // requireSameNode fails unless got is the node want is, carrying want's six facts.
@@ -224,6 +236,7 @@ func createChildIssue(t *testing.T, handler http.Handler, project, parent, spec 
 // them; a fact Dispatch never recorded is empty. The facts are on the wire for every node, made_by
 // and changed_by as arrays even when empty.
 func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -372,12 +385,16 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	if len(followers) != 1 || followers[0].Node.Kind != "session" || followers[0].Node.ID != sessionID {
 		t.Fatalf("the ask's followers = %#v, want session %s", followers, sessionID)
 	}
-	requireFacts(t, "the session following the ask", followers[0].Node, nodeFacts{MadeBy: nobody, ChangedBy: nobody})
+	// The asking session is a node of the store from the ask it opened, which follows it
+	// (asks.Follow): made by itself at the ask's own time.
+	requireFacts(t, "the session following the ask", followers[0].Node,
+		unchanged(session, ask.CreatedAt, nil, nil))
 }
 
 // A11: the other end of an edge, a document read's block at an edge, and every node of a
 // block-links read carry the same facts as the node read by its own reference.
 func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	parentIssue := createSpecIssue(t, handler, "CORE", "Parent spec.\n")
@@ -456,9 +473,12 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 // R12: a node's last change is a change of its own text or fields. An ask's edit by a person who
 // did not write it names that person; its answer and its resolution change nothing of it. A
 // comment's edit by its author moves its last change; another person resolving it does not. A
-// claim is no change of the issue. A spec edit is the spec's last change and the edited block's,
-// and leaves the other blocks' and every block's maker.
+// message's edit by its author moves its last change as a comment's does
+// (PATCH /api/v1/messages/{id}), and the blocks that edit wrote move with it, as an edited
+// comment's blocks do. A claim is no change of the issue. A spec edit is the spec's
+// last change and the edited block's, and leaves the other blocks' and every block's maker.
 func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -522,6 +542,48 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	succeeded(t, "resolve the comment as bob", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve", nil, "bob"))
 	requireFacts(t, "the comment bob resolved", readNode(t, handler, commentRef), commentFacts)
 
+	// A message its author edits, the correction route this issue added: its last change is that
+	// edit, as an edited comment's is, and not the moment it was sent.
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message.\n\nIts second paragraph."}, "alice")
+	messageRef := issueRef + "/message/" + message.ID
+	ofMessage := &model.NodeParent{Kind: "message", ID: message.ID, Ref: messageRef}
+	requireMessageFacts(t, "the message as sent", readNode(t, handler, messageRef),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofIssue})
+	// messageBlockRefs is the reference to each current block of the message, by its text.
+	messageBlockRefs := func(step string) map[string]string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/messages/"+message.ID+"/blocks", nil, "alice")
+		succeeded(t, step, response)
+		refs := map[string]string{}
+		for _, block := range decodeBody[model.ItemBlocks](t, response).Blocks {
+			refs[block.Text] = block.Ref
+		}
+		return refs
+	}
+	sent := messageBlockRefs("read the message's blocks as sent")
+	requireMessageFacts(t, "a block of the message as sent", readNode(t, handler, sent["Its second paragraph."]),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofMessage})
+	edited := editIssueMessage(t, handler, message.ID, "A message.\n\nIts second paragraph, reworded.\n\nAnd a third.", "alice")
+	if edited.EditedAt == nil || !edited.EditedAt.After(message.CreatedAt) {
+		t.Fatalf("the message's edit at %v is not after it was sent at %s", edited.EditedAt, message.CreatedAt)
+	}
+	requireMessageFacts(t, "the message alice edited", readNode(t, handler, messageRef),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofIssue})
+	// The blocks the edit wrote are stamped at the edit, as an edited comment's are: the block it
+	// reworded changed then, the block it added was made then, and the block it left alone keeps
+	// the moment the message was sent.
+	corrected := messageBlockRefs("read the message's blocks after the edit")
+	if corrected["A message."] != sent["A message."] {
+		t.Fatalf("the block the edit left alone is %s, want the block the message was sent with, %s",
+			corrected["A message."], sent["A message."])
+	}
+	requireMessageFacts(t, "the message block the edit left alone", readNode(t, handler, corrected["A message."]),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofMessage})
+	requireMessageFacts(t, "the message block the edit reworded", readNode(t, handler, corrected["Its second paragraph, reworded."]),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofMessage})
+	requireMessageFacts(t, "the message block the edit added", readNode(t, handler, corrected["And a third."]),
+		nodeFacts{MadeBy: alice, MadeAt: edited.EditedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofMessage})
+
 	unclaimed := readNode(t, handler, issueRef)
 	succeeded(t, "claim the issue", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "bob"))
 	requireSameNode(t, "the claimed issue", readNode(t, handler, issueRef), unclaimed)
@@ -540,11 +602,77 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	requireSameNode(t, "the block bob did not edit", readNode(t, handler, otherRef), other)
 }
 
+// A comment's and an issue message's node carry the time their author last edited them
+// (edited_at), and so does each node of their current blocks, so a reference to a corrected post
+// or to a block of one says it was edited, and so does the edge that names it where it cites
+// something: the citing node of a Referenced by list. A post never edited, and its blocks, carry
+// none.
+func TestAnEditedPostsNodeAndItsBlocksCarryTheEditTime(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "Edited posts as nodes", "A spec")
+	cited := createReferenceAPIIssue(t, handler, "TEST")
+	issueRef, citedRef := "dispatch://"+issue.Key, "dispatch://"+cited.Key
+	body := "One.\n\nSee " + citedRef + "."
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+	posts := []struct{ kind, id, table string }{
+		{"comment", comment.ID, "comments"}, {"message", message.ID, "messages"},
+	}
+	requireEdited := func(step string, node model.GraphNode, want *time.Time) {
+		t.Helper()
+		if !sameInstant(node.EditedAt, want) {
+			t.Fatalf("%s: %s %s edited_at = %v, want %v", step, node.Kind, node.ID, node.EditedAt, want)
+		}
+	}
+	// requirePost checks the post's own node, each of its current blocks' nodes and the edge at
+	// the issue it cites, each against want.
+	requirePost := func(step, kind, id string, want *time.Time) {
+		t.Helper()
+		requireEdited(step+": the post", readNode(t, handler, issueRef+"/"+kind+"/"+id), want)
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/"+kind+"s/"+id+"/blocks", nil, "alice")
+		succeeded(t, step+": read the blocks", response)
+		blocks := decodeBody[model.ItemBlocks](t, response)
+		requireEdited(step+": the blocks read's item", blocks.Item, want)
+		if len(blocks.Blocks) != 2 {
+			t.Fatalf("%s: the %s's blocks = %#v, want its two", step, kind, blocks.Blocks)
+		}
+		for _, block := range blocks.Blocks {
+			requireEdited(step+": its block "+block.ID, readNode(t, handler, block.Ref), want)
+		}
+		var citing *model.GraphNode
+		for _, edge := range readGraph(t, handler, url.Values{"to": {citedRef}}).Edges {
+			if edge.Node.ID == id || edge.Node.Parent != nil && edge.Node.Parent.ID == id {
+				citing = &edge.Node
+			}
+		}
+		if citing == nil {
+			t.Fatalf("%s: no edge at %s names the %s %s", step, citedRef, kind, id)
+		}
+		requireEdited(step+": the node citing "+citedRef, *citing, want)
+	}
+	for _, post := range posts {
+		requirePost("as written", post.kind, post.id, nil)
+	}
+
+	editThreadComment(t, handler, comment.ID, "One, reworded.\n\nSee "+citedRef+".", "alice")
+	editIssueMessage(t, handler, message.ID, "One, reworded.\n\nSee "+citedRef+".", "alice")
+	for _, post := range posts {
+		var editedAt time.Time
+		if err := database.Pool.QueryRow(ctx, `select edited_at from `+post.table+` where id = $1`, post.id).Scan(&editedAt); err != nil {
+			t.Fatalf("read the edit of %s %s: %v", post.kind, post.id, err)
+		}
+		requirePost("after the edit", post.kind, post.id, &editedAt)
+	}
+}
+
 // R12: a block Dispatch first saw when it indexed its document, as the owed pass indexes a
 // document written before blocks shipped, has no maker on record: version 3, where it first
 // appears, need not be where it was made. Its last change is that version. A block a later
 // version adds names that version's author as its maker.
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -597,6 +725,7 @@ func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 // a block no current version holds is made as the block was, last changed by the version that
 // removed it, and part of the latest version indexed before that, the last known to hold it.
 func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -641,6 +770,7 @@ func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
 // current when it was written. A later edit of the document and the ask's answer, which each move
 // the block's changed version, leave it there.
 func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -676,13 +806,10 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	succeeded(t, "answer the block ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"selected": []string{"Ship"}, "expected_edited_at": ask.EditedAt,
 	}, "alice"))
-	deadline := time.Now().Add(10 * time.Second)
-	for readNode(t, handler, blockRef).ChangedVersion <= before {
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer never moved the block's changed version past %d", before)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the answer to move the block's changed version past %d (its last version)", before), func() (int, bool) {
+		changed := readNode(t, handler, blockRef).ChangedVersion
+		return changed, changed > before
+	})
 	want("after its answer")
 }
 
@@ -690,6 +817,7 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 // does not decode as its column's shape (one actor, or a list of them) fails the read with a 500,
 // never a node made by nobody recorded.
 func TestAnActorThatDoesNotDecodeFailsTheRead(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")

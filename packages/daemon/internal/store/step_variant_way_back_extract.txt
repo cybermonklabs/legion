@@ -1,0 +1,22 @@
+# A copy of the way back of the release that names the variant on each step record, as
+# docs/kubernetes.md carries it under "Rolling back the release that names the variant on each
+# step record": the content of the fenced block that holds
+# `update outbox set payload = payload - 'experiment' - 'variant'`, in the guide's own bytes and
+# none of the prose around it, `<PROJECT>` standing for the key of the project that rolls back.
+#
+# The guide answers for the block in two halves. This package's
+# TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads runs this copy over queued rows and kept
+# starts and reads them as the release before reads them; packages/daemon/internal/textcheck's
+# TestTheStepVariantWayBackExtractIsTheGuidesBlock holds this copy to the guide's fenced block.
+# The split keeps the guide out of this package's CI filter, as the phase entry's way back does
+# (internal/daemon/upgrade_way_back_extract.txt): an edit to the guide alone starts the text-check
+# run rather than every Go lane.
+
+-- The experiment and the variant of the step records one project still has queued.
+update outbox set payload = payload - 'experiment' - 'variant'
+where kind = 'step_record' and (payload ? 'experiment' or payload ? 'variant')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The experiment and the variant of the starts one project keeps.
+update step_starts set record = record - 'experiment' - 'variant'
+where (record ? 'experiment' or record ? 'variant')
+  and split_part(issue, '-', 1) = '<PROJECT>';

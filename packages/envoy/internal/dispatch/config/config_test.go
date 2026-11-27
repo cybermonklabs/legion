@@ -165,7 +165,12 @@ func TestLoadEnvironmentOverridesMergedConfig(t *testing.T) {
 	}
 }
 
+// Each refusal names the variable, and a NATS_URLS entry by its position, and holds none of the
+// value: the rows with a made-up password in a URL's userinfo fail when the value prints.
 func TestLoadRejectsInvalidEnvironmentOverrides(t *testing.T) {
+	const madeUp = "madeUpDispatchPassword"
+	withPassword := "https://legion:" + madeUp + "@dispatch.example"
+	natsWithPassword := "nats://legion:" + madeUp + "@127.0.0.1:4222"
 	for _, tc := range []struct {
 		name        string
 		environment map[string]string
@@ -174,11 +179,14 @@ func TestLoadRejectsInvalidEnvironmentOverrides(t *testing.T) {
 		{name: "empty server URL", environment: map[string]string{"DISPATCH_SERVER_URL": ""}, variable: "DISPATCH_SERVER_URL"},
 		{name: "non-http scheme", environment: map[string]string{"DISPATCH_SERVER_URL": "ftp://dispatch.example"}, variable: "DISPATCH_SERVER_URL"},
 		{name: "userinfo", environment: map[string]string{"DISPATCH_SERVER_URL": "https://user@dispatch.example"}, variable: "DISPATCH_SERVER_URL"},
+		{name: "userinfo with a password", environment: map[string]string{"DISPATCH_SERVER_URL": withPassword}, variable: "DISPATCH_SERVER_URL"},
 		{name: "query", environment: map[string]string{"DISPATCH_SERVER_URL": "https://dispatch.example?next=oauth"}, variable: "DISPATCH_SERVER_URL"},
 		{name: "fragment", environment: map[string]string{"DISPATCH_SERVER_URL": "https://dispatch.example#oauth"}, variable: "DISPATCH_SERVER_URL"},
 		{name: "path", environment: map[string]string{"DISPATCH_SERVER_URL": "https://dispatch.example/auth/callback"}, variable: "DISPATCH_SERVER_URL"},
-		{name: "empty NATS URLs", environment: map[string]string{"NATS_URLS": ""}, variable: "NATS_URLS"},
-		{name: "empty NATS URL element", environment: map[string]string{"NATS_URLS": "nats://one:4222, "}, variable: "NATS_URLS"},
+		{name: "empty NATS URLs", environment: map[string]string{"NATS_URLS": ""}, variable: "NATS_URLS entry 1 of 1 is empty"},
+		{name: "empty NATS URL element", environment: map[string]string{"NATS_URLS": "nats://one:4222, "}, variable: "NATS_URLS entry 2 of 2 is empty"},
+		{name: "a trailing comma after a URL with a password", environment: map[string]string{"NATS_URLS": natsWithPassword + ","},
+			variable: "NATS_URLS entry 2 of 2 is empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(environment(tc.environment), LoadOptions{CWD: t.TempDir(), HomeDir: t.TempDir()})
@@ -187,6 +195,11 @@ func TestLoadRejectsInvalidEnvironmentOverrides(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.variable) {
 				t.Fatalf("error: got %q, want %s", err, tc.variable)
+			}
+			for _, value := range tc.environment {
+				if len(value) >= 10 && strings.Contains(err.Error(), value) || strings.Contains(err.Error(), madeUp) {
+					t.Fatalf("error %q holds the value it refuses", err)
+				}
 			}
 		})
 	}

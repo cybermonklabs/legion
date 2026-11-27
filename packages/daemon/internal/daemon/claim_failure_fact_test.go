@@ -49,6 +49,7 @@ func (h *claimFailures) applied() []intake.ClaimFailed {
 // limit. The hook the fact travels is the daemon's own, as the boot's attach wires it
 // (claimDurableState, applyTerminal), limits included.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	ctx := context.Background()
 	limits := supervise.Limits{LaunchFailures: 2, PromptFailures: 3, PromptRetires: 2}

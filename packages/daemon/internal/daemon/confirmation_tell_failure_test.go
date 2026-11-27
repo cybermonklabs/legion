@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -19,6 +21,7 @@ import (
 // October 2026). What this test holds is the other half: the decision is told again, never zero
 // times, so a failed write cannot lose it.
 func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
+	t.Parallel()
 	r := newHeldTaskRig(t)
 	ref := "dispatch://" + heldTaskRoot + "/ask/ask-told"
 	keepDecision(t, r.pool, r.records, heldTaskRoot, ref, time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC))
@@ -63,7 +66,7 @@ func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
 	// The root's next generation: its start task names what the root still keeps.
 	r.readmit()
 	var task string
-	err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		task, _, err = r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
 		return err

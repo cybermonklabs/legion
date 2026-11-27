@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 246, where each issue of the state can carry `podHold`, the standing hold of the issue's pod.
+time: 2026-11-22T04:45:00Z
+custom:
+    Issue: state-pod-hold

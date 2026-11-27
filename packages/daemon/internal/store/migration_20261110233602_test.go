@@ -10,13 +10,12 @@ import (
 const pastReviewStartsVersion = 20261110233602
 
 // 20261110233602 takes the admission-slot mark off every queued start of a phase that holds no
-// slot any more. An issue keeps one of the cap's slots until its work is past its review, except
-// while it waits on another issue (blockers.waitsOf), so accepting, retro and merging hold none
-// (record.KeepsSlot), and a start the previous release
-// marked for a slot in one of those phases would wait for a row its issue never takes again:
-// record.Store's outboxInOrder holds a marked start unclaimable while the slots table names no
-// row of its issue, so the row would stand in the outbox for ever and the tree would stop at its
-// retro.
+// slot any more. An issue keeps one of the cap's slots while it stands in a phase that keeps one,
+// except while it waits on another issue (blockers.waitsOf), and accepting, retro and merging
+// keep none (record.KeepsSlot), so a start the previous release marked for a slot in one of
+// those phases would wait for a row its issue never takes in that phase: record.Store's
+// outboxInOrder holds a marked start unclaimable while the slots table names no row of its
+// issue, so the row would stand in the outbox for ever and the tree would stop at its retro.
 //
 // The rows here are written as the previous release wrote them, through SQL rather than through
 // workflow.StartOrOwe, which no longer marks a start of those phases at all. The negative
@@ -24,6 +23,7 @@ const pastReviewStartsVersion = 20261110233602
 // which still holds a slot and still waits for it; a supervise row that is no start; and a row
 // of another kind whose payload carries the same field name.
 func TestTheStartsPastReviewLoseTheSlotMarkAfter20261110233602(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, pastReviewStartsVersion-1)

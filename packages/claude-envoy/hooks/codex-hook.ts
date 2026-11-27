@@ -127,7 +127,7 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
 
   const chosen = sessionConfigFile("codex", process.env)
-  const { dispatch, warnings } = sessionDispatchSettings(chosen, process.env, {
+  const { dispatch, warnings } = await sessionDispatchSettings(chosen, process.env, {
     cwd: input.cwd,
     session: input.session_id,
   })

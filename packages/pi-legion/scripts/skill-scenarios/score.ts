@@ -12,11 +12,29 @@
 //     legend saying what each count is. Each scenario's rule is on the function that scores it:
 //     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
 //     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below).
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+//     with its reason and left out of the counts (unscored, below). A scored scenario's run
+//     (owner-walk) is scored by the next command alone.
+//   score.ts runs <runs dir> --run <name>
+//     One run of a scored scenario (scored-runs.ts SCORED_SCENARIOS), <runs dir>/<name>, whose
+//     directory is owner-walk-<kind>-<form>-<family>-<label>-<n>. It writes model.txt (each model
+//     the run's transcript names, `<provider>/<model>`, one a line), then either the rig error of
+//     unscored, or the scenario's score (scored-runs.ts ownerWalk: score.json and judge-input.md),
+//     and the run's row.json (RunRow of scored-runs-contracts.ts: its clauses and its reach, or its
+//     rig error), which it also prints as one line of JSON. A rig error takes away the run's
+//     score.json and judge-input.md. Run it again once judgment.json is written: it reads the
+//     verdicts. Exit 0 for either row; 2 for a name of no scored scenario's run.
+//   score.ts cells <runs dir> <scenario>
+//     Each cell of the scenario's runs (scored-runs.ts cells), one CellLine of JSON a line, from
+//     each run's row.json and world.json; stderr names each run that is in no cell.
+//   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
+//     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
+//     prints: a case form's at <count>, and a control form's the control's own over every owner,
+//     with the verdict cells gives it. Exit 2 for a count that is no whole number above 0.
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { RECORD_HEAD } from "@legion/pi-shared/handoff-record";
 import { z } from "zod";
 // The gate's own names for its rules and the line its refusal opens with, read from the module
 // that writes them, so this rig scores what AskGate actually says. The rigs are not shipped
@@ -38,7 +56,17 @@ import {
   QuestionsOutput,
   SharedRunsFile,
 } from "./judge-prompts";
+import { caseName, ownerWalkRun } from "./owner-walk";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+import {
+  caseCell,
+  cells,
+  modelProblem,
+  ownerWalk,
+  SCORED_SCENARIOS,
+  transcriptModels,
+} from "./scored-runs";
+import { RunRow, runPass } from "./scored-runs-contracts";
 import {
   CREATED,
   SessionEntry,
@@ -116,27 +144,52 @@ const DaemonLine = z.looseObject({
   handoffVersion: z.number().optional(),
 });
 const nonEmpty = z.string().min(1);
-/** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
- * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
- * (`schemaVersion` 1, `phase` test and its `issue`), the verdict on the implementer's recorded
- * results, and the failures, each naming the check it is against. What the tester ran is no part
- * of the handoff: it is a result recorded against a `check` block of the issue's Verification
- * document (`dispatch result`), which the pull request body carries one line of per check. The
- * body carries
- * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
- * versions it; the object is loose, so a body from a checkout whose prompt still asks for
- * `previousHandoff` (main's, since sjawhar/legion#2585) or for a `completed` time (the prompt
- * before it) reads too, and the comparison measures the rule the score is about rather than the
- * fields the labels' prompts vary.
- * Nothing stamps a handoff for the tester: it writes the whole body and records it with
- * `dispatch handoff-write`. */
-export const TestHandoff = z.looseObject({
-  schemaVersion: z.literal(1),
-  phase: z.literal("test"),
-  issue: nonEmpty,
+/** The keys a test handoff holds, as the tester role's prompt gives them, each with the shape the
+ * score reads (TestHandoff): `head`, a `note` where the tester has one, and, until
+ * dispatch://INFRA-4930 moves them to results on the issue's checks, `implementerProof`, `failures`
+ * and `failed`. */
+const TEST_HANDOFF_KEYS = {
+  head: z.string().regex(RECORD_HEAD),
+  note: z.string().optional(),
   implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
   failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-});
+  failed: z.number().int().nonnegative().optional(),
+};
+/** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
+ * daemon holds it to one), as far as the score reads it: `head`, the commit the tester tested, as
+ * 40 lower-case hexadecimal characters (pi-shared's `RECORD_HEAD`, as `recordHead` reads it); a
+ * `note`, whose length the score does not read; the verdict on the implementer's recorded
+ * results; and the failures, each naming the check it is against, with their count. What the
+ * tester ran is no part of the handoff: it is a result recorded against a `check` block of the
+ * issue's Verification document (`dispatch result`), which the pull request body carries one line
+ * of per check. The record holds the issue (`issue_key`) and the phase, and Dispatch records when
+ * each handoff was written and versions it, so the body holds no stamp, no time and no
+ * `previousHandoff`.
+ * The body is held to those keys on purpose. The check reads the own keys of the input, the object
+ * that `JSON.parse` made, before an object schema copies it: the output of an object schema never
+ * holds a `__proto__` key. A loose object assigns that key, which sets the output's prototype (so a
+ * `failures` in it would reach testerProof unchecked), and a plain object drops it. Each own key
+ * outside TEST_HANDOFF_KEYS, `__proto__` and inherited names such as `constructor` included, is one
+ * issue at that key, `a test handoff holds no <key>`, which `z.prettifyError` prints by name and
+ * which the tests read. The pipe runs the object schema only when the check refuses no key. So a
+ * base checkout's body, whose prompt still gives `schemaVersion`, `phase` and `issue` (and, in
+ * older prompts, `previousHandoff`, a `completed` time, `proof` or `classSearch`), is refused, and
+ * that refusal is what the negative control of INFRA-4942's `d-scenario` check reads.
+ * Nothing stamps a handoff for the tester: it writes the whole body and records it with
+ * `dispatch handoff-write`. */
+export const TestHandoff = z
+  .unknown()
+  .superRefine((input, context) => {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) return;
+    for (const key of Object.keys(input))
+      if (!Object.hasOwn(TEST_HANDOFF_KEYS, key))
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: `a test handoff holds no ${key}`,
+        });
+  })
+  .pipe(z.object(TEST_HANDOFF_KEYS));
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
@@ -417,9 +470,9 @@ const GateEntry = z.looseObject({
 type GateEntry = z.infer<typeof GateEntry>;
 /** How a refused call's error result starts when a model's revise in block mode stopped it. */
 const NOT_SENT = "AskGate did not send this call.";
-/** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
- * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
-const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
+/** A flag under which a `dispatch` command stores nothing, so AskGate does not review the call
+ * (`NO_STORE_FLAGS` in pi-envoy's askgate-core.ts). */
+const NO_STORE = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
 /** Every case rig.sh's run_askgate has a prompt for. */
 const ASKGATE_CASES = [
   "facts",
@@ -493,8 +546,8 @@ const FAILURE_12 = /\bcontent\s+(?:failures?\s+)?12\b|(?:^|[^\w.])12\s*\(\s*cont
 /** The gate entry outcomes that record a refusal no review stands behind (askgateReview). */
 const NOT_REVIEWS = ["unreadable", "unmarked"];
 
-/** askgate: AskGate (the pi-envoy plugin's review of each Dispatch write) on a seeded issue whose
- * one comment is the person's. The run's label is its profile: `off` was built with
+/** askgate: AskGate (the pi-envoy plugin's review of each gated Dispatch write) on a seeded issue
+ * whose one comment is the person's. The run's label is its profile: `off` was built with
  * `{"askgate":{"enabled":false}}` in its envoy.json, every other label leaves the gate on. The
  * run's directory names its case, and `case.txt` names the prompt rig.sh gave, which must be the
  * same case. The row's scenario is `askgate:<case>`, so the counts are per case. A gate entry with
@@ -551,7 +604,7 @@ function askgateReview(runDir: string, run: string, label: string, dirCase: stri
       (c) =>
         c.tool === "bash" &&
         /\bdispatch\s+ask\b/.test(c.command) &&
-        !NO_SEND.test(c.command) &&
+        !NO_STORE.test(c.command) &&
         !NOT_REVIEWS.includes(gates.find((g) => g.toolCallId === c.id)?.outcome ?? "")
     );
     if (call === undefined) return row(false, "askCall=none");
@@ -662,10 +715,10 @@ function instant(text: string, what: string): bigint {
  *   2. the accepted completion names a record of the run's issue, at its version, recorded before
  *      the completion: the record comes first, since the `legion` tool's handoff_complete reports
  *      the phase's newest record and refuses when there is none;
- *   3. that record is a `test` record this run's own session wrote (the transcript header's id, the
- *      session `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) of this
- *      issue with `implementerProof.verdict` `verified` and no failures; and the branch as the
- *      tester
+ *   3. that record is a `test` record of this issue (the record's `issue_key`, since the body holds
+ *      no issue) that this run's own session wrote (the transcript header's id, the session
+ *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) with
+ *      `implementerProof.verdict` `verified` and no failures; and the branch as the tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
@@ -749,6 +802,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
     if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
+    if (record.issue_key !== world.key)
+      problems.push(`the record is ${record.issue_key}'s, not ${world.key}'s`);
     if (record.author.kind !== "session" || record.author.id !== ownSession)
       problems.push(
         `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
@@ -762,8 +817,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
     else {
-      const { issue, implementerProof, failures = [] } = read.data;
-      if (issue !== world.key) problems.push(`issue is ${issue}, not ${world.key}`);
+      const { implementerProof, failures = [] } = read.data;
       if (implementerProof.verdict !== "verified")
         problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
       if (failures.length > 0) problems.push(`${failures.length} failures`);
@@ -803,8 +857,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
- * batch's Postgres container (its id) and the server on it. */
+/** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database on the
+ * batch's Postgres (the container's id, or the given server's URL with no password) and the server
+ * on it. */
 const RunDispatch = z.object({
   postgres: z.string().min(1),
   database: z.string().min(1),
@@ -838,13 +893,15 @@ const BATCH_DISPATCH_NOTE =
 // (turns.txt, state-<turn>.json), the captured issue (spec.md, spec-versions/, agent-asks.json,
 // agent-texts.json, documents/, plan.md) and the judges' answers (faults.json and the rest).
 
-/** The outline every spec must follow: its `##` headings, exactly and in this order. The checks
- * are not among them: they live in the issue's Verification document, as `check` blocks. */
+/** The outline every spec must follow: its `##` headings, exactly and in this order. The
+ * Verification part only points to the issue's Verification document, which holds the checks as
+ * `check` blocks. */
 export const OUTLINE = [
   "Summary",
   "Problem",
   "Goals and non-goals",
   "Requirements",
+  "Verification",
   "Design",
   "Decisions",
 ] as const;
@@ -1241,9 +1298,9 @@ function withPythonDispatch(code: string): string {
  * command ends the call, except one after `&&` that follows a shown refusal: the shell never ran
  * it.
  *
- * The refusals score does not rest on this attribution: the CLI logs each call it ran, refused or
- * not, in its ledger (refusalBlocks), and the attribution only says which command of a call a
- * ledger line belongs to. The output does not show:
+ * The refusals score does not rest on this attribution: the CLI logs each spec command it ran,
+ * refused or not, in its ledger (refusalBlocks), and the attribution only says which command of a
+ * call a ledger line belongs to. The output does not show:
  * - the end of another command's output (`cat`, `sed`, a `dispatch` command that succeeded), so a
  *   refusal after it could be that output's text;
  * - output a `$(…)` or a redirect to a file takes;
@@ -1454,11 +1511,12 @@ type LedgerLine = z.infer<typeof LedgerLine>;
  * The CLI logs every call it ran, refused or not, whatever the shell did with its output: a pipe,
  * `$(…)`, a loop or another program (Python's subprocess.run) hides nothing from it. A refusal the
  * CLI makes before the call reaches Dispatch is logged too whenever the call knows its session: a
- * refusal of a command's own arguments (`dispatch <command> was not called`, exit 1) under its
+ * refusal of a command's own arguments (`dispatch <command> was not called`, exit 2) under its
  * tool, and a usage refusal (`dispatch: …`, exit 2) under its tool, or under `dispatch` when the
- * CLI could not name the command. It logs no `--help` call that printed help and no dry run that
- * passed; a `--help` of an unknown command is a usage refusal and is logged. A run with
- * no ledger is the rig's fault: its CLI kept no record where the rig reads it. */
+ * CLI could not name the command. It logs no `--help` call that printed help, no dry run that
+ * passed and no `dispatch proxy` or `dispatch login` call; a `--help` of an unknown command is a
+ * usage refusal and is logged. A run with no ledger is the rig's fault: its CLI kept no record
+ * where the rig reads it. */
 function ledgerOf(runDir: string, session: string): LedgerLine[] {
   const state = { XDG_STATE_HOME: path.join(runDir, "home", ".local", "state") };
   const file = path.join(sessionDirectory(state, session), "results.jsonl");
@@ -1520,12 +1578,14 @@ function refusalBlocks(
   }));
   const logged = new Set<number>();
   for (const call of calls) {
-    // The commands of the call the CLI logged: every one but a `--help` that printed help, and a
-    // `--dry-run` only when its argument check refused it. The CLI checks a command's name before
-    // its flags, so a help call of an unknown command is refused and logged like any usage
-    // refusal. A usage refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could
-    // not name the command, so the ledger line and the printed refusal are one refusal and match
-    // here.
+    // The commands of the call the CLI may have logged: every one but a `--help` that printed help,
+    // and a `--dry-run` only when the CLI refused it, whichever check did (the check of a text it
+    // reads, the argument check or the dry run's own step): the CLI logs every refusal and no dry
+    // run that passed. `dispatch proxy` and `dispatch login` are among them though the CLI logs
+    // neither, so no ledger line has their tool. The CLI checks a command's name before its flags,
+    // so a help call of an unknown command is refused and logged like any usage refusal. A usage
+    // refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could not name the
+    // command, so the ledger line and the printed refusal are one refusal and match here.
     const candidates = ops.flatMap((op, place) =>
       op.kind === "dispatch" &&
       op.step.id === call.step.id &&
@@ -1905,7 +1965,7 @@ function namedTasks(step: Step): { name: string; assignment: string }[] | undefi
   }
   return parts;
 }
-/** Whether a check's assignment is a spec-only check's: it holds the six outline headings as `##`
+/** Whether a check's assignment is a spec-only check's: it holds the outline's headings as `##`
  * lines and names no path under a checkout in `reach`. */
 function specOnly(assignment: string, reach: string[]): boolean {
   const outlined = OUTLINE.every((heading) =>
@@ -1987,16 +2047,16 @@ function specSlices(assignment: string): string[] {
 }
 /** The least share of a version the run's session wrote that a pasted spec covers, for the check
  * to be of this run's spec. An agent that splits out a sibling issue can send the sibling's spec
- * for review, alone or after its own spec in one assignment; that spec holds the six headings
- * too, but the report's findings on it are about another spec. Each spec of an assignment is
- * measured on its own (specWork's kindOf), and one that pastes both is `mixed`. The share is
- * recall over the written version (how much of the version's 5-word runs the pasted spec holds,
- * the best over the versions), not over the pasted text: text pasted after the spec, with no
- * heading to end its slice, cannot lower it, and a sibling spec that borrows a few of the parent's
- * sections covers little of the parent. On the 67 spec runs of the dispatch skills' acceptance
- * measurement, each of the 9 sibling specs sent for review (7 alone, 2 after the run's own)
- * covered at most 0.01 of any version, and each of the run's own specs at least 0.24, a draft the
- * agent rewrote in plain words after the check included. */
+ * for review, alone or after its own spec in one assignment; that spec holds the outline's
+ * headings too, but the report's findings on it are about another spec. Each spec of an
+ * assignment is measured on its own (specWork's kindOf), and one that pastes both is `mixed`.
+ * The share is recall over the written version (how much of the version's 5-word runs the
+ * pasted spec holds, the best over the versions), not over the pasted text: text pasted after
+ * the spec, with no heading to end its slice, cannot lower it, and a sibling spec that borrows
+ * a few of the parent's sections covers little of the parent. On the 67 spec runs of the
+ * dispatch skills' acceptance measurement, each of the 9 sibling specs sent for review (7 alone,
+ * 2 after the run's own) covered at most 0.01 of any version, and each of the run's own specs at
+ * least 0.24, a draft the agent rewrote in plain words after the check included. */
 const OWN_SPEC = 0.1;
 /** Each pasted spec's best share, over the versions the session wrote (each version's 5-word
  * runs), of a version's runs that the spec holds, in order. */
@@ -2014,8 +2074,8 @@ function ownSpecShares(assignment: string, versions: Set<string>[]): number[] {
 }
 /** The spec writes of the run's session (writesSpec, against the run's fixture.json) and the
  * spec-only checks before them: the one list of checks that both specRow's `checked` and the
- * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the six
- * outline headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
+ * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the outline's
+ * headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
  * is either of:
  * - a `task` call of the session's transcript. It counts for the first spec write after it when its
  *   tasks' reports came back before that write (checkOutcome); either way it counts for no later
@@ -2516,7 +2576,8 @@ export function sharedRuns(runDir: string): SharedRun[] {
  *   when the person approved none (then no checkable judge runs);
  * - `asks`: agent-asks.json less the approval request and the seeded asks, oldest first at full
  *   precision (Dispatch writes `…:00.5Z` before `…:00.51Z`, which text order reverses);
- * - `texts`: agent-texts.json less the seeded asks;
+ * - `texts`: agent-texts.json less the seeded asks. agent-texts.json holds no post the run
+ *   deleted, because the capture (seed.ts's captureSpec) leaves each out (dispatch://INFRA-1523);
  * - `documents`: each file of documents/, as `documents/<file>`;
  * - `checks`: how many spec-only checks count for a spec write, from specWork, the one list of
  *   checks specRow's `checked` reads too: with none, no findings judge runs and findings.json has
@@ -2682,9 +2743,9 @@ const indented = (text: string, depth = 6) =>
  *   - asked and grew: the run held the conversation before it wrote the design
  *     (conversationOrder). `asked` is the session's first question to the person being older than
  *     its first spec version, so a run that writes a draft and asks after it fails however short
- *     that draft is; `grew` is no version stating a design (`## Requirements`, `## Design` or
- *     `## Acceptance`) before the person has answered a question of the run's own. A session that
- *     wrote no version fails both.
+ *     that draft is; `grew` is no version stating a design (`## Requirements` or `## Design`)
+ *     before the person has answered a question of the run's own. A session that wrote no
+ *     version fails both.
  *   - outline: outlineProblems finds nothing.
  *   - checked: the transcript holds at least one spec write (writesSpec: a write Dispatch made of
  *     the run's own primary spec, each `dispatch` command of a call apart), a spec-only check
@@ -2699,9 +2760,11 @@ const indented = (text: string, depth = 6) =>
  *     are not judged (SpecWork.unjudged: it pastes a sibling issue's spec) is printed with why, and
  *     the row is flagged `unjudged=N`: a write whose only check is one of these has no answer to
  *     whether the agent acted on what came back.
- *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's ledger,
- *     or a refusal a call's output shows that the ledger holds no line of: an `eval` cell's, whose
- *     kernel knows no session, or one the CLI made with no session) is followed by a call
+ *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's
+ *     ledger, which logs spec commands alone, or a refusal a call's output shows that the ledger
+ *     holds no line of: an `eval` cell's, whose kernel knows no session, one the CLI made with no
+ *     session, or a refusal of `dispatch login`'s arguments or of `dispatch proxy`'s session or
+ *     configuration, which the CLI logs nowhere) is followed by a call
  *     the ledger logs as a success, in a later tool call, with no skill file read between them. A
  *     call the agent made before the refusal came back is no fix: it cannot show that the agent
  *     fixed the call from the refusal alone. Each failing refusal is printed with its text.
@@ -2723,7 +2786,7 @@ const indented = (text: string, depth = 6) =>
  *     preamble.json's passages by kind; proposal.json's verdicts. Each row whose id is in
  *     seeded.json is left out. */
 /** The `##` headings whose sections hold a design, compared without case or inner spacing. */
-const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
+const DESIGN_HEADINGS = ["requirements", "design"];
 
 /** Whether this version of a spec states a design, which is what the conversation rule holds back
  *  until the person has answered.
@@ -2733,10 +2796,10 @@ const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
  *  `## Requirements`, and a `## Design` heading with nothing under it states none (both measured
  *  on this scorer by the review of 2026-11-05). So a version states a design when either holds:
  *
- *  - it carries a `**R<n>.**` requirement or `**A<n>.**` check paragraph, the outline's own design
- *    content, wherever in the document it sits - which also catches a design written out under
- *    `## Summary` before the conventional headings arrive;
- *  - a heading whose title is Requirements, Design or Acceptance has text of its own under it,
+ *  - it carries a `**R<n>.**` requirement paragraph, the outline's own design content, wherever
+ *    in the document it sits - which also catches a design written out under `## Summary` before
+ *    the conventional headings arrive;
+ *  - a heading whose title is Requirements or Design has text of its own under it,
  *    read with the heading pattern `outlineProblems` uses, so spacing and a trailing `#` change
  *    nothing.
  *
@@ -2744,7 +2807,7 @@ const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
  *  neither. */
 export function statesDesign(spec: string): boolean {
   const text = withoutFences(spec);
-  if (marked(text).some((paragraph) => /^[RA]\d/.test(paragraph.mark))) return true;
+  if (marked(text).some((paragraph) => /^R\d/.test(paragraph.mark))) return true;
   const headings = [...text.matchAll(/^(#{1,6})[ \t]+(.+?)[ \t#]*$/gm)];
   for (const [index, heading] of headings.entries()) {
     const title = (heading[2] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -3031,17 +3094,42 @@ function median(values: number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
+/** The error of the first turn whose model failed, or undefined: a turn is the messages from one
+ * user message to the next, and it failed when its last assistant message stopped on an error
+ * (`stopReason` "error"), so the agent got no answer it could act on. A failed request that a retry
+ * recovered from is followed by an answer in the same turn, and is no failure. */
+function modelFailure(entries: SessionEntry[]): string | undefined {
+  let last: SessionEntry["message"];
+  for (const entry of [...entries, undefined]) {
+    const role = entry?.message?.role;
+    if (role === "assistant") last = entry?.message;
+    if (entry !== undefined && role !== "user") continue;
+    if (last?.stopReason === "error") return last.errorMessage ?? "it names no error";
+    last = undefined;
+  }
+  return undefined;
+}
+
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
- *     in the same Postgres container (`sharing`, each Dispatch's runs). A `dispatch search`
- *     searches every project of its server, so runs that share one can read each other's issue
- *     and asks, and one run's answer can be another's;
+ *     in the same Postgres (the container's id or the given server's URL) (`sharing`, each
+ *     Dispatch's runs). A `dispatch search` searches every project of its server, so runs that
+ *     share one can read each other's issue and asks, and one run's answer can be another's;
  *   - it never finished: out.txt has no `exit=` line;
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
  *     not set up;
+ *   - a turn of its agent ended on a model error (modelFailure), as when the model's route is down
+ *     and Oh My Pi's retries ran out. Oh My Pi writes each failed request as an assistant message,
+ *     so such a run has assistant messages and did nothing, and a score would count the route's
+ *     failure as the agent's;
+ *   - a scored scenario's run (SCORED_SCENARIOS) ran on another model than its label's: its
+ *     transcript names a model other than the `model` line of the built-from rig.sh copied into
+ *     the run, or two models, or its label's built-from names no `model` line to hold it to
+ *     (scored-runs.ts modelProblem). With SKILL_SCENARIOS_MODEL=standin, rig.sh records the model
+ *     stand-in as that line;
  *   - it compared the wrong text: a tool call of the run (its own or a subagent's) read a file under
  *     the other label's checkout, or a skill file (a path to skills/dispatch, skills/dispatch-first,
  *     skills/dispatch-writing-specs or skills/legion-worker) anywhere but `allowed`: its own run
@@ -3078,6 +3166,12 @@ function unscored(
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
+  const failed = modelFailure(entries);
+  if (failed !== undefined) return `a turn of the agent ended on a model error: ${failed}`;
+  if (SCORED_SCENARIOS.includes(scenario)) {
+    const problem = modelProblem(runDir, entries);
+    if (problem !== undefined) return problem;
+  }
   for (const call of calls) {
     const named: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));
@@ -3303,28 +3397,19 @@ function ranAt(dir: string, entries: SessionEntry[]): string {
     ? path.dirname(cwd)
     : dir;
 }
-function scoreRuns(runsDir: string, only: string | undefined) {
-  const rows: Row[] = [];
-  const errors: { run: string; key: string; reason: string }[] = [];
-  // Each label's checkout, as `rig.sh profile` recorded it.
+/** Each label's checkout, as `rig.sh profile` recorded it in <work>/profiles, beside the runs. */
+function labelsOf(runsDir: string): Map<string, string> {
   const profiles = path.join(path.dirname(runsDir), "profiles");
-  const labels = new Map(
+  return new Map(
     (existsSync(profiles) ? readdirSync(profiles) : [])
       .filter((label) => existsSync(path.join(profiles, label, "checkout")))
       .map((label) => [label, readFileSync(path.join(profiles, label, "checkout"), "utf8").trim()])
   );
-  // Every tester-proof run's PR head, to tell another run's line from a wrong one. A world.json
-  // that does not parse is its own run's rig error, below.
-  const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
-    try {
-      return [json(path.join(runsDir, run, "world.json"), World).head];
-    } catch {
-      return [];
-    }
-  });
-  // Every run's own Dispatch, keyed by its Postgres container and database, with the runs that
-  // name it. A run that records none is scored or not by unscored, below; a dispatch.json that does
-  // not parse is its own run's rig error, below.
+}
+/** Every run's own Dispatch, keyed by its Postgres (the container's id, or the given server's URL
+ * with no password) and database, with the runs that name it. A run that records none is scored or
+ * not by unscored; a dispatch.json that does not parse is its own run's rig error. */
+function sharingOf(runsDir: string): Map<string, string[]> {
   const sharing = new Map<string, string[]>();
   for (const run of existsSync(runsDir) ? readdirSync(runsDir) : []) {
     let dispatch: string | undefined;
@@ -3335,6 +3420,90 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     }
     if (dispatch !== undefined) sharing.set(dispatch, [...(sharing.get(dispatch) ?? []), run]);
   }
+  return sharing;
+}
+/** The run's work directory and its own places, from the paths the run had when it ran, which its
+ * transcripts name, never those of a copy scored elsewhere (ranAt): its HOME (in its directory),
+ * its label's profile and checkout, each with a slash after it. */
+function ownPlaces(
+  dir: string,
+  label: string,
+  labels: Map<string, string>
+): { work: string; own: string[] } {
+  const ran = ranAt(dir, session(dir));
+  const work = path.dirname(path.dirname(ran));
+  const profile = path.join(work, "profiles", label);
+  return { work, own: [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`) };
+}
+
+/** `runs <runs dir> --run <name>`: one scored scenario's run, its model.txt, its score and its
+ * row.json (the header says each). */
+function scoreScoredRun(runsDir: string, name: string): void {
+  const named = ownerWalkRun(name);
+  const dir = path.join(runsDir, name);
+  if (named === undefined || !existsSync(dir)) {
+    console.error(
+      `score.ts: ${dir} is no run of a scored scenario (${SCORED_SCENARIOS.join(", ")}): its directory is owner-walk-<kind>-<form>-<family>-<label>-<n>`
+    );
+    process.exit(2);
+  }
+  const scenario = "owner-walk";
+  const common = { run: name, scenario, label: named.label, case: caseName(named.case) };
+  let row: RunRow;
+  try {
+    const labels = labelsOf(runsDir);
+    const models = transcriptModels(session(dir));
+    if (models.length > 0) writeFileSync(path.join(dir, "model.txt"), `${models.join("\n")}\n`);
+    const { own } = ownPlaces(dir, named.label, labels);
+    const reason = unscored(
+      dir,
+      scenario,
+      dispatchOf(dir),
+      named.label,
+      labels,
+      sharingOf(runsDir),
+      runCalls(dir),
+      own
+    );
+    if (reason === undefined) {
+      const score = ownerWalk(dir, name, named.label);
+      row = {
+        outcome: "scored",
+        ...common,
+        pass: runPass(score.clauses),
+        clauses: score.clauses,
+        reach: score.reach,
+      };
+    } else row = { outcome: "rig-error", ...common, error: reason };
+  } catch (error) {
+    row = {
+      outcome: "rig-error",
+      ...common,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (row.outcome === "rig-error")
+    for (const file of ["score.json", "judge-input.md"])
+      rmSync(path.join(dir, file), { force: true });
+  const text = JSON.stringify(RunRow.parse(row));
+  writeFileSync(path.join(dir, "row.json"), `${text}\n`);
+  console.log(text);
+}
+
+function scoreRuns(runsDir: string, only: string | undefined) {
+  const rows: Row[] = [];
+  const errors: { run: string; key: string; reason: string }[] = [];
+  const labels = labelsOf(runsDir);
+  // Every tester-proof run's PR head, to tell another run's line from a wrong one. A world.json
+  // that does not parse is its own run's rig error, below.
+  const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
+    try {
+      return [json(path.join(runsDir, run, "world.json"), World).head];
+    } catch {
+      return [];
+    }
+  });
+  const sharing = sharingOf(runsDir);
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
@@ -3369,13 +3538,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
-      // The paths the run had when it ran, which its transcripts name, never those of a copy
-      // scored elsewhere (ranAt).
-      const ran = ranAt(dir, session(dir));
-      const work = path.dirname(path.dirname(ran));
-      const profile = path.join(work, "profiles", label);
-      // The run's own skills: its HOME (in its directory), its label's profile and checkout.
-      const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
+      const { work, own } = ownPlaces(dir, label, labels);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
         const scored = score(dir, run, label, askCase);
@@ -3486,11 +3649,28 @@ if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
   if (command === "live-read" && rest.length === 3) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
+  } else if (command === "runs" && rest.length === 3 && rest[1] === "--run") {
+    scoreScoredRun(rest[0] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
     scoreRuns(rest[0] ?? "", rest[1]);
+  } else if (command === "cells" && rest.length === 2) {
+    try {
+      for (const cell of cells(rest[0] ?? "", rest[1] ?? "")) console.log(JSON.stringify(cell));
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  } else if (command === "cell" && rest.length === 6 && /^[1-9][0-9]*$/.test(rest[5] ?? "")) {
+    const [runsDir = "", scenario = "", stage = "", label = "", name = ""] = rest;
+    try {
+      console.log(caseCell(runsDir, scenario, stage, label, name, Number(rest[5])));
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>]"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
     );
     process.exit(2);
   }

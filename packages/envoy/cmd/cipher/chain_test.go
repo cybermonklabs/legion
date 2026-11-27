@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -39,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // chainValue is the value chainBroker releases for TEST_KEY. The use command's child prints its
@@ -64,6 +64,51 @@ type chainBroker struct {
 	ended         map[string]bool
 	signedBy      []string
 	calls         int
+	// proofInvalid makes an ended enrollment's refusal the legacy `PROOF_INVALID` "proof
+	// invalid: not live" the production broker answered on 2026-11-22, in place of
+	// ENROLLMENT_NOT_LIVE.
+	proofInvalid bool
+	// selfReads counts GET /v1/enrollments/self, the read a sign-in this machine cannot renew is
+	// checked by.
+	selfReads int
+}
+
+// writeNotLive answers the refusal of a proof that names an enrollment b ended.
+func (b *chainBroker) writeNotLive(w http.ResponseWriter) {
+	b.mu.Lock()
+	legacy := b.proofInvalid
+	b.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	if legacy {
+		_, _ = w.Write([]byte(`{"code":"PROOF_INVALID","error":"proof invalid: not live"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"code":"ENROLLMENT_NOT_LIVE","error":"this enrollment is not live"}`))
+}
+
+// answerNotLiveAsProofInvalid makes every refusal of an ended enrollment from now on the legacy
+// PROOF_INVALID one (chainBroker.proofInvalid).
+func (b *chainBroker) answerNotLiveAsProofInvalid() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.proofInvalid = true
+}
+
+// pinKey records thumbprint as the key enrollmentID was registered for, as the broker records a
+// sign-in's box key: GET /v1/enrollments/self then verifies its proof against that key, and POST
+// /v1/requests its request object, as the real broker does.
+func (b *chainBroker) pinKey(enrollmentID, thumbprint string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.thumbprints[enrollmentID] = thumbprint
+}
+
+// selfReadCount is how many GET /v1/enrollments/self the broker answered.
+func (b *chainBroker) selfReadCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.selfReads
 }
 
 // storeSettings is GET /v1/settings of a broker on store ("aws" or "gcp"), naming google as its
@@ -129,6 +174,41 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"enrollment_id": id})
 	})
+	mux.HandleFunc("GET /v1/enrollments/self", func(w http.ResponseWriter, r *http.Request) {
+		eid := proofEID(r)
+		b.mu.Lock()
+		b.selfReads++
+		ended, thumbprint := b.ended[eid], b.thumbprints[eid]
+		b.mu.Unlock()
+		// An enrollment whose key is on record is held to it, signature, method and URL, as
+		// proof.Verifier holds it; a fixture's enrollment with no key on record is not.
+		if thumbprint != "" {
+			verifier := &proof.Verifier{Skew: time.Minute,
+				Lookup: func(context.Context, string) (string, bool, error) { return thumbprint, true, nil },
+				Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+			if _, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), http.MethodGet, b.URL()+"/v1/enrollments/self", time.Now()); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": "PROOF_INVALID", "error": err.Error()})
+				return
+			}
+		}
+		if ended {
+			b.writeNotLive(w)
+			return
+		}
+		writeJSON(w, map[string]any{"enrollment_id": eid, "kind": "session", "lease_expires_at": time.Now().Add(time.Hour), "grants": []any{}})
+	})
+	mux.HandleFunc("POST /v1/enrollments/{id}/renew", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		ended := b.ended[r.PathValue("id")]
+		b.mu.Unlock()
+		if ended {
+			b.writeNotLive(w)
+			return
+		}
+		writeJSON(w, map[string]any{"lease_expires_at": time.Now().Add(time.Hour)})
+	})
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		eid := proofEID(r)
 		var body struct {
@@ -140,9 +220,7 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 		ended, thumbprint := b.ended[eid], b.thumbprints[eid]
 		b.mu.Unlock()
 		if ended {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"code":"ENROLLMENT_NOT_LIVE","error":"this enrollment is not live"}`))
+			b.writeNotLive(w)
 			return
 		}
 		// An enrollment registered here has its key on record, and the request object must be
@@ -280,18 +358,6 @@ func (m *metadataServer) metadataIdentityRequests() int {
 	return m.requests["/computeMetadata/v1/instance/service-accounts/default/identity"]
 }
 
-// closedAddress is a loopback address nothing listens on: a metadata server that is not there.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := lis.Addr().String()
-	lis.Close()
-	return addr
-}
-
 // chainBinary builds agent-secrets.
 func chainBinary(t *testing.T) string {
 	t.Helper()
@@ -326,7 +392,10 @@ func newChainRig(t *testing.T, binary string, broker *chainBroker) *chainRig {
 	r := &chainRig{t: t, binary: binary, home: t.TempDir(), runtime: shortTempDir(t), state: t.TempDir()}
 	r.env = map[string]string{
 		"HOME": r.home, "XDG_RUNTIME_DIR": r.runtime, "XDG_STATE_HOME": r.state, "PATH": "/usr/bin:/bin",
-		"GCE_METADATA_HOST": closedAddress(t),
+		// A metadata server that is not there: a port the test holds and nothing listens on
+		// (testport.Refused). The held socket is close-on-exec, so the binary the rig runs does not
+		// inherit it, and no other process on the machine can take the port and answer.
+		"GCE_METADATA_HOST": testport.Refused(t),
 	}
 	if broker != nil {
 		r.env["AGENT_SECRETS_URL"] = broker.URL()
@@ -472,6 +541,7 @@ func machineExchanges(broker *chainBroker) []url.Values {
 // ~/.config/agent-secrets/config and trades the machine's own identity there. A variable that is
 // set wins over the file.
 func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	fromFile := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, nil)
@@ -509,6 +579,7 @@ func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 // and reaches the machine, which trades its own identity, registers one enrollment and keeps it in
 // the machine cache. Each backend's row reads the injection line its own store names.
 func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, store := range []string{"aws", "gcp"} {
 		t.Run(store, func(t *testing.T) {
@@ -537,6 +608,7 @@ func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 // audience accepts no machine identity, so the machine source is skipped with that reason and the
 // metadata server is never asked.
 func TestAnOlderBrokerWithoutExchangeAudiencesSkipsTheMachineSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", ""))
 	r := newChainRig(t, binary, broker)
@@ -575,6 +647,7 @@ func (r *chainRig) writeConfigFile(settings map[string]string) {
 // not tried: a broker that names no exchange audience, which detection would skip, still sees the
 // forced identity's trade. A machine session already in the cache signs before either.
 func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, row := range []string{"the environment", "the config file"} {
 		t.Run(row, func(t *testing.T) {
@@ -620,6 +693,7 @@ func TestAForcedMachineIdentityIsTheOnlyMachineSource(t *testing.T) {
 // the config file, is a usage error naming the values agent-secrets takes, and nothing is asked of
 // the broker or the metadata server.
 func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	for _, row := range []string{"the environment", "the config file"} {
 		t.Run(row, func(t *testing.T) {
@@ -647,10 +721,55 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 	}
 }
 
+// TestAGitHubActionsMachineIdentityIsRefusedBeforeAnyTrade: the broker mints no launcher
+// credential for a GitHub Actions run either, so AGENT_SECRETS_MACHINE_IDENTITY=github-actions,
+// from the environment or the config file, is the same usage error, and nothing is asked of the
+// broker, GitHub or the metadata server. GitHub sets the request URL and its token in the job's
+// environment, which is where they are in both rows: the config file takes neither.
+func TestAGitHubActionsMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
+	binary := chainBinary(t)
+	for _, row := range []string{"the environment", "the config file"} {
+		t.Run(row, func(t *testing.T) {
+			broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
+			r := newChainRig(t, binary, broker)
+			metadata := r.withMetadata()
+			var asked sync.Mutex
+			githubRequests := 0
+			github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				asked.Lock()
+				githubRequests++
+				asked.Unlock()
+				http.Error(w, "no token for agent-secrets", http.StatusUnauthorized)
+			}))
+			t.Cleanup(github.Close)
+			r.env["ACTIONS_ID_TOKEN_REQUEST_URL"] = github.URL + "/idtoken?api-version=2.0"
+			r.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "example-actions-request-token"
+			settings := map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "github-actions", "AGENT_SECRETS_MACHINE_AUDIENCE": "https://cipher.example"}
+			if row == "the environment" {
+				maps.Copy(r.env, settings)
+			} else {
+				r.writeConfigFile(settings)
+			}
+
+			code, stdout, stderr := r.use()
+			if code != exitUsageError || stdout != "" || !strings.Contains(stderr, "AGENT_SECRETS_MACHINE_IDENTITY=github-actions") ||
+				!strings.Contains(stderr, "metadata") || !strings.Contains(stderr, "pool") {
+				t.Fatalf("exit %d, stdout %q, stderr %q; want exit %d refusing github-actions and naming metadata and pool", code, stdout, stderr, exitUsageError)
+			}
+			asked.Lock()
+			defer asked.Unlock()
+			if calls, n := broker.callCount(), metadata.totalRequests(); calls != 0 || n != 0 || githubRequests != 0 {
+				t.Fatalf("the broker saw %d calls, the metadata server %d requests and GitHub %d; want none before the refusal", calls, n, githubRequests)
+			}
+		})
+	}
+}
+
 // TestSignInTakesEffectAfterAMachineCache is c5's unit half: a machine that has already used its
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
 func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:744); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -688,6 +807,7 @@ func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
 // machine cache, so the key directory is a launcher's alone again, and signs with it; a cache that
 // already holds a session keeps its own and the key directory's is removed.
 func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	t.Run("an empty cache", func(t *testing.T) {
 		broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -756,6 +876,7 @@ func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 // no-source refusal. Each backend's rows that run the command read the injection line its own
 // store names.
 func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	// stoppedHelper is the check of a row whose helper is expected and not running: the command
 	// stops naming the helper's socket, and nothing asks the metadata server or the exchange.
@@ -983,6 +1104,7 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 // token is minted for it, naming both audiences and the file that keeps the first, by where the
 // machine cache is and never by its path, since the cache holds the machine session's key.pem.
 func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -1016,6 +1138,7 @@ func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 // call that met the refusal is signed again by the new key, its request object included, which the
 // broker holds to the enrollment's own key.
 func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	r := newChainRig(t, binary, broker)
@@ -1055,6 +1178,7 @@ func TestAMachineRegistersAgainUnderAFreshKey(t *testing.T) {
 // at once register one session between them, and every one signs with it: the cache's key.pem is
 // always the key its enrollment was registered for.
 func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 	// Each settings read waits, so every process has found the cache empty before the first
@@ -1062,6 +1186,9 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 	broker.delaySettings(500 * time.Millisecond)
 	r := newChainRig(t, binary, broker)
 	r.withMetadata()
+	// The processes run side by side, each on one P: one left to size GOMAXPROCS to the host starts
+	// a thread for each P its collector's idle mark workers take, about 80 on a 288-CPU host.
+	r.env["GOMAXPROCS"] = "1"
 
 	const processes = 4
 	failures := make(chan string, processes)
@@ -1104,6 +1231,7 @@ func TestMachineRegistrationsAtOnceKeepOneSession(t *testing.T) {
 // session, under the home the password database gives its user, so the unit's second command
 // signs with the session its first registered rather than trading and enrolling again.
 func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_test.go:1200); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (passwdHome set at chain_test.go:1198).
 	isolateChain(t)
 	home := t.TempDir()
 	original := passwdHome
@@ -1129,7 +1257,7 @@ func TestAUnitWithNoHomeKeepsItsStateUnderItsUsersHome(t *testing.T) {
 	}
 
 	for run := range 2 {
-		if _, _, err := buildSigner(); err != nil {
+		if _, _, err := buildSigner(io.Discard); err != nil {
 			t.Fatalf("command %d with no HOME: %v", run+1, err)
 		}
 	}
@@ -1162,6 +1290,7 @@ func pemThumbprint(t *testing.T, data []byte) string {
 // whenever the helper answered and is not that source; with none it prints nothing on stdout and
 // the chain's refusal on stderr.
 func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
 	rows := []struct {
 		name  string
@@ -1187,7 +1316,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 		}},
 		{name: "metadata", setup: func(t *testing.T, r *chainRig) string {
 			r.withMetadata()
-			return "machine: " + cipherclient.NewMetadataIdentity("agent-secrets-vm").Describe() + "\n"
+			// Found with no setting, so the audience is the broker's and AGENT_SECRETS_MACHINE_AUDIENCE
+			// is not named; the rig's metadata server is the one GCE_METADATA_HOST names.
+			return "machine: this machine's Google identity token for the Google exchange audience the broker names (GCE_METADATA_HOST names the metadata server)\n"
 		}},
 		{name: "machine cache", setup: func(t *testing.T, r *chainRig) string {
 			r.writeMachineCacheFixture("cached-enrollment")
@@ -1225,8 +1356,9 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 }
 
 // writeSignInFixture keeps a sign-in for person in the rig's state directory, as `agent-secrets
-// login` would, holding an enrollment already made.
-func writeSignInFixture(t *testing.T, r *chainRig, person string) {
+// login` would, holding an enrollment already made, and answers its box key's thumbprint, the
+// key a broker holds that enrollment to (chainBroker.pinKey).
+func writeSignInFixture(t *testing.T, r *chainRig, person string) string {
 	t.Helper()
 	key, err := proof.NewKey()
 	if err != nil {
@@ -1245,4 +1377,5 @@ func writeSignInFixture(t *testing.T, r *chainRig, person string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return thumbprint
 }

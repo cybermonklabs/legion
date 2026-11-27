@@ -78,12 +78,13 @@ func assertUnreadableRoleClaimAnswer(t *testing.T, recorder *httptest.ResponseRe
 }
 
 func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	for _, tc := range unreadableRoleClaims {
 		t.Run(tc.name, func(t *testing.T) {
 			state, registry := openUnreadableRoleClaim(t, role, tc.record)
 			recorder := httptest.NewRecorder()
-			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+			roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 			assertUnreadableRoleClaimAnswer(t, recorder, registry, role, tc.record, tc.detail)
 		})
 	}
@@ -95,6 +96,7 @@ func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
 // holder_lapsed) reports one, and an unreadable claim establishes nothing about the holder, so a
 // consumer of the lane is told nothing it would act on.
 func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	topic := contracts.RoleTopicPrefix + role
 	for _, tc := range unreadableRoleClaims {
@@ -138,6 +140,7 @@ func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) 
 // (packages/pi-shared/src/legion-claim-core.ts): the record will not change at the next try, so a
 // claimant that retried a 503 would claim it forever. The record is left as it was.
 func TestASoftClaimOfAnUnreadableClaimRecordIsAServerErrorAndNotClaimedAgain(t *testing.T) {
+	t.Parallel()
 	const role, claimant = "reviewer", "ses_soft_claimant"
 	for _, tc := range unreadableRoleClaims {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,6 +162,7 @@ func TestASoftClaimOfAnUnreadableClaimRecordIsAServerErrorAndNotClaimedAgain(t *
 // error above, and so does the bare session id that build also stored. A missing field is never
 // store.ErrMalformedRoleClaim.
 func TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
@@ -183,7 +187,7 @@ func TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal(t *testing.T
 				t.Fatalf("store the claim record %q: %v", older.record, err)
 			}
 			recorder := httptest.NewRecorder()
-			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+older.role, nil))
+			roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+older.role, nil))
 			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"holder":"`+older.holder+`"`) {
 				t.Fatalf("GET /v1/roles/%s on the record %q: status %d %s, want 200 naming %s", older.role, older.record, recorder.Code, recorder.Body.String(), older.holder)
 			}

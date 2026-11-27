@@ -5,7 +5,7 @@ body: |-
   Secrets Manager and Google Secret Manager alike. The tag marks a Slack bot token whose use a
   private project's owner limits: a session or pod whose credential names a private Dispatch
   project gets it only behind the airlock, and is denied it `project-channels-need-airlock` where
-  the secret has no airlock entry. `secret show` prints the tag as a `project_channels:` line,
+  no profile with a proxy block serves the secret. `secret show` prints the tag as a `project_channels:` line,
   `secret list` as a `PROJECT_CHANNELS` column, and `--json` carries it as `project_channels`,
   `null` for a secret without it. Any value but `slack`, and `none` on create, is refused before
   anything is read or written, naming `project-channels-malformed`. A policy that limits

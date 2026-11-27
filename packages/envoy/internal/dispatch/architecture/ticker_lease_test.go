@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // architectureLeases is the pool an import pass takes its lease on, the one cmd/dispatch gives
@@ -22,6 +23,7 @@ func architectureLeases(t *testing.T, database *store.Store) duty.Leases {
 // another caller - the other envoy-dispatch process, inside an import of its own - this process's
 // pass reads nothing from GitHub and writes no component.
 func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: map[string]string{"core.md": "# Core\n"}}
 	importer, database := newImporterFixture(t, fake)
@@ -33,16 +35,12 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, leases, architectureImportLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, nil, leases, architectureImportLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the architecture-import lease")
-	}
+	testwait.Receive(t, "the other caller to take the architecture-import lease", taken)
 
 	syncAllLeased(ctx, importer, leases, time.Now())
 	if trees, blobs := fake.reads(); trees != 0 || blobs != 0 {
@@ -76,6 +74,7 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 // period the loop hands the lease, so this test reads the same against a build that handed it
 // SyncInterval and shows the refusal there.
 func TestTwoImportTicksTheShortestWaitApartBothImport(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: map[string]string{"core.md": "# Core\n"}}
 	importer, database := newImporterFixture(t, fake)

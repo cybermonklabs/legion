@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -265,12 +266,12 @@ func raceReleaseWith(t *testing.T, reg *Registry, role string, races int, wins f
 //
 // The administrator's forced release takes the same path, over the same renewal.
 //
-// The release names the role's own lane topic, which is the hand-back a client sends: a
+// The release names the role's own lane topic, which is the hand-back a client sends. A
 // deregistration of every interest at once, on this registry whose role claim view cannot be
-// served (coldRegistry), would reach the claim twice, through the record's role and then through
-// the scan of the role bucket a refusing view falls back to (Registry.releaseAllRoleClaims), and
-// the scan - which reads the claim again for its own reasons - would free what the first release
-// lost.
+// served (coldRegistry), releases the record's role the same way, and the scan of the role bucket
+// a refusing view falls back to (Registry.releaseAllRoleClaims) then leaves that role alone
+// (TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding), so the deletes counted here
+// would be the release's own either way.
 func TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -429,6 +430,117 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 						})
 					}
 				})
+			}
+		})
+	}
+}
+
+// The edge's release of a role its registration refuses (ReleaseRefusedRoleClaims) is a forced
+// release, so it frees the grant it read and no grant made after that read: the session's claim
+// granted again between that release's read and its delete stands after the release, which names
+// no role and answers no error, and the next release, which reads that grant, frees it - at the
+// edge, the session's next registration. It meets the same race whether the role claim copy names
+// the role or, while the copy cannot be served, the scan of the role bucket does, and also where
+// the session's stored row names the role while the copy cannot be served: the release of the
+// row's role is then the one read of that role, and the scan that follows leaves the role alone
+// rather than read the new grant as its own. Controls: with the delete freeing whatever the
+// session holds (the force before grant ids decided it), the first release frees the new grant
+// and names the role on every path; with the scan reading again a role the row's release weighed,
+// it does so where the row names the role.
+func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *testing.T) {
+	const (
+		role   = "legion-infra-infra-9-reviewer"
+		holder = "ses_refused_release_under_a_grant"
+	)
+	refusesEvery := func(string) bool { return false }
+	for _, path := range []claimReleasePath{
+		{name: "the role claim copy names the role", viewed: true},
+		{name: "the scan while the copy cannot be served"},
+		{name: "the stored row names the role while the copy cannot be served", handsBack: true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+			read := storedRoleClaim(t, reg, role)
+			advance(time.Second)
+			var granted RoleClaim
+			racing := raceReleaseWith(t, reg, role, 1, func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			})
+
+			released, err := reg.ReleaseRefusedRoleClaims(context.Background(), holder, refusesEvery)
+			if err != nil || len(released) != 0 {
+				t.Fatalf("the release under a new grant answered %q, %v; want no role released and no error", released, err)
+			}
+			if granted.GrantID == "" || granted.GrantID == read.GrantID {
+				t.Fatalf("the new grant carries the id %q and the claim the release read %q, want an id of the grant's own", granted.GrantID, read.GrantID)
+			}
+			if racing.deletes != 1 {
+				t.Fatalf("the release sent %d conditional deletes, want one: a claim granted since its read is never deleted", racing.deletes)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the release is %+v, want the new grant %+v untouched", stood, granted)
+			}
+
+			released, err = reg.ReleaseRefusedRoleClaims(context.Background(), holder, refusesEvery)
+			if err != nil || len(released) != 1 || released[0] != role {
+				t.Fatalf("the next release answered %q, %v; want %s released and no error", released, err, role)
+			}
+			assertClaimFreed(t, reg, role)
+		})
+	}
+}
+
+// A deregistration while the role claim copy cannot be served releases the roles the session's
+// stored row names and then scans the role bucket for the claims the row does not name
+// (Registry.releaseAllRoleClaims). The row here names the role, and the role is granted again to
+// the very process the release states between the release of the row's role reading the claim
+// and its conditional delete. That release leaves the new grant standing, as every release
+// leaves a grant made since its read (releaseUnderAFreshGrant), and the scan that follows leaves
+// the role alone rather than read the new grant as its own and free it in the same call: one
+// conditional delete, no error, and the new grant standing, under the holder's own release and
+// the administrator's force alike. Control: with the scan reading again a role the row's release
+// weighed, the deregistration sends a second delete and frees the new grant.
+func TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding(t *testing.T) {
+	const (
+		role   = "legion-controller"
+		holder = "ses_deregistered_under_a_grant"
+	)
+	// handsBack keeps the role's lane topic on the stored row (claimForRelease), and no view
+	// leaves the copy unservable; the deregistration below names no topic all the same.
+	path := claimReleasePath{name: "the stored row names the role while the copy cannot be served", handsBack: true}
+	for _, by := range []struct {
+		name      string
+		authority RoleReleaseAuthority
+	}{
+		{name: "the holder's own process", authority: releasedByItsProcess},
+		{name: "the administrator's force", authority: RoleReleaseAuthority{Force: true}},
+	} {
+		t.Run(by.name, func(t *testing.T) {
+			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
+			if viewErr := reg.RoleViewErr(); !errors.Is(viewErr, ErrRoleViewNotReady) {
+				t.Fatalf("the registry's role claim view refuses with %v, want ErrRoleViewNotReady: a view that answers takes no scan, and the row would control nothing", viewErr)
+			}
+			read := storedRoleClaim(t, reg, role)
+			advance(time.Second)
+			var granted RoleClaim
+			racing := raceReleaseWith(t, reg, role, 1, func() {
+				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
+				granted = storedRoleClaim(t, reg, role)
+			})
+
+			if _, err := reg.Remove(context.Background(), holder, nil, by.authority); err != nil {
+				t.Fatalf("the deregistration under a new grant: %v, want no error", err)
+			}
+
+			if granted.GrantID == "" || granted.GrantID == read.GrantID || granted.ClientInstanceID != roleClaimInstance {
+				t.Fatalf("the new grant is %+v over the claim the release read, %+v; want a grant id of its own, to the process %q", granted, read, roleClaimInstance)
+			}
+			if racing.deletes != 1 {
+				t.Fatalf("the deregistration sent %d conditional deletes, want one: the row's release, which a grant made since its read beat; the scan leaves a role the row's release weighed alone", racing.deletes)
+			}
+			if stood := storedRoleClaim(t, reg, role); stood != granted {
+				t.Fatalf("the claim after the deregistration is %+v, want the new grant %+v untouched", stood, granted)
 			}
 		})
 	}

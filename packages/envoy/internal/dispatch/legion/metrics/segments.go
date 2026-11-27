@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"iter"
 	"slices"
 	"strings"
 	"time"
@@ -13,8 +14,11 @@ import (
 type Segment string
 
 const (
-	SegmentWaitingOnPerson   Segment = "waiting_on_person"
-	SegmentInATurn           Segment = "in_a_turn"
+	SegmentWaitingOnPerson Segment = "waiting_on_person"
+	SegmentInATurn         Segment = "in_a_turn"
+	// SegmentCIWait has no rule in the precedence, since segment 3 is not measured, and holds no
+	// hour: it names the CIWait field in its place, which ByName lists among the five.
+	SegmentCIWait            Segment = "ci_wait"
 	SegmentWaitingOnChildren Segment = "waiting_on_children"
 	SegmentIdle              Segment = "idle"
 )
@@ -53,17 +57,44 @@ type Segments struct {
 	Idle              float64 `json:"idle"`
 }
 
-// add books a segment's time onto the bar.
-func (s *Segments) add(segment Segment, spent time.Duration) {
+// segmentsInOrder is the five segments in the spec's order, idle last.
+var segmentsInOrder = [...]Segment{SegmentWaitingOnPerson, SegmentInATurn, SegmentCIWait, SegmentWaitingOnChildren, SegmentIdle}
+
+// hoursOf is the field of s that holds segment's hours, nil for a name that is no segment: the one
+// table from a segment's name to its field.
+func (s *Segments) hoursOf(segment Segment) *float64 {
 	switch segment {
 	case SegmentWaitingOnPerson:
-		s.WaitingOnPerson += hours(spent)
+		return &s.WaitingOnPerson
 	case SegmentInATurn:
-		s.InATurn += hours(spent)
+		return &s.InATurn
+	case SegmentCIWait:
+		return &s.CIWait
 	case SegmentWaitingOnChildren:
-		s.WaitingOnChildren += hours(spent)
+		return &s.WaitingOnChildren
 	case SegmentIdle:
-		s.Idle += hours(spent)
+		return &s.Idle
+	}
+	return nil
+}
+
+// ByName is each of the bar's five segments and its hours, in the spec's order with idle last:
+// the names a bar's day part counts its segments under (barCounts), and an items row's
+// columns and a phase-time eval's statistics name them by.
+func (s Segments) ByName() iter.Seq2[Segment, float64] {
+	return func(yield func(Segment, float64) bool) {
+		for _, segment := range segmentsInOrder {
+			if !yield(segment, *s.hoursOf(segment)) {
+				return
+			}
+		}
+	}
+}
+
+// add books a segment's time onto the bar.
+func (s *Segments) add(segment Segment, spent time.Duration) {
+	if field := s.hoursOf(segment); field != nil {
+		*field += hours(spent)
 	}
 }
 
@@ -143,7 +174,8 @@ func (v *issueView) claims(index int) []Span {
 // as waiting on a person" is two conditions, "opened **on that issue** by any Legion session of
 // the issue's tree", and `keepTreeAsks` has already applied the tree test and attached each turn
 // it kept to the issue the ask was opened on. Reading the tree again here would count one child's
-// ask for its root and for every sibling.
+// ask for its root and for every sibling. An ask nobody answered stands on the person's turn to
+// the issue's end, which its turn's zero To says (Issue.AskTurns).
 func waitingOnPersonSpans(view *issueView) []Span {
 	var spans []Span
 	for stretch := range view.population.phaseStretches(view.root) {
@@ -153,6 +185,9 @@ func waitingOnPersonSpans(view *issueView) []Span {
 	}
 	answered := answeredAts(view.root)
 	for _, turn := range view.issue.AskTurns {
+		if turn.To.IsZero() {
+			turn.To = view.end
+		}
 		if at, found := answeredWithin(answered, turn); found {
 			turn.To = at
 		}
@@ -178,11 +213,16 @@ func inATurnSpans(view *issueView) []Span {
 		if !strings.HasPrefix(field, legion.ClaimFieldPrefix) {
 			continue
 		}
-		spans = append(spans, markSpans(marks, view.end, func(value string) bool {
-			return legion.JSONString([]byte(value)) == "working"
-		})...)
+		spans = append(spans, markSpans(marks, view.end, claimWorking)...)
 	}
 	return spans
+}
+
+// claimWorking is whether a `claim.<role>` observation reads `working`: the role is in a turn.
+// It is the one reading of that field, which the in-a-turn segment and the idle hours by role
+// (idleByRole) both take.
+func claimWorking(value string) bool {
+	return legion.JSONString([]byte(value)) == "working"
 }
 
 // waitingOnChildrenSpans is segment 4: "the issue is a root with a child in a phase from planning

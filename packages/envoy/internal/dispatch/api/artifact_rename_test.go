@@ -83,6 +83,7 @@ func renameEvents(t *testing.T, handler http.Handler, issueKey string) []renamed
 // makes itself, the issue's spec, an artifact that is no document, and a name that is empty or
 // too long - each leave the document as it was.
 func TestADocumentTitleIsCorrectedWithoutMovingItsAddress(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	spec := createInteractionIssue(t, handler, "TEST", "A spec of its own", "# Spec\n\nA passage.\n")
 

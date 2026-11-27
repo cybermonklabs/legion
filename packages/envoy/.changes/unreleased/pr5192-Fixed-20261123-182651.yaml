@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  An edge listener judges a role-marked frame on a session's own agent subject by its role only
+  where a role message's topic is: a role lane, or an agent subject in the old form or in the new
+  form under one of the token's projects (`roleFrameVerdict`, `roleMarkOnAgentSubject`). Before, a
+  frame whose role mark named a role of the token's project passed whatever its topic, so a frame
+  naming another project's event, a GitHub event, another project's agent subject or no topic
+  reached the session, and the plugin showed it by that topic. Such a frame is now judged by its
+  topic, as a frame with no role mark, and withheld under `reason="project_not_held"`; so is a lane
+  forward of the token's project's lane that carries another project's role mark. The edge and the
+  relay now read a frame's top-level fields through one reader (`topLevelJSONFields`).
+time: 2026-11-23T18:26:51Z
+custom:
+    Issue: pr5192

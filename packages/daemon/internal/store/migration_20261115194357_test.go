@@ -19,6 +19,7 @@ const projectPauseVersion = 20261115194357
 // must be a role token of the pause's project, while its issue, and a held pod's, may be another
 // project's.
 func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, projectPauseVersion-1)

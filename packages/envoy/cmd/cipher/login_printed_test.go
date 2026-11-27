@@ -17,6 +17,7 @@ import (
 // it prints Go-quoted, so neither a credential nor a forged line reaches the terminal. Control:
 // Google's own page and code print as they came.
 func TestTheSignInPromptPrintsTheIssuersPageOnlyWhereItIsAPlainURL(t *testing.T) {
+	t.Parallel()
 	planted := "hunter2pw-" + "signinpage-" + "8e2b"
 	for _, row := range []struct{ name, page, code, want string }{
 		{"a page with a user and a password", "https://tokuser9f3:" + planted + "@www.google.com/device", "ABCD-EFGH", "open " + redact.NotPrinted + " and type the code ABCD-EFGH"},

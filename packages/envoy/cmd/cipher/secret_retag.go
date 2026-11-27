@@ -86,15 +86,16 @@ func tagPairs(tags map[string]string) string {
 }
 
 // cmdSecretRetag changes a secret's owner, tier, type, GitHub owners, requesters, scopes, admin
-// mark, project, project channels, max grant or default grant, in one cloud write; a removal that
-// moves the project tags' rollback guard writes the requesters tag in a second write after it
-// (guardRetag, writeGuardRewrite). A retag that names none (--type none, --github-owners none,
-// --requesters none, --scopes none, --admin none, --project none, --project-channels none,
-// --max-grant none, --default-grant none) removes those tags and sets none of the user's; --type
-// none also removes the old kind tag and the rollback guard written with the type. Any other retag
-// sets tags. A retag that does both is refused before anything is read or written: AWS removes
-// tags only with UntagResource, so it would be two calls, and a refused second call would leave it
-// half applied.
+// mark, project, project channels, max grant, default grant, judge, guidance, proxy kind or
+// proxy narrowing, in one cloud write; a removal that moves the project tags' rollback guard
+// writes the requesters tag in a second write after it (guardRetag, writeGuardRewrite). A retag
+// that names none (--type none, --github-owners none, --requesters none, --scopes none, --admin
+// none, --project none, --project-channels none, --max-grant none, --default-grant none, --judge
+// none, --guidance none, --proxy none, --proxy-narrowed none) removes those tags and sets none of
+// the user's; --type none also removes the old kind tag and the rollback guard written with the
+// type. Any other retag sets tags. A retag that does both is refused before anything is read or
+// written: AWS removes tags only with UntagResource, so it would be two calls, and a refused
+// second call would leave it half applied.
 //
 // Either kind of retag reads the tags the secret holds, builds from them the tags it will hold
 // once the write lands (after), and checks the github-owners rule and the broker's cross-tag
@@ -131,92 +132,74 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	flags := secretFlags(form, stderr)
 	newOwner := flags.String("owner", "", "the new owner: me (the email of the person your AWS or Google sign-in names), shared, a person's email, or group: and a Google group's lowercase email")
 	newTier := flags.String("tier", "", "the new tier: agent or human")
-	newType := flags.String("type", "", strings.Join(policy.Types, ", ")+" or none")
-	newGitHubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, separated by spaces ("<login> <login>"), or none`)
-	newRequesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"), or none; an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
-	newScopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that type alone, and a secret without it mints cloud-platform`)
-	newAdmin := flags.String("admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
-	newProject := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV), whose private secret goes only to a session naming the project in AGENT_SECRETS_PROJECTS, or none: the secret then belongs to no project")
-	newProjectChannels := flags.String("project-channels", "", "slack (a session or pod whose credential names a private Dispatch project spends the secret only through the airlock, on a Slack post to a channel that project's owner named) or none")
-	newMaxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows, or none")
-	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
+	// f is every tag flag's value, each registered straight into its field, so the tags the retag
+	// sets and removes read the flags themselves (tagFlagTable), and the checks below write each
+	// value's canonical form back into it.
+	var f tagFlags
+	flags.StringVar(&f.Type, "type", "", strings.Join(policy.Types, ", ")+" or none")
+	flags.StringVar(&f.GitHubOwners, "github-owners", "", `the GitHub accounts a github-app secret mints for, or a github-installations secret hands stored tokens over for, separated by spaces ("<login> <login>"), or none`)
+	flags.StringVar(&f.Requesters, "requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"), or none; an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
+	flags.StringVar(&f.Scopes, "scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that type alone, and a secret without it mints cloud-platform`)
+	flags.StringVar(&f.Admin, "admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
+	flags.StringVar(&f.Project, "project", "", "the key of the Dispatch project the secret belongs to (PRIV), whose private secret goes only to a session naming the project in AGENT_SECRETS_PROJECTS, or none: the secret then belongs to no project")
+	flags.StringVar(&f.ProjectChannels, "project-channels", "", "slack (a session or pod whose credential names a private Dispatch project spends the secret only through the airlock, on a Slack post to a channel that project's owner named) or none")
+	flags.StringVar(&f.MaxGrant, "max-grant", "", "the longest grant duration this secret allows, or none")
+	flags.StringVar(&f.DefaultGrant, "default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
+	flags.StringVar(&f.Judge, "judge", "", "whole seconds from 1 to 900, the longest grant the model judge makes of this secret when it decides a request for it against its guidance, or none: a person decides it")
+	flags.StringVar(&f.Guidance, "guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters (on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @), or none")
+	flags.StringVar(&f.Proxy, "proxy", "", "the kind of the broker's profiles file this secret is served behind, one lowercase word such as github or anthropic, or none: the secret is then released as its value")
+	flags.StringVar(&f.ProxyNarrowed, "proxy-narrowed", "", "true (the secret is served only through its one profile, whose allow narrows its kind's) or none")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && *newType == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newProject == "" && *newProjectChannels == "" && *newMaxGrant == "" && *newDefaultGrant == "" {
-		err = usageErr{errors.New("--owner, --tier, --type, --github-owners, --requesters, --scopes, --admin, --project, --project-channels, --max-grant, --default-grant or a combination is required")}
+	if err == nil && *newOwner == "" && *newTier == "" && f == (tagFlags{}) {
+		err = retagFlagsRequired()
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
 	}
 	if err == nil {
-		err = checkType(*newType)
+		err = checkType(f.Type)
 	}
 	if err == nil {
-		*newGitHubOwners, err = checkGitHubOwners(*newGitHubOwners, true)
+		f.GitHubOwners, err = checkGitHubOwners(f.GitHubOwners, true)
 	}
 	if err == nil {
-		*newRequesters, err = checkRequesters(*newRequesters, true)
+		f.Requesters, err = checkRequesters(f.Requesters, true)
 	}
 	if err == nil {
-		*newScopes, err = checkScopes(*newScopes, true)
+		f.Scopes, err = checkScopes(f.Scopes, true)
 	}
 	if err == nil {
-		err = checkAdmin(*newAdmin, true)
+		err = checkAdmin(f.Admin, true)
 	}
 	if err == nil {
-		err = checkProject(*newProject, true)
+		err = checkProject(f.Project, true)
 	}
 	if err == nil {
-		err = checkProjectChannels(*newProjectChannels, true)
+		err = checkProjectChannels(f.ProjectChannels, true)
 	}
 	if err == nil {
-		err = checkMaxGrant(*newMaxGrant, true)
+		err = checkMaxGrant(f.MaxGrant, true)
 	}
 	if err == nil {
-		err = checkDefaultGrant(*newDefaultGrant, true)
+		err = checkDefaultGrant(f.DefaultGrant, true)
 	}
-	var remove []string
-	if *newType == tagNone {
-		// The rollback guard goes with the type: a stored secret is safe on every broker.
-		remove = append(remove, policy.TagType, policy.LegacyTypeTag, policy.TagRollbackGuard)
+	if err == nil {
+		err = checkJudge(f.Judge, true)
 	}
-	if *newGitHubOwners == tagNone {
-		remove = append(remove, policy.TagGitHubOwners)
+	if err == nil {
+		err = checkGuidance(f.Guidance, true)
 	}
-	if *newRequesters == tagNone {
-		remove = append(remove, policy.TagRequesters)
+	if err == nil {
+		err = checkProxy(f.Proxy, true)
 	}
-	if *newScopes == tagNone {
-		remove = append(remove, policy.TagScopes)
+	if err == nil {
+		err = checkProxyNarrowed(f.ProxyNarrowed, true)
 	}
-	if *newAdmin == tagNone {
-		remove = append(remove, policy.TagAdmin)
-	}
-	if *newProject == tagNone {
-		remove = append(remove, policy.TagProject)
-	}
-	if *newProjectChannels == tagNone {
-		remove = append(remove, policy.TagProjectChannels)
-	}
-	if *newMaxGrant == tagNone {
-		remove = append(remove, policy.TagMaxGrant)
-	}
-	if *newDefaultGrant == tagNone {
-		remove = append(remove, policy.TagDefaultGrant)
-	}
-	set := optionalTags(tagFlags{
-		Type:            *newType,
-		GitHubOwners:    *newGitHubOwners,
-		Requesters:      *newRequesters,
-		Scopes:          *newScopes,
-		Admin:           *newAdmin,
-		Project:         *newProject,
-		ProjectChannels: *newProjectChannels,
-		MaxGrant:        *newMaxGrant,
-		DefaultGrant:    *newDefaultGrant,
-	})
+	remove := noneRemoves(f)
+	set := optionalTags(f)
 	if err == nil && len(remove) > 0 && (*newOwner != "" || *newTier != "" || len(set) > 0) {
 		err = usageErr{errors.New("none removes a tag in a retag of its own: run the removal and the other changes as two retags")}
 	}
@@ -254,7 +237,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	named := *newGitHubOwners != "" && *newGitHubOwners != tagNone
+	named := f.GitHubOwners != "" && f.GitHubOwners != tagNone
 	if err := checkGitHubOwnersFor(policy.TypeFromTags(after), after[policy.TagGitHubOwners], named); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
@@ -262,6 +245,21 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	owner, tier := after[policy.TagOwner], after[policy.TagTier]
+	// The store's own limit on a tag value (awsBackend.checkTagValues), over every tag this retag
+	// writes: each it sets or changes, the requesters a guard rewrite writes, and the owner and tier
+	// every AWS tag write sends again. A value it leaves as the secret holds it is not written.
+	written := map[string]string{}
+	for key, value := range after {
+		if held.tags[key] != value || key == policy.TagOwner || key == policy.TagTier {
+			written[key] = value
+		}
+	}
+	if rewrite != "" {
+		written[policy.TagRequesters] = rewrite
+	}
+	if err := s.backend.checkTagValues(written); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	if len(remove) == 0 && (owner == "" || tier == "") {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s has no owner tag or no tier tag, and a retag sends both: name the missing one with --owner or --tier", name)})
 	}
@@ -317,19 +315,19 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 // makes to the requesters tag into the retag's own write: set and remove are the tags the flags
 // set and remove, and heldTags what the secret holds now. A retag that sets tags writes the
 // requesters tag guardRequesters leaves in the same write, the list a command names with the
-// guard after it. A retag that removes tags removes the requesters tag too where it held nothing
-// but the guard, and answers rewrite, the value the requesters tag must then be written as, where
-// the guard leaves a list or joins one: a second write after the removal, in that order, so a
-// second write that fails leaves the guard on a secret that no longer needs it, which only a
+// guards after it. A retag that removes tags removes the requesters tag too where it held nothing
+// but guards, and answers rewrite, the value the requesters tag must then be written as, where a
+// guard leaves a list or joins one: a second write after the removal, in that order, so a
+// second write that fails leaves a guard on a secret that no longer needs it, which only a
 // broker from legion-envoy-v29.23.0 (the first to read requesters) up to the release before the
-// project tags reads, as a refusal. A retag that sets tags never removes
-// the requesters tag: a guard left on a secret with no project tag, by a console's removal of the
-// tag, stays until a removal retag takes it out.
+// project tags or the kinds reads, as a refusal. A retag that sets tags never removes the
+// requesters tag: a guard left on a secret with none of its tags, by a console's removal of
+// them, stays until a removal retag takes it out.
 //
-// --requesters none on a secret that keeps a project tag removes the list and keeps the guard, so
-// the requesters tag is written as the guard alone: a write, not a removal. Beside another
-// removal that is two writes of the user's own asking, which a retag refuses, so it is refused
-// here too, before any write.
+// --requesters none on a secret that keeps a tag of rollbackGuards removes the list and keeps the
+// guards, so the requesters tag is written as the guards alone: a write, not a removal. Beside
+// another removal that is two writes of the user's own asking, which a retag refuses, so it is
+// refused here too, before any write.
 func guardRetag(heldTags, after, set map[string]string, remove *[]string) (rewrite string, err error) {
 	guardRequesters(after)
 	heldList, heldListed := heldTags[policy.TagRequesters]
@@ -339,7 +337,7 @@ func guardRetag(heldTags, after, set map[string]string, remove *[]string) (rewri
 	case afterListed && removing:
 		*remove = slices.DeleteFunc(*remove, func(key string) bool { return key == policy.TagRequesters })
 		if len(*remove) > 0 {
-			return "", usageErr{fmt.Errorf("--requesters none on a secret that keeps a %s or %s tag writes the requesters tag as %s alone, the rollback guard, which is a write and no removal: run --requesters none in a retag of its own", policy.TagProject, policy.TagProjectChannels, policy.RequestersRollbackGuard)}
+			return "", usageErr{fmt.Errorf("--requesters none on a secret that keeps a %s tag writes the requesters tag as %s alone, which holds its rollback guards and is a write, no removal: run --requesters none in a retag of its own", guardTags(), afterList)}
 		}
 		set[policy.TagRequesters] = afterList
 	case afterListed && len(*remove) == 0:
@@ -476,13 +474,24 @@ func reportRewriteFailure(s *secretSession, stderr io.Writer, form, name, rewrit
 	default:
 		// The store refused the rewrite before acting on it, or the read made before it failed
 		// and nothing was sent, so what the requesters tag holds now is what it held before this
-		// retag: the removal did not touch it. The guard was either leaving it (harmless to
-		// leave) or joining it (the secret keeps a project tag with no guard, which a broker from
-		// before the project tags would serve), and the two need different words.
-		_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
-		state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
-		if !guarded {
-			state = fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before the project tags would serve this secret by owner and tier alone", policy.RequestersRollbackGuard)
+		// retag: the removal did not touch it. Each of rollbackGuards was either leaving it
+		// (harmless to leave) or joining it (the secret keeps one of its tags with no guard,
+		// which a broker from before those tags would serve), and the two need different words.
+		_, heldProject, heldKinds := policy.SplitGuards(held.tags[policy.TagRequesters])
+		_, wantProject, wantKinds := policy.SplitGuards(rewrite)
+		holds, wants := [2]bool{heldProject, heldKinds}, [2]bool{wantProject, wantKinds}
+		var states []string
+		for i, g := range rollbackGuards {
+			switch {
+			case holds[i] && !wants[i]:
+				states = append(states, fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before %s reads, as a refusal", g.guard, g.era))
+			case wants[i] && !holds[i]:
+				states = append(states, fmt.Sprintf("The requesters tag does not hold %s yet, so a broker from before %s would %s", g.guard, g.era, g.risk))
+			}
+		}
+		state := "The requesters tag holds what it held before this retag"
+		if len(states) > 0 {
+			state = strings.Join(states, "; ")
 		}
 		fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but writing %s's requesters as %q failed: %v; looked in %s. %s; run this retag again to write it\n", form, name, rewrite, s.refusedAs(err), s.storeName(), state)
 	}
