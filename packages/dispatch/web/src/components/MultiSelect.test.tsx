@@ -196,9 +196,10 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
   }
 });
 
-/** The open list's Clear foot, which it draws while its pick holds a value, or null. */
+/** The open list's Clear foot, which it draws once its pick has held a value in this open, or
+ *  null: its button reads `Clear <label>`, or `No <label> picked` while nothing is picked. */
 function clearFoot(): HTMLElement | null {
-  return screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
+  return screen.queryByRole("button", { name: /^Clear |^No .+ picked$/ })?.parentElement ?? null;
 }
 
 /** Lays `foot`, the list's Clear foot, out as `layOutList` lays out the list: 61 px tall, stuck
@@ -749,8 +750,9 @@ test("Enter in a multi-select whose host lists the picked values first scrolls t
       ["web", 7, "", 127],
       // Ticked, web is listed first, at 61-105.
       ["web", 0, "web", 0],
-      // Unticked, web is back last, at 369-413, and the Clear foot is gone.
-      ["web", 7, "", 127],
+      // Unticked, web is back last, at 369-413, above the foot the list keeps: at 188 the box
+      // shows 249-413 px of its content between the text box and the foot.
+      ["web", 7, "", 188],
     ]);
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
@@ -807,12 +809,13 @@ test("Clear in a multi-select whose host lists the picked values first keeps the
       // Ticked, web, the last option, is listed first, at 61-105 px of the box's content, which
       // shows 61-225 px of it above the Clear foot.
       ["web", 0, "web", 0],
-      // Cleared, web is back last, at 369-413, and the foot is gone, so at 0 the box showed 61-286.
-      ["web", 7, "", 127],
+      // Cleared, web is back last, at 369-413, above the foot the list keeps: at 188 the box shows
+      // 249-413 px of its content between the text box and the foot.
+      ["web", 7, "", 188],
       // Ticked again and the list opened again: web is listed first, and is the first row.
       ["web", 0, "web", 0],
       // Cleared, web is back last, as above.
-      ["web", 7, "", 127],
+      ["web", 7, "", 188],
     ]);
     expect(screen.getByRole("combobox", { name: "Search labels" })).toHaveFocus();
     expect(scrolls).not.toHaveBeenCalled();
@@ -905,6 +908,127 @@ test("a pointer's tick that leaves no option whole between a multi-select's text
   } finally {
     scrolls.mockRestore();
     lists.restore();
+    view.unmount();
+  }
+});
+
+// A pointer untick of the last picked value, with the list scrolled to its end, took the Clear
+// foot away, and the browser clamped the scroll of the box it left 61 px shorter: the project
+// List's Labels filter went from 716 to 655 px, and the Inbox Filter panel's Project list from 496
+// to 435, in Chromium, Firefox and WebKit, so the row under the pointer became the row above the
+// one pressed. While the list is open the foot keeps its room once it is drawn, its Clear held and
+// saying that nothing is picked.
+test("a pointer untick of a multi-select's last picked value at the end of its list keeps the Clear foot's room, its Clear held and saying nothing is picked, and the list's scroll stays", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={LABELS} />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  try {
+    await user.click(trigger);
+    const box = lists.box();
+    if (box === null) throw new Error("the list was not laid out");
+    // How far the box has scrolled once the browser has laid out what a press drew: no further
+    // than the end of what the box then holds, which the foot's going makes 61 px shorter.
+    const laidOut = () => {
+      const at = box.scrollTop;
+      box.scrollTop = at;
+      return box.scrollTop;
+    };
+    const last = screen.getByRole("option", { name: "lab-20" });
+    // How far the box has scrolled at its end, at its end again after a pointer's tick of its last
+    // label, and after a pointer's untick of that label.
+    box.scrollTop = Number.MAX_SAFE_INTEGER;
+    const walked = [laidOut()];
+    await user.click(last);
+    box.scrollTop = Number.MAX_SAFE_INTEGER;
+    walked.push(laidOut());
+    await user.click(last);
+    walked.push(laidOut());
+    expect(screen.getByTestId("selected").textContent).toBe("");
+    // The box shows 286 px of the text box and twenty labels, 61 + 880 px, so its end is at 655;
+    // the foot's 61 px take it to 716, where the untick leaves it.
+    expect(walked).toEqual([655, 716, 716]);
+    const held = screen.getByRole("button", { name: "No labels picked" });
+    expect(held).toHaveAttribute("aria-disabled", "true");
+    expect(held).toBeEnabled();
+    // A press of the held Clear does nothing, and the focus a screen reader's cursor put on it
+    // stays there.
+    held.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("selected").textContent).toBe("");
+    expect(held).toHaveFocus();
+  } finally {
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// The foot keeps its room only while the list stays open: opened again with nothing picked, the
+// list draws no foot, as a list opened with nothing picked never does.
+test("a multi-select closed with nothing picked and opened again draws no Clear foot", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={["api", "docs", "frontend"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Labels" });
+    const foot = () => clearFoot()?.textContent ?? "no foot";
+    // The foot's words at the open, after a pointer's tick of api, after its untick, and once the
+    // list is closed and opened again.
+    await user.click(trigger);
+    const seen = [foot()];
+    await user.click(screen.getByRole("option", { name: "api" }));
+    seen.push(foot());
+    await user.click(screen.getByRole("option", { name: "api" }));
+    seen.push(foot());
+    await user.keyboard("{Escape}");
+    await user.click(trigger);
+    seen.push(foot());
+    expect(seen).toEqual(["no foot", "Clear labels", "No labels picked", "no foot"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Agents page's machine and role lists refuse a pick past the address's bound through the
+// list's error, whose words stood beside the list in no live region, so a screen reader said
+// nothing of the refusal. They are announced as they appear, as `QueryError` says a refusal, and
+// the text box names them as its description while they stand.
+test("a multi-select's error is announced as it appears, and its text box names it as its description while it stands", () => {
+  const refusal =
+    "Not added: the address keeps at most 1,000 characters of machines, and this pick would make 1,012.";
+  const list = (error: string | null) => (
+    <MultiSelect
+      emptyMessage="Nothing here."
+      error={error}
+      label="Machines"
+      onChange={() => undefined}
+      onOpenChange={() => undefined}
+      open
+      options={["alpha", "beta"]}
+      searchLabel="Search machines"
+      selected={[]}
+    />
+  );
+  const view = render(list(null));
+  try {
+    const search = screen.getByRole("combobox", { name: "Search machines" });
+    // What the page says as an alert, and the words the text box names as its description: with
+    // no error, with the refusal, and once the host drops it.
+    const said = () => [
+      screen.queryByRole("alert")?.textContent ?? "no alert",
+      document.getElementById(search.getAttribute("aria-describedby") ?? "")?.textContent ??
+        "no description",
+    ];
+    const seen = [said()];
+    view.rerender(list(refusal));
+    seen.push(said());
+    view.rerender(list(null));
+    seen.push(said());
+    expect(seen).toEqual([
+      ["no alert", "no description"],
+      [refusal, refusal],
+      ["no alert", "no description"],
+    ]);
+  } finally {
     view.unmount();
   }
 });
@@ -1739,9 +1863,9 @@ function OpenHost({
   );
 }
 
-// Clear is drawn only while the pick holds a value, so a press of Clear takes Clear away under
-// the focus. The focus goes to the search box, not to the body, where the popover's Escape no
-// longer reaches it.
+// A press of Clear empties the pick, and leaves Clear held, with nothing more to do, under the
+// focus. The focus goes to the search box, where the reader goes on in the list, not to the body,
+// where the popover's Escape no longer reaches it.
 test("a keyboard press of Clear, by Enter or Space, empties the pick and the focus stays in the search box", async () => {
   const user = userEvent.setup();
   const view = render(<OpenHost options={["api", "docs"]} />);
@@ -1822,7 +1946,7 @@ test("a Create row that new options name leaves the focus on the page's body", a
   }
 });
 
-// A pointer press of Clear leaves the focus in the search box, so Clear goes without it. That
+// A pointer press of Clear leaves the focus in the search box, and Clear is held without it. That
 // press answers no later loss: a Create row a screen reader's cursor focused, which new options
 // then take away, is no press of the reader's, and its focus stays on the page's body.
 test("a pointer press of Clear answers no later loss: a Create row new options take away leaves the focus on the page's body", async () => {
