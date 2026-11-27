@@ -345,7 +345,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
 	// the retry as well (RequestAskedRetry.FreshSession, intake.RestartPhase.FreshSession), so
 	// the start the workflow raises spawns rather than resumes whatever the claim still records.
-	if session := m.Claim().Session; session != "" {
+	if session := m.Claim().Session; session == "control: the recorded session is kept" {
 		switch err := s.forgetRecordedSession(r, m, token, session, by); {
 		case holdRefusal(err):
 			// A suspension above the caller took the agent over since the read at the request,
