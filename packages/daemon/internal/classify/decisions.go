@@ -1273,15 +1273,17 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // mergeWaitView makes no state test of its own and relies on this one.
 //
 // Nor does it hold for an approval of a head GitHub reports `blocked` while a fix of the task runs
-// beside the review (record.Issue.RunningFix): what blocks that head is a check the fix is there to
-// make pass, and the task's end waits for every check a CI job runs to pass at its head, so the
-// approval ends its round as on a state GitHub would merge from, and no review-stuck notice is
-// sent for it. Every other state keeps the wait beside a fix, since the fix does not cause it.
+// beside the review (record.Issue.RunningFix), where the merge state waits quietly or ends the
+// round (MergeOutcomeOf): what blocks that head is a check the fix is there to make pass, and the
+// task's end waits for every check a CI job runs to pass at its head, so the approval ends its
+// round as on a state GitHub would merge from, and no review-stuck notice is sent for it. A
+// `blocked` head that is told (a review request open, or `mergeable` null past its bound) keeps the
+// wait beside a fix, and so does every other state, since the fix causes none of them.
 func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
 	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
 		return false
 	}
-	if issue.RunningFix > 0 && pr.MergeState == record.MergeStateBlocked {
+	if issue.RunningFix > 0 && pr.MergeState == record.MergeStateBlocked && !MergeOutcomeOf(*pr, pr.StateReadAt).Told() {
 		return false
 	}
 	// The moment passed is the record's own read time, not a clock: only whether the round ends is

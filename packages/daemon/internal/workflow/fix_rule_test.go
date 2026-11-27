@@ -440,13 +440,14 @@ func TestATaskOfTheReleaseBeforeStartsNoFix(t *testing.T) {
 	applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
 	assertStrings(t, "the fixes", r.fixes(), nil)
 	assertStrings(t, "the failures", r.failures(), nil)
-	// The settlement tells the architect, the reviewer and the implementer, each by the fields its
-	// role message carries; the implementer also hears of the failed CI job, by its own fields
-	// (ciFailureMessage). No test reads a word of either body (assertToldRows).
+	// The implementer hears of the failed CI job at the failure, by its own fields
+	// (ciFailureMessage); the settlement then tells the architect, the reviewer and the
+	// implementer, each by the fields its role message carries. No test reads a word of either body
+	// (assertToldRows).
 	settled := settledFields.to
 	ciFailed := record.RoleMessage{Role: roleToken(t, claim.RoleImplementer), PullRequest: 42, Head: fixHead, Check: "k-ci", CICase: "failure"}
 	assertToldRows(t, r.pool, "LEGION-208", []record.RoleMessage{
-		settled(roleToken(t, claim.RoleArchitect)), settled(roleToken(t, claim.RoleReviewer)), ciFailed,
+		ciFailed, settled(roleToken(t, claim.RoleArchitect)), settled(roleToken(t, claim.RoleReviewer)),
 		settled(roleToken(t, claim.RoleImplementer)),
 	})
 }

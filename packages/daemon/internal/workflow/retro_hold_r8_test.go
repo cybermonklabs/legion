@@ -89,7 +89,8 @@ func retryRefusedWith(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, mes
 
 // heldForARestingRoot is P (LEGION-100), walking `implementer reviewer`, held before its retro by
 // the reviewer's pass while R (LEGION-208), a view root of its own tree, has its spec step waiting
-// on P's open approval request ask-100, and by nothing else.
+// on P's open approval request ask-100, and by nothing else: Dispatch holds no check of P at its
+// head (noChecksAt), so P's task's end waits for no CI.
 func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -99,6 +100,7 @@ func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: basisAncestor, Repo: "sjawhar/legion", Number: 41,
 		Branch: "legion/" + basisAncestor, HeadSHA: "head", Failing: []string{}})
+	noChecksAt(t, pool, basisAncestor, "sjawhar/legion", "head")
 	reviewingWithoutAcceptance(t, pool, engine, basisAncestor)
 	// R, a view on P, admitted in its own tree as seedGatedTree records it, its spec step waiting
 	// on P's approval request.

@@ -33,7 +33,8 @@ var cwAt = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 
 // cwSeedParent records key as a root of its own standing in at, at generation 1, on its open pull
 // request number at head, and answers the record. A parent held from a phase shows the status of
-// the phase it was held from, as a hold leaves it.
+// the phase it was held from, as a hold leaves it. Dispatch holds no check of key at head
+// (noChecksAt), so a move into the retro waits for no CI.
 func cwSeedParent(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, number int, change ...func(*record.Issue)) record.Issue {
 	t.Helper()
 	status := PhaseStatus(at)
@@ -48,6 +49,7 @@ func cwSeedParent(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, 
 	seedIssue(t, pool, issue)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: number,
 		Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
+	noChecksAt(t, pool, key, "sjawhar/legion", "head")
 	return issue
 }
 

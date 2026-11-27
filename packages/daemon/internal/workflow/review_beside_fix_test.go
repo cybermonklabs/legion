@@ -201,12 +201,26 @@ func (r *fixRig) mergeStateAt(head string, state record.MergeState) {
 		CheckedHead: head, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: head, Conclusion: record.RunSucceeded}}})
 }
 
+// reviewRequestedAtX records GitHub's whole answer for LEGION-208's pull request at fixHead:
+// `blocked`, MERGEABLE, every check run of the head concluded, and one review request open, which
+// the round waits on and is told of (classify.MergeWaitsToldReviewRequested).
+func (r *fixRig) reviewRequestedAtX() {
+	r.t.Helper()
+	requested := 1
+	seedPR(r.t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: statesRepo, Number: 42,
+		Branch: "legion/LEGION-208", HeadSHA: fixHead, Failing: []string{}, Cancelled: []string{},
+		Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked,
+		HeadChecks: record.HeadChecksConcluded, ReviewsRequested: &requested,
+		CheckedHead: fixHead, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: fixHead, Conclusion: record.RunSucceeded}}})
+}
+
 // While a fix runs beside the review, the reviewer's approval of X, the head GitHub reports
 // `blocked`, ends its round and the task goes on past its review, with no notice of a stuck round:
 // a check the fix owns is what blocks the head, and the task's end waits for each check a CI job
-// runs. The controls, kept: with no fix the same approval stays in reviewing and the architect is
-// told the round is stuck, as the base does; and a head GitHub reports `behind` keeps the wait
-// beside a fix, since the fix does not cause it.
+// runs. The controls, kept: with no fix the same approval stays in reviewing, on GitHub's next
+// answer; a `blocked` head GitHub holds a review request open on keeps the wait beside a fix, and
+// the architect is told the round is stuck, since the fix does not cause that hold; and a head
+// GitHub reports `behind` keeps the wait beside a fix, for the same reason.
 func TestAnApprovalOfABlockedHeadBesideARunningFixEndsItsRound(t *testing.T) {
 	r := besideTheFix(t)
 	r.mergeStateAtX(record.MergeStateBlocked)
@@ -218,14 +232,22 @@ func TestAnApprovalOfABlockedHeadBesideARunningFixEndsItsRound(t *testing.T) {
 		t.Fatalf("the architect was told %+v, want nothing: the blocked head beside a fix ends the round", told)
 	}
 
-	t.Run("with no fix the round stays stuck and tells", func(t *testing.T) {
+	t.Run("with no fix the round stays in reviewing", func(t *testing.T) {
 		r := reviewing(t)
 		seedClaimSession(t, r.pool, reviewClaim, "ses-reviewer")
 		r.mergeStateAtX(record.MergeStateBlocked)
 		r.reviewOf(1, "approved", fixHead)
 		assertPhase(t, r.pool, phase.Reviewing)
+	})
+
+	t.Run("a review request open on the blocked head keeps the wait beside a fix and tells", func(t *testing.T) {
+		r := besideTheFix(t)
+		seedClaimSession(t, r.pool, reviewClaim, "ses-reviewer")
+		r.reviewRequestedAtX()
+		r.reviewOf(1, "approved", fixHead)
+		assertPhase(t, r.pool, phase.Reviewing)
 		if told := reviewStuckNotices(t, r.pool); len(told) != 1 {
-			t.Fatalf("the architect was told %+v, want one review-stuck notice", told)
+			t.Fatalf("the architect was told %+v, want one review-stuck notice: the review request is no hold of the fix's", told)
 		}
 	})
 
