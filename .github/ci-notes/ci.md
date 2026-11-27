@@ -2915,6 +2915,9 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
+The rows run beside each other, up to the package's eight process slots at once
+(cmd/dispatch/process_slots_test.go): run one after another they took 13 minutes, nearly all
+of it waiting, with the runner's four cores 91% idle.
 
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 
