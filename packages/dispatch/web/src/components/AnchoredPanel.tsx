@@ -53,6 +53,13 @@ const EDGE: CSSProperties = {
  *  (`PANEL_ATTRIBUTE`). */
 const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
 
+/** Where the panel stands in the window, and the height it is cut to where it is cut. */
+interface Placement {
+  readonly left: number;
+  readonly maxHeight?: number;
+  readonly top: number;
+}
+
 /** A top and a bottom, in the window. */
 interface Span {
   readonly bottom: number;
@@ -78,22 +85,30 @@ export function scrollToShow(box: Element, span: Span, shown: Span): void {
   else if (span.bottom > shown.bottom) box.scrollTop += span.bottom - shown.bottom;
 }
 
+/** The side of its panel `child` sticks to, `top` or `bottom`, as the shared list's text box and
+ *  Clear foot do, or null for a child that sticks to none. A sticky box sticks to a side whose
+ *  inset is set: `auto` in a browser, empty in happy-dom, is no side. */
+function stuckSide(child: Element): "bottom" | "top" | null {
+  const { bottom, position, top } = getComputedStyle(child);
+  if (position !== "sticky") return null;
+  if (top !== "auto" && top !== "") return "top";
+  return bottom !== "auto" && bottom !== "" ? "bottom" : null;
+}
+
 /** The part of `panel`'s shown span (`shownSpan`) that no sticky child of the panel covers: cut
  *  at the bottom edge of a child stuck to its top and at the top edge of one stuck to its bottom,
  *  as the shared list's text box and Clear foot are, the rows scrolling under both (`MultiSelect`,
  *  whose arrows measure the same span). A sticky child that holds `control` cuts nothing: it
  *  stands where it sticks however the panel scrolls. */
-function uncoveredSpan(panel: HTMLElement, control: Element): Span {
+function uncoveredSpan(panel: Element, control: Element): Span {
   let { bottom, top } = shownSpan(panel);
   for (const child of panel.children) {
     if (child.contains(control)) continue;
-    const { bottom: stuckBottom, position, top: stuckTop } = getComputedStyle(child);
-    if (position !== "sticky") continue;
+    const side = stuckSide(child);
+    if (side === null) continue;
     const box = child.getBoundingClientRect();
-    // A sticky box sticks to a side whose inset is set: `auto` in a browser, empty in happy-dom,
-    // is no side.
-    if (stuckTop !== "auto" && stuckTop !== "") top = Math.max(top, box.bottom);
-    else if (stuckBottom !== "auto" && stuckBottom !== "") bottom = Math.min(bottom, box.top);
+    if (side === "top") top = Math.max(top, box.bottom);
+    else bottom = Math.min(bottom, box.top);
   }
   return { bottom, top };
 }
@@ -128,6 +143,63 @@ function scrollPanelToShow(panel: HTMLElement, control: Element): void {
   scrollToShow(panel, { bottom, top }, uncoveredSpan(panel, control));
 }
 
+/**
+ * The least height `panel` is cut to where the window has too little room for it: its border and
+ * padding, each child stuck to its top or its bottom (`stuckSide`), and one row, the first control
+ * it holds outside those children. In the shared list that is its text box, its first option and
+ * its Clear foot while the foot is drawn: cut to the room alone, the issue header's Labels list at
+ * 390x360 showed no option whole between its text box and its foot, which left 22 px for the
+ * rows. A panel counts only the parts it has: a filter panel, which has no sticky child, is never
+ * cut below its first control, and a list that shows no option is never cut below its text box
+ * and its foot. Each part is read as it is drawn.
+ */
+function leastHeight(panel: HTMLElement): number {
+  const { paddingBottom, paddingTop } = getComputedStyle(panel);
+  let least =
+    panel.offsetHeight -
+    panel.clientHeight +
+    (Number.parseFloat(paddingTop) || 0) +
+    (Number.parseFloat(paddingBottom) || 0);
+  const stuck: Element[] = [];
+  for (const child of panel.children) {
+    if (stuckSide(child) === null) continue;
+    stuck.push(child);
+    least += child.getBoundingClientRect().height;
+  }
+  const row = focusableIn(panel).find((control) => !stuck.some((child) => child.contains(control)));
+  return least + (row?.getBoundingClientRect().height ?? 0);
+}
+
+/**
+ * Scrolls what holds `anchor` the least that moves it `by` px up the window, or down for a `by`
+ * below 0: each box around it whose overflow scrolls, nearest first, and then the page. Each box
+ * moves it no further than the box's own scroll reaches, and than keeps the anchor whole in the
+ * part of the box no sticky child of the box covers (`uncoveredSpan`) - a drawer's head, say - so
+ * the control that opened a panel is still there to press. The walk stops at the anchor or a box
+ * around it that is `fixed` or `sticky`: a scroll of what holds that box need not move the anchor,
+ * and would move the page under a panel that stays where it stood.
+ */
+function moveAnchor(anchor: Element, by: number): void {
+  let left = by;
+  for (let box: Element | null = anchor; box !== null && left !== 0; box = box.parentElement) {
+    const { overflowY, position } = getComputedStyle(box);
+    const page = box === document.scrollingElement;
+    if (box !== anchor && (page || overflowY === "auto" || overflowY === "scroll")) {
+      const shown = page ? { bottom: window.innerHeight, top: 0 } : uncoveredSpan(box, anchor);
+      const at = anchor.getBoundingClientRect();
+      const step =
+        left > 0
+          ? Math.min(left, box.scrollHeight - box.clientHeight - box.scrollTop, at.top - shown.top)
+          : Math.max(left, -box.scrollTop, at.bottom - shown.bottom);
+      if (Math.sign(step) === Math.sign(left)) {
+        box.scrollTop += step;
+        left -= at.top - anchor.getBoundingClientRect().top;
+      }
+    }
+    if (position === "fixed" || position === "sticky") return;
+  }
+}
+
 /** What dismissed a panel, which `onDismiss` hands its host: Escape, Tab or Shift+Tab past its
  *  last or first control, a pointer press outside it and its anchor, or its anchor gone from the
  *  page or drawn nowhere. A host whose next move depends on how the reader left - the Agents
@@ -144,6 +216,12 @@ export type PanelDismissal = "escape" | "gone" | "press" | "tab";
  * control, the last three of which also return focus to the anchor. Opening moves focus to the
  * panel's first control that takes it, by the rule its edges and every dialog's trap follow
  * (`focusableIn`), else to the panel itself, unless the host opens it without (`focusOnOpen`).
+ *
+ * A cut panel is never cut below its least height (`leastHeight`): the shared list's text box,
+ * one option and its Clear foot. Where the roomier side has less room than that, the panel takes
+ * that side at its least height and the page scrolls the least that shows it within the window
+ * (`moveAnchor`); where the page cannot scroll so far, it is cut to the room it has then, so it
+ * never draws past the window's edge.
  *
  * The press outside is read at the document's capture phase, before any control under it can
  * stop it on its way up: an ask card's hand-on keeps its press from the row it sits in, and a
@@ -204,10 +282,7 @@ export function AnchoredPanel({
   role?: "dialog";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ left: number; maxHeight?: number; top: number }>({
-    left: 0,
-    top: 0,
-  });
+  const [position, setPosition] = useState<Placement>({ left: 0, top: 0 });
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
   const takesFocus = useRef(focusOnOpen);
@@ -281,19 +356,40 @@ export function AnchoredPanel({
         ? Math.min(panel.scrollHeight + panel.offsetHeight - panel.clientHeight, classMax.current)
         : 200;
       // Under the anchor where it fits, else over it where it fits there, else on the side with
-      // more room and cut to that room - never over the anchor itself, so the control that
-      // opened a panel is always there to press again and close it: a list low in a filter
-      // panel, or a filter panel under a trigger low on a phone, goes up rather than over it.
-      const below = window.innerHeight - 8 - (box.bottom + 4);
-      const above = box.top - 4 - 8;
-      let next: { left: number; maxHeight?: number; top: number };
-      if (height <= below || below >= above) {
-        const maxHeight = height <= below ? undefined : Math.max(below, 0);
-        next = { left, maxHeight, top: Math.max(8, box.bottom + 4) };
-      } else if (height <= above) {
-        next = { left, top: box.top - 4 - height };
-      } else {
-        next = { left, maxHeight: above, top: 8 };
+      // more room and cut to that room, though never below `floor` - never over the anchor
+      // itself, so the control that opened a panel is always there to press again and close it:
+      // a list low in a filter panel, or a filter panel under a trigger low on a phone, goes up
+      // rather than over it. `short` is how far `floor` runs past that room: past the window's
+      // bottom margin as a count over 0, past its top margin as one under 0.
+      const placed = (at: DOMRect, floor: number): { short: number; spot: Placement } => {
+        const below = window.innerHeight - 8 - (at.bottom + 4);
+        const above = at.top - 4 - 8;
+        if (height <= below) return { short: 0, spot: { left, top: Math.max(8, at.bottom + 4) } };
+        if (below >= above) {
+          const room = Math.max(below, 0);
+          const maxHeight = Math.max(room, floor);
+          const top = Math.max(8, at.bottom + 4);
+          return { short: maxHeight - room, spot: { left, maxHeight, top } };
+        }
+        if (height <= above) return { short: 0, spot: { left, top: at.top - 4 - height } };
+        const maxHeight = Math.max(above, floor);
+        return { short: above - maxHeight, spot: { left, maxHeight, top: at.top - 4 - maxHeight } };
+      };
+      let next = placed(box, Number.NEGATIVE_INFINITY).spot;
+      // A cut panel is cut no lower than its least height (`leastHeight`), or than all it holds
+      // where it holds less. Where the room on its side is less than that, the page scrolls the
+      // least that gives the panel that room (`moveAnchor`). Where it cannot scroll so far, the
+      // panel is cut to the room it has then, so it never draws past the window's edge.
+      if (panel && next.maxHeight !== undefined) {
+        const least = Math.min(leastHeight(panel), height);
+        let short: number;
+        ({ short, spot: next } = placed(box, least));
+        if (short !== 0) {
+          moveAnchor(anchor, short);
+          const moved = anchor.getBoundingClientRect();
+          ({ short, spot: next } = placed(moved, least));
+          if (short !== 0) next = placed(moved, Number.NEGATIVE_INFINITY).spot;
+        }
       }
       setPosition((current) =>
         current.left === next.left &&
