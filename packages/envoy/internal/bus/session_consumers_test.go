@@ -193,9 +193,9 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 }
 
 // A relay frame is a stored message's bytes with the relay's headers, so a message that fits the
-// server's max payload alone can make a frame past it, which nats.go refuses before sending.
-// Publish names that refusal ErrTooLarge, an ErrRefused, with the frame's size, headers included,
-// and the limit. The connection stays up and still sends a frame at the limit.
+// server's max payload alone can make a frame past it. Publish refuses it before sending, as
+// ErrTooLarge, an ErrRefused, in the words of every size refusal (sizeText): the frame's size,
+// headers included, and the limit. The connection stays up and still sends a frame at the limit.
 func TestPublishNamesAFramePastTheMaxPayloadTooLarge(t *testing.T) {
 	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
@@ -211,7 +211,7 @@ func TestPublishNamesAFramePastTheMaxPayloadTooLarge(t *testing.T) {
 	if !errors.Is(err, ErrTooLarge) || !errors.Is(err, ErrRefused) {
 		t.Fatalf("publish of a frame one byte past the max payload = %v, want ErrTooLarge, an ErrRefused", err)
 	}
-	if want := fmt.Sprintf("a frame of %d bytes, headers included, against the server's max payload of %d bytes", limit+1, limit); !strings.Contains(err.Error(), want) {
+	if want := sizeText(limit+1, limit); !strings.Contains(err.Error(), want) {
 		t.Fatalf("publish error = %q, want it to say %q", err, want)
 	}
 	if !consumers.client.Connection().IsConnected() {

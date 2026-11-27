@@ -947,7 +947,7 @@ func TestPublishHandler_SourceFieldWithNATS(t *testing.T) {
 func TestSendHandler_RejectsUnknownTarget(t *testing.T) {
 	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions}
+	state := &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions}
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(

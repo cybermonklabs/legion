@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A role message the Envoy listener refuses for itself (`400` or `413` with its own error, such as
+    a message too large for NATS to take whole) now ends its outbox row, logged as dropped, as a role
+    message to a role nobody holds does. Before, the row retried the refusal on its backoff for ever.
+    The listener of cybermonklabs/legion#5701 counts a message's size before it resolves its role, so
+    a role message too large to store meets its `413` whether or not anyone holds the role, where it
+    met the `404` that ends the row before.
+time: 2026-11-27T14:43:35Z
+custom:
+    Issue: pr5701-role-message-refused

@@ -334,23 +334,21 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // replacing until ctx ends: a relay frame on a session's DeliverSubject, which the stream does not
 // store, so it travels on the connection the frame's message was pulled and is answered on.
 //
-// A frame whose headers and data together are past the server's max payload is refused before it
-// is sent, as ErrTooLarge naming both sizes: a stored message that fits the limit alone can still
-// make such a frame once the relay adds its headers, and every send of it is refused again. A
-// frame the connection dropped under after the wait is refused as ErrReconnecting (Reconnecting).
+// A frame whose headers and data together are past the server's max payload is refused before the
+// wait for a connection (Client.checkSend), as ErrTooLarge naming its size and the bound: a stored
+// message that fits the limit alone can still make such a frame once the relay adds its headers,
+// and every send of it is refused again. nats.go's own refusal, which a frame meets only when the
+// client had not read the bound of the server it reached, is named the same way (Client.refused).
+// A frame the connection dropped under after the wait is refused as ErrReconnecting
+// (Reconnecting).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
+	if err := s.client.checkSend(msg); err != nil {
+		return err
+	}
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	conn := s.client.Connection()
-	err := conn.PublishMsg(msg)
-	if errors.Is(err, nats.ErrMaxPayload) {
-		// nats.go weighs the headers and the data against the limit; Size counts the subject
-		// and the reply too.
-		return fmt.Errorf("%w: a frame of %d bytes, headers included, against the server's max payload of %d bytes",
-			ErrTooLarge, msg.Size()-len(msg.Subject)-len(msg.Reply), conn.MaxPayload())
-	}
-	return Reconnecting(err)
+	return s.client.refused(s.client.Connection().PublishMsg(msg), msg)
 }
 
 // NewInbox names a new inbox on the connection, under its inbox prefix (WithInboxPrefix): the

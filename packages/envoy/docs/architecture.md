@@ -200,7 +200,8 @@ attempt:
 | The store read did not answer (its second ran out, or the read failed any other way) | `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` |
 | The target's entry, or for a target with no entry its known-session record when that record carries capabilities, does not advertise the frame's `delivery.mode`, or that mode cannot be read unambiguously | `403` naming the session, and the mode when it could be read |
 | The request body is longer than 4 MiB, the `/v1` body limit | `413 {"error":"body too large: the limit is 4194304 bytes (4 MiB)"}`, recorded `too_large`, with nothing read past the limit and nothing stored (see “Request body limits”) |
-| The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
+| The message is over the server's max payload, headers included, before the listener adds its own fields: the envelope as the route built it with the message id header its publish carries. The route checks it after the request's own checks and before the sender limit and any store read (`refuseTooLargeToPublish`), so with nothing read, reported or stored | `413` naming the size against the server's max payload, with no `Retry-After`, recorded `too_large` |
+| The message is over the bound only once the listener adds its sender stamp, or only as a role forward under its own dedupe key and header: the route's reads, its probe and its wake report come first, and the publish or the forward refuses it by the same size rule, before it waits on a reconnect or reads the route's context (`bus.Client.checkSend`) | `413` as the row above, once those reads answer. A role message with no live holder is not forwarded but kept for the role's next holder under the keep's own message id, so it gets the keep's answer: `202` kept for one that fits the keep, even where a forward of it would be too large, and `404` (`unclaimed` or `holder_lapsed`), as every keep that stored nothing is, for one that does not. With the route's deadline already spent, a read that then runs out is answered first, as the `503` of its own row |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The stream answers the publish as a duplicate of another request's copy (a repeat under the same key), and the listener reads that copy back at the sequence the verdict named | `200` as the rows above, with `duplicate: true` and an answer read from the stored copy (`publishHeld`, `cmd/listener/stored_copy.go`): the copy's envelope whole (its `event_id`, `issued_at` and body) to the request's own copy and to the copy's own sender (the same `source` and the `source_session` the copy names, and, where the request presents a broker token, the session it proves; a copy that names no session is whole only to its own request); to anyone else, where the request names `Envoy-Reads: key-taken` (`listenerwire.ReadsHeader`), only the copy's `event_id`, times, `topic`, `dedupe_key` and `expects_reply`, and otherwise the envelope the listener built for the request (`requestSender.answer`); the record line names the copy's `event_id` and the request's own sender; a verdict on the bus's own resend that names this request's first send is answered as a new copy, with no `duplicate`; a role send's repeat from a session that has since taken the role, which forwards nothing, is answered from the forward this listener's record names for the earlier holder for the same request (`settledBeforeForward`): the record is the listener's own and lasts 10 minutes; a repeat after that or on another listener answers its own new envelope, as at main |
@@ -227,7 +228,9 @@ role send's first role-holder resolution that did not answer, exactly the same w
 resolution (the claim read and the holder's session read; it writes nothing to the role bucket, so
 a holder it finds past the live window keeps its claim) runs
 inside the same 3.5 s budget, and one the budget runs out on is that 503 too, naming the call that
-did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged. Its role 404s
+did not answer. Its 400s and its 403 for a denied publish are unchanged, and its 413 for a message
+past the server's max payload comes before the role-holder resolution, the sender limit and the
+publish, as the send route's does. Its role 404s
 (`unclaimed`, `holder_lapsed`) keep their bodies, and a role send gives one only when the listener
 kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
 no claim can ever name; or the keep itself failed, also a keep whose publish went out and was
@@ -268,8 +271,9 @@ proves, else the request's `source_session`. Only a message whose `source` is `a
 and that has a sender is counted. So a message of Dispatch (`dispatch`) or of Envoy itself
 (`envoy`) is not counted, and neither is the Legion daemon's notice, which names no sender. The
 check comes after the request's own checks, the publish route's `ReachesNoSession` 400 included,
-and before the route reads a session, resolves a role, reports a wake or stores anything
-(`senderLimit.admit`).
+and after the `413` of a message past the server's max payload (`refuseTooLargeToPublish`), so a
+sender at its limit is told the message is too large, not to wait; it comes before the route reads
+a session, resolves a role, reports a wake or stores anything (`senderLimit.admit`).
 
 A message that finds its count at 0 is answered `429`, recorded `sender_rate_limited`, and the
 listener stores it nowhere, keeps it for no later holder of a role and reports no wake for it

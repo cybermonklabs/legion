@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/nats-io/nats.go"
 )
 
 // KeptExpiredSubjectPrefix begins the expiry notice of every role (KeptExpiredSubject): what
@@ -107,6 +105,6 @@ func (c *Client) PublishKeptCopyExpiry(ctx context.Context, notice KeptCopyExpir
 	if err != nil {
 		return fmt.Errorf("encode the expiry notice of role %s's copy %d: %w", notice.Role, notice.Sequence, err)
 	}
-	_, err = c.publishStoredRaw(ctx, KeptExpiredSubject(notice.Role), data, nats.MsgId(KeptExpiryMsgID(notice.Role, notice.Sequence)))
+	_, err = c.publishStoredRaw(ctx, KeptExpiredSubject(notice.Role), data, msgIDHeader(KeptExpiryMsgID(notice.Role, notice.Sequence)))
 	return err
 }

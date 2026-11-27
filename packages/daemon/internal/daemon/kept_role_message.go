@@ -170,11 +170,13 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
 // roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
 // unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
-// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
-// removal from the merge queue and of a change of the merge holds, hold the row for a topic with
-// no holder and for an unresponsive holder while the merger's claim has neither failed nor
-// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go); and
+// delivery mode (notify.ErrRefusedByHolder), a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied) or a message the listener refuses for itself, a size NATS does not
+// take whole among them (notify.ErrMessageRefused, permanentRefusal); mergeQueueRemoval and
+// mergeHoldsChanged, the merger's message of a removal from the merge queue and of a change of
+// the merge holds, hold the row for a topic with no holder and for an unresponsive holder while
+// the merger's claim has neither failed nor retired, and retry every other failure
+// (merge_queue_removal.go, merge_holds.go); and
 // mergeForwardMessage, a message of a merge forward, holds its row the same way while the role's
 // claim has neither failed nor retired and the merge forward still stands at the row's head
 // (merge_forward.go). Those three publish through the deliverHeld they share. Each of those six

@@ -65,9 +65,13 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 	// nc is the connection already in c.Conn, reconnected in place, and the JetStream context taken
 	// from it keeps working, so neither field is reassigned here. The reconnect is a connection
 	// event, so the hooks are due. A callback nats.go delivers late for a connection the client has
-	// since replaced is not: the replacement was its own event.
+	// since replaced is not: the replacement was its own event. The server this reconnect reached
+	// may take another max payload than the last one, so the size checks' copy is read again,
+	// outside mu: nats.Conn.MaxPayload takes nats.go's connection lock.
+	maxPayload := nc.MaxPayload()
 	c.mu.Lock()
 	if nc == c.Conn {
+		c.maxPayload.Store(maxPayload)
 		c.markHooksDueLocked()
 		// The session this reconnect replaced is the one the server reported its publish refusals
 		// on, and the publishes they answered are over; this session's grant is read again from

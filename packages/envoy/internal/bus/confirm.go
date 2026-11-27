@@ -93,7 +93,7 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 		return windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)}
 	}
 	if err := publish(msg); err != nil {
-		return c.refused(err, len(msg.Data))
+		return c.refused(err, msg)
 	}
 	return confirmFlushed(ctx, conn, msg.Subject, before, deadline)
 }

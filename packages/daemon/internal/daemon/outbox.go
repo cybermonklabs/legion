@@ -647,6 +647,14 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Error("outbox state event refused by the listener and dropped; its events reach Dispatch at the next whole read of the project",
 				"row", row.ID, "project", row.Issue, "seq", row.StateSeq, "kind", row.Kind, "error", cause)
 		}
+	case record.RoleMessage:
+		// Nobody is told: the message only informs (record.RoleMessage), and its role would have
+		// been told nothing had nobody held it. The line is what says the row ended, an ERROR,
+		// since the daemon built a message the listener will never take.
+		told = func() {
+			r.log.Error("outbox role message refused by the listener and dropped; it answers the same message the same way however often it is sent",
+				"row", row.ID, "issue", row.Issue, "role", value.Role, "error", kept)
+		}
 	case record.StepRecord:
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
 		// never take, a writer its route refuses or an id of another issue, and the work the
@@ -954,6 +962,15 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		var denied notify.ErrPublishDenied
 		var refused notify.ErrMessageRefused
 		return errors.As(err, &denied) || errors.As(err, &refused)
+	case record.OutboxKindRoleMessage:
+		// Permanent where the listener refuses the message itself (notify.ErrMessageRefused): a
+		// field or the topic it does not take, or a size NATS does not take whole, which it answers
+		// the same way however often the message is sent. The listener counts the size before it
+		// resolves the role, so a message too large to store meets that 413 whether or not anyone
+		// holds the role. The row ends, as it does for a role nobody holds (roleMessage); retried, it
+		// would never end.
+		var refused notify.ErrMessageRefused
+		return errors.As(err, &refused)
 	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
 		return recordRefused(err)
 	case record.OutboxKindHookPrompt:
