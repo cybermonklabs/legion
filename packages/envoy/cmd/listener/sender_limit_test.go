@@ -246,11 +246,12 @@ func newSenderLimitRig(t *testing.T) *senderLimitRig {
 }
 
 // newSenderLimitRigOnServer is a senderLimitRig on a server of its own, which the test can stop
-// answering under live connections (testnats.Server.Freeze).
-func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server) {
+// answering under live connections (testnats.Server.Freeze). options are added to the listener
+// connection's own (bus.WithReplicas(1)).
+func newSenderLimitRigOnServer(t *testing.T, options ...bus.ConnectOption) (*senderLimitRig, *testnats.Server) {
 	t.Helper()
 	server, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	client, err := bus.ConnectOwningStream([]string{url}, append([]bus.ConnectOption{bus.WithReplicas(1)}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
@@ -736,7 +737,7 @@ func TestSenderLimitCost(t *testing.T) {
 		const sender = "ses_cost_reconnecting"
 		client := down.harness.client
 		server.Stop(t)
-		waitFor(t, 10*time.Second, "the listener's connection to reconnect after its server stopped", func() bool {
+		waitFor(t, "the listener's connection to reconnect after its server stopped", func() bool {
 			return !client.Connected() && client.Connection().IsReconnecting()
 		})
 		unsent := down.publishFrom(t, sender, "notifications.team.sender-limit-reconnecting-"+id.New(), nil)
@@ -744,7 +745,7 @@ func TestSenderLimitCost(t *testing.T) {
 		unsent.requireOutcome(t, "the publish while NATS reconnects", outcomeBusUnavailable)
 		unsent.requireUnnamed(t, "the publish while NATS reconnects")
 		server.Start(t)
-		waitFor(t, 30*time.Second, "the listener's bus to answer again after its server started", func() bool {
+		waitFor(t, "the listener's bus to answer again after its server started", func() bool {
 			if !client.Connected() {
 				return false
 			}
@@ -1024,7 +1025,7 @@ func TestSenderLimitCost(t *testing.T) {
 		full.limit(4, 1)
 		const sender, target = "ses_cost_full", "ses_cost_full_target"
 		full.recorded(t, target, nil)
-		bustest.FillStream(t, client, 64)
+		bustest.FillStream(t, client)
 		refused := full.sendFrom(t, sender, target, nil)
 		refused.requireStatus(t, "the send to a full stream", http.StatusServiceUnavailable)
 		refused.requireOutcome(t, "the send to a full stream", outcomeStreamFull)
@@ -1050,7 +1051,7 @@ func TestSenderLimitCost(t *testing.T) {
 		unacknowledged.requireStatus(t, "the publish whose acknowledgement was lost", http.StatusServiceUnavailable)
 		unacknowledged.requireOutcome(t, "the publish whose acknowledgement was lost", outcomeBusUnavailable)
 		unacknowledged.requireNamed(t, "the publish whose acknowledgement was lost", sender)
-		waitFor(t, 10*time.Second, "the stream to store the publish the frozen server held", func() bool {
+		waitFor(t, "the stream to store the publish the frozen server held", func() bool {
 			return lost.storedOn(t, topic) == 1
 		})
 		lost.requireCount(t, sender, false)
@@ -1095,7 +1096,7 @@ func TestSenderLimitCost(t *testing.T) {
 		unacknowledged.requireStatus(t, "the send whose acknowledgement was lost", http.StatusServiceUnavailable)
 		unacknowledged.requireOutcome(t, "the send whose acknowledgement was lost", outcomeBusUnavailable)
 		unacknowledged.requireNamed(t, "the send whose acknowledgement was lost", sender)
-		waitFor(t, 10*time.Second, "the stream to store the send the frozen server held", func() bool {
+		waitFor(t, "the stream to store the send the frozen server held", func() bool {
 			return lost.storedOn(t, contracts.LegacyAgentSubject(target)) == 1
 		})
 		lost.requireCount(t, sender, false)

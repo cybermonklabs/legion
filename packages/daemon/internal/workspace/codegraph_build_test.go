@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -127,7 +128,7 @@ init)
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		warmCodegraphIndexOn(context.Background(), c, dir, time.Now())
+		warmCodegraphIndexOn(context.Background(), c, procgroup.NoReaper, dir, time.Now())
 	}()
 	var standIn, sleeper, group int
 	t.Cleanup(func() {
@@ -208,7 +209,7 @@ init) env > '`+seen+`' ;;
 `)
 	dir := t.TempDir()
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	listing, err := os.ReadFile(seen)
 	if err != nil {
 		t.Fatalf("the stand-in init recorded no environment: %v; calls %v", err, stubCalls(t, callLog))
@@ -253,7 +254,7 @@ func warmUpTwiceAfterADeath(t *testing.T, initEnd, want string, first func(dir s
 	indexed.Delete(dir)
 	captured := captureStderr(t)
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	stderr := captured()
 	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "init", "status"}) {
 		t.Fatalf("the calls across both warm-ups = %v, want the second to run status alone: the build died, and a repair would run it again on the same disk", calls)
@@ -265,7 +266,9 @@ func warmUpTwiceAfterADeath(t *testing.T, initEnd, want string, first func(dir s
 
 // warmUpOnce is the first warm-up of warmUpTwiceAfterADeath on the real clock, for a build that
 // ends by itself.
-func warmUpOnce(dir string) { WarmCodegraphIndex(context.Background(), dir, time.Now()) }
+func warmUpOnce(dir string) {
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
+}
 
 // TestWarmCodegraphIndexDoesNotRepairABuildThatDiedUnseen: a build that died with its shim (a pod
 // end, the kernel's out-of-memory kill, a shim killed at its stop grace) left its record
@@ -282,7 +285,7 @@ index) exit 0 ;;
 	writeWarmBuildRecord(t, dir, died)
 	captured := captureStderr(t)
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	stderr := captured()
 	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status"}) {
 		t.Fatalf("codegraph calls = %v, want status alone on a workspace whose last build died unseen", calls)
@@ -316,7 +319,7 @@ func TestWarmCodegraphIndexDoesNotRepairABuildThatTimedOut(t *testing.T) {
 		returned := make(chan struct{})
 		go func() {
 			defer close(returned)
-			warmCodegraphIndexOn(context.Background(), c, dir, time.Now())
+			warmCodegraphIndexOn(context.Background(), c, procgroup.NoReaper, dir, time.Now())
 		}()
 		testwait.Eventually(t, "the stand-in init to have begun", func() bool {
 			_, err := os.Stat(filepath.Join(dir, ".codegraph", "begun"))
@@ -349,7 +352,7 @@ init) cp .codegraph/`+warmBuildName+` '`+seen+`' ;;
 		dir := t.TempDir()
 		before := time.Now().Add(-time.Second)
 
-		WarmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		body, err := os.ReadFile(seen)
 		if err != nil {
 			t.Fatalf("the build found no record when it started: %v", err)
@@ -376,7 +379,7 @@ init) : > '`+begun+`'; exec sleep 30 ;;
 		returned := make(chan struct{})
 		go func() {
 			defer close(returned)
-			WarmCodegraphIndex(ctx, dir, time.Now())
+			WarmCodegraphIndex(ctx, procgroup.NoReaper, dir, time.Now())
 		}()
 		testwait.Eventually(t, "the stand-in init to have begun", func() bool {
 			_, err := os.Stat(begun)
@@ -403,7 +406,7 @@ func TestWarmCodegraphIndexClearsItsRecordOnACompleteIndex(t *testing.T) {
 	dir := t.TempDir()
 	writeWarmBuildRecord(t, dir, warmBuild{Subcommand: "init", Started: time.Now().Add(-time.Hour).UTC(), Outcome: warmOutcomeKilled, CodeGraph: "1.5.0", Cap: codegraphMemoryCap})
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status"}) {
 		t.Fatalf("codegraph calls = %v, want status alone on a complete index", calls)
 	}
@@ -433,7 +436,7 @@ index) kill -KILL $$ ;;
 			dir := t.TempDir()
 			writeWarmBuildRecord(t, dir, warmBuild{Subcommand: "init", Started: time.Now().Add(-time.Hour).UTC(), Outcome: warmOutcomeKilled, CodeGraph: tc.version, Cap: tc.cap})
 
-			WarmCodegraphIndex(context.Background(), dir, time.Now())
+			WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 			if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "index"}) {
 				t.Fatalf("codegraph calls = %v, want status then index: %s allows one new attempt", calls, tc.name)
 			}
@@ -443,7 +446,7 @@ index) kill -KILL $$ ;;
 			}
 			indexed.Delete(dir)
 
-			WarmCodegraphIndex(context.Background(), dir, time.Now())
+			WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 			if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "index", "status"}) {
 				t.Fatalf("codegraph calls = %v, want the next warm-up to run status alone: the one new attempt died too", calls)
 			}
@@ -468,7 +471,7 @@ index) exit 0 ;;
 	}
 	writeWarmBuildRecord(t, dir, warmBuild{Subcommand: "init", Started: died, Outcome: warmOutcomeMemoryCap, CodeGraph: "1.5.0", Cap: codegraphMemoryCap})
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "index"}) {
 		t.Fatalf("codegraph calls = %v, want status then index on a workspace created after its record's build", calls)
 	}
@@ -494,7 +497,7 @@ index) exit 0 ;;
 	}
 	captured := captureStderr(t)
 
-	WarmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	stderr := captured()
 	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "index"}) {
 		t.Fatalf("codegraph calls = %v, want status then index: an unreadable record holds nothing", calls)

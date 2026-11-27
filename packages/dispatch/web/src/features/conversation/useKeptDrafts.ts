@@ -22,7 +22,6 @@ import {
   submittedAskOptions,
 } from "./composer-draft";
 import {
-  type AcceptedMention,
   type ComposerAnchor,
   type ComposerKind,
   type DraftIntake,
@@ -162,7 +161,6 @@ export interface MountDraft {
   readonly body: string;
   /** An edit that waits beside the newer body the field opens on (`changedUnder`). */
   readonly changed: SentDraft | undefined;
-  readonly mentions: AcceptedMention[];
   readonly replacement: string;
   /** The field took a draft - a held send's, or one kept under the send name or for the
    *  address - which the reply prefill must not replace. */
@@ -206,13 +204,11 @@ export function mountDraft({
       : { draft: unsentHere };
   const heldElsewhere =
     held?.status === "refused" && !sameAddress(held.request, { anchor, edit, owner, replyTo });
-  const seeded = seededDraft(seedMentions, undefined, owner);
   const fresh = {
     ask: undefined,
     away: false,
-    body: edit?.body ?? seeded.body,
+    body: edit?.body ?? seededDraft(seedMentions, "", owner),
     changed: undefined,
-    mentions: seeded.mentions,
     replacement: "",
     taken: false,
   };
@@ -229,7 +225,6 @@ export function mountDraft({
       away: false,
       body: held.draft.draft.body,
       changed: undefined,
-      mentions: [...held.draft.draft.mentions],
       replacement: held.draft.draft.replacement,
       taken: true,
     };
@@ -243,7 +238,6 @@ export function mountDraft({
       away: unsentHere === undefined,
       body: kept.draft.body,
       changed: undefined,
-      mentions: [...kept.draft.mentions],
       replacement: kept.draft.replacement,
       taken: true,
     };
@@ -448,7 +442,6 @@ export function useKeptDrafts({
     readonly field: {
       readonly askOptions: readonly AskOptionDraft[];
       readonly body: string;
-      readonly mentions: readonly AcceptedMention[];
       readonly multiple: boolean;
       readonly replacement: string;
       readonly urgency: AskUrgency;
@@ -476,7 +469,7 @@ export function useKeptDrafts({
     readonly stoppedAside: OfferedDraft | undefined;
     readonly unsent: UnsentDrafts;
   }): KeptDrafts {
-  const { askOptions, body, mentions, multiple, replacement, urgency } = field;
+  const { askOptions, body, multiple, replacement, urgency } = field;
   const { awayName, unsentName } = keptNames({ composerName, inline, standing });
   const keptByAddress = unsent.useAway(awayName ?? "");
   // A draft kept for a reply the host no longer lists, or lists deleted - which takes no reply -
@@ -518,8 +511,10 @@ export function useKeptDrafts({
   // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
-  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows. A refusal the host has moved the
+  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after it
+  // mounts and after each keystroke, and as the page goes, which no unmount follows. A composer
+  // that mounts over a refusal so keeps the very draft the send holds, and a keep of what the
+  // send holds already writes nothing (`holdsAlready`). A refusal the host has moved the
   // composer off (`elsewhere`) keeps the draft it was written with: what is typed over it there
   // is for that other address. So does an edit's refusal while it waits beside a newer body
   // (`changed`): the field shows that body, not the reader's edit.
@@ -528,7 +523,7 @@ export function useKeptDrafts({
     if (elsewhere !== undefined || changed !== undefined) return;
     outgoing.keep({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-      draft: { body, mentions, replacement },
+      draft: { body, replacement },
     });
   };
   useEffect(() => () => keepDraft.current(), []);
@@ -536,7 +531,7 @@ export function useKeptDrafts({
   useEffect(() => {
     const write = window.setTimeout(() => keepDraft.current(), KEEP_DRAFT_MS);
     return () => window.clearTimeout(write);
-  }, [askOptions, body, mentions, multiple, replacement, urgency]);
+  }, [askOptions, body, multiple, replacement, urgency]);
   useEffect(() => {
     const keepNow = () => keepDraft.current();
     window.addEventListener("pagehide", keepNow);
@@ -554,9 +549,7 @@ export function useKeptDrafts({
    *  opens with, a reply's prefill, or what the channel seeds. */
   const freshBody =
     edit?.body ??
-    (replyTo === null
-      ? seededDraft(seedMentions, undefined, owner).body
-      : replyPrefill(replyTo).body);
+    (replyTo === null ? seededDraft(seedMentions, "", owner) : replyPrefill(replyTo).body);
   /** Whether the field holds words the reader wrote for the address whose untouched field reads
    *  `fresh`: more than that, and other than a held refusal's own draft, which its held send
    *  keeps. Only such a draft is kept for an address the composer leaves. */
@@ -624,7 +617,7 @@ export function useKeptDrafts({
         anchor,
         ask: { multiple, options: submittedAskOptions(askOptions), urgency },
         base: edit?.body,
-        draft: { body, mentions, replacement },
+        draft: { body, replacement },
         kind,
         owner,
         replyTo,
@@ -677,7 +670,7 @@ export function useKeptDrafts({
     if (editBody === undefined || editedFrom.current === editBody) return;
     const writtenOver = editedFrom.current;
     editedFrom.current = editBody;
-    const written = { body, mentions, replacement };
+    const written = { body, replacement };
     if (
       changed === undefined &&
       !(holdsSend && heldRefusal === undefined) &&
@@ -696,7 +689,7 @@ export function useKeptDrafts({
       }
       setChanged(written);
     }
-    replaceDraft({ body: editBody, mentions: [] });
+    replaceDraft({ body: editBody });
   }, [editBody]);
   // The unsent draft is written under its send name while no send of its own holds the draft, and
   // while the host has the composer away from a refusal's address (`refusedElsewhere`): what the
@@ -707,8 +700,8 @@ export function useKeptDrafts({
   const keepsUnsent = wroteOver("");
   useEffect(() => {
     if (unsentName === undefined || (holdsSend && !refusedElsewhere)) return;
-    unsent.write(unsentName, keepsUnsent ? { body, mentions, replacement } : undefined);
-  }, [body, holdsSend, keepsUnsent, mentions, refusedElsewhere, replacement, unsent, unsentName]);
+    unsent.write(unsentName, keepsUnsent ? { body, replacement } : undefined);
+  }, [body, holdsSend, keepsUnsent, refusedElsewhere, replacement, unsent, unsentName]);
   // A refusal lives at the address its send went to, or the one the reader has carried it to
   // since (`sameAddress`; the own moves below). A host can move the composer to another while it
   // holds one - another row or thread, a Reply on a message - and from there neither Send nor
@@ -782,7 +775,7 @@ export function useKeptDrafts({
       return;
     }
     if (!replyMoved || sendOut) return;
-    const leaving = { body, mentions, replacement };
+    const leaving = { body, replacement };
     const ask = { multiple, options: submittedAskOptions(askOptions), urgency };
     if (refusalAt(before.address)) {
       // Written now, since the debounced write reads the address the composer shows by then.
@@ -807,7 +800,7 @@ export function useKeptDrafts({
       ? heldRefusal?.draft.draft
       : (kept?.draft ??
         heldRefusal?.draft.draft ??
-        (replyTo === null ? seededDraft(seedMentions, undefined, owner) : undefined));
+        (replyTo === null ? { body: seededDraft(seedMentions, "", owner) } : undefined));
     // Arriving at a reply that keeps nothing, with no refusal held, is a new reply: the prefill
     // fills the field.
     if (next === undefined) return;
@@ -843,7 +836,7 @@ export function useKeptDrafts({
     takeAway: (away) => {
       if (awayTakes !== "here" || awayName === undefined) return;
       replaceDraft({
-        ...seededDraft(seedMentions, away.draft, owner),
+        body: seededDraft(seedMentions, away.draft.body, owner),
         replacement: away.draft.replacement,
       });
       unsent.forgetAway(awayName, { anchor: away.anchor, replyTo: away.replyTo });

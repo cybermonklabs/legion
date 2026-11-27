@@ -4,7 +4,7 @@
 // and leaving it out of the -race run spares that job compiling the guard and running its scan
 // over every .go file of packages/envoy a second time.
 //
-// The tag is here for that saving rather than for the compiler. What this guard and the seven
+// The tag is here for that saving rather than for the compiler. What this guard and the eight
 // others share - moduleSource, moduleSources, stringConstants, sqlStatements, literalText,
 // sqlWhitespace - is declared in module_source_test.go, which carries no tag because tests of
 // this package use declarations of it untagged and so must have them under -race too
@@ -15,7 +15,7 @@
 // The work stays behind the tag: the constant fixpoint and the statement walk this guard runs
 // over the whole module, and
 // TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and
-// once in the text-check run that names the seventeen tests of these eight guards and
+// once in the text-check run that names the twenty-two tests of these nine guards and
 // one_expression_guard_test.go. That file is where the module's second walk went: main had it
 // as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
 // is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather
@@ -23,7 +23,7 @@
 
 package api
 
-//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources:, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, one_expression_guard_test.go:72, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+//ci:reads packages/envoy/**/*.go !**/*_test.go `packages/envoy/internal/dispatch/api/module_source_test.go#scanModuleSources` walks packages/envoy (infra, testdata and all) and parses every .go file it finds but the test files, for the tests that ask it for the module's sources: `packages/envoy/internal/dispatch/api/lock_level_test.go#TestNoForUpdateOnOwnerTables`, `packages/envoy/internal/dispatch/api/event_insert_guard_test.go#TestOnlyTheBrokerInsertsEvents`, `packages/envoy/internal/dispatch/api/review_order_guard_test.go#TestEveryReviewReadOrdersByReviewOrder`, `packages/envoy/internal/dispatch/api/review_write_guard_test.go#TestOnlyQueueReviewWritesReviews`, `packages/envoy/internal/dispatch/api/one_expression_guard_test.go#TestOneExpressionDecidesWhoWaitsInOneSpelling`, `packages/envoy/internal/dispatch/api/issue_route_writer_guard_test.go#TestOnlyTheIssuePatchWritesTheRoute`; that last also walks packages/envoy and reads every non-test file of it as text
 
 import (
 	"path/filepath"

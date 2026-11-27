@@ -13,14 +13,25 @@ type edge struct {
 }
 
 // findLoops is one cycle of each strongly connected part of the graph edges holds that holds a
-// cycle, ported from level_check.py's find_loops: Tarjan's strongly connected parts, then the
-// shortest cycle from the part's smallest id back to it, found breadth first with each node's
-// edges in (target, relation) order. Each cycle starts and ends at that smallest id, and the
-// cycles are sorted by it.
+// cycle (loopParts), ported from level_check.py's find_loops: the shortest cycle from the part's
+// smallest id back to it, found breadth first with each node's edges in (target, relation) order.
+// Each cycle starts and ends at that smallest id, and the cycles are sorted by it.
 func findLoops(edges map[string][]edge) [][]string {
 	for node := range edges {
 		slices.SortFunc(edges[node], func(a, b edge) int { return cmp.Or(cmp.Compare(a.to, b.to), cmp.Compare(a.relation, b.relation)) })
 	}
+	var loops [][]string
+	for _, part := range loopParts(edges) {
+		loops = append(loops, shortestCycle(edges, slices.Min(part), part))
+	}
+	slices.SortFunc(loops, func(a, b []string) int { return cmp.Compare(a[0], b[0]) })
+	return loops
+}
+
+// loopParts is each strongly connected part of the graph edges holds that holds a cycle, by
+// Tarjan's algorithm: a part of two nodes or more, or one node with an edge to itself. Each node of
+// a loop is in exactly one part, and a part is every node of its loops.
+func loopParts(edges map[string][]edge) [][]string {
 	index := map[string]int{}
 	low := map[string]int{}
 	onStack := map[string]bool{}
@@ -50,7 +61,9 @@ func findLoops(edges map[string][]edge) [][]string {
 					break
 				}
 			}
-			parts = append(parts, part)
+			if len(part) > 1 || slices.ContainsFunc(edges[node], func(e edge) bool { return e.to == node }) {
+				parts = append(parts, part)
+			}
 		}
 	}
 	for _, node := range slices.Sorted(maps.Keys(edges)) {
@@ -58,17 +71,28 @@ func findLoops(edges map[string][]edge) [][]string {
 			visit(node)
 		}
 	}
+	return parts
+}
 
-	var loops [][]string
-	for _, part := range parts {
-		start := slices.Min(part)
-		if len(part) == 1 && !slices.ContainsFunc(edges[start], func(e edge) bool { return e.to == start }) {
-			continue
-		}
-		loops = append(loops, shortestCycle(edges, start, part))
+// statementEdges is the parent and serves relations of each of statements to another of them, as
+// the edges of Validate's loop rule: a relation to an id that is no statement of the list is none.
+func statementEdges(statements []Statement) map[string][]edge {
+	held := make(map[string]bool, len(statements))
+	for _, s := range statements {
+		held[s.ID] = true
 	}
-	slices.SortFunc(loops, func(a, b []string) int { return cmp.Compare(a[0], b[0]) })
-	return loops
+	edges := map[string][]edge{}
+	for _, s := range statements {
+		if held[s.Parent] {
+			edges[s.ID] = append(edges[s.ID], edge{to: s.Parent, relation: statementParent.member})
+		}
+		for _, id := range s.Serves {
+			if held[id] {
+				edges[s.ID] = append(edges[s.ID], edge{to: id, relation: statementServes.member})
+			}
+		}
+	}
+	return edges
 }
 
 // shortestCycle is the shortest path from start back to start inside part, as the list
@@ -108,12 +132,13 @@ func shortestCycle(edges map[string][]edge, start string, part []string) []strin
 	return path
 }
 
-// loopDetail writes a cycle as the loop rule's Detail names it: "a -[parent]-> b -[serves]-> a".
+// loopDetail writes a cycle as the loop rule's Detail names it: "a -[parent]-> b -[serves]-> a",
+// each id cut (Cut).
 func loopDetail(cycle []string) string {
 	var b strings.Builder
-	b.WriteString(cycle[0])
+	b.WriteString(Cut(cycle[0]))
 	for i := 1; i+1 < len(cycle); i += 2 {
-		b.WriteString(" -[" + cycle[i] + "]-> " + cycle[i+1])
+		b.WriteString(" -[" + cycle[i] + "]-> " + Cut(cycle[i+1]))
 	}
 	return b.String()
 }

@@ -349,7 +349,7 @@ func TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate(t *testing.T
 		t.Fatalf("connect through the slow link: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(30 * time.Second))
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}

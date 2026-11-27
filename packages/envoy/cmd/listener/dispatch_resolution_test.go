@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,12 +21,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	dispatchstoretest "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testpg"
 )
 
 // This file is the one proof that spans both services. Every other test of INFRA-249 exercises
@@ -159,10 +160,14 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		// of for the process. This rig needs one because the handler refuses a config without
 		// it; nothing here keeps a role message.
 		roleKeepDrains: newRoleKeepGuards(),
-		// The listener's clock, and its dead letter's publish, as main.go sets them.
-		now:               time.Now,
-		publishDeadLetter: d.client.PublishStoredAs,
-		keepPublish:       d.client.PublishStoredAck,
+		// The listener's clock, and its dead letter's and expiry notice's publishes, as main.go sets them.
+		now:                 time.Now,
+		publishDeadLetter:   d.client.PublishStoredAs,
+		publishExpiryNotice: d.client.PublishKeptCopyExpiry,
+		keepPublish:         d.client.PublishStoredAck,
+		// Whether the rig's NATS user holds the session consumers' calls: the answer of the
+		// session delivery opened below, set there as main.go sets it.
+		consumerGrant: &consumerGrantAnswer{},
 	}
 	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
 	config = wireTestRoleForwarder(t, config)
@@ -175,6 +180,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
+	config.consumerGrant.set(delivery.holdsConsumerGrant)
 	relays, err := startSessionRelays(delivery, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
@@ -197,19 +203,21 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 	return logs
 }
 
-// migratedDispatchDatabase opens an empty Postgres database of this test's own, carries every
-// Dispatch migration into it, and records the person whose writes the tests make.
+// migratedDispatchDatabase is a Dispatch store on an empty database of this test's own carrying
+// every migration (Dispatch's storetest.Open), with the person whose writes the tests make
+// recorded. It is storetest's rather than internal/testpg's, which starts a container when
+// DISPATCH_TEST_DATABASE_URL is unset: testpg links testcontainers-go, whose package init reads
+// every process on the machine, and this test binary starts itself as the listener
+// (start_credential_wait_test.go's startListenerChild), so every such start would pay that init.
+// Without the variable the row skips, as every Postgres-backed Dispatch test does, and its skip
+// says what to set; CI's envoy-go-race job sets it for the step that runs this package.
 func migratedDispatchDatabase(t *testing.T) *dispatchstore.Store {
 	t.Helper()
+	if os.Getenv(dispatchstoretest.DatabaseURLEnv) == "" {
+		t.Skip(dispatchstoretest.DatabaseURLEnv + " is unset, so this row has no Postgres for Dispatch's store: set it to a Postgres server's admin URL, such as postgres://postgres:<password>@127.0.0.1:5432/postgres?sslmode=disable, as .github/workflows/ci-job-envoy-go-race.yaml does")
+	}
 	ctx := context.Background()
-	database, err := dispatchstore.Open(ctx, testpg.URL(t))
-	if err != nil {
-		t.Fatalf("open the Dispatch database: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate the Dispatch database: %v", err)
-	}
+	database := dispatchstoretest.Open(t)
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	if err := people.Record(ctx, rigHuman); err != nil {
 		t.Fatalf("record %s as having signed in: %v", rigHuman, err)
@@ -346,7 +354,7 @@ func (s *rigSession) awaitFrame(t *testing.T) string {
 	select {
 	case frame := <-s.standIn.frames:
 		return string(frame.msg.Data)
-	case <-time.After(15 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("no frame reached %s's own consumer", s.id)
 		return ""
 	}
@@ -475,7 +483,7 @@ type rigBroadcast struct {
 // work cancelled by its own t.Context() rather than finished.
 func (rig *dispatchRig) awaitBroadcastDeliveries(t *testing.T, broadcastID string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/broadcasts/"+broadcastID, nil)
 		if read.Code != http.StatusOK {
@@ -519,7 +527,7 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 			sessionID, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
 		if read.Code != http.StatusOK {
@@ -779,7 +787,7 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 		t.Fatalf("the stored copy = %#v, want message %s from dispatch under its send's key, its frame as payload", queued, message.ID)
 	}
 
-	waitFor(t, 20*time.Second, "the listener to give the copy up", func() bool {
+	waitFor(t, "the listener to give the copy up", func() bool {
 		return len(recordsFor(deliveryRecords(t, rig.deliveryLog.String(), "listener agent delivery given up"), released)) > 0
 	})
 	logs := rig.deliveryLog.String()

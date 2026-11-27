@@ -27,6 +27,8 @@ import (
 
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -65,9 +67,11 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
-// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
-// databases to drop and drops their templates, inside the broker harness's Run, which then drops
-// the database brokerstoretest.URL made the contract rows' broker schemas in.
+// TestMain runs the package's tests through the Dispatch harness's Main, which drops their
+// databases and their templates, inside the broker harness's Run, which then drops the database
+// brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
+// testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
+// harness's may have reached that bound, still waits testdb's floor for its own drop.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
@@ -108,6 +112,7 @@ func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 // it down, and its compaction worker would outlive every server it served. An input with none is
 // refused, naming the field.
 func TestNewDepsRefusesAnInputWithNoDocumentService(t *testing.T) {
+	t.Parallel()
 	if _, err := NewDeps(DepsInput{}); err == nil || !strings.Contains(err.Error(), "Docs is required") {
 		t.Fatalf("an input with no document service = %v, want it refused naming Docs", err)
 	}
@@ -193,6 +198,9 @@ type testServerOptions struct {
 	// goroutines out; a test that stops the server before it ends (the socket's) passes one it
 	// can cancel itself. It must end by the test's end, so derive it from t.Context().
 	lifetime context.Context
+	// clock is the server's Deps.Clock, which its timers and the listener client's window run
+	// on: nil is clock.Real(), and a test that drives a timer passes a clocktest.Fake.
+	clock clock.Clock
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
 	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
@@ -209,6 +217,11 @@ type testServerOptions struct {
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
+	// liveSocketClock is the server's Deps.LiveSocketClock, which a live socket's pong deadline, its
+	// wait for the page's close frame and its drain of a frame past the read limit run on: nil is
+	// clock.Real(), and a test whose sockets must not end on a late pong passes clocktest.Held(), or
+	// a fake it moves to each deadline.
+	liveSocketClock clock.Clock
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -222,6 +235,10 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// inboxStatementBound is the mark-all's and the dismissal's statement_timeout
+	// (server.inboxStatementBound); zero keeps production's inboxReadStatementTimeout. A case that
+	// holds a dismissal behind a lock of its own passes pastTheRun (seedHeldInboxRead).
+	inboxStatementBound time.Duration
 	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
 	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
 	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
@@ -242,6 +259,12 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// legionStatusScope is Deps.LegionStatusScope (DISPATCH_LEGION_STATUS_SCOPE): R26's refusal
+	// of a write that sets a Legion issue's status, takes the legion label off an issue, or moves
+	// a Legion issue out from under every labelled issue, from a credential that holds neither
+	// the person scope nor the legion-status scope. False is the deployment that has not turned
+	// it on, which every test but legion_status_scope_test.go's runs as.
+	legionStatusScope bool
 	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
 	parentStatusRule bool
 	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
@@ -413,13 +436,16 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:            options.buildCommit,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
+		LegionStatusScope:      options.legionStatusScope,
 		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
+		Clock:                  options.clock,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
@@ -427,6 +453,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.inboxStatementBound = options.inboxStatementBound
 	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
@@ -465,6 +492,34 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
 	return &server{deps: deps, lifetime: context.Background()}
+}
+
+// awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
+// what and the deadlines it last saw when none ever is. It looks for the one deadline rather than a
+// count, since the server's other timers on the same fake may be pending beside it.
+func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
+}
+
+// awaitArmedCountAt waits until at least count timers for at are pending on fake, the server's
+// clock: a row with count sockets open moves the clock to their heartbeat only once each of them
+// has armed it, so none is armed after the move and fires off a heartbeat the row did not drive.
+func awaitArmedCountAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time, count int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%s armed %d times for %s", what, count, at.Format(time.RFC3339Nano)), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		n := 0
+		for _, deadline := range armed {
+			if deadline.Equal(at) {
+				n++
+			}
+		}
+		return armed, n >= count
+	})
 }
 
 // writeSessionRecord answers GET /v1/registry/{session_id} from the rows a stub listener also
@@ -1211,25 +1266,23 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 	}
 }
 
-// dispatch_issue's external says what POST /api/v1/issues does with the reference it names: a
-// reference already imported into the call's project answers its issue and creates nothing, and
-// one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH. The words are the
-// tool's generated copy (contracts.DispatchTools), the text the catalogue serves, and each promise
-// is held to the route here, so a change of either the words or the route fails this test.
-func TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers(t *testing.T) {
+// dispatch_issue's external names the code POST /api/v1/issues refuses an import with when the
+// reference is already imported into another project, 400 EXTERNAL_PROJECT_MISMATCH, and the
+// route answers that code; a reference already imported into the call's project answers its
+// issue. The description is the tool's generated copy (contracts.DispatchTools), the text the
+// catalogue serves, so a change of the code in either the description or the route fails here.
+func TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers(t *testing.T) {
 	t.Parallel()
-	var words string
+	var description string
 	for _, tool := range contracts.DispatchTools {
 		for _, argument := range tool.Arguments {
 			if tool.Name == "dispatch_issue" && argument.Name == "external" {
-				words = argument.Description
+				description = argument.Description
 			}
 		}
 	}
-	for _, promise := range []string{"owner/repo#n", "answers its issue and creates nothing", "400 EXTERNAL_PROJECT_MISMATCH"} {
-		if !strings.Contains(words, promise) {
-			t.Fatalf("dispatch_issue's external says %q, want it to say %q", words, promise)
-		}
+	if !strings.Contains(description, "400 EXTERNAL_PROJECT_MISMATCH") {
+		t.Fatalf("dispatch_issue's external reads %q, want it to name 400 EXTERNAL_PROJECT_MISMATCH", description)
 	}
 	handler := newTestHandler(t)
 	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {

@@ -43,6 +43,7 @@ import (
 // credential the controller's launcher signs in with, and the form that launcher runs, the
 // roles-dir form with it and the single-role form without (controllerPod.launcherContainer).
 func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testing.T) {
+	t.Parallel()
 	const overlay = "/etc/legion-operator-roles/controller.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
@@ -135,6 +136,7 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 // nothing is lost by replacing the pod where it stands — and it is replaced at its next launch,
 // with no second registration anywhere.
 func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := controllerSpec(t)
 	loc := g.spawn(spec)
@@ -194,6 +196,7 @@ func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t
 // runtime's making and stays unmoved, and the comparison stays one way: an owner the pod holds
 // that the daemon no longer serves is a stale directory and no reason to remake a pod.
 func TestAnOwnerlessControllerPodIsReplacedOnceItsProjectGainsAnOwner(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.ControllerCredential = noOwnerControllerCredential
 		o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
@@ -249,6 +252,7 @@ func TestAnOwnerlessControllerPodIsReplacedOnceItsProjectGainsAnOwner(t *testing
 // served. Were it the other way round, every launch of such a deployment's controller would
 // replace the pod it just made, for ever, since the replacement's gh directory is empty too.
 func TestAnOwnerlessControllerIsKeptWhileItsProjectStaysOwnerless(t *testing.T) {
+	t.Parallel()
 	ownerless := func(o *Options) {
 		o.ControllerCredential = noOwnerControllerCredential
 		o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
@@ -280,6 +284,7 @@ func TestAnOwnerlessControllerIsKeptWhileItsProjectStaysOwnerless(t *testing.T) 
 // A pod projecting an owner the daemon no longer serves is ahead of the daemon, not behind it: a
 // stale directory costs nothing, and remaking the pod would delete the issue's disk for it.
 func TestMovedGhDirsLeavesAPodItCannotJudgeAndOneAheadOfTheDaemon(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	name := roleVolume(ghVolume, claim.RoleTester)
 	for what, spec := range map[string]corev1.PodSpec{
@@ -304,6 +309,7 @@ func TestMovedGhDirsLeavesAPodItCannotJudgeAndOneAheadOfTheDaemon(t *testing.T) 
 // projects a directory of its own for it, where a pod lacking an owner's directory holds no token
 // of that owner at all.
 func TestMovedGhDirsComparesTheOwnerDirectoriesOfThePodsOwnRepository(t *testing.T) {
+	t.Parallel()
 	t.Run("a repository of an owner the pod already holds", func(t *testing.T) {
 		var asked []string
 		withSibling := func(repo ghrepo.Repository, _ []appauth.AppRole) []string {

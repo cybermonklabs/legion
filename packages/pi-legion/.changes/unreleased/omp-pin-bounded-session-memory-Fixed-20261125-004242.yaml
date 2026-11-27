@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: omp-pin-bounded-session-memory
+body: |-
+  The `repository-extensions` capability row reads the `path` of each entry Oh My Pi's
+  `discoverExtensionPaths` answers, which is a `{path, scope}` object from Oh My Pi
+  18.18.6-sami.20261124-152326 on. On such a build the row failed with `The "paths[0]" property
+  must be of type string, got object` in every repository with `.omp/extensions`, `.omp/skills` or
+  `.claude/skills`.

@@ -494,6 +494,73 @@ check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 
+# A job split into legs keeps its old name on a job that waits for the legs and fails when one did
+# not pass (.github/workflows/ci-job-daemon-go.yaml's daemon-go and daemon-go-race). That job's
+# check run carries its own `exit code 1` beside an error saying it restates its legs' result, so
+# runner-shutdown.sh passes over it and reads the legs' check runs. Here typecheck stands for such
+# a job: `typecheck / typecheck (leg 1)` and `(leg 2)` are its legs, `typecheck / typecheck` the
+# job that restates them.
+restated="typecheck's legs ended failure, and this job restates its legs' result: each leg's own check run says why it did not pass"
+echo "case: a leg the platform killed, under a job that restates its legs' result"
+check_runs changes lint 'typecheck / typecheck (leg 1)' 'typecheck / typecheck (leg 2)' 'typecheck / typecheck' \
+  envoy-client worker-image docs
+annotations 'typecheck / typecheck (leg 1)' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+annotations 'typecheck / typecheck' "$restated" 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "reads the leg's shutdown through the restating job" \
+  "$(contains "$out" '^typecheck: cancelled (selected: needs.changes.outputs.typecheck is true)$')"
+check "says a runner shutdown cut it off" "$(contains "$out" 'a runner shutdown cut this one off')"
+
+echo "case: a leg that failed of itself, under a job that restates its legs' result"
+check_runs changes lint 'typecheck / typecheck (leg 1)' 'typecheck / typecheck (leg 2)' 'typecheck / typecheck' \
+  envoy-client worker-image docs
+annotations 'typecheck / typecheck (leg 1)' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+annotations 'typecheck / typecheck (leg 2)' 'Process completed with exit code 1.'
+annotations 'typecheck / typecheck' "$restated" 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
+
+echo "case: a job whose only failing check run restates its legs' result"
+# Legs that ended with no annotation at all (cancelled, or skipped) leave the restating job the
+# one failing check run, which is no evidence of a kill: the failure stands.
+check_runs changes lint 'typecheck / typecheck (leg 1)' 'typecheck / typecheck' envoy-client worker-image docs
+annotations 'typecheck / typecheck' "$restated" 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+
+echo "case: every job that restates its legs' result writes the words runner-shutdown.sh reads"
+# The marker is read by its words, so a job whose error is reworded would hide its legs' shutdowns
+# again with every check green: each such step of every workflow must hold them. The steps are
+# found across .github/workflows by their name, so a new legs job's restating step is held the
+# moment it is written, and the count is checked against the files known to have one, so a scan
+# that found none could not pass.
+marker=$(sed -n "s/^RUNNER_SHUTDOWN_RESTATED=\"\(.*\)\"\$/\1/p" "$script_dir/runner-shutdown.sh")
+check "runner-shutdown.sh spells the marker" "$(is "$([ -n "$marker" ] && echo set)" set)"
+held=$(MARKER="$marker" python3 -c '
+import os, sys, yaml, pathlib
+found = {}
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.yaml")):
+    document = yaml.safe_load(path.read_text()) or {}
+    for job in (document.get("jobs") or {}).values():
+        for step in (job or {}).get("steps", []) or []:
+            if step.get("name") == "Pass only when every leg passed":
+                count, marked = found.get(path.name, (0, 0))
+                found[path.name] = (count + 1, marked + (os.environ["MARKER"] in step.get("run", "")))
+print(" ".join(f"{name}={count}/{marked}" for name, (count, marked) in sorted(found.items())))
+' "$script_dir/../workflows")
+check "every restating step writes it: daemon-go's two, envoy-go's, envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs's" \
+  "$(is "$held" "ci-job-daemon-go.yaml=2/2 ci-job-envoy-go-race-api.yaml=1/1 ci-job-envoy-go-race-docs.yaml=1/1 ci-job-envoy-go-race.yaml=1/1 ci-job-envoy-go.yaml=1/1")"
+
 echo "case: GitHub refuses the check runs of this head"
 # The read is tried three times and the verdict is reached without it: a read that did not
 # happen is no evidence that the platform killed anything, so the failure stands as a failure

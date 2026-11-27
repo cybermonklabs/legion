@@ -19,13 +19,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
-// function (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its
-// expiry, so most ticks render the hosts.yml the Secret already holds and write nothing; a minute
-// keeps the time a role's gh runs on a token the daemon has already replaced short against an
-// installation token's hour, at one Secret read per live role. A runtime reads it once, as it starts
-// (start); a test that must see a tick inside its run shortens it before starting one.
-var gitHubRefreshInterval = time.Minute
+// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store unless the
+// runtime's Options set another (Options.GitHubRefreshInterval). The daemon's function
+// (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its expiry,
+// so most ticks render the hosts.yml the Secret already holds and write nothing; a minute keeps the
+// time a role's gh runs on a token the daemon has already replaced short against an installation
+// token's hour, at one Secret read per live role.
+const gitHubRefreshInterval = time.Minute
 
 // refreshGitHubCredentialsEvery runs refreshGitHubCredentials, then refreshCacheTokens, then
 // readCacheHealth, every interval until ctx ends: the informers' lifetime (start), so the walk never
@@ -67,16 +67,15 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // directory the render no longer holds, which the pod's projection may still name, stay as they
 // are, so no key a running pod projects is ever deleted. Every live issue pod's provisioning
 // Secret is brought to the implement App's current lease for the pod's own repository too
-// (refreshProvisioningToken), whatever its
-// workspace-fetch has already done: the kubelet runs a pod's init containers afresh whenever it
-// rebuilds the pod's sandbox, at any point in the pod's life (a relaunch that replaces the pod
-// provisions it anew instead), and the fetch re-reads the token's file before every transfer, so
-// a pod left on its boot token, aged past the hour GitHub gives an installation token, could not
-// fetch its repository again. The lease is minted once per repository a tick, however many of
-// that repository's pods the walk holds, and a repository whose mint fails is logged once and
-// left to the next tick, where its pods are tried again. The gh bundles are built once per App
-// role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
-// reads its two Apps' installations and not its six roles'.
+// (refreshProvisioningToken), whatever workspace-init has already done: the kubelet runs a pod's
+// init containers afresh whenever it rebuilds the pod's sandbox, at any point in the pod's life (a
+// relaunch that replaces the pod provisions it anew instead), and workspace-init re-reads the
+// token's file before every transfer, so a pod left on its boot token, aged past the hour GitHub
+// gives an installation token, could not fetch its repository again. The lease is minted once per
+// repository a tick, however many of that repository's pods the walk holds, and a repository whose
+// mint fails is logged once and left to the next tick, where its pods are tried again. The gh
+// bundles are built once per App role and repository of the tick in the same way (appauth.Bundles),
+// so a tick over an issue pod reads its two Apps' installations and not its six roles'.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion
@@ -136,15 +135,14 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 }
 
 // refreshProvisioningToken writes token — the implement App's current lease for repo, the
-// repository the fetch of pod names (fetchRepository), which the walk minted once for that
+// repository workspace-init of pod names (fetchRepository), which the walk minted once for that
 // repository this tick — into the provisioning Secret of pod, owned by the Sandbox with uid.
-// The fetch reads the token's file anew before every transfer from GitHub (workspace.Fetch),
-// and the kubelet rewrites the projected file within its sync period, so a fetch that starts
-// long after the pod did, one the kubelet runs again after it rebuilds the pod's sandbox
-// included, never presents an expired token. Only the token is written; the cache's token
-// beside it stays. A Secret another Sandbox owns, or one that already holds the lease, is left;
-// a write that fails is logged and tried at the next tick, and a write that conflicts is
-// retried once on a fresh read.
+// Workspace-init reads the token's file anew before every transfer from GitHub (workspace.Fetch),
+// and the kubelet rewrites the projected file within its sync period, so a provision that starts
+// long after the pod did, one the kubelet runs again after it rebuilds the pod's sandbox included,
+// never presents an expired token. Only the token is written; the cache's token beside it stays. A
+// Secret another Sandbox owns, or one that already holds the lease, is left; a write that fails is
+// logged and tried at the next tick, and a write that conflicts is retried once on a fresh read.
 func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod, uid types.UID, repo ghrepo.Repository, token string) {
 	name := secretName(pod.Name)
 	failed := func(err error) {

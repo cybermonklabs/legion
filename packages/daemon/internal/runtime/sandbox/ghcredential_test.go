@@ -53,6 +53,7 @@ func linesHolding(logged, text string) []string {
 // binding wrote stay — and is logged naming the sandbox, the role, its App, the lease's expiry and
 // the owner it rewrote.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -143,6 +144,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 // and a render of it that holds no directory for the owner its Secret records is refused on its
 // own.
 func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
+	t.Parallel()
 	var lease atomic.Pointer[string]
 	first, second := "first", "second"
 	lease.Store(&first)
@@ -236,6 +238,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 // bundle's directories must rest on (INFRA-2543 R2). A build that fails is kept by nothing, so
 // the tick's next role of that App asks again and fails naming itself.
 func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
+	t.Parallel()
 	var built sync.Map
 	var fail atomic.Bool
 	logs := &lockedLog{}
@@ -293,6 +296,7 @@ func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 // may not leave out (appauth's mintBundle), and the recorded default stays as the launch wrote
 // it.
 func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
+	t.Parallel()
 	var gained atomic.Bool
 	// asked is the owner the controller's bundle was last asked for: none by its launch, and
 	// the recorded one by its refresh, which is what this test holds the tick to.
@@ -369,6 +373,7 @@ func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 // the refresher's read and its write — is retried once on a fresh read, so the binding's annotation
 // and the new gh files both land.
 func TestTheRefresherRetriesAConflictedWriteOnce(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
@@ -404,6 +409,7 @@ func TestTheRefresherRetriesAConflictedWriteOnce(t *testing.T) {
 // A pod that is not live is not refreshed: one whose phase is past Running, or one being deleted,
 // runs its launchers no more, so its Secrets are left as they are.
 func TestTheRefresherLeavesAPodThatIsNotLiveAlone(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]func(*corev1.Pod){
 		"a succeeded pod":   func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded },
 		"a failed pod":      func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed },
@@ -460,15 +466,6 @@ func (l *leaseTokens) minted(repo ghrepo.Repository) int {
 	return l.mints[strings.ToLower(repo.String())]
 }
 
-// fetched is a pod's status once workspace-fetch has exited successfully: Pending still, with
-// workspace-init running, which is a pod past its fetch.
-func fetched(p *corev1.Pod) {
-	p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-		{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
-		{Name: initContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
-	}}
-}
-
 // spawnIssue launches the architect of the issue named key on g — an issue of the test tree with a
 // pod of its own — and returns that pod's name.
 func spawnIssue(t *testing.T, g *rig, key string) string {
@@ -500,15 +497,16 @@ func refreshTick(g *rig) {
 }
 
 // A re-minted lease reaches the provisioning Secret of every live issue pod on one tick, whatever
-// its workspace-fetch has already done — a pod's init containers can run again at any point in its
-// life, and the fetch reads the token's file anew before every transfer from GitHub, so a boot
-// token aged past the hour GitHub gives one would leave the pod unable to fetch its repository
-// again — and the repository cache's Secret follows on the same tick. Only the token is rewritten;
-// the cache's bearer token beside it stays. A pod no launcher runs in any more, one the walk can
-// judge nothing by, and a Secret another Sandbox owns are left as they are. The lease is minted
-// once for a repository however many of its pods the walk holds, and a repository whose mint
+// its workspace-init has done. The kubelet can run the init container again after it rebuilds the
+// pod's sandbox, and workspace-init reads the token's file anew before every transfer from GitHub,
+// so a boot token aged past the hour GitHub gives one would leave the pod unable to fetch its
+// repository again. The repository cache's Secret follows on the same tick. Only the token is
+// rewritten; the cache's bearer token beside it stays. A pod no launcher runs in any more, one the
+// walk can judge nothing by, and a Secret another Sandbox owns are left as they are. The lease is
+// minted once for a repository however many of its pods the walk holds, and a repository whose mint
 // fails is logged once and left to the next tick.
 func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
+	t.Parallel()
 	t.Run("every live pod and the repository cache follow the lease", func(t *testing.T) {
 		tokens := &leaseTokens{}
 		first, second := "first", "second"
@@ -540,8 +538,8 @@ func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
 			}
 		}
 		bearer := string(g.secret(secretName(inFetch)).Data[cacheTokenKey])
-		g.update(g.pod(pastFetch), fetched)
-		g.update(g.pod(inFetch), fetching)
+		g.update(g.pod(pastFetch), initializing)
+		g.update(g.pod(inFetch), initializing)
 		g.update(g.pod(deleting), func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
 		g.update(g.pod(succeeded), func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded })
 		g.update(g.pod(failed), func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed })
@@ -549,7 +547,7 @@ func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
 		g.update(g.pod(unowned), func(p *corev1.Pod) { p.OwnerReferences = nil })
 		g.update(g.pod(unparsed), func(p *corev1.Pod) {
 			for i, c := range p.Spec.InitContainers {
-				if at := slices.Index(c.Command, "--repo"); c.Name == fetchContainer && at >= 0 {
+				if at := slices.Index(c.Command, "--repo"); c.Name == initContainer && at >= 0 {
 					p.Spec.InitContainers[i].Command[at+1] = repo.Name()
 				}
 			}
@@ -828,7 +826,7 @@ func leaseNamed(role appauth.AppRole, owner, kind string) string {
 
 // An issue recorded on the repository as it was keeps writing the repository as GitHub holds it
 // now across a refresh, pod after pod. The refresher reads the repository from the pod itself
-// (fetchRepository, the --repo its workspace-fetch names) and asks the credential by it, so the
+// (fetchRepository, the --repo workspace-init names) and asks the credential by it, so the
 // configured pair is resolved for that one repository: the sjawhar directory, the name the record
 // spells, holds the write lease minted for cybermonklabs, and so does cybermonklabs' own
 // directory — the one the record's repository routes to, which the pod's GH_CONFIG_DIR names,
@@ -836,6 +834,7 @@ func leaseNamed(role appauth.AppRole, owner, kind string) string {
 // its Secret records instead would mint sjawhar's own token and leave it there, which is every
 // push of the issue's trees refused.
 func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T) {
+	t.Parallel()
 	leases := &namedLeases{}
 	listed := func() []ghrepo.Repository { return []ghrepo.Repository{servingSmoke} }
 	served := servesOneOf(listed)
@@ -972,6 +971,7 @@ func hostsTokens(t *testing.T, secret *corev1.Secret, dirs ...string) map[string
 // recorded stays: cybermonklabs, the directory the issue's repository routes to
 // (ghconfig.RouteDir), the owner holding the repository the pair moved.
 func TestTheRefresherServesAPodProjectingThePairsTheLayoutBuiltNow(t *testing.T) {
+	t.Parallel()
 	g, pod, name, app, logs := renamedIssueOnBothOwners(t)
 	if got := string(g.secret(name).Data[GitHubDefaultKey]); got != "cybermonklabs" {
 		t.Fatalf("the launch recorded the default %q, want cybermonklabs, the directory sjawhar/legion-smoke routes to", got)
@@ -1000,6 +1000,7 @@ func TestTheRefresherServesAPodProjectingThePairsTheLayoutBuiltNow(t *testing.T)
 // and the default stays the sjawhar its Secret records. Served the layout built now, its refresh
 // would put sjawhar's own lease where that pod's push of the moved repository reads it.
 func TestTheRefresherServesAPodProjectingNoPairsTheLayoutItWasLaunchedWith(t *testing.T) {
+	t.Parallel()
 	g, pod, name, app, logs := renamedIssueOnBothOwners(t)
 	projectGhItems(t, g, g.r, pod, ownerRoutedItems("cybermonklabs", "sjawhar"))
 	staleGhKeys(g, pod, "sjawhar", "cybermonklabs", "sjawhar")
@@ -1027,6 +1028,7 @@ func TestTheRefresherServesAPodProjectingNoPairsTheLayoutItWasLaunchedWith(t *te
 // sjawhar/legion-smoke, the pair's `from`, takes cybermonklabs' — the installation holding the
 // repository GitHub serves for that name — and never sjawhar's, which cannot write it.
 func TestTheRefresherFillsTheRepositoryDirectoriesAnOlderPodProjects(t *testing.T) {
+	t.Parallel()
 	g, pod, name, app, logs := renamedIssueOnBothOwners(t)
 	dirs := []string{"cybermonklabs", "sjawhar", "sjawhar/legion-smoke", "sjawhar/other"}
 	projectGhItems(t, g, g.r, pod, ownerRoutedItems(dirs...))
@@ -1050,6 +1052,7 @@ func TestTheRefresherFillsTheRepositoryDirectoriesAnOlderPodProjects(t *testing.
 // issue's role: the refresh is refused and writes nothing, whichever layout the pod's projection
 // names.
 func TestTheRefresherRefusesASecretRecordingAnotherIssuesDefault(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		items []corev1.KeyToPath
@@ -1104,6 +1107,7 @@ func (i installedOnOwners) InstalledOwners(context.Context, appauth.AppRole) ([]
 // held to the ones that resolve now, which is what the pod's wrappers route the moved
 // repository by, and leaves the recorded default where the launch fixed it.
 func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *testing.T) {
+	t.Parallel()
 	// state is one state of the served names the pair turns on: the repositories served, the
 	// directory a bundle built under it routes sjawhar/legion-smoke to, and the pairs file
 	// such a bundle carries.

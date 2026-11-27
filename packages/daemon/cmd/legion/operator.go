@@ -17,6 +17,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
@@ -113,21 +114,22 @@ func (c *operatorCall) check(required ...string) (code int, ok bool) {
 
 // connect reads the bearer --operator-token-file names, when the command was given one, by
 // config.ReadPrivateSecretPointer's rules — a file that cannot be read, holds nothing, or that its
-// group or others can read is refused naming its path, never its contents — and finds the daemon
-// the way `legion state` does (daemonAddress).
+// group or others can read is refused, never naming its contents, and naming its path only once it
+// was opened — and finds the daemon the way `legion state` does (daemonAddress).
 func (c *operatorCall) connect() (operator, bool) {
 	var bearer string
 	if *c.tokenFile != "" {
 		read, err := config.ReadPrivateSecretPointer("--operator-token-file", *c.tokenFile)
 		if err != nil {
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+			printRefusal(c.stderr, c.name(), err)
 			return operator{}, false
 		}
 		bearer = read
 	}
+	// The loader's refusal, through the URL rule as every command's (printRefusal).
 	address, err := daemonAddress(*c.configPath, *c.port)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+		printRefusal(c.stderr, c.name(), err)
 		return operator{}, false
 	}
 	return operator{base: address, bearer: bearer}, true
@@ -160,7 +162,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
-				c.name(), method, op.base+path, c.waited)
+				c.name(), method, redact.URL(op.base+path), c.waited)
 			return 0, nil, false
 		}
 		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
@@ -176,7 +178,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 // printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.
 func (c *operatorCall) printAnswer(op operator, path string, answer []byte, print func(io.Writer, []byte) error) int {
 	if err := print(c.stdout, answer); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+path), err)
 		return 1
 	}
 	return 0
@@ -191,7 +193,9 @@ type operator struct {
 
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
 // Authorization when op carries one. It answers the status and the body the daemon served; only a
-// request that got no answer is an error.
+// request that got no answer is an error, which names the route and its error through
+// redact.RequestError: op.base is LEGION_DAEMON_URL's when it is set, user name and password and
+// all, and Go's *url.Error quotes the URL with only the password masked.
 func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -201,9 +205,10 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
+	route := op.base + path
+	request, err := http.NewRequestWithContext(ctx, method, route, reader)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("%s %w", method, redact.RequestError(daemonServer, route, err))
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -213,15 +218,19 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("%s %w", method, redact.RequestError(daemonServer, route, err))
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
+		return 0, nil, fmt.Errorf("read the answer to %s %w", method, redact.RequestError(daemonServer, route, err))
 	}
 	return response.StatusCode, answer, nil
 }
+
+// daemonServer is how a request's refusal names the daemon when its address does not parse
+// (redact.RequestError).
+const daemonServer = "the daemon"
 
 // daemonAddress is the API root of the daemon a command reaches: the one LEGION_DAEMON_URL names —
 // the daemon names it on every pane, and a pane has no legion.yaml — unless --config or --port

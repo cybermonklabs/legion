@@ -1,12 +1,13 @@
 // read_only_token_test.go holds Dispatch to its read class: a read-only token — one the secrets
 // broker minted from a read entry, or narrowed to reading because its trade asked for read, or a
-// personal token a person minted holding read — reaches the rows readClasses classes as reads and
+// personal token a person minted holding read — reaches the routes whose declarations class them
+// as reads (routeDecl.Read) and
 // nothing else. Every other row of the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before
 // the route's handler, before the row's scopes and the sign-in check and before its
 // Idempotency-Key is read, and every read but GET /api/v1/whoami answers one that carries a cut
-// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken). register refuses a table whose GET rows
-// readClasses does not class, and a personal token the gate resolves before the route keeps the
-// answer it had before the gate.
+// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken). register refuses a table whose GET routes
+// are not all classed, and a personal token the gate resolves before the route keeps the answer
+// it had before the gate.
 //
 // A token that names a service and no person is already refused every write, SIGN_IN_REQUIRED or
 // OAUTH_SCOPE_REQUIRED, so each refusal here is read by its code: a bare 403 would prove nothing.
@@ -212,12 +213,13 @@ func readOnlyPersonalTokens(t *testing.T, rig *brokerTokenRig) []readOnlyWalkTok
 // empty where the row's handler runs: READ_ONLY_TOKEN on every row that is not a read, every
 // write among them; AS_OF_TOKEN_NOT_SERVED on every read but whoami for a token that carries a
 // cut; OAUTH_SCOPE_REQUIRED on a read whose scopes the token's credential does not hold. The
-// class is read from readClasses and not from the row (apiRoute.Read), so a table routes()
-// stamped wrong fails the walks rather than agreeing with the gate.
+// class is read from the route's declaration (declaredRoute) and not from the mounted row
+// (apiRoute.Read), so a table routes() built wrong fails the walks rather than agreeing with the
+// gate.
 func readOnlyAnswer(route apiRoute, token readOnlyWalkToken) string {
 	name := route.Method + " " + route.Pattern
 	switch {
-	case route.Method != http.MethodGet || readClasses[name].Writes != readWritesNothing:
+	case route.Method != http.MethodGet || declared(name).Read.Writes != readWritesNothing:
 		return contracts.DispatchReadOnlyToken
 	case token.cut != "" && name != whoamiRow:
 		return contracts.DispatchAsOfTokenNotServed
@@ -456,57 +458,75 @@ func registerRefusal(t *testing.T) (refusal string) {
 	return ""
 }
 
-// TestRegisterRefusesAGETRowWithNoReadClass: a GET row with no class is a row nobody has read for
-// what it writes, and an entry that names no GET row reads as though it classed a route that is
-// not there, so Register refuses a table whose read class has either, naming the row: a GET row
-// with no entry, an entry whose Writes is unset, an entry naming a POST row, an entry naming no
-// row at all, and a GET that writes whose entry has no WriteNote. With all five at once, the one
-// refusal names every one of them. It replaces the package's readClasses for its length, so it is
-// not parallel.
-func TestRegisterRefusesAGETRowWithNoReadClass(t *testing.T) {
-	kept := readClasses
-	t.Cleanup(func() { readClasses = kept })
+// withRouteRegistry replaces the package's route declarations for the length of a test, so a
+// negative control can mount a table no route file declares. It is not parallel with anything
+// that reads the registry.
+func withRouteRegistry(t *testing.T, routes []routeDecl) {
+	t.Helper()
+	kept := routeRegistry
+	routeRegistry = routes
+	t.Cleanup(func() { routeRegistry = kept })
+}
+
+// TestRegisterRefusesARouteThatIsNotClassed: a GET route stating no class is one nobody has read
+// for what it writes, and a route that is not a GET stating one would open a write to a credential
+// minted only to read, so Register refuses a table holding either, naming the route: a GET route
+// stating nothing, one whose Writes is no class, a GET that writes stating no WriteNote, and a
+// write stating a class. With all four at once, the one refusal names every one of them. It
+// replaces the package's declarations for its length, so it is not parallel.
+//
+// There is no "a class naming no route" case, which the map beside the table needed: a class is a
+// field of the route's own declaration.
+func TestRegisterRefusesARouteThatIsNotClassed(t *testing.T) {
+	// Not parallel: it writes the package variable routeRegistry, the declarations every server of
+	// the package reads at Register (withRouteRegistry).
 	if refusal := registerRefusal(t); refusal != "" {
-		t.Fatalf("api.Register refused the read class as it stands: %s", refusal)
+		t.Fatalf("api.Register refused the read classes as they stand: %s", refusal)
 	}
 	const (
-		unclassed = whoamiRow
-		unset     = "GET /api/v1/limits"
-		post      = "POST /api/v1/issues/{key}/comments"
-		nowhere   = "GET /api/v1/no-such-route"
+		unclassed = whoamiRoute
+		unknown   = "GET /api/v1/limits"
 		unnoted   = "GET /api/v1/delivery/timeline"
+		write     = "POST /api/v1/issues/{key}/comments"
 	)
 	changes := []struct {
-		why, row string
-		change   func(classes map[string]readEntry)
+		why, route string
+		change     func(*routeDecl)
 	}{
-		{"a GET row with no entry", unclassed, func(classes map[string]readEntry) { delete(classes, unclassed) }},
-		{"an entry whose Writes is unset", unset, func(classes map[string]readEntry) { classes[unset] = readEntry{} }},
-		{"an entry naming a POST row", post, func(classes map[string]readEntry) { classes[post] = readEntry{Writes: readWritesNothing} }},
-		{"an entry naming no row", nowhere, func(classes map[string]readEntry) { classes[nowhere] = readEntry{Writes: readWritesNothing} }},
-		{"a GET that writes with no WriteNote", unnoted, func(classes map[string]readEntry) { classes[unnoted] = readEntry{Writes: readWritesState} }},
+		{"a GET route stating no class", unclassed, func(route *routeDecl) { route.Read = readEntry{} }},
+		{"a class that is no class", unknown, func(route *routeDecl) { route.Read = readEntry{Writes: readWrites(99)} }},
+		{"a GET that writes with no WriteNote", unnoted, func(route *routeDecl) { route.Read = readEntry{Writes: readWritesState} }},
+		{"a write stating a class", write, func(route *routeDecl) { route.Read = readEntry{Writes: readWritesNothing} }},
 	}
-	refused := func(t *testing.T, refusal, row string) {
+	plant := func(t *testing.T, apply ...struct {
+		why, route string
+		change     func(*routeDecl)
+	}) string {
 		t.Helper()
-		if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row+":") {
-			t.Fatalf("api.Register refused %q, want a refusal of the read class naming %s", refusal, row)
+		planted := slices.Clone(routeRegistry)
+		for _, change := range apply {
+			index := slices.IndexFunc(planted, func(route routeDecl) bool { return route.Method+" "+route.Pattern == change.route })
+			if index < 0 {
+				t.Fatalf("no route declares %s", change.route)
+			}
+			change.change(&planted[index])
+		}
+		withRouteRegistry(t, planted)
+		return registerRefusal(t)
+	}
+	refused := func(t *testing.T, refusal, route string) {
+		t.Helper()
+		if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, route+":") {
+			t.Fatalf("api.Register refused %q, want a refusal of the read class naming %s", refusal, route)
 		}
 	}
 	for _, change := range changes {
-		t.Run(change.why, func(t *testing.T) {
-			readClasses = maps.Clone(kept)
-			change.change(readClasses)
-			refused(t, registerRefusal(t), change.row)
-		})
+		t.Run(change.why, func(t *testing.T) { refused(t, plant(t, change), change.route) })
 	}
-	t.Run("all five at once", func(t *testing.T) {
-		readClasses = maps.Clone(kept)
+	t.Run("all four at once", func(t *testing.T) {
+		refusal := plant(t, changes...)
 		for _, change := range changes {
-			change.change(readClasses)
-		}
-		refusal := registerRefusal(t)
-		for _, change := range changes {
-			refused(t, refusal, change.row)
+			refused(t, refusal, change.route)
 		}
 	})
 }

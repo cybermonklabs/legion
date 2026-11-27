@@ -101,6 +101,29 @@ test("the token in hand is reused until the renewal window, then traded again", 
   }
 });
 
+// A token that lives less than the renewal window, such as the 270 seconds the broker gives a
+// restricted member's machine login, is reused until halfway through its life, as the Go client
+// renews one (`renewalAt`, packages/envoy/internal/cipherclient/brokerclient.go), not traded
+// again at every call: a client that renewed it at once would trade at every Dispatch request
+// and every reconnect, into the broker's per-address bucket.
+test("a token shorter than the renewal window is reused until halfway through its life", async () => {
+  const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 300) }));
+  const clock = { now: Date.now() };
+  const client = await clientAt(broker.url, clock, countingSource(), 5 * 60_000);
+  try {
+    expect((await client.token()).accessToken).toBe("token-1");
+    clock.now += 100_000;
+    expect((await client.token()).accessToken).toBe("token-1");
+    expect(broker.trades.length).toBe(1);
+    // Past the halfway mark: traded again, with the token in hand still live.
+    clock.now += 60_000;
+    expect((await client.token()).accessToken).toBe("token-2");
+    expect(broker.trades.length).toBe(2);
+  } finally {
+    broker.stop();
+  }
+});
+
 /** The renewal corpus beside the Go client, read by relative path, never a copy: the Go suite's
  *  `TestRenewalCorpus` replays the same rows through its `renewalAt`. */
 const RENEWAL_CORPUS = new URL(
@@ -334,6 +357,57 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect(isFinalRefusal(refusal)).toBe(false);
     expect((refusal as Error).message).toContain("too many token requests; try again later");
+  } finally {
+    client.close();
+    broker.stop();
+  }
+});
+
+// An outage (a 408, a 429, a 5xx: `outage` of `@legion/contracts/http-status`) is no refusal a
+// trade ends on, whatever OAuth error its body names: the token in hand stays, and the next trade
+// is tried. A 400 or a 403 refusal is final, and drops the token in hand.
+test.each([
+  [408, false],
+  [429, false],
+  [400, true],
+  [403, true],
+] as const)("a trade answered %i with an OAuth error is final: %p", async (status, final) => {
+  const third = Promise.withResolvers<void>();
+  const broker = stubBroker((_trade, count) => {
+    if (count === 3) third.resolve();
+    return count === 2
+      ? {
+          status,
+          body: { error: "invalid_request", error_description: "the stand-in answered this trade" },
+        }
+      : { body: accepted(`token-${count}`, 600) };
+  });
+  // The retry loop's waits are held until the row lets them go, so no clock decides the row.
+  const held: (() => void)[] = [];
+  const sleep = (_ms: number, signal?: AbortSignal): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    held.push(resolve);
+    signal?.addEventListener("abort", () => resolve(), { once: true });
+    return promise;
+  };
+  const clock = { now: Date.now() };
+  const client = await clientAt(broker.url, clock, countingSource(), 60_000, sleep);
+  try {
+    expect((await client.token()).accessToken).toBe("token-1");
+    // Into the renewal window: the client trades again, and the broker answers `status`.
+    clock.now += 560_000;
+    const second = await told(client.token());
+    expect(broker.trades.length).toBe(2);
+    if (final) {
+      expect(second).toBeInstanceOf(BrokerRefusedError);
+      expect(isFinalRefusal(second)).toBe(true);
+      return;
+    }
+    // The token in hand is still answered, and once the loop's wait ends it trades again.
+    expect(second).toBeNull();
+    for (const release of held.splice(0)) release();
+    await third.promise;
+    expect(broker.trades.length).toBe(3);
   } finally {
     client.close();
     broker.stop();

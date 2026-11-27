@@ -673,7 +673,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 				return httptest.NewRequest(
 					http.MethodPost,
 					"/v1/messages/publish",
-					strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+					strings.NewReader(`{"topic":"notifications.role.reviewer","source_session":"ses_role_state_sender","message":"please review"}`),
 				)
 			},
 			handler: func(d *listenerDeps) http.Handler {
@@ -1066,7 +1066,7 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 	if err := claimant.sessions.Delete(context.Background(), "ses_gone"); err != nil {
 		t.Fatalf("end ses_gone's session: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		_, fresh := observer.registry.Cached("ses_fresh")
 		_, gone := observer.registry.Cached("ses_gone")
@@ -1179,6 +1179,8 @@ func (discardingCache) CompleteRead(kvwatch.Read)         {}
 // timeout): a lookup and a soft claim answer 503, a role delivery reports delivery_failed, and the
 // reaper keeps the claim.
 func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
+	// Not parallel: it requires each answer within its 5 s bound, and the soft claim's stalled
+	// session reads end only at sendRequestBudget (3.5 s).
 	const bound = 5 * time.Second
 	holderOf := func(t *testing.T, d *listenerDeps, role string) string {
 		t.Helper()
@@ -1313,7 +1315,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		}
 
 		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","message":"please review"}`))
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","source_session":"ses_holder_only_sender","message":"please review"}`))
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want 202 for a kept message; body = %s", recorder.Code, recorder.Body.String())
@@ -1372,7 +1374,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		handler.ServeHTTP(publishRecorder, httptest.NewRequest(
 			http.MethodPost,
 			"/v1/messages/publish",
-			strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+			strings.NewReader(`{"topic":"notifications.role.reviewer","source_session":"ses_holder_only_sender","message":"please review"}`),
 		))
 		// A claim whose holder is not live is kept for, as a role nobody claims is: the copy
 		// waits on the role's kept lane for the next session that holds the role live, and the
@@ -1715,6 +1717,8 @@ func registerInstance(t *testing.T, sessions *session.SessionRegistry, sessionID
 // own instance id, or when either side carries no instance id at all. A predecessor still live
 // inside another instance keeps the role: knowing its session id is not enough to take it.
 func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
+	// Not parallel: it requires the soft claim whose predecessor cannot be read to answer within
+	// 5 s, and its stalled session reads end only at sendRequestBudget (3.5 s).
 	const (
 		claimantInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 		otherInstance    = "9b8a7c6d5e4f3a2b9b8a7c6d5e4f3a2b"
@@ -2227,7 +2231,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 	// own deadline. The wait below only turns a blocked handler into a failure instead of a hang.
 	select {
 	case <-responded:
-	case <-time.After(30 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("subscribe is still waiting on a stream-info lookup that never answers")
 	}
 	// The lookup goroutine records its deadline when it runs, which need not be before the handler
@@ -2237,7 +2241,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 		if remaining > unwiredRepositoryWarningTimeout {
 			t.Fatalf("stream-info lookup was issued with a deadline %s away, want at most the %s advisory bound", remaining, unwiredRepositoryWarningTimeout)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("no stream-info lookup was issued with a deadline")
 	}
 	if recorder.Code != http.StatusOK {
@@ -3654,7 +3658,10 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 // carries only what the stream stored; refusing the whole registration would leave it no
 // consumer at all. A role lane is no such topic: its holder registers it and the listener stores
 // each role message for it on its agent subject, which the stream does capture (startRoleForward).
-// A team topic and a topic outside notifications. are stored as they always were.
+// A team topic is stored as it always was. A topic that does not begin with the literal
+// notifications. is left out of the row too, with a warning of its own and not the uncaptured
+// one: the session's consumer filter carries no such topic, so the plan keeps it out of the row
+// and the answer names it in that filter's words (planWithoutLeftOut).
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
 	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -3712,9 +3719,24 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read the stored interest: %v", err)
 	}
-	want := []string{contracts.LegacyAgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept", "team.bridge.>"}
+	want := []string{contracts.LegacyAgentSubject("ses_captured"), contracts.RoleTopicPrefix + "reviewer", "notifications.team.kept"}
 	if !slices.Equal(stored.Topics, want) {
 		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
+	}
+	var answer interestSubscribeAnswer
+	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	// The role lane in its old form earns a warning of its own (store.Registry.LegacyTopicWarnings),
+	// so the check is on the warnings that name team.bridge.>: one, in the filter's words.
+	var named []string
+	for _, warning := range answer.Warnings {
+		if strings.HasPrefix(warning, "team.bridge.> ") {
+			named = append(named, warning)
+		}
+	}
+	if want := (filterLeftOut{topic: "team.bridge.>"}).warning("ses_captured"); !slices.Equal(named, []string{want}) {
+		t.Fatalf("warnings = %q, want one naming team.bridge.>: %q", answer.Warnings, want)
 	}
 }
 
@@ -4213,6 +4235,8 @@ func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
 // under the listener's 10 s HTTP write timeout), and never in the words a caller takes for a
 // session that has ended.
 func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer(t *testing.T) {
+	// Not parallel: it requires the 503 within 5 s, and the stalled session read it answers ends
+	// only at roleHolderReadTimeout (2 s).
 	const bound = 5 * time.Second
 	claimant, observer := trailingListeners(t)
 	if err := claimant.sessions.Put("ses_unread", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {

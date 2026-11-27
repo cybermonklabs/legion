@@ -248,27 +248,37 @@ shows that issue and offers **Create anyway**. A new issue opens as soon as it i
 
 ### The header
 
-The header holds the issue's key, title, and pin, then its controls:
+The header holds the issue's key, title, and pin, then its controls in groups. When the header is
+too narrow, a whole group moves to the next line:
 
-- **Status**, priority, and assignee.
-- An approval chip once someone has asked for the spec to be approved.
-- **Close issue**, or **Reopen** on a closed issue.
-- Whose turn it is: `Waiting on you (N)` or `Waiting on agents (N)`, counting the issue's open
-  asks.
+- **State**: status, priority, assignee, progress, and an approval chip once someone has asked for
+  the spec to be approved (or the steps of the project's approval gate).
+- **Attention**: whose turn it is (`Waiting on you (N)` or `Waiting on agents (N)`, counting the
+  issue's open asks), a warning when nobody holds the issue's message route, or its holder has
+  stopped answering, and the claim with **Release** beside it.
+- **Labels**, at most ten and then **+N**, which shows the rest.
+- **Close issue** and **Details**. A closed issue says so above its key, with **Reopen**.
 
-A line of details follows: labels, subscribers, the parent issue, linked GitHub issues and pull
-requests, and **Referenced by**. Choose the title, or press `e`, to edit it.
+Choose the title, or press `e`, to edit it. A title shows in full, wrapped at any width, rather
+than cut off after two lines. A list that still clamps a title shows the whole of it on hover.
 
-A title shows in full, wrapped at any width, rather than cut off after two lines. A list that
-still clamps a title shows the whole of it on hover.
+**Details** opens the issue's other properties, each a name and a value with the control that
+changes it. It stays open or closed as you left it, on every issue, in this browser:
 
+- **Advances**: the priorities the issue serves.
+- **Opened by**: who opened the issue.
+- **Message route**: where new asks, comments and messages on the issue go, with a line under it
+  that says what the route is for.
+- **Subscribers** lists the agent sessions subscribed to the issue. **Unsubscribe** stops delivery
+  to one and tells it so.
+- **Referenced by** lists every issue, document, ask, comment, and message that links here.
 - **Parent** shows the parent issue or **None**. You can edit it to move the issue under another.
-- **Subscribers: N** lists the agent sessions subscribed to the issue. **Unsubscribe** stops
-  delivery to one and tells it so.
-- **Referenced by (N)** lists every issue, document, ask, comment, and message that links here.
-- **Components** appears when the project has an architecture source. It shows which parts of the
-  architecture the issue belongs to, and lets you change them, picking from the components of
-  every source of the project.
+- **Repository**: the repository the issue's work lands in.
+- **Components** shows which parts of the project's architecture the issue belongs to. When the
+  project has an architecture source you can change them, picking from the components of every
+  source of the project.
+- **Pull requests** lists the GitHub pull requests linked to the issue, each with its state and
+  checks, and **Links** the other links. Each list shows ten and then **+N**.
 
 ### Changes Dispatch has not confirmed
 
@@ -344,7 +354,9 @@ agents using it stop working at once.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
 - **Steps** lists each step Legion ran on the issue, one table per task: each run of a step with
-  its role, type, agent, model, attempt, start, end and result. A step that ran twice, after a
+  its role, type, agent, model, attempt, start, end and result.
+  Where the records of the issue's newest run name an experiment, the tab shows
+  `Experiment <experiment>: variant <variant>` once above its tables. A step that ran twice, after a
   review sent its task back, has a row for each run, and the second reads attempt 2; a run that
   failed or stopped and sent its task back says which step it returned to. A run that has not
   ended reads **running**, and a field Legion did not record reads `—`. Legion's daemon writes

@@ -181,9 +181,10 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 // two to ten, are no member. It reads as somebody who proves no author, and no node of this data
 // is reserved for one, so the predicates it binds leave every member main answered.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
-	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
+	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -205,6 +206,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
 // keyed one. Every read of refs is keyed too.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
 	tx, err := fixture.database.Pool.Begin(ctx)
@@ -374,6 +376,7 @@ func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
 // shows the fixture is as hard as the real graph. Every count of every statement, and of main's,
 // is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
+	t.Parallel()
 	fixture := newOneHopFixture(t, true)
 	writeOutsideStoreNodes(t, fixture.database.Pool, oneHopMinimumRows)
 	ctx := context.Background()
@@ -393,7 +396,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 	recorder := &statementRecorder{Queryer: tx}
 	read := time.Now()
-	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue)
+	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue, "")
 	took := time.Since(read)
 	_ = tx.Rollback(ctx)
 	if err != nil {
@@ -551,7 +554,7 @@ func depthOneDiff(t *testing.T, database *store.Store, issueKey string, reached 
 			t.Fatalf("main's statement answers %s at no depth 1 for %s, so the fixture decides nothing; its rows of depth 1: %v", refKey, issueKey, want)
 		}
 	}
-	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey)
+	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey, "")
 	if err != nil {
 		t.Fatalf("read %s's references: %v", issueKey, err)
 	}
@@ -592,6 +595,7 @@ func insertItemWithID(t *testing.T, tx pgx.Tx, kind ItemKind, id, issueKey strin
 // is first checked to answer at depth 1, and each named fixture also holds a second hop, which a
 // read past one hop answers. None holds a typed pointer, which main's statement does not read.
 func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
+	t.Parallel()
 	// The out side of TestTheReferencesReadReadsOnlyTheIssuesOwnLinks' graph, its pointer a
 	// plain mention.
 	t.Run("the out side of the one-hop fixture", func(t *testing.T) {
@@ -722,7 +726,7 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/by-message-block-md.")
 		question := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE/artifact/by-question-md first?", model.AskOption{Label: "Yes"})
 		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, itemBlockServer).Mentions(question.Question)
-		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil, false); err != nil {
 			t.Fatalf("index the ask's own references: %v", err)
 		}
 		indexAskPartsAt(t, tx, question, 1)

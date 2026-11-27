@@ -202,9 +202,9 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 // What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
 // daemon ends every staleEntry refusal with staleEntryInstruction, and the legion tool's
 // description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`) carries
-// it after the code. This golden is where the two meet, as version.json is for the contract
-// number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the file,
-// so a word changed on the Go side fails here until the fixture is written again
+// it after the code. This golden is where the two meet, as released-contracts.json is for the
+// numbered contracts: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to
+// the file, so a word changed on the Go side fails here until the fixture is written again
 // (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
 //
 // The code is written out here beside it, so a rename of the constant's value — which would
@@ -732,8 +732,12 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		task := ""
+		if entry > 0 {
+			task = "work this phase entry"
+		}
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
-			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
+			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryTask: task, EntryMovedBack: movedBack})
 	}); err != nil {
 		t.Fatalf("put the %s's row of %s on entry %d: %v", role, issue, entry, err)
 	}

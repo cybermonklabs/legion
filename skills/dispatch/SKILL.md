@@ -10,23 +10,26 @@ Dispatch is a record for the people who decide, never a log of your work.
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
 - Exit 2 is a usage error: fix every problem it names before you call again. Exit 1 is any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again. `dispatch login` exits 1 when the broker cannot be reached or refuses, the person denies the login, or its code expires; its usage error names only the first bad argument.
-- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
+- Never work around a hard-to-use command, or one storing or losing something wrongly: fix it in your own pull request, coordinating only with an open one that changes the same file. A Legion role's tree fixes it, through its implementer, as `skill://legion-worker/references/findings.md` says.
 
 ## Asks and ask blocks
 
 - An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
 - An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
-- A design question's ask block ends its section:
+- Ask a question only between two or more real choices: each within your rules, and one a person could choose. With one real choice, make it and say what you did and why.
+- Give each choice's cost and one recommendation with its reason. A design question's ask block ends its section:
 
 ```md
 :::ask{urgency="med"}
-The question and the recommendation (`skill://dispatch-writing-specs`).
+The question and one recommendation (`skill://dispatch-writing-specs`).
 
 - Option one: what it costs.
 - Option two: what it costs.
 :::
 ```
 
+- Ask for one act only the person can do (an approval, a credential, a grant, their own account's setting) as that act: what it is, what it changes and how to do it, with no recommendation and the options `Done` and `Can't` (`dispatch request-approval` keeps its own answers). A safer alternative is a fact, not an option.
+- Add no option that breaks your rules or that no one would choose. Add an option not to act (`Hold`, `Leave it`) only where not acting is a real choice whose cost the question names.
 - A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
@@ -40,9 +43,9 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
 - When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
 - Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
-- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read that list first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
-- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
+- Name an issue's priority: `--advance <id>`; the priorities page (`/priorities?tab=none`) and `dispatch priorities` list what advances no priority.
 
 ## Issue status is yours to move
 
@@ -58,6 +61,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
+- Begin no Dispatch comment, ask, reply or message with who you are or which role you hold: Dispatch shows the sender. A first line that a program reads stays.
 - Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`.
 
 ## Architecture components

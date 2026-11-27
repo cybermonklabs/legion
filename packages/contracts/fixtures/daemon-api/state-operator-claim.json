@@ -1,13 +1,18 @@
 {
   "daemon": {
     "project": "AC91849371",
-    "schemaVersion": 3,
+    "schemaVersion": 0,
     "boots": 1,
     "firstBootAt": "2026-09-25T05:50:00Z",
     "startedAt": "2026-09-25T05:50:00Z"
   },
   "admission": {
-    "cap": 2,
+    "cap": 4,
+    "p0Holders": 0,
+    "p0Bound": {
+      "bound": null,
+      "configured": null
+    },
     "active": [],
     "waiting": [],
     "trees": [],
@@ -42,15 +47,134 @@
   "heldOutboxRows": [],
   "strandedClaims": [],
   "wakesWaiting": [],
-  "claimsToRefresh": 0,
-  "capabilities": [],
+  "claimsToRefresh": 1,
+  "capabilities": [
+    {
+      "name": "subagents",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): dispatches task subagents, each on the model its role configures"
+    },
+    {
+      "name": "eval-js",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "eval-python",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "browser",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "lsp",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "codegraph",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "web-search",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): searches the web through the web-search tool"
+    },
+    {
+      "name": "skills",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "mcp",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): reaches the MCP servers the deployment configures"
+    },
+    {
+      "name": "repository-extensions",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-629): loads the Oh My Pi extensions the repository it works carries"
+    },
+    {
+      "name": "dispatch-envoy-tools",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools"
+    },
+    {
+      "name": "github",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on its role's App token file"
+    },
+    {
+      "name": "secrets",
+      "status": "open",
+      "detail": "the tmux runtime enrolls no process with the secrets broker",
+      "configLine": "capabilities.decided.secrets: \"\u003creason\u003e\"",
+      "source": "configuration"
+    },
+    {
+      "name": "model-fallback",
+      "status": "open",
+      "detail": "not read: the plugin gate could not read retry.modelFallback",
+      "configLine": "capabilities.decided.model-fallback: \"\u003creason\u003e\"",
+      "source": "boot"
+    },
+    {
+      "name": "toolchain",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "claude-code",
+      "status": "unchecked",
+      "detail": "the tmux runtime runs the host's tools, which no probe checks"
+    },
+    {
+      "name": "resource-limits",
+      "status": "open",
+      "detail": "the tmux runtime sets no requests or limits on a pane",
+      "configLine": "capabilities.decided.resource-limits: \"\u003creason\u003e\"",
+      "source": "configuration"
+    },
+    {
+      "name": "pool-capacity",
+      "status": "present",
+      "detail": "the tmux runtime runs no probe pod",
+      "source": "configuration"
+    },
+    {
+      "name": "repository-cache-room",
+      "status": "present",
+      "detail": "the tmux runtime runs no repository cache",
+      "source": "caches"
+    },
+    {
+      "name": "network",
+      "status": "withheld",
+      "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
+    },
+    {
+      "name": "operator-setup",
+      "status": "withheld",
+      "detail": "dispatch://LEGION-200: installs or configures its own dependencies in the pod: Legion owns its dependencies"
+    },
+    {
+      "name": "production-identities",
+      "status": "withheld",
+      "detail": "dispatch://LEGION-551, dispatch://LEGION-205: acts under a production identity of its own"
+    }
+  ],
   "repositories": {
     "live": [],
     "withoutWebhookApp": [],
     "caches": []
   },
   "settings": {
-    "project": "DEMO",
+    "project": "AC91849371",
     "port": 13370,
     "bind": "127.0.0.1",
     "state_dir": "/var/lib/legion",
@@ -93,6 +217,8 @@
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
     "controller": "operator",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {}
     },

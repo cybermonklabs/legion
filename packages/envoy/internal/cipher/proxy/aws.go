@@ -8,12 +8,12 @@
 // anywhere.
 //
 // This path is outside the Lean model, which covers the header swap alone: the model's Rewrite
-// swaps a placeholder for a value in the headers an entry names, and no signature is a
+// swaps a placeholder for a value in the headers a kind names, and no signature is a
 // substitution of that shape. What is inside the model is the decision that lets this path run.
 // proxyrules.Decide runs first, on the request as it came, so the bound host, the TLS name, the
-// Host header, the entry's allow list and the refusal of a request that already carries the
-// real value hold here exactly as they hold for a header swap; this file adds the signature and
-// nothing else.
+// Host header, the kind's and the profile's allow lists and the refusal of a request that
+// already carries the real value hold here exactly as they hold for a header swap; this file adds
+// the signature, and the removal of Cipher-Repository the swap would have made, and nothing else.
 package proxy
 
 import (
@@ -49,6 +49,11 @@ const (
 	streamingPayload        = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
 	streamingPayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
 )
+
+// signerHeaders are the headers signAWS deletes before it signs and the signer writes back: the
+// Authorization header that carries the signature, the date and the session token. The leftover
+// scan in bound.go leaves them out for the same reason: the signer wrote them, not the command.
+var signerHeaders = [...]string{"Authorization", "X-Amz-Date", "X-Amz-Security-Token"}
 
 // maxHashedBody is how much of a body the proxy reads to hash when no header carries the
 // payload hash. 64 MiB: the calls that send no hash header are the small ones - STS, and the
@@ -182,11 +187,9 @@ func (s *Server) signAWS(ctx context.Context, r *http.Request, host string, plac
 			}
 		}
 	}
-	header.Del("Authorization")
-	header.Del("X-Amz-Date")
-	// Whatever the command put there, the identity of the call that leaves is this grant's key
-	// pair: the signer writes the real session token back when the pair has one.
-	header.Del("X-Amz-Security-Token")
+	for _, name := range signerHeaders {
+		header.Del(name)
+	}
 	signed := &http.Request{
 		Method:        r.Method,
 		URL:           &url.URL{Scheme: "https", Host: host, Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: r.URL.RawQuery},

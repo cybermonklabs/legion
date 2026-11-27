@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -24,10 +25,10 @@ func machineForm(t *testing.T, f *signInFixture, session string) url.Values {
 // TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow is the shape of a TypeScript client's
 // machine trade: a caller that wants a Dispatch access token and nothing else sends
 // launcher_credential=false and is answered one, with no launcher credential minted for it and
-// nothing in the answer naming one. Each of those clients makes a key per process and per session,
-// so a trade that asked would leave a row on the operator's machine-logins list for every
-// `dispatch` call, every hook run and every session of a long-lived process, and nothing removes
-// those rows.
+// nothing in the answer naming one. Each of those clients proves a key of one process, or a pod
+// role's own agent-secrets key, so a trade that asked would leave a row on the operator's
+// machine-logins list for every `dispatch` call, every hook run and every session of a long-lived
+// process, and nothing removes those rows.
 func TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow(t *testing.T) {
 	f := newSignInFixture(t)
 	key := newKey(t)
@@ -176,8 +177,8 @@ func TestRevokingASignInEndsTheTokenItsTradeMinted(t *testing.T) {
 	}
 }
 
-// recordSignIn writes the person_signins row the trade's own recorder stood in for and answers
-// its id, which the revoke route takes.
+// recordSignIn writes the person_signins row the trade's own recorder stood in for, as the
+// account the fixture's person token names, and answers its id, which the revoke route takes.
 func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -186,7 +187,10 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := store.RecordPersonSignIn(ctx, tx, person, thumbprint, machine); err != nil {
+	if err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine,
+		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person}, EndUnrecorded: true,
+	}); err != nil {
 		t.Fatalf("RecordPersonSignIn: %v", err)
 	}
 	var id string

@@ -492,7 +492,7 @@ func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeThePro
 			case tc.configRoot:
 				configRoot := filepath.Join(dir, "config-root")
 				// Oh My Pi looks for its native module under the config root's `natives` and,
-				// finding none, extracts all of it there, some 123 MiB. PI_NATIVES_DIR, which it
+				// finding none, extracts all of it there, some 125 MiB. PI_NATIVES_DIR, which it
 				// reads before the config root, points it at the copy OMPHome linked under HOME.
 				env = append(env, "OMP_CONFIG_ROOT="+configRoot, "PI_NATIVES_DIR="+filepath.Join(home, ".omp", "natives"))
 				want, others = filepath.Join(configRoot, "profiles", "legion"), []string{underStateHome, underHome}

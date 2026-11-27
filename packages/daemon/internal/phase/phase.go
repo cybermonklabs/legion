@@ -22,20 +22,28 @@ const (
 	// priority, among the issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
-	Planning       Phase = "planning"
-	Implementing   Phase = "implementing"
-	Testing        Phase = "testing"
-	Reviewing      Phase = "reviewing"
-	Accepting      Phase = "accepting"
-	Retro          Phase = "retro"
-	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// AwaitingChildren is a parent that held a phase start because a Dispatch child of it is still
+	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
+	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
+	// work. When no open child is left it comes back as the step its return takes (record's
+	// ReturnStep): the start it held, or for a held testing, reviewing or accepting the first step
+	// of its walk after the implementer's. It stands outside Order, so no move into or out of it is
+	// a move back, and outside RoleFor, since no role works it.
+	AwaitingChildren Phase = "awaiting_children"
+	Planning         Phase = "planning"
+	Implementing     Phase = "implementing"
+	Testing          Phase = "testing"
+	Reviewing        Phase = "reviewing"
+	Accepting        Phase = "accepting"
+	Retro            Phase = "retro"
+	Merging          Phase = "merging"
+	Done             Phase = "done"
+	Held             Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
+	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
 	Done, Held,
 }
 
@@ -49,7 +57,7 @@ var All = []Phase{
 //
 // Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
 // pair of two different workflow phases (MovePairs, all 42 ordered pairs of the seven) that some
-// task's line makes as a move back (plan.MovesBackPairs, 28 of them), since it reads the file with
+// task's line makes as a move back (plan.CanMoveBack, 28 of them), since it reads the file with
 // no plan, and refuses the other 14, which would never fire. The engine counts the pair of each
 // move back the task's own line reads (Walk.MovesBack), and a pass. It
 // lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
@@ -62,11 +70,16 @@ var All = []Phase{
 // names one package of this repository, internal/claim.
 var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
-// MovesBack says whether to is a workflow phase before from. Both must stand in Order: a phase
-// outside it is no part of the forward line, so nothing moves back into or out of it.
+// MovesBack says whether to is a workflow phase before from on Order (MovesBackOn).
 func MovesBack(from, to Phase) bool {
-	toIndex := slices.Index(Order, to)
-	return toIndex >= 0 && toIndex < slices.Index(Order, from)
+	return MovesBackOn(Order, from, to)
+}
+
+// MovesBackOn says whether to stands before from on line. Both must stand on it: a phase the line
+// does not hold is no part of it, so nothing moves back into or out of it.
+func MovesBackOn(line []Phase, from, to Phase) bool {
+	toIndex := slices.Index(line, to)
+	return toIndex >= 0 && toIndex < slices.Index(line, from)
 }
 
 // BackwardPairs is every move back of today's line, Order, each written "<from>-<to>": each
@@ -183,15 +196,15 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none. Admitted and accepting are the architect's, and neither
-// phase starts a worker. On a root both are its own architect's. On a child both are the
-// architect that owns it: its own while that claim holds its role, else the one above. At
-// admitted that is the one above, since the child's own architect has not started yet or a leave
-// suspended or retired it, unless a person set the child back to todo while it ran or was held:
-// that re-entry starts and stops nothing, so a child's own architect that held its role still
-// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
-// skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
-// workflow's booted and Stranded).
+// awaiting_person, awaiting_children, done, held — has none. Admitted and accepting are the
+// architect's, and neither phase starts a worker. On a root both are its own architect's. On a
+// child both are the architect that owns it: its own while that claim holds its role, else the one
+// above. At admitted that is the one above, since the child's own architect has not started yet or
+// a leave suspended or retired it, unless a person set the child back to todo while it ran or was
+// held: that re-entry starts and stops nothing, so a child's own architect that held its role
+// still holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's
+// worker skips the architect, so it skips both phases (workflow's start, admit's
+// startMidPhaseMembers, workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of

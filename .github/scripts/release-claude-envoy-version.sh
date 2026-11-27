@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The version this run releases, written into all five manifests of packages/claude-envoy and its
-# Codex package, before the packages are built and packed.
+# Codex package, and the tree's daemon API contract, written into its package.json, before the
+# packages are built and packed.
 #
 # Who runs it, and what it takes:
 #
@@ -8,8 +9,8 @@
 #
 # No arguments. It reads one variable of the step's environment, $VERSION, the version this run
 # releases, which the step's `env:` carries from the version step, and rewrites the five manifests
-# of the checkout in place. It names them by their paths from the repository root, so that is the
-# working directory.
+# of the checkout in place. It names them, and scripts/daemon-contract.sh, by their paths from the
+# repository root, so that is the working directory.
 #
 # Run from the repository root: .github/scripts/release-claude-envoy-version.sh
 # CI runs it in release.yaml's claude_envoy_build job, at the step "Set release version".
@@ -40,3 +41,13 @@ for manifest in packages/claude-envoy/package.json \
   jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json
   mv tmp.json "$manifest"
 done
+
+# Claude Envoy's manifest takes `legion.daemonApiVersion`, the contract of this tree
+# (scripts/daemon-contract.sh), which no committed manifest names: the daemon built from the same
+# commit requires it of the installed manifest, and verify-build.sh, which runs next, bundles this
+# manifest into dist/, so the code the plugin runs states the same number. The other four
+# manifests carry no contract.
+contract=$(bash scripts/daemon-contract.sh)
+jq --argjson contract "$contract" '.legion.daemonApiVersion = $contract' \
+  packages/claude-envoy/package.json > tmp.json
+mv tmp.json packages/claude-envoy/package.json

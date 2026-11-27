@@ -2,14 +2,25 @@ name: CI job envoy-go-race
 
 # The steps of `.github/workflows/ci.yaml#envoy-go-race` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# whole `if:` that decides whether these steps run, so no `if:` here selects the suite: the ones
+# this file carries run the forced-order steps in the last leg alone (`matrix.leg == 5`), and let
+# the job envoy-go-race report a failed leg (`!cancelled()`).
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# The race step runs in legs, all at the same time: envoy-go-race-legs runs it once per leg, each
+# over the packages .github/go-legs.yaml lists for that leg under envoy-go-race, with the step's one
+# text, and .github/scripts/go_legs.py fails the step when that file does not run each package of
+# the module exactly once. The last leg also runs the forced-order steps, which run no leg's
+# packages. The job envoy-go-race waits for the legs and passes only when every leg passed: it
+# carries the check-run name `envoy-go-race / envoy-go-race` that the one job had before the legs.
+# why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
+#
+# Each job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
+# ci.yaml ends, so a failing leg does not wait for the others to end. `ci-ok-changes` carries
+# `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -30,22 +41,26 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  envoy-go-race:
+  # The race step's legs, each over its share of .github/go-legs.yaml's envoy-go-race packages.
+  # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
+  envoy-go-race-legs:
+    name: envoy-go-race (leg ${{ matrix.leg }})
     runs-on: ubuntu-24.04-arm
+    strategy:
+      # One leg's failure leaves the others running, so each reports its own packages.
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3, 4, 5]
     # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36. natscred and the NATS auth service
-    # (internal/cipher/natscallout) add two test binaries to that compile and two packages,
-    # natscallout and natsgrant, since the rest of their race build (`go list -deps -test -race`)
-    # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
-    # where cmd/listener took 785 s here (run 43875539224), so the sum stands. The sign-in code
-    # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s
-    # on a dev box, all of it in-process against oidctest's issuer. Each forced-order step then
-    # compiles a hooked nats-server and the packages above it under the detector again, up to 5
-    # minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The
-    # script's own test compiles one more hooked build, of a fixture with one test that skips, up
-    # to 5 minutes, and runs it at once, so 71 in all.
-    timeout-minutes: 80
+    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the leg's race
+    # binaries, then the step's own 30 minutes, which is 36. In the last leg each forced-order step
+    # then compiles a hooked nats-server and the packages above it under the detector again, up to
+    # 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The first
+    # of them also compiles cmd/listener, the heaviest package of the race step, against that
+    # hooked server, which took 58 s of the step's 70 s on a dev box: 5 minutes more for the
+    # runner, so 71. The script's own test compiles one more hooked build, of a fixture with one
+    # test that skips, up to 5 minutes, and runs it at once, so 76 in all.
+    timeout-minutes: 85
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -53,25 +68,51 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    # BROKER_TEST_DATABASE_URL names the same service for the NATS auth service's hold rows
+    # (internal/cipher/natscallout), which read the broker's hold row from Postgres and skip
+    # without it; a unit leg of envoy-go runs the package again to count those skips.
     env:
-      JOB_TIMEOUT_MINUTES: 80 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 85 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      - name: Size the service for this lane's Dispatch processes
+      # go-envoy-race, restored only: the race objects of this lane's packages and the modules
+      # they need, which ci-caches.yaml's envoy-race job builds on every push to main.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The store package's tests run eight at once (storeTestParallelism, store_test.go), each with
       # a database and pools of its own, beside the step's other packages, so this samples the
@@ -83,8 +124,18 @@ jobs:
         run: |
           # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
           nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
+      # Each leg runs the packages .github/go-legs.yaml lists for its number under envoy-go-race,
+      # the packages of ENVOY_RACE_LANE's envoy-go-race (.github/scripts/ci_job_reads.py, which
+      # holds the two to one set). go_legs.py prints them only once `go list ./...` and the file
+      # agree, every package in one place, and `set -o pipefail` fails the step when it refuses.
+      # Legs 1 and 2 each run a group of cmd/listener's tests: go_legs.py prints that group's
+      # anchored -run and the package, after it has held the groups file
+      # (.github/go-legs/packages/envoy/cmd/listener.yaml) to `go test -list . -race`, which is why
+      # it is given -race, the step's own build.
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/
+        run: |
+          set -o pipefail
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -105,18 +156,71 @@ jobs:
       # version, so it hooks the nats-server the workspace links, which the hub runs; when go.mod
       # moves to a version internal/testnats/testdata/hooked has no hooks for, the script refuses
       # it and the step fails until the hooks are ported. The second step hooks v2.10.29. The
-      # script also fails a package that declares no such test. No
+      # script also fails a package that declares no such test. cmd/listener's row is the first
+      # step's alone: it holds the linked server where a stream update has re-armed its purge of
+      # remembered duplicate ids and not stored the new window yet, a point v2.10.29 has not
+      # (internal/testnats/hooks.go's missing), where the row would skip and leave the second step
+      # with a package whose every forced-order test skipped. No
       # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
       # of whose steps sets a GO* name.
       - name: Test forced-order.sh's refusals
+        if: matrix.leg == 5
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server the module links
-        run: scripts/forced-order.sh ./internal/testnats/hooktest/
+        if: matrix.leg == 5
+        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./cmd/listener/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
+        if: matrix.leg == 5
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-race
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The check run `envoy-go-race / envoy-go-race`, which the one job carried before its race step
+  # ran in legs: it waits for every leg and passes only when all passed, so ci-ok, the merge queue
+  # and every reader of that name read what they read before. A leg's own failure has already
+  # posted its early ci-ok from the leg.
+  # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
+  envoy-go-race:
+    needs: envoy-go-race-legs
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The jobs this one waits for are the ones `needs:` names, and only there: the test reads
+      # every result through `needs.*.result`, so a job added to `needs:` is tested with the rest.
+      # A job that failed, was cancelled or was skipped fails this one; the error prints their
+      # results, and each job's own check run says why. (`toJSON(needs)` would name each job beside
+      # its result, but it carries every output of every job, which
+      # .github/scripts/check-ci-filters.sh refuses in a run: (rule 23).) The results are written
+      # into the run: rather than set in an env:, which check-ci-filters.sh reads as able to move
+      # what the legs' go commands compile. The error says this job restates its legs' result, in
+      # the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds, so a leg the
+      # platform killed still reads as a runner shutdown: this job's failure only follows the
+      # leg's, and read as its own it would hide the leg's.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = true ]; then
+            echo "::error::envoy-go-race's legs ended ${{ join(needs.*.result, ', ') }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "envoy-go-race's legs ended ${{ join(needs.*.result, ', ') }}"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
