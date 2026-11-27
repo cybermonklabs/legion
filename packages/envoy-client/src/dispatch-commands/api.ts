@@ -108,6 +108,7 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/results", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/results/dry-run", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/results/{id}/retract", commands: ["result"] },
+  { method: "POST", pattern: "/api/v1/deploys", commands: ["deploy"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/handoffs/{phase}", commands: ["handoff-write"] },
   // The writes of the reasoning commands (reasoning.ts). premortem-convert's dry run, which writes
   // nothing, sends the same route.

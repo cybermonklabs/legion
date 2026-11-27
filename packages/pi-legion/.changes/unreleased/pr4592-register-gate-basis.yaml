@@ -5,6 +5,6 @@ body: |-
   tool looks up on the issue the reference names; `basisVersion`; and `reason`. The three come
   together or not at all, and a call that names some of them is refused before anything is read.
   Before the daemon is asked anything, the tool refuses a basis while the root's own document holds
-  an open decision block, with the test `dispatch request-approval` makes.
+  an open ask block, with the test `dispatch request-approval` makes.
 custom:
     Issue: pr4592

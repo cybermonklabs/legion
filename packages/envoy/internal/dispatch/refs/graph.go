@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -1094,6 +1095,13 @@ func (n resolvedNode) name(serverURL string) string {
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
 // see.
 func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow) (map[[2]string]resolvedNode, error) {
+	return resolveNodesWith(ctx, q, who, byRefKey, rows, nodeRegistry)
+}
+
+// resolveNodesWith is resolveNodes resolving each kind through registry in place of nodeRegistry,
+// as a build whose registry is registry would: a test reads an older build's answer through it
+// without writing the package's registry under every other test of the process.
+func resolveNodesWith(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow, registry map[string]nodeKind) (map[[2]string]resolvedNode, error) {
 	byKind := make(map[string][]string)
 	seen := make(map[[2]string]struct{})
 	for _, row := range rows {
@@ -1106,7 +1114,7 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		load := nodeRegistry[kind].load
+		load := registry[kind].load
 		if load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
@@ -1658,6 +1666,13 @@ func anchorVersion(alias string) string {
 // carrying no artifact_id at all does, and as both search arms link the same ask. The version and
 // the document therefore always come from one branch.
 //
+// An ask whose stored author, or the editor its latest ask.edited event names, is no actor is
+// absent from the answer and logged, as a node the reader may not see is absent, and so is each
+// of its parts whose maker is that author (itemBlockNodes): every read of the graph reaches its
+// asks here, the walk of an issue's tree and its conversation among them (ConversationNodes), so
+// one row written by hand drops that ask from each of those reads and fails none of them, as the
+// Decisions read drops an ask whose stored value does not decode (dispatch://INFRA-1150's R4).
+//
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
 //
@@ -1714,7 +1729,10 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		}
 		node := model.GraphNode{Kind: "ask", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("ask", issueKey, project, slug, id)}
 		if err := setMadeAndChanged(&node, author, createdAt, editedBy, editedAt, storedActor); err != nil {
-			return err
+			// A maker or an editor that is no actor leaves the ask out (R4, above).
+			slog.Warn("dispatch: an ask whose stored value does not parse is left out of the read",
+				"ask", id, "err", err)
+			continue
 		}
 		setStored(&node, stored)
 		node.Parent = issueParent(issueKey)

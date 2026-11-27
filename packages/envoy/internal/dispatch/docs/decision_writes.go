@@ -217,6 +217,15 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 // rename carries an ask block's (liveWrite.carriedAskAuthors). A section whose author is unknown
 // credits nobody, and its node takes no author.
 //
+// A decision is credited to its section's author only where that author is a session. A person
+// who wrote a section's newest version - an edit in the browser, or an answer that settled into
+// it - did not make its choice by that write, and R1 lets no write attribute a choice to a person
+// who did not make it; a decided_by naming a person would also read as that person's own
+// decision, which waits for nobody's review (decisionread). So such a decision names nobody and
+// waits for a person's review until a Keep or a replacement, as the release before's read let a
+// section that cites no ask wait, and as R9 says a decision the step could not place does. A
+// reading's author is its section's, whoever wrote it (R9).
+//
 // kept for one release: decisions-step
 func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string) {
 	write := ledgerFrom(ctx).liveWriteFor(document)
@@ -230,7 +239,9 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 		}
 		switch {
 		case converted.fate == fateDecision && document == r.spec.id:
-			authors[converted.decisionID] = converted.author
+			if kind, _, proved := graphstore.AuthorOf(converted.author); proved && kind == graphstore.KindSession {
+				authors[converted.decisionID] = converted.author
+			}
 		case converted.fate == fateReading && converted.askDocument.id == document:
 			id, _ := converted.reading.Attrs[pmdoc.BlockIDAttr].(string)
 			authors[id] = converted.author

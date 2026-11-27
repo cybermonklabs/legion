@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -806,23 +807,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Clock = clock
 	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
-	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
-	// The project's declared experiments decide what each unit admission records is drawn for.
-	// A project whose file writes neither the `memory` block nor an `experiments` key declares
-	// the memory experiment all the same, at mode off, whose draw records each new tree at no
-	// variant (config.Project.ExperimentsDeclared).
-	w.admission.UseExperiments(cfg.ExperimentsDeclared())
-	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
-	// has stopped at: the loader gives six hours to a file that names no key, so the pass
-	// always runs under a number somebody chose.
-	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
-	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
-	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
-	// config.Config.WorkerBackground).
-	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
-	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
-	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
-	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
+	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -977,19 +962,21 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change that a release
 // before this one made and did not publish (queueRoleHoldersPublish): a claim whose last write is
-// older and that is not live is not read. No plan gives the number a reason beyond bounding the
-// boot's read. Each issue inside it costs the boot one outbox row and its lane one PUT, so a
-// longer window costs a boot one more of each for every issue whose claims last changed inside the
-// longer span.
+// older and that does not hold its role is not read. No plan gives the number a reason beyond
+// bounding the boot's read. Each issue inside it costs the boot one outbox row and its lane one
+// PUT, so a longer window costs a boot one more of each for every issue whose claims last changed
+// inside the longer span.
 const roleHoldersPublishWindow = 7 * 24 * time.Hour
 
 // queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
-// a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
-// in one transaction. Every claim write of this release that changes a holder queues its own
-// publication in its own transaction (store's putClaim), so this pass recovers no change of this
-// release. It publishes what a release that published nothing left: a daemon that upgrades from
-// such a release starts over running sessions that Dispatch has never been told of, and a roll
-// forward after a rollback to one finds the claims that release changed. A claim that release
+// a claim that holds its role (supervise.HoldsRole), or a claim that changed in the last
+// roleHoldersPublishWindow (RecentClaimIssues), in one transaction. Every claim write of this
+// release that changes a holder queues its own publication in its own transaction (store's
+// putClaim), so this pass recovers no change of this release. It publishes what a release that
+// published nothing, or another set, left: a daemon that upgrades from such a release starts over
+// sessions that Dispatch has never been told of, or, from a release that left a claim the idle
+// release suspended out of the set, over such a claim whose role Dispatch no longer names, and a
+// roll forward after a rollback to one finds the claims that release changed. A claim that release
 // ended longer than roleHoldersPublishWindow before the roll forward stays listed on Dispatch
 // until the next change of a claim on its issue. A boot that cannot write the rows fails the boot,
 // as the design-gates pass does, and queueing rather than writing means a Dispatch that is down
@@ -1080,7 +1067,7 @@ func (w *workflowRuntime) wakeRoleHolders(issue string) {
 //
 // The session is named only while the claim holds it (plan E's t-e-54): a claim the boot could not
 // suspend can record another claim's session, or one no claim holds, and its step's record would
-// show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
+// show that session as the one at work, as the role-holder publication would (RoleHolders,
 // which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
 // no store call), and where the machine has not seen the answer, as after a restart, it reads
 // claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
@@ -1155,6 +1142,34 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
 	}
+}
+
+// workflowAdmission is the workflow's admission over records and engine, as openWorkflow builds it
+// from cfg, on the daemon's one clock. The state's architect-stalled arms are this admission's
+// reading (source.architectStalls), so the state fixtures build theirs with it too
+// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds).
+func workflowAdmission(records record.Store, engine *workflow.Engine, cfg config.Config, clock func() time.Time, log *slog.Logger) *admit.Admission {
+	admission := admit.New(records, engine, cfg.AdmissionCap, cfg.Project, log)
+	// The admission stamps and measures on the same one clock as the engine, so the
+	// architect-stalled arms the state serves are judged at the state's own instant.
+	admission.UseClock(clock)
+	// The project's declared experiments decide what each unit admission records is drawn for.
+	// A project whose file writes neither the `memory` block nor an `experiments` key declares
+	// the memory experiment all the same, at mode off, whose draw records each new tree at no
+	// variant (config.Project.ExperimentsDeclared).
+	admission.UseExperiments(cfg.ExperimentsDeclared())
+	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
+	// has stopped at: the loader gives six hours to a file that names no key, so the pass
+	// always runs under a number somebody chose.
+	admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
+	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
+	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
+	// config.Config.WorkerBackground).
+	admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	admission.UseP0Bound(cfg.AdmissionP0Bound)
+	return admission
 }
 
 // engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
@@ -2601,7 +2616,9 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 		if downtime < warnEvery || (!warnedAt.IsZero() && time.Since(warnedAt) < warnEvery) {
 			continue
 		}
-		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
+		// The last error by its class (natsconn.ConnectionClass): a failed redial's names the server
+		// by its host and port.
+		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", natsconn.ConnectionClass(conn.LastError()))
 		warnedAt = time.Now()
 	}
 }

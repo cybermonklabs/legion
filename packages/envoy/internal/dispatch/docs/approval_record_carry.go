@@ -60,10 +60,12 @@ func IsRecordCarry(reason string) bool {
 // RecordCarry is what the record carry of a version weighs it by (recordUnmoved), handed to
 // carryNewestApprovalNaming by the call site that knows it: every fact the version's write states
 // before its version's event, which the call site vouches for whole (StatedWhole); or the version's
-// record digest, known to its writer (the drain's, knownRecord); or that the version stands stored
-// with its record's digest (storedRecord, followLatestVersion and the approval request's carry).
-// The zero RecordCarry runs no record case: a call site that cannot hand the rule every fact its
-// write states hands it.
+// record digest, known to its writer (the drain's, the fill's and the first pass's, knownRecord);
+// or that the version stands stored with its record's digest (storedRecord, followLatestVersion and
+// the approval request's carry). The same reads weigh a carry by carryVerdict's cases, and by the
+// restore onto a stored version, on a query document of a converted issue (carryKeepsTheRecord,
+// standMoved). The zero RecordCarry runs no record case and shows no record moved: a call site that
+// cannot hand the rule every fact its write states hands it.
 type RecordCarry struct {
 	stated []graphstore.Uncaused
 	whole  bool
@@ -79,7 +81,8 @@ func StatedWhole(stated ...graphstore.Uncaused) RecordCarry {
 }
 
 // knownRecord is the RecordCarry of a version whose record digest is digest, known to its writer
-// in its read phase (the drain's, writeRevisions).
+// in its read phase (the drain's, writeRevisions) or read once the version stands (the fill's and
+// the first pass's, carryUnmovedEarlier).
 func knownRecord(digest string) RecordCarry {
 	return RecordCarry{digest: &digest}
 }
@@ -218,13 +221,16 @@ func carryUnmovedRecord(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 // recordUnmoved reports whether version number of artifactID, which the write of tx makes, or
 // which stands written, has the record of the version newest, the document's newest review and an
 // approval, stands on: the record case of carryNewestApprovalNaming, which runs once the restore
-// and carryVerdict's cases carried nothing (R14). record says what the call site knows of the
-// version (RecordCarry), and the zero RecordCarry answers false.
+// and carryVerdict's cases carried nothing (R14). The converse, whether the read phase shows the
+// record moved, holds those cases to it (carryKeepsTheRecord, standMoved), over the same reads.
+// record says what the call site knows of the version (RecordCarry), and the zero RecordCarry
+// answers false.
 //
-// A version whose digest is known answers by its digest alone: the drain's (knownRecord) carries
-// where that digest is the one newest stands on, the digest every gate compares (its carry row's
-// record_sha256, else its content_sha256); a stored version (storedRecord) carries where its
-// version_renders row holds that digest and the issue holds no query mark.
+// A version whose digest is known answers by its digest alone: the drain's, the fill's and the
+// first pass's (knownRecord) carries where that digest is the one newest stands on, the digest
+// every gate compares (its carry row's record_sha256, else its content_sha256); a stored version
+// (storedRecord) carries where its version_renders row holds that digest and the issue holds no
+// query mark.
 //
 // A version its write makes, whose digest is owed until the fill after the COMMIT, carries where
 // all of this holds, each refusal made as cheaply as it can be, in this order.
@@ -303,20 +309,35 @@ func carryUnmovedRecord(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 // Each of its reads runs where it is called, the write's read phase, before the batch: the batch
 // takes no statement for it beyond the carry's own.
 func recordUnmoved(ctx context.Context, tx pgx.Tx, artifactID string, number int, newest model.ArtifactReview, record RecordCarry) (bool, error) {
-	if !record.runs() {
+	at, weighed := record.weighedAt(ctx, tx, artifactID, number)
+	if !weighed {
 		return false, nil
 	}
-	at := number
-	if record.whole {
-		ledger := queueFor(ctx, tx)
-		if ledger == nil || !slices.Contains(ledger.stated, statedVersion{artifactID: artifactID, number: number}) {
-			return false, nil
-		}
-		at = number - 1
-	}
 	stand, err := readRecordStand(ctx, tx, artifactID, at, newest)
-	if err != nil || stand.pin == nil {
+	if err != nil {
 		return false, err
+	}
+	return standUnmoved(ctx, tx, stand, record)
+}
+
+// weighedAt is the version whose version_renders row recordUnmoved reads for version number of
+// artifactID, and whether the rule weighs the version at all: the version itself where record
+// holds its digest or says it stands stored (knownRecord, storedRecord), and the version before
+// it, L, where its digest is owed and a pass of tx stated this very version (recordUnmoved's A).
+// The zero RecordCarry, and an owed version no pass of tx stated, are weighed by nothing.
+func (record RecordCarry) weighedAt(ctx context.Context, tx pgx.Tx, artifactID string, number int) (int, bool) {
+	if !record.whole {
+		return number, record.runs()
+	}
+	ledger := queueFor(ctx, tx)
+	return number - 1, ledger != nil && slices.Contains(ledger.stated, statedVersion{artifactID: artifactID, number: number})
+}
+
+// standUnmoved is recordUnmoved's rule over stand, what recordStandStatement read for record at
+// the version weighedAt names.
+func standUnmoved(ctx context.Context, tx pgx.Tx, stand recordStand, record RecordCarry) (bool, error) {
+	if stand.pin == nil {
+		return false, nil
 	}
 	if record.digest != nil {
 		return *record.digest == *stand.pin, nil
@@ -327,39 +348,116 @@ func recordUnmoved(ctx context.Context, tx pgx.Tx, artifactID string, number int
 	if record.stored {
 		return true, nil
 	}
+	digest, held, err := headRecordOf(ctx, tx, stand, record)
+	return held && digest == *stand.pin, err
+}
+
+// headRecordOf is, for a version whose digest is owed, the digest of its query's record at the
+// head of the issue's tree, and whether the facts its write states (record, StatedWhole) leave that
+// record as the head holds it, so that the record at the version's cut is the head's
+// (recordUnmoved's C, D, E and F's read, and its soundness). It holds nothing for a document whose
+// query the rule weighs no record of (the decisions query, a document of an issue that has not
+// converted), nor where the facts may move a node the query takes or bring a subtree into the
+// walk. recordCarryForced answers stand's pin.
+func headRecordOf(ctx context.Context, tx pgx.Tx, stand recordStand, record RecordCarry) (string, bool, error) {
 	takes := graphstore.QueryTakes(stand.query)
 	if !stand.converted || stand.issue == "" || stand.query == graphstore.QueryDecisions || len(takes) == 0 {
-		return false, nil
+		return "", false, nil
 	}
 	if recordCarryForced(ctx) {
-		return true, nil
+		return *stand.pin, true, nil
 	}
 	stated := readStatedFacts(record.stated)
 	if stated.mayTake(takes) {
-		return false, nil
+		return "", false, nil
 	}
 	if err := refs.TurnJITOff(ctx, tx); err != nil {
-		return false, err
+		return "", false, err
 	}
 	tree, err := WalkIssueTree(ctx, tx, stand.issue, refs.TreeCut{})
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	joining, leaves := stated.leavesQuery(tree, stand.query, takes)
 	if !leaves {
-		return false, nil
+		return "", false, nil
 	}
 	if len(joining) > 0 {
 		children, err := refs.TreeChildren(ctx, tx, joining, tree.Cut)
 		if err != nil || len(children) > 0 {
-			return false, err
+			return "", false, err
 		}
 	}
 	head, err := tree.QueryRecord(ctx, tx, stand.query)
 	if err != nil {
+		return "", false, err
+	}
+	return head.Digest, true, nil
+}
+
+// standMoved reports whether the read phase shows that the record of the version record weighs is
+// another than the one stand's pin names, stand being what recordStandStatement read for record at
+// the version weighedAt names and weighed weighedAt's answer: a known digest that is not the pin
+// (knownRecord); a stored row holding a digest that is not the pin (storedRecord); or, for a
+// version whose digest is owed and that a pass of tx stated, facts that leave its record as the
+// head's (headRecordOf) where the head's record is not the pin. A stored row that owes its digest
+// or is marked tree_mismatch, an owed version whose facts may move its record, and a call site
+// that hands the rule nothing (the zero RecordCarry) show nothing, and answer false.
+func standMoved(ctx context.Context, tx pgx.Tx, stand recordStand, record RecordCarry, weighed bool) (bool, error) {
+	switch {
+	case record.digest != nil:
+		return *record.digest != *stand.pin, nil
+	case record.stored:
+		return stand.digest != nil && *stand.digest != *stand.pin, nil
+	case !weighed:
+		return false, nil
+	}
+	digest, held, err := headRecordOf(ctx, tx, stand, record)
+	return held && digest != *stand.pin, err
+}
+
+// carryKeepsTheRecord reports whether a carry of newest, the document's newest review and an
+// approval, to version number of artifactID by carryVerdict's cases, or by the restore onto a
+// version that stands stored or whose digest is known, keeps to the record newest stands on (R14).
+// Every gate holds an approval of a query document of a converted issue to the digest of its
+// query's record wherever the approval stands on a digest (ApprovalStand), and the cases and the
+// restore compare the two versions' texts alone. A version whose text differs from the approved one
+// in an ask block's server-owned attributes alone can hold a record that moved since: a criterion
+// written into the tree artifact of the issue's room, which the spec query takes and the spec's
+// text never holds, moves it in the drain's version before it. Carried by its text, the approval
+// would read approved at a record nobody approved once the fill repinned it. So on such a document
+// no case carries where the read phase shows the version's record is another than the one newest
+// stands on (standMoved), by what the call site knows of the version: its digest, known to the
+// drain, the fill and the first pass (knownRecord); its stored row's (storedRecord); or, where its
+// digest is owed, the facts its write states (StatedWhole), where they leave the version's record
+// as the head's. Where the read phase shows nothing - the write states a fact a query takes, as an
+// edit that writes a requirement back to its approved words does, or the call site hands the rule
+// nothing (the zero RecordCarry) - the cases carry as they always did, before the version's
+// artifact.version, as R14 orders a carry. A carry to the version newest approves itself - the
+// fill's and the first pass's of an approval given before that version's digest was known
+// (carryNewestApproval) - is a carry to the approved version's own record, which nothing here
+// reads. A case's own change - an ask block, a decision, a reading - is of no type the spec,
+// Verification or plan query takes, so it moves no record of theirs. Every other document keeps the
+// cases as they are: one whose node is no query node, one of an issue that has not converted, and
+// one whose approval holds no digest, which stands on its version alone. It reads
+// recordStandStatement once, and the owed rule's walk where the rule gets that far.
+func carryKeepsTheRecord(ctx context.Context, tx pgx.Tx, artifactID string, number int, newest model.ArtifactReview, record RecordCarry) (bool, error) {
+	if number == newest.Version {
+		return true, nil
+	}
+	at, weighed := record.weighedAt(ctx, tx, artifactID, number)
+	stand, err := readRecordStand(ctx, tx, artifactID, at, newest)
+	if err != nil {
 		return false, err
 	}
-	return head.Digest == *stand.pin, nil
+	if !stand.converted || stand.query == "" || stand.pin == nil {
+		return true, nil
+	}
+	moved, err := standMoved(ctx, tx, stand, record, weighed)
+	if err != nil {
+		return false, err
+	}
+	return !moved, nil
 }
 
 // statedNode is what a write's facts state of one node (readStatedFacts): the supertag of each of

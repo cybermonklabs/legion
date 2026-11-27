@@ -261,7 +261,8 @@ type overrides struct {
 	// daemon's readiness latch is set (serve, servingLatch), on a context that ends when serving
 	// does, so a hook that waits never outlives the daemon's stop; nil, in production, is nothing.
 	// It is the seam a test holds the daemon at the moment it serves HTTP and reports itself not
-	// ready, which is what /readyz answers 503 for.
+	// ready, which is what /readyz answers 503 for, and the signal the tests' startDaemonLogging
+	// waits on to know the daemon serves, in place of polling /healthz against a clock.
 	beforeServingLatched func(ctx context.Context)
 	// pluginRelaunchable overrides whether a stale-plugin claim can be relaunched onto a plugin
 	// (supervise.Deps.PluginRelaunchable), bypassing the configuration-derived default: nil keeps
@@ -1508,7 +1509,8 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			roleReferences: p.roleReferences,
 			log:            log,
 		}
-		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Env: environPairs(env), WorkDir: cfg.StateDir}
+		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Shown: omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation),
+			Prefix: cfg.OmpLaunchPrefix, Env: environPairs(env), WorkDir: cfg.StateDir}
 		// The role overlays first: a cheap read whose refusal names the operator's file, before the
 		// plugin gate's slower load probes.
 		p.gate = func(ctx context.Context) error {
@@ -1780,9 +1782,11 @@ type supervision struct {
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
 	// refresh pass is its own: each sweep corrects the gate from the wakes the machines publish
 	// (waitingWakes) and then asks it for each stale claim it is about to post
-	// (refreshStalePlugins). Every supervision holds one, never nil: a test that builds one by
-	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
-	// grants every refresh.
+	// (refreshStalePlugins). openSupervision sets it beside the other fields that run the claims,
+	// so every supervision the daemon runs holds one, never nil: a test that builds one by hand
+	// and runs the refresh pass gives it supervise.NewRefreshGate(0), the gate of a daemon that
+	// paces nothing, which grants every refresh. The state fixtures' supervision (newSupervision
+	// alone) holds none, since the state route never reads it.
 	refreshGate supervise.RefreshAdmitter
 	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
 	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
@@ -2189,17 +2193,34 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		pauses.supervisor = sup
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
-	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
-		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
-		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops, cacheStatuses: repositoryCachesOf(rt),
-	}
+	// The part the state route reads is newSupervision's, which the state fixtures build theirs
+	// with too; the rest is what runs the claims.
+	supervisionOf := newSupervision(cfg, log, p, rt, sup, claims, reports)
+	supervisionOf.stream, supervisionOf.tokens, supervisionOf.reportStore, supervisionOf.pauses = listener, tokens, st, pauses
+	supervisionOf.refreshGate = refreshGate
+	supervisionOf.cancel, supervisionOf.draining, supervisionOf.endDrain, supervisionOf.decided = cancel, draining, endDrain, api.NewRouteDecisions()
+	supervisionOf.stopping, supervisionOf.beginStop, supervisionOf.sessionStops = stopping, beginStop, &sessionStops
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
 	// any machine exists, as the workflow sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	return supervisionOf, nil
+}
+
+// newSupervision is the supervision the boot builds over sup, whose machines hold claims: the
+// daemon's configuration, logger and plan, the runtime rt and its repository caches
+// (repositoryCachesOf), the supervisor, the claims and their sessions' stored capability reports
+// (reportsOfClaims). The state route reads nothing else the boot gives a supervision
+// (stateSource); the image probe's report comes after, from run. openSupervision builds the
+// daemon's supervision with it and adds what runs the claims, the refresh gate among them, and the
+// state fixtures build theirs with it (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds),
+// so a field set here reaches the fixtures as it reaches the daemon's state.
+func newSupervision(cfg config.Config, log *slog.Logger, p plan, rt runtime.Runtime, sup *supervisor, claims []supervise.Claim,
+	reports []capabilities.Report) *supervision {
+	return &supervision{
+		cfg: cfg, log: log, plan: p, runtime: rt, supervisor: sup, claims: claims,
+		reports: reportsOfClaims(reports, claims), cacheStatuses: repositoryCachesOf(rt),
+	}
 }
 
 // cleanSessionStop is what a machine calls once a claim's agent process has ended — a probe
@@ -3113,36 +3134,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// boot is the server goroutine below.
 	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
-		State: &source{
-			store:        st,
-			records:      records,
-			project:      cfg.Project,
-			projectToken: p.project,
-			runtime:      cfg.Runtime.Name,
-			admissionCap: cfg.AdmissionCap,
-			p0Bound:      cfg.AdmissionP0Bound,
-			startedAt:    startedAt,
-			now:          p.clock.Now,
-			secretsLogin: p.secretsLogin,
-			deployment:   s.deploymentWith,
-			reports:      s.capabilityReports,
-			wakes:        s.waitingWakes,
-			catchUps:     catchUps,
-			repositories: p.repositories,
-			caches:       s.cacheStatuses,
-			gatedSteps:   cfg.Gates.Steps(),
-			experiments:  cfg.ExperimentsDeclared(),
-			settings:     api.SettingsOf(cfg),
-			// The same rule the lane itself reads, over the same configuration, so the count
-			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
-			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
-			architectStalls: architectStalls,
-			// Under dispatch_token_broker alone: without it the state carries no
-			// `dispatchCredential` (dispatchTokensOf).
-			dispatchSession: dispatch.DaemonSession(cfg.Project),
-			dispatchTokens:  dispatchTokensOf(cfg, s.runtime),
-		},
+		State:              stateSource(cfg, st, records, startedAt, s, p, architectStalls, catchUps),
 		ConsumerLag:        consumerLag,
 		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
@@ -3354,6 +3346,51 @@ type source struct {
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
 }
 
+// stateSource is the state route's source of this daemon (api.Options.State), as serve builds it
+// over st and the records the route reads (records, the workflow's own where it runs one): the
+// configuration's project, runtime, cap, gated steps, experiments and settings; the boot's
+// start, clock and broker login (p); the supervision's deployment, capability reports, waiting
+// wakes and repository caches (s); p's repository state; the session the daemon's own Dispatch
+// calls run under and the Sandbox runtime's Dispatch token counts, under dispatch_token_broker
+// alone (dispatchTokensOf); architectStalls, nil without a workflow; and catchUps, the
+// workflow's place of each held catch-up in the wake pacing, nil without a workflow
+// (pacedCatchUps). It is the one place a source of a running daemon is built, so the state
+// fixtures, which build theirs with it (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds),
+// are what a daemon of the same configuration and memory serves.
+func stateSource(cfg config.Config, st *store.Store, records record.Store, startedAt time.Time, s *supervision, p plan,
+	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error), catchUps *catchUpPacing) *source {
+	return &source{
+		store:        st,
+		records:      records,
+		project:      cfg.Project,
+		projectToken: p.project,
+		runtime:      cfg.Runtime.Name,
+		admissionCap: cfg.AdmissionCap,
+		p0Bound:      cfg.AdmissionP0Bound,
+		startedAt:    startedAt,
+		now:          p.clock.Now,
+		secretsLogin: p.secretsLogin,
+		deployment:   s.deploymentWith,
+		reports:      s.capabilityReports,
+		wakes:        s.waitingWakes,
+		catchUps:     catchUps,
+		repositories: p.repositories,
+		caches:       s.cacheStatuses,
+		gatedSteps:   cfg.Gates.Steps(),
+		experiments:  cfg.ExperimentsDeclared(),
+		settings:     api.SettingsOf(cfg),
+		// The same rule the lane itself reads, over the same configuration, so the count the state
+		// serves and the claims the pass posts are one set (refreshStalePlugins, and serve's
+		// NoPluginInstall option).
+		noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		architectStalls: architectStalls,
+		// Under dispatch_token_broker alone: without it the state carries no
+		// `dispatchCredential` (dispatchTokensOf).
+		dispatchSession: dispatch.DaemonSession(cfg.Project),
+		dispatchTokens:  dispatchTokensOf(cfg, s.runtime),
+	}
+}
+
 // projectRecords scopes the shared daemon database to the daemon's configured project without
 // widening record.Store's fixed transaction interface; the workflow, its admission and its
 // blockers mirror, the outbox, the API's routes, the project's pause and the state route read the
@@ -3384,16 +3421,18 @@ type source struct {
 // Its writes take the same rule from the other side: no row is written into the outbox keyed by
 // another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
-// ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
-// ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
-// refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
+// NameUndeliveredHookPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps,
+// DropStatusWrites, and ClearGeneration and ClearTreeGeneration, which queue the publication of
+// the gates they empty — refuses a key of another project, and EnqueueID refuses it with
+// claim.ErrKeyOfAnotherProject.
 // The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
 // (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
 // here.
 //
-// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
-// ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
+// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
+// NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
+// (outbox.wake) once the transaction has committed, through the transaction's commit hooks
+// (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
 // its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
 // and the project's pause (projectPause.stopped).
@@ -3565,6 +3604,23 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 	}
 	s.wakeOnCommit(ctx, row)
 	return nil
+}
+
+// NameUndeliveredHookPrompt refuses a key of another project and wakes the lane of the message row
+// it opens as Enqueue does. A prompt it names in a message already open writes no new row, and that
+// row's lane already waits for it.
+func (s projectRecords) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	if !s.ownsKey(record.OutboxKindDispatchMessage, issue) {
+		return time.Time{}, false, nil
+	}
+	posts, opened, err := s.Store.NameUndeliveredHookPrompt(ctx, tx, issue, role, paragraph, now, window)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if opened {
+		s.wakeOnCommit(ctx, record.OutboxRow{Kind: record.OutboxKindDispatchMessage, Issue: issue})
+	}
+	return posts, opened, nil
 }
 
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is

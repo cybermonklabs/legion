@@ -692,9 +692,9 @@ readonly left_format_at left_store_at
 query capture "compare the answer times of ask_left_format and ask_left_store" \
   "select ('$left_format_at'::timestamptz < '$left_store_at'::timestamptz)::text"
 [[ "$answer" == true ]] ||
-  fail capture "the person answered q-left-format before q-left-store, the reverse of their blocks' order" \
+  fail capture "the person answered q-left-format before q-left-store" \
     "q-left-format at $left_format_at, q-left-store at $left_store_at"
-pass capture "the person answered q-left-format ($left_format_at) before q-left-store ($left_store_at), the reverse of their blocks' order in the spec"
+pass capture "the person answered q-left-format ($left_format_at) before q-left-store ($left_store_at)"
 
 # The spec blocks the base's Decisions read links each ask's section to.
 for issue in "$issue_a" "$issue_b"; do

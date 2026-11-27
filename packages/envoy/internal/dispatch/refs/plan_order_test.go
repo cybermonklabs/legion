@@ -684,6 +684,62 @@ func TestTheOrderedReadKeepsEachChainOfStepsTogether(t *testing.T) {
 	}
 }
 
+// TestTheOrderedReadReachesAPlanNodeUnderTheConversation: a plan node that stands under a block
+// of a comment of the issue - as a criterion a person writes in that exchange stands, and every
+// node under it - takes its place in the issue's order, as one under the issue's own node does.
+// The comment holds no part_of into the issue (the walk of the tree reads the conversation apart
+// and walks down from its blocks), so the walk down the issue's part_of tuples alone reaches no
+// node under it, and the plan view answered no position for such a node. Before readPlanTree
+// starts from the blocks of the issue's asks, comments and messages too, TALK-1's order holds a
+// alone, and the test fails, printing it.
+func TestTheOrderedReadReachesAPlanNodeUnderTheConversation(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	f := newOrderFixture(t, database, "TALK")
+	f.issue("TALK-1", "")
+	f.plan("TALK-1", orderTask("a", ""), orderTask("b", "", "TALK-1#a"))
+	comment := createReferenceComment(t, f.tx, "TALK-1")
+	block := "comment/" + comment + "#b1"
+	if _, err := f.tx.Exec(ctx, `
+		insert into comment_blocks (comment_id, block_id, node_id, position, type, text_sha256, excerpt,
+		                            made_at, changed_revision, changed_at)
+		values ($1::uuid, 'b1', $2, 0, 'paragraph', 'sha', 'The thread the plan comes out of.', now(), 1, now())
+	`, comment, block); err != nil {
+		t.Fatalf("index the comment's block: %v", err)
+	}
+	// b moves from the place the index pass gave it to the comment's block, as a move writes it:
+	// the old part_of retracted, the new one asserted.
+	moved := f.address("TALK-1", "b")
+	var fromKind, fromID string
+	if err := f.tx.QueryRow(ctx, `
+		select to_kind, to_id from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind <> $4
+		order by seq desc limit 1
+	`, BlockNodeKind, moved, graphstore.TuplePartOf, graphstore.KindValue).Scan(&fromKind, &fromID); err != nil {
+		t.Fatalf("read the part_of of %s: %v", moved, err)
+	}
+	at := time.Now()
+	placement := func(toKind, toID string, asserted bool) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: moved, Kind: graphstore.TuplePartOf, ToKind: toKind, ToID: toID,
+			At: at, Who: orderAuthor, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+		}
+	}
+	if err := store.RunWrite(ctx, f.tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{placement(fromKind, fromID, false), placement(ItemComment.BlockKind(), block, true)})
+		return nil
+	}); err != nil {
+		t.Fatalf("move %s under %s: %v", moved, block, err)
+	}
+
+	answer := f.read(orderAuthor, "TALK-1")
+	requireOrderStands(t, answer)
+	want := []OrderNode{issueStart("TALK-1"), f.task("TALK-1", "a"), f.task("TALK-1", "b"), issueDone("TALK-1")}
+	if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
+		t.Errorf("the ordered read of TALK-1 answers the order\n%v\nwant b, which stands under the comment's block %s, at its place after a, which it needs:\n%v", got, block, want)
+	}
+}
+
 // cycleNames is the name of each node of each cycle answer reports.
 func cycleNames(answer TreeOrder) [][]OrderNode {
 	cycles := make([][]OrderNode, len(answer.Cycles))

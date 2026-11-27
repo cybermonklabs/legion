@@ -1,7 +1,7 @@
 kind: Added
 body: |-
   `dispatch-execute` exports `refuseOpenDecisionBlocks`, the test `dispatch request-approval`
-  makes over a document's open decision blocks, which takes the refused call's own words
+  makes over a document's open ask blocks, which takes the refused call's own words
   (`OpenDecisionBlockRefusal`); `resolveIssueDocument`, an issue's document resolved with the
   issue as Dispatch shows it; and `parseDispatchRef`. The `legion` tool's `register_gate` uses them
   for a registration on an ancestor's basis.

@@ -22,10 +22,10 @@
 #
 # The server decides the room. It opens the socket for P's spec document by its own uuid and reads
 # the admission to P's room: the room's Yjs document holds a fragment for each of P's three
-# documents. The paragraph it then writes there reads back in P's tree. P's spec's document_rooms
-# row names P's tree node as its room. The socket for D's spec, whose issue has not converted,
-# is admitted to D's spec alone (one fragment, no document_rooms row, the artifact read's room its
-# own id).
+# documents. The requirement it then writes there reads back in P's tree (a requirement, since the
+# tree read answers no prose block of a role document). P's spec's document_rooms row names P's
+# tree node as its room. The socket for D's spec, whose issue has not converted, is admitted to
+# D's spec alone (one fragment, no document_rooms row, the artifact read's room its own id).
 #
 # Two overlapping views. It opens two sockets on P's room and holds both, one through the spec's
 # uuid and one through the Verification document's, and brings both to one state vector. The
@@ -240,8 +240,10 @@ issue_room_write_issue() {
   tree_uuid "$section" "the plan-md of $written" "$written_plan"
 }
 issue_room_write_issue "The parent the one room is proved on" parent
+# `parent` is not readonly: issue_room_write_issue and seed-corpus.sh's corpus_issue, which write
+# the two issues after this one, each take a local of that name, which a readonly variable refuses.
 parent="$written" parent_spec="$written_spec" parent_verification="$written_verification" parent_plan="$written_plan"
-readonly parent parent_spec parent_verification parent_plan
+readonly parent_spec parent_verification parent_plan
 corpus_comment person "$section" "$parent" "The person's comment on the parent."$'\n\n'"Its second block."
 parent_comment="$corpus_item"
 readonly parent_comment
@@ -355,18 +357,28 @@ for document in "$parent_spec" "$parent_verification" "$parent_plan"; do
     fail "$section" "the socket on $parent's spec uuid is admitted to $parent's room" "its document holds the fragments $fragments, not $document"
 done
 pass "$section" "the socket on $parent's spec ($parent_spec) is admitted to $parent's room: it holds the fragments $fragments"
-readonly payload="p-payload-${stamp//-/}" payload_words="The payload written through the spec uuid lands in the tree."
+# The payload is a requirement: the tree read answers the typed blocks of a role document and none
+# of its prose (R2 and R16 of the issue-tree spec), so a paragraph written here would land in the
+# room and never read in the tree.
+readonly payload="r-payload-${stamp//-/}" payload_words="The payload written through the spec uuid lands in the tree."
 tree_peer_append "$section" spec "$parent_spec" "$(jq -cn --arg id "$payload" --arg w "$payload_words" \
-  '{type: "paragraph", id: $id, text: $w}')"
+  '{type: "requirement", id: $id, text: $w}')"
 issue_room_wait_node "$section" "$parent" "the payload written through the spec uuid reads in $parent's tree" \
   --arg w "$payload_words" '(.text // "") | contains($w)'
-pass "$section" "the paragraph written through the spec's uuid reads in $parent's tree as $(jq -r '.id' <<<"$node")"
+pass "$section" "the requirement written through the spec's uuid reads in $parent's tree as $(jq -r '.id' <<<"$node")"
 tree_peer "$section" "close the socket on $parent's spec" close spec
 want_value "$section" "$parent's spec's document_rooms row names $parent's tree node as its room" "$parent_tree" \
   "select coalesce((select room::text from document_rooms where artifact_id = '$parent_spec'), '(no row)')"
-tree_peer_open "$section" closed "$closed_spec"
+# $closed is done, and a closed issue's document admits a socket read-only (docs' authorize), so
+# the admission is read here with that scope, and not through tree_peer_open, which takes a
+# writable one: what the check states of this socket is the room it is admitted to.
+tree_peer "$section" "open a document socket on $closed_spec" open closed "$closed_spec"
+[[ "$reply" =~ ^opened\ closed\ readonly\ (.*)$ ]] ||
+  fail "$section" "the socket on the spec of $closed, whose issue is done, is admitted read-only" "the peer answered: $reply"
+fragments="${BASH_REMATCH[1]}"
 [[ "$fragments" == prosemirror ]] ||
   fail "$section" "the socket on the spec of $closed, which has not converted, is admitted to that document alone" "its document holds the fragments $fragments"
+pass "$section" "the socket on the spec of $closed, which has not converted, is admitted to that document alone, read-only since $closed is done"
 want_value "$section" "the spec of $closed holds no document_rooms row" 0 \
   "select count(*) from document_rooms where artifact_id = '$closed_spec'"
 tree_send GET "/api/v1/artifacts/$closed_spec"

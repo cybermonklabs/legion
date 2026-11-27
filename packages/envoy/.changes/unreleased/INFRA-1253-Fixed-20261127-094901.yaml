@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A person's approval of a spec, a Verification document or a plan of a converted issue is no
+  longer carried to a later version whose record is known to have moved since the version the
+  person approved. Before, a version whose text differed from the approved one only in what the
+  carry cases allow - the server-owned attributes of an ask block, the readings of decisions and
+  answered asks, an answer the approver gave since - carried the approval by its text alone, and so
+  did a version holding the approved text again. Where a write that the document's own text does not
+  show had moved the record first, such as a criterion written into the issue's tree, which the
+  Spec query takes, the approval was carried onto that version: the header read the document
+  approved at it, and every gate read it approved with a criterion nobody approved. This happened
+  when the document's next version changed only such ask attributes, and when an issue was reopened
+  over a version that holds the approved text and a moved record. Such a version now carries
+  nothing. The approval stays at the version the person approved, and the gate reads the document as
+  changed since. A version whose text and record are both the approved ones still carries the
+  approval, as before.
+time: 2026-11-27T09:49:01Z
+custom:
+    Issue: INFRA-1253

@@ -17,6 +17,7 @@ import {
   changeAnchor,
   changeDocumentIds,
   decisionChangeComments,
+  decisionChanges,
 } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
@@ -637,6 +638,34 @@ test("a decision's document is the one the read names, before the issue read lis
     (node) => node.reference === `dispatch://${KEY}/spec#b-listed`
   );
   expect(listed?.source).toEqual({ id: spec.id, issue: KEY, kind: "artifact" });
+});
+
+// A `decision` block whose `decided_by` names a person is that person's own decision, which the
+// Decisions tab lists under "Your decisions" (`isPersonDecision`): a person's comment on its words
+// is no Change of it. The tree draws the decision as no change asked of it, never as waiting on its
+// agent, and the comment stands as a turn of the conversation, not under the decision; the
+// Decisions filter, which reads `decisionChanges`, holds no change for it either.
+test("a person's comment on a decision block a person decided asks no change of it", () => {
+  const decided: DecisionEntry = {
+    ...entryOf(waitingDecision("changed", ["r1"])),
+    decided_by: { id: "bob", kind: "person" },
+    waiting_review: false,
+  };
+  const read: IssueDecisions = { ...decisions, entries: [decided] };
+
+  expect(decisionChangeComments(read, [change], issue, undefined)).toEqual(new Map());
+  expect(decisionChanges(read, [change], issue, undefined)).toEqual(new Map());
+  expect(changeDocumentIds(issue, read)).toEqual(new Set());
+  const root = buildIssueTree({
+    tree: answerOf([commentNode(change, KEY)]),
+    coverage,
+    decisions: read,
+    issue,
+    viewer: "alice",
+  });
+  const node = nodesInOrder(root).find((one) => one.reference === decided.ref);
+  expect({ id: node?.id, state: node?.state }).toEqual({ id: "spec#b-changed", state: undefined });
+  expect(parentsOf(root, change.id)).toEqual([root.id]);
 });
 
 // R3, R7 and R13: a Change belongs to the decision whose block of the spec holds the block the

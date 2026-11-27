@@ -25,6 +25,7 @@ export type {
 export { asObject } from "./dispatch-commands/context";
 export {
   OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_SETTLES,
   OPEN_BLOCK_WAIVED,
   refuseOpenDecisionBlocks,
 } from "./dispatch-commands/decision-blocks";

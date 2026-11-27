@@ -197,7 +197,7 @@ tree_read agent "$child"
 tree_want 200 V1 "read the tree of $child"
 expect V1 "$child is a view on $parent" "$(jq -cn --arg p "$parent" '$p')" '.view_of'
 expect V1 "$child's check c1 hangs from $child, since it serves no requirement of its own issue" \
-  "$(jq -cn --arg c "$child" '[{kind: "issue", id: $c}]')" \
+  "$(jq -cnS --arg c "$child" '[{kind: "issue", id: $c}]')" \
   '[.nodes[] | select(.supertag == "check" and .block_id == "c1") | {kind: .parent.kind, id: .parent.id}]'
 tree_block_node V1 "$parent_spec" r1
 readonly r1_node="$tree_block_node_id"

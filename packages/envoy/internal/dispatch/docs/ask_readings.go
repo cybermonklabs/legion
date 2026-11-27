@@ -121,14 +121,17 @@ func readingAnswers(ctx context.Context, tx pgx.Tx, blockIDs []string, rows map[
 }
 
 // askAnswers reads what the store holds now of each ask ids names, by ask id: its address,
-// whether its row names its node, and whether it holds an answer, which it reads off the ask's
-// node - its newest answer_state value (asks.NodeValueOf), which asks.Settle appends, decoded as
-// every ask read decodes it (asks.NodeAnswer.Read) - and which an ask node holding none - an ask a
-// process of the release before wrote, before the boot step states it - reads as open. The asks
-// row names the ask and its document's address alone.
+// whether its row names its node, and whether it holds an answer, which it reads as every ask read
+// lays the answer state over the row (asks.NodeStateOf), decoded as every ask read decodes it
+// (asks.NodeAnswer.Read): the newest answer_state value of the ask's node (asks.NodeValueOf),
+// which asks.Settle appends, or open where a node the row names holds none; and the row's own
+// state where the row names no node - an ask a process of the release before wrote, before the
+// boot step marks it, and one whose relations are past the store's bound (graphstore.AskFacts) -
+// whose answer Settle writes on the row alone. The asks row names the ask and its document's
+// address beside it.
 func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAnswer, error) {
 	rows, err := tx.Query(ctx, `
-		select k.id::text, coalesce(`+asks.NodeValueOf("k", graphstore.TupleAnswerState)+`, '`+asks.StateOpen+`'),
+		select k.id::text, `+asks.NodeStateOf("k")+`,
 		       k.issue_key, a.project_key, coalesce(a.slug, ''),
 		       k.node_kind is not null and k.node_address is not null
 		from asks k join artifacts a on a.id = `+refs.AskBlockDocumentSQL("k")+`

@@ -393,8 +393,11 @@ func requireReviewCarriedWith(t *testing.T, handler http.Handler, artifactID str
 	if string(carried.Actor) != string(approval.Actor) {
 		t.Fatalf("carried review actor = %s, want the approval's %s", carried.Actor, approval.Actor)
 	}
-	if carried.Reason == nil || *carried.Reason != reason {
-		t.Fatalf("carried review reason = %v, want %q", carried.Reason, reason)
+	if carried.Reason == nil {
+		t.Fatalf("carried review reason = none, want %q", reason)
+	}
+	if *carried.Reason != reason {
+		t.Fatalf("carried review reason = %q, want %q", *carried.Reason, reason)
 	}
 	if !reflect.DeepEqual(carried.AskID, askID) {
 		t.Fatalf("carried review ask_id = %v, want %v", carried.AskID, askID)

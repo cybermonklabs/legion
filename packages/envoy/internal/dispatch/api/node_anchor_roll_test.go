@@ -161,8 +161,10 @@ type rollBlock struct {
 
 // rollAnchorCensusLine is the line `envoy-dispatch census --store` prints of the kind
 // comment_anchor_block (graphcensus's StoreReport.Write): its tuples, its rows' triples, and the
-// differences in each direction.
-var rollAnchorCensusLine = regexp.MustCompile(`(?m)^census: store kind=comment_anchor_block (?:node|tuple)s=(\S+) rows=(\S+) table=\S* rows_without_a_(?:node|tuple)=(\S+) (?:node|tuple)s_without_a_row=(\S+) `)
+// differences in each direction. Its table is the list the projection names, `comments.anchor,
+// comments.node_anchor` (graphcensus/census_anchors.go), which holds a space, so it is read up to
+// the next member rather than as one word.
+var rollAnchorCensusLine = regexp.MustCompile(`(?m)^census: store kind=comment_anchor_block (?:node|tuple)s=(\S+) rows=(\S+) table=[^=\n]* rows_without_a_(?:node|tuple)=(\S+) (?:node|tuple)s_without_a_row=(\S+) `)
 
 // requireRollAnchorCensus runs `envoy-dispatch census --store` of binary, this build, over the
 // run's database, and fails t unless it reads comment_anchor_block with rows and no difference in
@@ -204,19 +206,22 @@ func requireRollAnchorCensus(t *testing.T, binary, databaseURL string) {
 // reads BASELINE_SHA first and fails, never skips, where it is unset or names no 40-character
 // commit (skeletonBaseCommit), before it builds or boots anything.
 //
-// It boots this build over an empty database, where a person writes an issue whose spec holds the
-// requirement r1, a lens on r1 whose verdict holds bound twice, and a comment on the lens's text by
-// node anchor, {node, quote: bound, occurrence: 1}, which states its anchored_in and its part_of to
-// the lens. It then boots the build of BASELINE_SHA over the same database beside this build, as a
-// roll does, and through that build reads GET /api/v1/issues/{key}/comments, which answers the
-// comment on the lens with anchor null; posts a comment with node, which answers 400
-// INVALID_ANCHOR and writes no comments row; and writes a comment anchored in r1 by artifact and
-// block_id. It stops this build, so the release before serves alone, as after a rollback, and
-// writes one more such comment through it. It boots this build again, beside it, and once its boot
-// backfill is done each comment the release before wrote holds its anchored_in and its part_of to
-// the block its stored anchor names, which is r1 or a block of r1's text; the comment on the lens
-// holds both to the lens; and `envoy-dispatch census --store` reads comment_anchor_block with rows
-// and at zero differences.
+// It boots this build over an empty database, and then the build of BASELINE_SHA over the same
+// database beside it, as a roll does. A person then writes, through this build, an issue whose
+// spec holds the requirement r1, a lens on r1 whose verdict holds bound twice, and a comment on the
+// lens's text by node anchor, {node, quote: bound, occurrence: 1}, which states its anchored_in and
+// its part_of to the lens. The release before is live while the issue is written, so the issue is
+// not born converted (R5: fleetServesIssueRoom in issue_create.go), and its spec stays in its own
+// room, which the release before reads; an issue this build writes alone is born converted, and the
+// release before reads its spec as empty and refuses a comment anchored in it with 409 DOC_SCHEMA.
+// Through the release before it reads GET /api/v1/issues/{key}/comments, which answers the comment
+// on the lens with anchor null; posts a comment with node, which answers 400 INVALID_ANCHOR and
+// writes no comments row; and writes a comment anchored in r1 by artifact and block_id. It stops
+// this build, so the release before serves alone, as after a rollback, and writes one more such
+// comment through it. It boots this build again, beside it, and once its boot backfill is done each
+// comment the release before wrote holds its anchored_in and its part_of to the block its stored
+// anchor names, which is r1 or a block of r1's text; the comment on the lens holds both to the lens;
+// and `envoy-dispatch census --store` reads comment_anchor_block with rows and at zero differences.
 func TestANodeAnchorOutlivesARollAndARollback(t *testing.T) {
 	baseCommit := skeletonBaseCommit(t)
 	databaseURL := skeletonDatabase(t)
@@ -239,7 +244,7 @@ func TestANodeAnchorOutlivesARollAndARollback(t *testing.T) {
 	listener := skeletonListener(t)
 	conn := skeletonConnect(t, databaseURL)
 
-	// ───── first: this build alone, over an empty database ─────
+	// ───── first: this build over an empty database ─────
 	head := startSkeletonServer(t, client, "this build ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
 	waitRollBackfill(t, head)
 	for _, person := range []string{readCostReader, readCostWriter} {
@@ -247,6 +252,12 @@ func TestANodeAnchorOutlivesARollAndARollback(t *testing.T) {
 	}
 	head.expect(t, "create the project "+rollAnchorProject, http.MethodPost, "/api/v1/projects", readCostWriter,
 		map[string]string{"key": rollAnchorProject, "name": "A comment on a lens through a roll"}, http.StatusCreated)
+
+	// ───── second: the release before beside this build, as a roll serves them ─────
+	// It boots before the issue is written, so a process of the fleet serves no issue room and the
+	// issue is not born converted (R5): its spec stays in its own room, which the release before
+	// reads.
+	base := startSkeletonServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
 	key := createReadCostIssue(t, head, rollAnchorProject, "A lens a comment is on", rollAnchorSpec, readCostWriter)
 	var issue struct {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
@@ -255,6 +266,14 @@ func TestANodeAnchorOutlivesARollAndARollback(t *testing.T) {
 	spec := issue.PrimaryArtifactID
 	if spec == "" {
 		t.Fatalf("the issue %s answers no spec", key)
+	}
+	var rooms int
+	if err := conn.QueryRow(context.Background(), `select count(*) from document_rooms where artifact_id = $1`, spec).Scan(&rooms); err != nil {
+		t.Fatalf("read the document_rooms row of the spec %s of %s: %v", spec, key, err)
+	}
+	if rooms != 0 {
+		t.Fatalf("%s, written while %s served beside this build, was born converted: its spec %s holds a document_rooms row, "+
+			"so the release before reads the spec as empty", key, base.name, spec)
 	}
 	invoked := head.expect(t, "invoke a lens on r1 of "+key, http.MethodPost, "/api/v1/issues/"+key+"/lenses", readCostWriter, map[string]any{
 		"on": refs.BlockRef("dispatch://"+key+"/spec", "r1"), "kind": "trade-off", "verdict": rollAnchorVerdict,
@@ -269,8 +288,6 @@ func TestANodeAnchorOutlivesARollAndARollback(t *testing.T) {
 	})
 	requireRollAnchorPair(t, conn, lensName+", as this build wrote it,", lensComment, graphstore.KindLens, lens.ID)
 
-	// ───── second: the release before beside this build, as a roll serves them ─────
-	base := startSkeletonServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
 	var listed []map[string]json.RawMessage
 	base.read(t, "list the comments of "+key+" through "+base.name, "/api/v1/issues/"+key+"/comments", &listed)
 	answered := false

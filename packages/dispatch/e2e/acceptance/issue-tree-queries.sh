@@ -23,7 +23,12 @@
 # head's commit, and runs `envoy-dispatch convert-issues --project PROJECT`.
 #
 # On the converted issue it reads the same coverage and results and compares every field the earlier
-# release answered, entry for entry and word for word; the coverage read must answer as many
+# release answered, entry for entry and word for word, but the two members of the results read the
+# move itself moves, which it reads at what the move makes them: each result's check_artifact_id
+# names the issue's tree artifact, the room its check's row now stands in (R13: the pair
+# check_artifact_id and check_block_id of check_results is a projection of the moved node), and
+# each check's version is the version the conversion wrote of the Verification document, at which
+# the room's index states each of its blocks. The coverage read must answer as many
 # requirements as before, or the driver prints the answer and fails; the line `r-backup has no plan
 # task` stands, since the issue holds a plan. It then compares each query with the reads it replaces,
 # block by block, keyed by block id, each block's markdown as the earlier blocks read answered it
@@ -31,7 +36,8 @@
 #   spec          ?view=spec answers the memo callout and each requirement, as the query's, with that
 #                 markdown;
 #   verification  ?view=verification answers each check, as the query's, with that markdown, its
-#                 surface, run, when and negative_control values, and its serves;
+#                 surface, run, when and negative_control values, read off the opening line of
+#                 that markdown as the earlier read's are, and its serves;
 #   plan          ?view=plan answers each plan task, as the query's, with that markdown, its serves and
 #                 its needs;
 #   tree          the read with no view answers each of those blocks once and no prose block of the
@@ -306,13 +312,21 @@ expect before "the earlier decisions read holds an entry in open_questions, an e
 printf 'earlier decisions read: %s\n' "$(jq -c '{open_questions: [.open_questions[] | {id, question}],
   decisions: [.decisions[] | {block_id, kind, replaced, kept: (.kept != null), waiting_review}]}' "$work/decisions-before.json")"
 
+# written: the attributes a typed block's opening line writes, name="value", by name. The earlier
+# blocks read and this head's tree read each answer a check's surface, run, when and
+# negative_control there, in the block's markdown, and nowhere else: the store states no value of
+# them on a check's node (refs' planBlockValues states a plan node's values alone), so the tree
+# read's `attributes` member, which holds a node's values, carries none of them.
+readonly written_jq='def written: split("\n")[0]
+  | [capture("(?<name>[a-z_]+)=\"(?<value>(?:[^\"\\\\]|\\\\.)*)\""; "g") | {key: .name, value}] | from_entries;'
+
 # Each typed block and each prose block of the three documents, keyed by block id, with its
 # markdown as the earlier read answered it: the slice of its markdown its byte range names, the
 # fixture being ASCII, so a slice by character is a slice by byte. A typed block's attributes are
-# read off its opening line; serves and needs as the block ids they name. Prose is a block of no
-# typed type that no typed block holds.
+# read off its opening line (written); serves and needs as the block ids they name. Prose is a
+# block of no typed type that no typed block holds.
 for slug in "${compared_slugs[@]}"; do
-  jq -c --arg slug "$slug" --argjson typed "$typed_blocks" '
+  jq -c --arg slug "$slug" --argjson typed "$typed_blocks" "$written_jq"'
     .markdown as $m
     | [.blocks[] | select(.type as $t | $typed | index($t)) | [.from, .to]] as $ranges
     | .blocks[]
@@ -320,8 +334,7 @@ for slug in "${compared_slugs[@]}"; do
     | (.type as $t | $typed | index($t) != null) as $isTyped
     | . as $block
     | select($isTyped or ([$ranges[] | select(.[0] <= $block.from and $block.from < .[1])] | length == 0))
-    | ($text | split("\n")[0]) as $opening
-    | ([$opening | capture("(?<name>[a-z_]+)=\"(?<value>(?:[^\"\\\\]|\\\\.)*)\""; "g") | {key: .name, value}] | from_entries) as $attributes
+    | ($text | written) as $attributes
     | {slug: $slug, block_id: .id, type, typed: $isTyped, text: $text, attributes: $attributes,
        serves: [($attributes.serves // "") | splits(" +") | select(. != "") | sub("^.*#b-"; "")],
        needs: [($attributes.needs // "") | splits(" +") | select(. != "") | sub("^.*#b-"; "")]}' \
@@ -333,7 +346,7 @@ done < <(jq -c '.[] | {slug, block_id, type, typed, serves, needs}' "$work/block
 cp "$work/blocks-before.json" "$work/body"
 expect before "the earlier documents hold the memo, the three requirements, the two checks and the two plan tasks beside prose" \
   '[["callout","memo"],["check","c-format"],["check","c-store"],["plan_task","t-format"],["plan_task","t-store"],["requirement","r-backup"],["requirement","r-format"],["requirement","r-store"],true,true,true]' \
-  '[(.[] | select(.type == "callout" or .type == "requirement" or .type == "check" or .type == "plan_task") | [.type, .block_id])] | sort
+  '([(.[] | select(.type == "callout" or .type == "requirement" or .type == "check" or .type == "plan_task") | [.type, .block_id])] | sort)
    + [([.[] | select(.slug == "spec" and (.typed | not))] | length > 0),
       ([.[] | select(.slug == "verification-md" and (.typed | not))] | length > 0),
       ([.[] | select(.slug == "plan-md" and (.typed | not))] | length > 0)]'
@@ -364,8 +377,32 @@ issue_tree_queries_differences coverage "GET /api/v1/issues/$key/coverage" "$wor
 cp "$work/coverage-after.json" "$work/body"
 expect coverage "the line r-backup has no plan task stands on the converted issue, which holds a plan" '1' \
   '[(.gaps[]?, .requirements[].gaps[]?) | select(contains("has no plan task") and contains("r-backup"))] | unique | length'
+# The results read, but the two members the move itself moves, each read at what the move makes
+# it. A result's check_artifact_id names the artifact its check's document_blocks row is keyed by
+# (model.CheckResult): the Verification document before the move, and the issue's tree artifact
+# after it, where the conversion moved the result with its check (issueConversion.moveResults; R13
+# makes that pair of check_results a projection of the moved node). A check's version is its row's
+# changed_version (model.CheckBlock): the room's index states every block of a fragment at the
+# version the conversion wrote of that fragment's document (issueConversion.indexTheRoom), which
+# holds the words the version before it held, so check_words_moved, which the comparison below
+# still holds to the earlier answer, reads as before.
 tree_keep coverage "/api/v1/issues/$key/results" "$work/results-after.json"
-issue_tree_queries_differences coverage "GET /api/v1/issues/$key/results" "$work/results-before.json" "$work/results-after.json"
+jq 'del(.checks[].version, .checks[].results[].check_artifact_id)' "$work/results-before.json" >"$work/results-before-compared.json" ||
+  fail coverage "read the earlier results read" "jq could not read $work/results-before.json"
+issue_tree_queries_differences coverage "GET /api/v1/issues/$key/results" "$work/results-before-compared.json" "$work/results-after.json"
+room_tree="$(jq -r '.tree // ""' "$work/tree.json")"
+tree_uuid coverage "$key's tree artifact" "$room_tree"
+query coverage "read the newest version of $key's Verification document" \
+  "select coalesce(max(number), 0) from artifact_versions where artifact_id = '$verification'"
+verification_version="$answer"
+cp "$work/results-before.json" "$work/body"
+expect coverage "before the move each result named the Verification document $verification as its check's artifact, and the read answered results" \
+  "$(jq -cn --arg v "$verification" '[[$v], true]')" \
+  '[([.checks[].results[].check_artifact_id] | unique), ([.checks[].results[]] | length > 0)]'
+cp "$work/results-after.json" "$work/body"
+expect coverage "after it each result names $key's tree artifact $room_tree, the room its check moved into, and each check stands at version $verification_version, the conversion's of the Verification document" \
+  "$(jq -cn --arg t "$room_tree" --argjson n "$verification_version" '[[$t], [$n]]')" \
+  '[([.checks[].results[].check_artifact_id] | unique), ([.checks[].version] | unique)]'
 
 # --- the four queries and the tree read -----------------------------------------------------------
 
@@ -381,11 +418,11 @@ jq -c '([.nodes[] | {key: "\(.kind):\(.id)", value: (.block_id // "")}] | from_e
         to: ($block["\(.to.kind):\(.to.id)"] // "\(.to.kind):\(.to.id)")}]' "$work/tree.json" >"$work/relations.json"
 
 # issue_tree_queries_compare VIEW FILE SELECT WHAT: each earlier block SELECT picks is answered by
-# the read in FILE once, as the query's where VIEW is a view, with the earlier markdown, its values
-# and its relations; prints every difference.
+# the read in FILE once, as the query's where VIEW is a view, with the earlier markdown, the values
+# its opening line writes (written) and its relations; prints every difference.
 issue_tree_queries_compare() {
   local view="$1" file="$2" select="$3" what="$4" found
-  found="$(jq -r --arg view "$view" --slurpfile blocks "$work/blocks-before.json" --slurpfile relations "$work/relations.json" '
+  found="$(jq -r --arg view "$view" --slurpfile blocks "$work/blocks-before.json" --slurpfile relations "$work/relations.json" "$written_jq"'
     . as $read
     | $blocks[0][] | select('"$select"') as $block
     | [$read.nodes[] | select(.block_id == $block.block_id and (.issue // "") == "")] as $held
@@ -396,9 +433,10 @@ issue_tree_queries_compare() {
           (if ($node.text | sub("\\s+$"; "")) != $block.text
            then "block \($block.block_id): the earlier read answered \($block.text | tojson), this one \($node.text | tojson)" else empty end),
           (if $block.type == "check" then
-             (["surface", "run", "when", "negative_control"][] as $name
-              | select(($node.attributes[$name] // null) != ($block.attributes[$name] // null))
-              | "block \($block.block_id): \($name) the earlier read answered \($block.attributes[$name] | tojson), this one \($node.attributes[$name] | tojson)")
+             ($node.text | written) as $now
+             | ["surface", "run", "when", "negative_control"][] as $name
+             | select(($now[$name] // null) != ($block.attributes[$name] // null))
+             | "block \($block.block_id): \($name) the earlier read answered \($block.attributes[$name] | tojson), this one \($now[$name] | tojson)"
            else empty end),
           (if $block.type == "check" or $block.type == "plan_task" then
              ([$relations[0][] | select(.kind == "serves" and .from == $block.block_id) | .to] | sort) as $serves
