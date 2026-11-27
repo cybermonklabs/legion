@@ -53,9 +53,14 @@ const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
  * file's afterAll removes the whole directory under the file's 60 s: on the disk TMPDIR names,
  * that removal of about 1,600 entries took 70 to 90 s at a five-minute load of about 2,200, and
  * failed the file with "a beforeEach/afterEach hook timed out" after every row had passed. `need`
- * is about sixteen times the 1.8 MiB a run held there at its largest (1,392 entries).
+ * holds the largest thing a row writes there: an Oh My Pi that finds no natives beside its binary
+ * extracts them into the HOME of the profile, which is in this directory, and its
+ * pi_natives.linux-x64-modern.node is about 131 MB (18.18.6, 2026-11-27). A build pod's /dev/shm is
+ * 64 MiB, so under a smaller `need` the stand-in row's turn there failed with "embedded addon
+ * extraction (pi_natives.linux-x64-modern.node): ENOSPC". The rest of a run is small: 1.8 MiB at
+ * its largest (1,392 entries).
  */
-const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const memory = memoryRoot({ need: 256 * 1024 * 1024 });
 const memoryPath = realpathSync(memory);
 // A HOME that does not exist holds no config, and realpathSync would throw on it.
 const developerHome = existsSync(homedir()) ? realpathSync(homedir()) : path.resolve(homedir());
