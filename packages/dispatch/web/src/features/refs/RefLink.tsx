@@ -574,6 +574,13 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
   return wordsFormatting(pieces);
 }
 
+/** The words an element the `RefLink` portal draws into held before `collectReferenceAnchors`
+ *  cleared them (`ReferenceAnchor.text`): a bare reference as its author wrote it, or a link's own
+ *  words, none for the link of a picture whose reference names no artifact. `RefLink` may draw a
+ *  name in their place; a surface that counts its words as their author wrote them reads these
+ *  (`issue-page/row-references.ts`'s `markDrawnAtoms`). */
+export const REFERENCE_WORDS = "data-dispatch-words";
+
 /**
  * Finds every already-rendered `<a>` in root whose href is a dispatch:// reference or a
  * same-origin dashboard path — a link `linkifyDispatchRefs` just inserted, an ordinary Markdown
@@ -599,7 +606,8 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
  * Before it clears an anchor, it notes which of the anchor's words a search mark inside it
  * covers (`ReferenceAnchor.marked`, `markedStretches`), so `RefLink` can draw the server's marks
  * again wherever it draws those words. An anchor that becomes its words keeps its own nodes, and
- * with them the marks inside it.
+ * with them the marks inside it; the element the portal draws into keeps the words it held as
+ * `REFERENCE_WORDS`.
  *
  * `@legion/proof-editor`'s Markdown link serializer sanitizes a `dispatch://` href to `""`
  * (Milkdown's link sanitizer only allows http/https/mailto/tel/ftp — a document strangers can
@@ -676,6 +684,7 @@ export function collectReferenceAnchors(
       anchor.setAttribute("data-dispatch-ref", reference);
       anchor.replaceChildren();
     }
+    host.setAttribute(REFERENCE_WORDS, text);
     targets.push({
       anchor: host,
       key: `${reference}:${targets.length}`,

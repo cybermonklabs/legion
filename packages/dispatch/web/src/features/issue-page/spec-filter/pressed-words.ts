@@ -1,5 +1,6 @@
 import type { CaretAt } from "../node-caret";
-import { FOCUSABLE, ROW_WRITTEN } from "../RowText";
+import { FOCUSABLE } from "../RowText";
+import { ROW_WRITTEN } from "../row-references";
 
 /** The item containing the focus, if it belongs to this tree. */
 export function focusedTreeItem(tree: HTMLElement): HTMLElement | null {
@@ -19,33 +20,17 @@ export function statementWordsAt(target: EventTarget): HTMLElement | null {
 
 /**
  * What a statement's drawn words draw in place of the text its editor holds otherwise, each
- * marked by the words' renderer with the editor's text for it (`RowText.tsx`'s `markDrawnAtoms`)
- * and counted as that text. So the count reads one mark and no list of shapes, and a kind the
- * words draw in a new way needs only its mark. A statement holds paragraphs alone (the
- * `requirement` block's content), so these are the inline kinds the two draw differently:
- *
- * - A reference, and a mention of a document, a block or a post: the view's link pass
- *   (`row-references.ts`'s `linkRowReferences`) draws it as a link by its target's name - an
- *   issue's key and title, a chip's words - marked with the words it was written as; the editor
- *   holds those words as text, hidden under a title it draws as a widget the caret cannot enter
- *   (`@legion/proof-editor`'s `reference-decorations.ts`).
- * - Inline HTML (`<name>`) and a footnote's reference: the view draws each by the schema's own
- *   `toDOM`, Milkdown's `span[data-type="html"]` holding its value and
- *   `sup[data-type="footnote_reference"]` holding its label, a reference whose note the document
- *   defines outside the statement included, since the server reads the statement's words with a
- *   stand-in note for each such call (`api/coverage.go`'s `requirementBlocksIn`). The editor
- *   holds each as an atom ProseMirror draws `contenteditable="false"`, marked with no text.
- * - A picture of an artifact: the view draws it as a link (`markdown-serializer.ts`'s
- *   `pictureSerializer`) holding the picture, or its caption's link until it loads or where it
- *   fails (`DispatchPicture`); the editor holds it as an atom (`doc/picture-view.ts`), its
- *   picture or its fallback link with no text the caret can enter, marked with no text.
+ * marked by the words' renderer with the editor's text for it (`ROW_WRITTEN`) and counted as that
+ * text. So the count reads one mark and no list of shapes, and a kind the words draw in a new way
+ * needs only its mark. Which kinds are marked, and with what, is the renderer's to say:
+ * `row-references.ts`'s `linkRowReferences` marks each reference it draws by its target's name,
+ * and its `markDrawnAtoms` everything else the words draw in place of the editor's text.
  *
  * Every other text counts as drawn: a hard break is a `br` in both, holding no text, and each
- * reading counts it as one character, "\n" (`node-caret.ts`'s `placeAt`); a `[^label]` the view
- * draws as text - a call the document defines no note for, an escaped one - is text the editor
- * holds too; and what the editor draws as a widget - a reference's title, a collaborator's
- * cursor - stands outside its editable text and is not drawn by the view. A mark with no text is
- * an atom: a press inside it counts as at its start, and a press past it goes after it.
+ * reading counts it as one character, "\n" (`node-caret.ts`'s `placeAt`); and what the editor
+ * draws as a widget - a reference's title, a collaborator's cursor - stands outside its editable
+ * text and is not drawn by the view. A mark with no text is an atom: a press inside it counts as
+ * at its start, and a press past it goes after it.
  */
 const HELD_OTHERWISE = `[${ROW_WRITTEN}]`;
 
@@ -153,9 +138,9 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
  *  right where the atom runs left to right, and left of its least left where it runs right to
  *  left. Chromium draws an atom in one box for each run of one direction and gives the boxes of
  *  one line left to right on the screen, so the line's end need not be the last box's. A box is on
- *  the last line where its middle stands between the last box's top and bottom; a padded atom's
- *  boxes can be taller than its line and overlap the line above, as a link under `.prose` is, so
- *  no edge tells the two lines apart. An atom's box is as tall as its font, not as its line, so
+ *  the last line where its middle stands at or below the last box's top; a padded atom's boxes
+ *  can be taller than its line and overlap the line above, as a link under `.prose` is, so no
+ *  edge tells the two lines apart. An atom's box is as tall as its font, not as its line, so
  *  `y` only tells the last line from the one before it, the last box above the last line: the two
  *  lines meet half way between that box's foot and the last box's top, and a point at or above
  *  that is on no last line. An atom whose boxes all stand on one line has no line before its

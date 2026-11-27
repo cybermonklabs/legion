@@ -1,6 +1,7 @@
 import type { AgentText } from "../refs/AgentName";
 import { isPartyRoute } from "../refs/party-references";
 import { deletedLineText, editedName } from "../refs/post-marks";
+import { REFERENCE_WORDS } from "../refs/RefLink";
 import type { KnownReferences } from "../refs/reference-names";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
@@ -303,9 +304,15 @@ export function rowReferenceWords(
  *  it the name it has come to have since. */
 const ROW_REFERENCE = "data-row-reference";
 
-/** The words a row's own reference was made over, as the text wrote them, which a later pass
- *  puts back where the reference is read as ambiguous since (`linkRowReferences`). */
-const ROW_WRITTEN = "data-row-written";
+/** The mark of what a node's words draw in place of the text its editor holds there, which holds
+ *  the editor's text for it: a reference's or a link's words as its author wrote them, and nothing
+ *  for what the editor holds as an atom with no text a caret can enter. The reference pass sets it
+ *  on each reference it draws by name, and reads it back to put those words back where the
+ *  reference is read as ambiguous since (`linkRowReferences`); `markDrawnAtoms` sets it on
+ *  everything else the words draw in place of the editor's text. A press's count reads this mark
+ *  and no list of shapes (`spec-filter/pressed-words.ts`), so a kind the words draw in a new way
+ *  needs only its mark. */
+export const ROW_WRITTEN = "data-row-written";
 
 /** A link the page draws in its words' own ink: underlined in the bullets' grey, as `styles.css`
  *  draws a link in a node's drawn words. */
@@ -399,5 +406,33 @@ export function linkRowReferences(
     }
     pieces.push(value.slice(at));
     text.replaceWith(...pieces);
+  }
+}
+
+/** What the words draw an editor's atom as: inline HTML and a footnote's reference by the schema's
+ *  own `toDOM` (Milkdown's `span[data-type="html"]` and `sup[data-type="footnote_reference"]`), a
+ *  picture of an artifact as a link holding the picture, or its caption where it has not loaded
+ *  (`markdown-serializer.ts`'s `pictureSerializer`, `DispatchPicture`), and a picture on another
+ *  website as the picture itself, an `img`. */
+const DRAWN_ATOMS =
+  '[data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture], img';
+
+/** Marks with `ROW_WRITTEN` what the words painted into `root` draw in place of the editor's text,
+ *  besides the references the reference pass marks itself: each element the body's link pass
+ *  handed `RefLink` (`REFERENCE_WORDS`), with the words that pass cleared from it, which are the
+ *  text the editor holds for any link - a link worded by its author keeps those words, and one
+ *  whose words are its address is drawn by its target's name - and each of `DRAWN_ATOMS`, with no
+ *  text of the editor's. A picture whose reference names no artifact is drawn as such a link,
+ *  holding no words, so its mark says nothing whatever `RefLink` draws in it. An element inside a
+ *  marked element is part of what that mark stands for and takes no mark of its own: a
+ *  reference's thumbnail, an artifact's loaded picture. A `[^label]` the words draw as text - a
+ *  call the document defines no note for, an escaped one - is text the editor holds too, and is
+ *  left as drawn. Run again after every paint, after the reference pass; it finds nothing to do
+ *  twice. */
+export function markDrawnAtoms(root: HTMLElement): void {
+  for (const drawn of root.querySelectorAll(`[${REFERENCE_WORDS}], ${DRAWN_ATOMS}`)) {
+    if (drawn.closest(`[${ROW_WRITTEN}]`) === null) {
+      drawn.setAttribute(ROW_WRITTEN, drawn.getAttribute(REFERENCE_WORDS) ?? "");
+    }
   }
 }

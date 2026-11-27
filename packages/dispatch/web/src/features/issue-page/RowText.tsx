@@ -26,6 +26,7 @@ import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
   linkRowReferences,
+  markDrawnAtoms,
   rowReferenceNames,
   rowReferences,
   rowReferenceWords,
@@ -269,30 +270,6 @@ const ROW_CHIP = "data-row-chip";
 
 /** The mark the deleted line carries wherever it is drawn (`DeletedBody`, `RefLink`). */
 const POST_DELETED = "data-post-deleted";
-
-/** The mark of what a node's words draw in place of the text its editor holds there, which holds
- *  the editor's text for it: a reference's words as its author wrote them (the mark of the same
- *  name `row-references.ts` keeps private, which the reference pass sets), and nothing for what
- *  the editor holds as an atom with no text a caret can enter. A press's count reads this mark and
- *  no list of shapes (`spec-filter/pressed-words.ts`), so a kind the words draw in a new way needs
- *  only its mark. */
-export const ROW_WRITTEN = "data-row-written";
-
-/** What the words draw an editor's atom as: inline HTML and a footnote's reference by the schema's
- *  own `toDOM` (Milkdown's `span[data-type="html"]` and `sup[data-type="footnote_reference"]`),
- *  and a picture of an artifact as a link holding the picture, or its caption where it has not
- *  loaded (`markdown-serializer.ts`'s `pictureSerializer`, `DispatchPicture`). */
-const DRAWN_ATOMS = '[data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]';
-
-/** Marks with `ROW_WRITTEN` each of `DRAWN_ATOMS` the words painted into `root` draw, in place of
- *  an atom of the editor's, with no text of the editor's. A `[^label]` the words draw as text -
- *  a call the document defines no note for, an escaped one - is text the editor holds too, and
- *  is left as drawn. Run again after every paint; it finds nothing to do twice. */
-function markDrawnAtoms(root: HTMLElement): void {
-  for (const atom of root.querySelectorAll(DRAWN_ATOMS)) {
-    if (!atom.hasAttribute(ROW_WRITTEN)) atom.setAttribute(ROW_WRITTEN, "");
-  }
-}
 
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
