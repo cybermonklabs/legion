@@ -744,6 +744,90 @@ func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *t
 	}
 }
 
+// A kept row names the claim it is for by its token (record.HookPrompt.Claim,
+// record.PhaseEnded.Claim), and two claims of one issue can hold one role: the agent of a key
+// works a step of another role beside that role's own claim. So the claim the row names and the
+// claim of the row's role are different claims, and only the one the row names decides whether the
+// pod is held (heldMessageForNoClaimThisPodAnswers). This is the case the token match exists for,
+// and the role fallback is what it replaced. The two cases below are each other's control: a
+// predicate that read the role alone would hold the pod in the second and release it in the first,
+// which is the pair of faults the token match stops. A predicate that read the token alone would
+// still pass both, and the row with no claim in
+// TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers is what holds the
+// fallback.
+func TestAKeptRowNamingAClaimIsDecidedByThatClaimAndNotByItsRole(t *testing.T) {
+	for _, message := range keptRoleMessageRows {
+		for _, tc := range []struct {
+			name   string
+			named  supervise.ClaimState
+			byRole supervise.ClaimState
+			holds  bool
+		}{
+			{name: "the claim it names runs and the role's own claim is retired", named: supervise.StateIdle,
+				byRole: supervise.StateRetired, holds: true},
+			{name: "the claim it names is retired and the role's own claim runs", named: supervise.StateRetired,
+				byRole: supervise.StateIdle},
+		} {
+			t.Run(message.kind+" where "+tc.name, func(t *testing.T) {
+				st := migratedStore(t)
+				ctx := context.Background()
+				openRunningTree(t, st)
+				// named is a key's agent on a step of message.role, so its own role is another one
+				// and the row reaches it by its token alone. byRole is that role's own claim.
+				named := claim.Token("legion-legion-legion-208-" + string(message.role) + "-2")
+				for _, c := range []supervise.Claim{
+					{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue,
+						Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle},
+					{Token: named, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RolePlanner,
+						TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.named},
+					{Token: claim.Token("legion-legion-legion-208-" + string(message.role)), Project: "legion", Tree: rootIssue,
+						Issue: rootIssue, Role: message.role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.byRole},
+				} {
+					if err := st.PutClaim(ctx, c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queueWaitingKeptRow(t, st, namedClaimOf(t, message.payload, named))
+
+				if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+					t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s where %s, want %t",
+						view.Waiting, message.kind, tc.name, tc.holds)
+				}
+				_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+				decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+				if err != nil {
+					t.Fatalf("IssueReleaseStop: %v", err)
+				}
+				want := ReleaseActs
+				if tc.holds {
+					want = ReleaseCancel
+				}
+				if decision.Act != want {
+					t.Fatalf("the boundary = %s for %s, with %s where %s, want %s", decision.Act, decision.Cause, message.kind, tc.name, want)
+				}
+			})
+		}
+	}
+}
+
+// namedClaimOf is payload with the claim it is for named by its token. A payload of a kind this
+// test does not know stops the test rather than passing with no claim named, which would read the
+// role and prove nothing.
+func namedClaimOf(t *testing.T, payload record.OutboxPayload, token claim.Token) record.OutboxPayload {
+	t.Helper()
+	switch p := payload.(type) {
+	case record.HookPrompt:
+		p.Claim = token
+		return p
+	case record.PhaseEnded:
+		p.Claim = token
+		return p
+	default:
+		t.Fatalf("namedClaimOf has no case for %T, so the row would name no claim and the test would read the role", payload)
+		return nil
+	}
+}
+
 // The idle rule's two exemptions meet on one role: a tester owed a start of its phase that waits for
 // its issue's admission slot (slotWaitingStart), and a phase-ended message to that tester waiting
 // for a session to hold its role (heldMessageForNoClaimThisPodAnswers). Each term decides its own
