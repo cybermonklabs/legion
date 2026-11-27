@@ -30,6 +30,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
+  AGENT_STREAM_LIMITS,
   canonicalTopic,
   type Envelope,
   EnvelopeSchema,
@@ -4248,6 +4249,66 @@ describe("envoy OMP extension", () => {
     ]);
   });
 
+  // A claim can land and still hand over none of the messages of the session it replaces, and the
+  // listener says so in the answer's warnings. The agent that ran `envoy_role_set` reads each in
+  // the tool's result, and the log holds each at warn level with the role and the session.
+  test("envoy_role_set logs each of the listener's warnings about the claim and returns them to the agent", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const legacy = "controller is the old form of ACME.controller; claim ACME.controller";
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as { readonly role?: string };
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [`notifications.role.${body.role ?? ""}`],
+          warnings: [legacy, handover],
+        });
+      }
+      if (url.pathname === "/v1/interests/subscribe") {
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: ["notifications.agent.ses_omp"],
+          delivery: consumerDelivery("ses_omp", { streamID: TEST_STREAM_ID }),
+        });
+      }
+      if (url.pathname === "/v1/sessions") return response([]);
+      return response({ session_id: "ses_omp", machine_id: "test", dir: "/tmp", topics: [] });
+    };
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const roleSet = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleSet === undefined) throw new Error("envoy_role_set was not registered");
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const result = await roleSet.execute("", { role: "controller" }).finally(stopSink);
+    expect(result.content[0]?.text).toBe(
+      `Now holding role: controller\nListener warning: ${legacy}\nListener warning: ${handover}`
+    );
+    expect(result.details).toEqual({ role: "controller", warnings: [legacy, handover] });
+    expect(
+      warnings.filter(({ message }) => message === "envoy: the listener warned about a role claim")
+    ).toEqual([
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "controller", sessionID: "ses_omp", warning: legacy },
+      },
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "controller", sessionID: "ses_omp", warning: handover },
+      },
+    ]);
+  });
+
   // No live session holds the role, so the listener kept the message for one hour and answered
   // 202 with kept_until, the end of that hour. The tool must not read that as a failure, and it
   // tells the sender until when the copy waits and what comes if no session takes it: a message
@@ -7569,6 +7630,51 @@ console.log(JSON.stringify(args));
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
   });
 
+  // Contract entry 20261125170509: a Legion claim names the session it replaces, as the daemon's registration
+  // names it, and the bridge sends that session as the claim's `previous_session_id` on a claim
+  // that stays hard (a Legion claim is last-claim-wins), so the listener hands that session's
+  // unread messages to this one. A claim naming none, or an empty one, sends no such key.
+  test("a Legion role claim naming the session it replaces sends it as previous_session_id on a hard claim", async () => {
+    const role = "legion-omp-repo-1-implementer";
+    const roleClaims: Record<string, unknown>[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        roleClaims.push(JSON.parse(init?.body?.toString() ?? "{}") as Record<string, unknown>);
+        return response({
+          session_id: "ses_replacing",
+          machine_id: "test",
+          dir: "/tmp/envoy-omp-test",
+          topics: [`notifications.role.${role}`],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    // A copy of the extension of this test's own, as every row here imports: its module state
+    // starts empty, which a static import shared by the file could not give.
+    const { default: envoyExtension } = await import("./envoy.ts?role-claim-replaces");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const context = sessionContext("ses_replacing");
+    await fixture.handlers.get("session_start")?.({}, context);
+
+    await claimEnvoyRole("ses_replacing", role, context, "ses_replaced");
+    await claimEnvoyRole("ses_replacing", role, context);
+    await claimEnvoyRole("ses_replacing", role, context, "");
+
+    const instance = expect.any(String);
+    expect(roleClaims).toEqual([
+      {
+        session_id: "ses_replacing",
+        role,
+        previous_session_id: "ses_replaced",
+        client_instance_id: instance,
+      },
+      { session_id: "ses_replacing", role, client_instance_id: instance },
+      { session_id: "ses_replacing", role, client_instance_id: instance },
+    ]);
+  });
+
   // INFRA-771: a session takes its messages from its own consumer, whose filter is the topics it
   // registered, so the controller's notice lane and its Slack mention topics have to be in the
   // registration while it holds the role — on the base they came in on a core subscription this
@@ -8045,6 +8151,8 @@ console.log(JSON.stringify(args));
     const claims: string[] = [];
     // Each claim as `<role>@<session it was sent for>`.
     const claimSessions: string[] = [];
+    // Each claim's `previous_session_id`, `undefined` for a claim that names none.
+    const claimPredecessors: (string | undefined)[] = [];
     const handedBack: string[] = [];
     let gated: { role: string; reached: () => void; release: Promise<void> } | undefined;
     let registered: { session: string; seen: () => void } | undefined;
@@ -8072,6 +8180,9 @@ console.log(JSON.stringify(args));
       | undefined;
     // While positive, each claim fails with a 500 (the client retries a failure once).
     let failingClaims = 0;
+    // While positive, each claim that names a previous session stands and is then answered 503,
+    // as a listener whose handover record did not store answers it (the client retries once).
+    let unstoredHandovers = 0;
     // While positive, each hand-back fails with a 500 before the listener acts on it.
     let failingHandBacks = 0;
     // Runs as the listener takes a hand-back (an unsubscribe), before it answers.
@@ -8110,6 +8221,9 @@ console.log(JSON.stringify(args));
         const claimant = body?.session_id;
         claims.push(claimed);
         claimSessions.push(`${claimed}@${claimant}`);
+        claimPredecessors.push(
+          typeof body?.previous_session_id === "string" ? body.previous_session_id : undefined
+        );
         if (failingClaims > 0) {
           failingClaims -= 1;
           return new Response(JSON.stringify({ error: "listener failed" }), { status: 500 });
@@ -8147,6 +8261,13 @@ console.log(JSON.stringify(args));
         if (typeof body?.client_instance_id === "string") {
           holderInstances.set(claimed, body.client_instance_id);
         } else holderInstances.delete(claimed);
+        if (unstoredHandovers > 0 && typeof body?.previous_session_id === "string") {
+          unstoredHandovers -= 1;
+          return new Response(JSON.stringify({ error: "handover record not stored" }), {
+            status: 503,
+            headers: { "Retry-After": "1" },
+          });
+        }
         return response({
           session_id: claimant,
           machine_id: "test",
@@ -8372,6 +8493,9 @@ console.log(JSON.stringify(args));
     const failClaims = (count: number) => {
       failingClaims = count;
     };
+    const unstoreHandovers = (count: number) => {
+      unstoredHandovers = count;
+    };
     const failHandBacks = (count: number) => {
       failingHandBacks = count;
     };
@@ -8385,6 +8509,7 @@ console.log(JSON.stringify(args));
       roleTool,
       claims,
       claimSessions,
+      claimPredecessors,
       handedBack,
       holders,
       holderInstances,
@@ -8407,6 +8532,7 @@ console.log(JSON.stringify(args));
       gateHandBack,
       holdRegistration,
       failClaims,
+      unstoreHandovers,
       failHandBacks,
       failRoleReads,
       onHandBack: (hook: () => void) => {
@@ -8860,6 +8986,51 @@ console.log(JSON.stringify(args));
     // The start's reclaim was overtaken and continued no one, so the fork names the start itself.
     expect(claimSessions).toEqual(["legion-controller@ses_rs_fork"]);
     expect(holders.get("legion-controller")).toBe("ses_rs_fork");
+  });
+
+  // A soft claim that names its predecessor and is answered 503 stood at the listener, which did
+  // not store its handover record. The next pass names that predecessor again, though the
+  // listener's holder read names this session by then: a claim that named none would leave the
+  // predecessor's unread messages where only it reads them.
+  test("a soft claim answered 503 names the same predecessor again at the next pass", async () => {
+    const {
+      fixture,
+      live,
+      claimPredecessors,
+      holders,
+      started,
+      startReached,
+      releaseStart,
+      unstoreHandovers,
+      tick,
+      nextRegistration,
+    } = await gatedRoleFixture("predecessor-after-503", "ses_p5", {
+      claimAtStart: false,
+      transcriptRole: "legion-controller",
+      holdStart: true,
+    });
+    // As above, the fork overtakes the resumed start and names it, read off the listener's
+    // holder; the claim stands, and both its sends are answered 503.
+    await startReached;
+    unstoreHandovers(2);
+    const forked = fixture.handlers.get("session_switch")?.(
+      { reason: "fork" },
+      live("ses_p5_fork")
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseStart();
+    await started;
+    await forked;
+    expect(claimPredecessors).toEqual(["ses_p5", "ses_p5"]);
+    expect(holders.get("legion-controller")).toBe("ses_p5_fork");
+    const tickRegistered = nextRegistration("ses_p5_fork");
+    tick();
+    await tickRegistered;
+    for (let step = 0; step < 10; step += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(claimPredecessors).toEqual(["ses_p5", "ses_p5", "ses_p5"]);
+    expect(holders.get("legion-controller")).toBe("ses_p5_fork");
   });
 
   // A session can be overtaken at any point of its establishment: before it begins, at its
@@ -13255,10 +13426,10 @@ console.log(JSON.stringify(args));
   });
 
   test("a regain hook that never settles does not block the next heartbeat tick's registration", async () => {
-    // The hook is legion.ts's daemon round-trip (`claims/ready`, retried on a 5xx or a transport
-    // failure), which this side cannot bound. The heartbeat's healing latch must release once
-    // registration and the claim are settled, or a stuck hook would stop re-registration and
-    // let the session's registry entry lapse.
+    // The hook is legion.ts's daemon round-trip (`claims/ready`, retried on an outage or a
+    // transport failure), which this side cannot bound. The heartbeat's healing latch must
+    // release once registration and the claim are settled, or a stuck hook would stop
+    // re-registration and let the session's registry entry lapse.
     const role = "legion-controller";
     let listenerHoldsClaim = true;
     let registrations = 0;
@@ -22982,6 +23153,381 @@ console.log(JSON.stringify(args));
     expect(replayed).toContain(ownTurn);
     expect(replayed).not.toContain(returnedTurn);
     await fixture.handlers.get("session_shutdown")?.({}, first);
+  }, 30_000);
+
+  /** The frames a viewer that attaches to `session` is replayed, in the order the answer gives
+   *  them. */
+  const replayFrames = async (session: string, inbox: string) => {
+    const control = natsState.controls.get(`agentstream.${session}.control`);
+    expect(control?.active()).toBe(true);
+    control?.push(JSON.stringify({ type: "watch", v: 1 }));
+    control?.push(JSON.stringify({ type: "replay", v: 1 }), inbox);
+    const answered = () => natsState.published.filter((each) => each.subject === inbox);
+    await until(() => answered().length > 0, `the replay answer on ${inbox}`);
+    const answer = answered().at(-1);
+    return z
+      .object({ frames: z.array(z.record(z.string(), z.unknown())) })
+      .parse(JSON.parse(new TextDecoder().decode(answer?.data))).frames;
+  };
+
+  /** What a viewer that attaches to `session` is replayed of its conversation: each message's id,
+   *  role and Dispatch message, and each tool result's call, in the order the answer gives them. */
+  const viewerReplay = async (session: string, inbox: string) =>
+    (await replayFrames(session, inbox)).flatMap((frame) => {
+      if (frame.kind === "tool-result") {
+        return [{ call: z.object({ toolCallId: z.string() }).parse(frame.result).toolCallId }];
+      }
+      if (frame.kind !== "message") return [];
+      const message = z
+        .object({ dispatchMessageId: z.string().optional(), id: z.string(), role: z.string() })
+        .parse(frame.message);
+      return [{ dispatchMessageId: message.dispatchMessageId, id: message.id, role: message.role }];
+    });
+
+  /** A session's transcript as Oh My Pi's `getBranch` lists it: a person's Send the session took
+   *  as its typed turn (`sent`, the attempt the session recorded handling, and the user message
+   *  the host wrote with the message's id as its tag), a reply with a tool call, its result, an
+   *  Envoy card the session showed and one it did not, another input's tagged user message, and
+   *  the last reply, between entries that hold no message. */
+  const resumedTranscript = (sent: string): unknown[] => [
+    { id: "e0", modelId: "claude-opus-5", provider: "anthropic", type: "model_change" },
+    {
+      customType: "envoy-dispatch-handled-attempt",
+      data: { attempt: 1, message_id: sent },
+      id: "e1",
+      type: "custom",
+    },
+    {
+      id: "e2",
+      message: {
+        content: [{ text: "What changed?", type: "text" }],
+        role: "user",
+        tag: sent,
+        timestamp: 10,
+      },
+      type: "message",
+    },
+    {
+      id: "e3",
+      message: {
+        content: [
+          { text: "Reading it.", type: "text" },
+          { arguments: { path: "a.ts" }, id: "call-1", name: "read", type: "toolCall" },
+        ],
+        role: "assistant",
+        timestamp: 20,
+      },
+      type: "message",
+    },
+    {
+      id: "e4",
+      message: {
+        content: [{ text: "export {};", type: "text" }],
+        isError: false,
+        role: "toolResult",
+        timestamp: 30,
+        toolCallId: "call-1",
+        toolName: "read",
+      },
+      type: "message",
+    },
+    {
+      content: "A card the session showed.",
+      customType: "envoy-message",
+      details: { envoyCard: "card-1" },
+      display: true,
+      id: "e5",
+      timestamp: new Date(40).toISOString(),
+      type: "custom_message",
+    },
+    {
+      content: "A card the session kept out of sight.",
+      customType: "envoy-message",
+      details: { envoyCard: "card-2" },
+      display: false,
+      id: "e6",
+      timestamp: new Date(45).toISOString(),
+      type: "custom_message",
+    },
+    // A compaction that kept every turn above from the Send on: the live context, which the
+    // session's terminal draws on a resume, starts there.
+    {
+      firstKeptEntryId: "e2",
+      id: "e7",
+      summary: "The conversation so far.",
+      type: "compaction",
+    },
+    {
+      id: "e8",
+      message: {
+        content: [{ text: "A line another input sent.", type: "text" }],
+        role: "user",
+        tag: "other-input",
+        timestamp: 50,
+      },
+      type: "message",
+    },
+    {
+      id: "e9",
+      message: { content: [{ text: "Done.", type: "text" }], role: "assistant", timestamp: 60 },
+      type: "message",
+    },
+  ];
+
+  /** What `viewerReplay` reads of `resumedTranscript(sent)`: the same frames the process that ran
+   *  those turns recorded, the Send tagged with its Dispatch message as it was then. */
+  const resumedTurns = (sent: string) => [
+    { dispatchMessageId: sent, id: `u10:${sent}`, role: "user" },
+    { dispatchMessageId: undefined, id: "a20", role: "assistant" },
+    { call: "call-1" },
+    { dispatchMessageId: undefined, id: "c40:card-1", role: "user" },
+    { dispatchMessageId: undefined, id: "u50:other-input", role: "user" },
+    { dispatchMessageId: undefined, id: "a60", role: "assistant" },
+  ];
+
+  // A process that resumes a session (a pod's restart, `omp --continue`) recorded none of its
+  // turns, and a viewer who opened the session was replayed none of what its terminal still
+  // showed (dispatch://INFRA-5990, R1).
+  test("a session the host resumes at its start replays the turns its transcript holds", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-resumed-start"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const sent = "22222222-2222-4222-8222-222222222222";
+    const transcript = resumedTranscript(sent);
+    const base = sessionContext("ses_resumed");
+    const resumed: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => transcript,
+        getEntries: () => transcript,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, resumed);
+
+    expect(await viewerReplay("ses_resumed", "inbox-resumed-viewer")).toEqual(resumedTurns(sent));
+    await fixture.handlers.get("session_shutdown")?.({}, resumed);
+  }, 30_000);
+
+  // Oh My Pi keeps the transcript's message objects and rewrites them in place: a prune pass blanks
+  // a stale tool result's content (`blankToolResult` in its `packages/agent/src/compaction/
+  // pruning.ts`). The replay of a result the session was taken up with keeps the output it had
+  // then, as a result this process recorded keeps the output it had at its `message_end`.
+  test("a resumed session's tool result keeps its output in the replay after the host prunes it", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-pruned-after-take-up"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const transcript = resumedTranscript("44444444-4444-4444-8444-444444444444");
+    const base = sessionContext("ses_pruned_later");
+    const resumed: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => transcript,
+        getEntries: () => transcript,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, resumed);
+    // The host's prune pass after the take-up, on the object it holds: the tool result, e4.
+    const pruned = Object(transcript[4]);
+    expect(Reflect.get(pruned, "id")).toBe("e4");
+    Reflect.set(Reflect.get(pruned, "message"), "content", [
+      { text: "[Superseded by a newer read of this file]", type: "text" },
+    ]);
+
+    const outputs = (await replayFrames("ses_pruned_later", "inbox-pruned-later-viewer")).flatMap(
+      (frame) =>
+        frame.kind === "tool-result"
+          ? [z.object({ output: z.string() }).parse(frame.result).output]
+          : []
+    );
+    expect(outputs).toEqual(["export {};"]);
+    await fixture.handlers.get("session_shutdown")?.({}, resumed);
+  }, 30_000);
+
+  // An in-process `/resume` takes up a session the same way: its viewer reads its transcript's
+  // turns, and none of the session the host left.
+  test("a session the host resumes by a switch replays its own transcript's turns alone", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-resumed-switch"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const left = sessionContext("ses_left");
+    await fixture.handlers.get("session_start")?.({}, left);
+    const leftTurn = "a turn of the session the host left";
+    await fixture.handlers.get("message_end")?.(
+      {
+        message: { content: [{ text: leftTurn, type: "text" }], role: "assistant", timestamp: 5 },
+      },
+      left
+    );
+    const sent = "33333333-3333-4333-8333-333333333333";
+    const transcript = resumedTranscript(sent);
+    const base = sessionContext("ses_switched_to");
+    const switched: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => transcript,
+        getEntries: () => transcript,
+      },
+    };
+    await fixture.handlers.get("session_switch")?.({ reason: "resume" }, switched);
+
+    expect(await viewerReplay("ses_switched_to", "inbox-switched-viewer")).toEqual(
+      resumedTurns(sent)
+    );
+    await fixture.handlers.get("session_shutdown")?.({}, switched);
+  }, 30_000);
+
+  // R2: a session with no earlier turns replays what it records, and nothing else.
+  test("a session that starts fresh replays only the turns it records", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-fresh-start"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const base = sessionContext("ses_fresh");
+    const fresh: SessionContext = {
+      ...base,
+      sessionManager: { ...base.sessionManager, getBranch: () => [], getEntries: () => [] },
+    };
+    await fixture.handlers.get("session_start")?.({}, fresh);
+    await fixture.handlers.get("message_end")?.(
+      {
+        message: {
+          content: [{ text: "The first turn.", type: "text" }],
+          role: "assistant",
+          timestamp: 7,
+        },
+      },
+      fresh
+    );
+
+    expect(await viewerReplay("ses_fresh", "inbox-fresh-viewer")).toEqual([
+      { dispatchMessageId: undefined, id: "a7", role: "assistant" },
+    ]);
+    await fixture.handlers.get("session_shutdown")?.({}, fresh);
+  }, 30_000);
+
+  // A ring a session holds does not say its transcript was read back: the host can record a turn
+  // under a session before a pass has taken that session up, and that ring then holds the one turn
+  // and none before it. Here the host leaves A for B, records A's next turn with no event for the
+  // move back, and only then does a pass take A up again.
+  test("a session whose ring holds a turn recorded before its pass still replays its earlier turns", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-ring-before-the-pass"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const earlier = [
+      {
+        id: "e0",
+        message: {
+          content: [{ text: "A turn of its own, before the move.", type: "text" }],
+          role: "assistant",
+          timestamp: 10,
+        },
+        type: "message",
+      },
+    ];
+    const base = sessionContext("ses_rolled_back");
+    const rolledBack: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => earlier,
+        getEntries: () => earlier,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, rolledBack);
+    // The host moves to another session, and this one's ring is dropped: nobody watches it.
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext("ses_other"));
+    // It is back, with no event, and records a turn: that turn makes the ring again.
+    await fixture.handlers.get("message_end")?.(
+      {
+        message: {
+          content: [{ text: "A turn after the move back.", type: "text" }],
+          role: "assistant",
+          timestamp: 20,
+        },
+      },
+      rolledBack
+    );
+    // The pass that learns of the move takes the session up.
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, rolledBack);
+
+    expect(await viewerReplay("ses_rolled_back", "inbox-rolled-back-viewer")).toEqual([
+      { dispatchMessageId: undefined, id: "a10", role: "assistant" },
+      { dispatchMessageId: undefined, id: "a20", role: "assistant" },
+    ]);
+    await fixture.handlers.get("session_shutdown")?.({}, rolledBack);
+  }, 30_000);
+
+  // A move away and back leaves the view where it was: a viewer's watch keeps the ring, the
+  // session is filled once per ring (`restoredAgentStreams`), and a fill into a ring that already
+  // holds the session's turns keeps each of them where it is (`AgentStreamPublisher.restore`). So
+  // a turn the bound dropped stays dropped, and the turn this process recorded is still the
+  // newest.
+  test("a session taken up again while its ring is watched replays the turns the ring holds", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-filled-once"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const say = (at: number) => ({
+      content: [{ text: `turn ${at}`, type: "text" }],
+      role: "assistant",
+      timestamp: at,
+    });
+    const transcript = Array.from({ length: historyMessages }, (_, index) => ({
+      id: `e${index}`,
+      message: say(index + 1),
+      type: "message",
+    }));
+    const base = sessionContext("ses_filled_once");
+    const watched: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => transcript,
+        getEntries: () => transcript,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, watched);
+    expect(await viewerReplay("ses_filled_once", "inbox-filled-first")).toHaveLength(
+      historyMessages
+    );
+    // One more turn: the ring drops the first.
+    await fixture.handlers.get("message_end")?.({ message: say(historyMessages + 1) }, watched);
+    // The host leaves and comes back; the viewer's watch keeps the ring.
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext("ses_away"));
+    await fixture.handlers.get("session_switch")?.({ reason: "resume" }, watched);
+
+    const replayed = await viewerReplay("ses_filled_once", "inbox-filled-again");
+    expect(replayed).toHaveLength(historyMessages);
+    expect(replayed.slice(0, 2).map((row) => ("id" in row ? row.id : row.call))).toEqual([
+      "a2",
+      "a3",
+    ]);
+    expect(replayed.at(-1)).toEqual({
+      dispatchMessageId: undefined,
+      id: `a${historyMessages + 1}`,
+      role: "assistant",
+    });
+    await fixture.handlers.get("session_shutdown")?.({}, watched);
   }, 30_000);
 
   test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {

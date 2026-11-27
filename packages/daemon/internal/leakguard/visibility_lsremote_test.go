@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The read with no credential carries no credential of the pod's. Of the caller's GIT_ variables
@@ -176,7 +177,9 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 // The read with no credential ends at its own cap when git never answers, inside a caller's bound
 // that would let it run longer, and the call is refused naming the spent limit and git's stop by
 // a bound no longer than that cap. GraphQL's own limit is spent, which is what sends the read on
-// to git.
+// to git. The caller's bound is what is left of the test binary's deadline (testwait.Remaining),
+// minutes past the cap, so a stand-in a loaded machine starts slowly still reaches git inside it,
+// and the cap is the only bound that can stop git.
 func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	saved := lsRemoteBound
 	lsRemoteBound = 2 * time.Second
@@ -193,7 +196,8 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 			return "", &rateLimitError{reset: reset}
 		},
 	})
-	ctx := bound(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	t.Cleanup(cancel)
 	var err error
 	answered(t, "the visibility read whose git never answers", func() { _, err = guard.Visibility(ctx, theRepo) })
 	if err == nil {
@@ -208,7 +212,7 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 		}
 	}
 	if got := stopBound(t, err); got > 2 {
-		t.Errorf("git was stopped by a bound of %d s, want the read's own %s, not the caller's minute", got, lsRemoteBound)
+		t.Errorf("git was stopped by a bound of %d s, want the read's own %s, not the caller's", got, lsRemoteBound)
 	}
 }
 

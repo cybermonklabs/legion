@@ -407,6 +407,24 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
 
 const documentOwner = { artifact_id: "artifact-1", issue_key: null, project: "CORE" } as const;
 
+/** The outbox's `role.undelivered` on one owner, CORE-1 unless `owner` names another: written as
+ *  a system actor, so it wakes nobody. */
+function roleUndelivered(owner: Partial<DispatchEvent> = {}): DispatchEvent {
+  return event(
+    "role.undelivered",
+    {
+      dropped_at: "2026-10-26T03:00:00Z",
+      event_id: 11,
+      event_type: "comment.created",
+      keeps: 3,
+      kept_at: "2026-10-26T02:00:00Z",
+      reason: "expired",
+      role: "reviewer",
+    },
+    { actor: { id: "dispatch-outbox", kind: "system" }, notify: false, ...owner }
+  );
+}
+
 interface Rule {
   readonly event: DispatchEvent;
   readonly page?: Partial<PageOptions>;
@@ -1186,6 +1204,51 @@ const rules: Record<string, Rule> = {
     ),
     refreshes: [],
     spares: ["detail", "unrelatedDetail", "projects", "projectList", "inbox", "pinned"],
+  },
+  // The outbox's report that an event's copy for a role reached no session moves only its
+  // owner's log: an issue's, which the page reads; a project document's, which takes the
+  // document's path; and a project's, which no page reads.
+  "a role.undelivered on an issue refreshes its detail, its log and its project list alone": {
+    event: roleUndelivered(),
+    refreshes: ["detail", "log", "projectList"],
+    spares: [
+      "unrelatedDetail",
+      "parent",
+      "summary",
+      "projects",
+      "inbox",
+      "pinned",
+      "otherProjectList",
+      "steps",
+      "collaborators",
+      "referencesTab",
+    ],
+  },
+  "a role.undelivered on a project document refreshes that document's page and no issue read": {
+    event: roleUndelivered(documentOwner),
+    refreshes: ["documentPage"],
+    spares: [
+      "otherDocumentPage",
+      "docSummary",
+      "detail",
+      "log",
+      "projectList",
+      "inbox",
+      "projects",
+    ],
+  },
+  "a role.undelivered on a project refreshes nothing": {
+    event: roleUndelivered({ artifact_id: null, issue_key: null }),
+    refreshes: [],
+    spares: [
+      "detail",
+      "unrelatedDetail",
+      "log",
+      "projectList",
+      "projects",
+      "inbox",
+      "documentPage",
+    ],
   },
   // The Inbox's thread rows, by the event that moves each of them.
   "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
@@ -1996,6 +2059,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     to: "CORE-2",
     source: "branch",
   }),
+  "role.undelivered": roleUndelivered(),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",
     {},

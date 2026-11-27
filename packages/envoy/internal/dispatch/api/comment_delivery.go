@@ -1451,18 +1451,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The mention the reply answers and the session its attempt names are read before the
-	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
-	// asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
-	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500. An attempt past
-	// comment_deliveries.attempt's range names no delivery, so no read is made with it: the bound
-	// below (fitsIntegerColumn) answers it, where it always has.
+	// transaction, so a reply from a session the attempt does not name asks the listener, with
+	// nothing held, whether that session holds the role now, for a mention of a role, or replaced
+	// the attempt's session, for a mention of a session (lookUpRoleHolderReply). The mention is
+	// the one the request names, else the comment's first, which is its only one wherever the
+	// transaction below takes a reply naming none, and the session is that of the mention's own
+	// attempt, the one it was sent to. A read that finds nothing asks nothing: the transaction
+	// below answers that comment, mention or attempt as it always has. A read that fails is the
+	// route's 500. An attempt past comment_deliveries.attempt's range names no delivery, so no read
+	// is made with it: the bound below (fitsIntegerColumn) answers it, where it always has.
 	var roleReply roleHolderReply
 	var err error
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		roleReply, err = s.roleHolderReplyOf(r, actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
@@ -1576,10 +1577,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the mentioned
-	// role now, while it is live: a different session that took the role from the one the
-	// attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	// role now, while it is live, and a session that replaced the one the attempt names: a
+	// different session that took the role, or that replaced the session, is handed what that
+	// session had not read (lookUpRoleHolderReply).
 	if (attempt.SessionID == nil || *attempt.SessionID != actor.ID) && !roleReply.allows(attempt.Target) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
+		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, replyForbiddenSession)
 		return
 	}
 	// A replay of a callback that already posted its reply writes nothing and answers the stored
