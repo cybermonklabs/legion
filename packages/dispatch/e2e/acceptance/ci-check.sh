@@ -590,10 +590,12 @@ stage_head k2 "$k2_open" 101 "$open_sha" open
 results k2 "$k2_open"
 derived k2 "c-ci prints the pass of CI run contracts at the open head" c-ci pass "$open_sha" \
   success 101 "$ci_words"
+# The reading's first line follows `Reading: ` at the result's two spaces; `dispatch results`
+# indents each later line of a quoted text four spaces, so none of them reads as a check line.
 line k2 "the result's reading opens with the run's conclusion" "  Reading: conclusion: success"
-line k2 "the reading carries the run's output title" "contracts success"
-line k2 "the reading carries the run's output summary" "The contracts job concluded success."
-line k2 "the reading carries the run's URL" "https://github.com/$driven_repo/actions/runs/40/job/9001"
+line k2 "the reading carries the run's output title" "    contracts success"
+line k2 "the reading carries the run's output summary" "    The contracts job concluded success."
+line k2 "the reading carries the run's URL" "    https://github.com/$driven_repo/actions/runs/40/job/9001"
 get "/api/v1/issues/$k2_open/results"
 want_status 200 k2 "GET /results answers"
 expect k2 "the one result is the derived one: its id, role, producer, run and commit" \
