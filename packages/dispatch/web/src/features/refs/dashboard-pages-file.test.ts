@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 
 import { DASHBOARD_PAGES_FILE, renderDashboardPages } from "./dashboard-pages-file";
 
-// The committed pages file is what the route table renders today: a tab added to `ISSUE_TABS`, a
-// segment added to `ISSUE_DOCUMENT_SEGMENTS`, or a page that comes to draw another document
+// The committed pages file is what the route table renders today: a tab added to `ISSUE_TABS`
+// whose page names something in text (not a page of the web alone, as Dashboard's is), a segment
+// added to `ISSUE_DOCUMENT_SEGMENTS`, or a page that comes to draw another document
 // (`issueDocuments`, the choice `IssuePage.tsx` draws each tab from) changes the render, and this
 // fails until `bun web/src/features/refs/dashboard-pages-file.ts --write` (from packages/dispatch)
 // writes the file again in @legion/contracts; `bun run gen:go` there writes the server's copy.

@@ -6,18 +6,20 @@ import type { ArtifactApproval } from "../../api/types";
 /**
  * Dispatch's refusal of a person's Approve for the form of The Spec (`SPEC_FORM`), kept by the
  * approval request it refused, under the request's own key (`requestRefusalKey`, its ask). The
- * header (`ApprovalChip`) of each document the request names and each card of the request
- * (`AskCard`'s answer form) read it there, so a refusal of a press in one place shows in each place
+ * header (`ApprovalChip`) of each document the request names and each ask body of the request
+ * (`ask-body/AskBody.tsx`, whose answer form, `useAskAnswerForm`, reads it) read it there. An ask
+ * body has two hosts: an ask's card (`inbox/AskCard.tsx`) and Dashboard's tab
+ * (`dashboard/DashboardAskBody.tsx`). So a refusal of a press in one place shows in each place
  * that shows the request, and in no place that shows another request. A header's Approve with no
  * request open is kept for its document alone (`approvalRefusalKey`).
  *
- * A refusal belongs to that request, not to the card or the header that shows it, for the reason
- * an unsent answer belongs to its ask (`inbox/answer-drafts.ts`): a host can draw its card again
- * while the answer is out. The issue page's Needs you does that every time, because the answer
- * takes the ask's row out of the Inbox read and the refusal puts it back. The card drawn again
- * reads the refusal here, and with it picks Request changes and takes the focus that the press
- * owes. Each surface that shows the request shows its refusal, only one takes the focus
- * (`takeFormRefusalFocus`), and only one card puts the reason in the request's draft
+ * A refusal belongs to that request, not to the ask body or the header that shows it, for the
+ * reason an unsent answer belongs to its ask (`inbox/answer-drafts.ts`): a host can draw its ask
+ * body again while the answer is out. The issue page's Needs you does that every time, because
+ * the answer takes the ask's row out of the Inbox read and the refusal puts it back. The ask body
+ * drawn again reads the refusal here, and with it picks Request changes and takes the focus that
+ * the press owes. Each surface that shows the request shows its refusal, only one takes the focus
+ * (`takeFormRefusalFocus`), and only one ask body puts the reason in the request's draft
  * (`takeFormRefusalReason`).
  *
  * Each refusal holds the versions it judged, one for each document the request names
@@ -31,12 +33,12 @@ interface FormRefusal {
   /** Whether the press it answers still owes the focus to a surface that shows it: true until
    *  one takes it (`takeFormRefusalFocus`). */
   focusOwed: boolean;
-  /** Whether the reason it carries is still to go in the request's draft: true until a card
+  /** Whether the reason it carries is still to go in the request's draft: true until an ask body
    *  puts it there (`takeFormRefusalReason`). */
   reasonOwed: boolean;
 }
 
-/** The key of the refusal of the approval request `askId`, which each card of the request and
+/** The key of the refusal of the approval request `askId`, which each ask body of the request and
  *  the header of each document it names share. */
 export function requestRefusalKey(askId: string): string {
   return `ask:${askId}`;
@@ -142,7 +144,7 @@ export function useFormRefusal(key: string, versions: string | undefined): ApiEr
  * Whether `surface` takes the focus that the press of `key`'s refusal owes, and takes it once.
  * The surface where the person pressed takes it. When its host took that surface out of the page,
  * a surface drawn after the press stands in for it, while the focus is on no control or inside
- * `root`. Another surface that shows the refusal, such as a second card of the same request on
+ * `root`. Another surface that shows the refusal, such as a second ask body of the same request on
  * the page, takes no focus: the focus stays where the person pressed.
  */
 export function takeFormRefusalFocus(key: string, surface: number, root: Element | null): boolean {
@@ -156,8 +158,8 @@ export function takeFormRefusalFocus(key: string, surface: number, root: Element
 }
 
 /** Whether the reason of `key`'s refusal is still to go in the request's draft, and takes it once:
- *  the draft belongs to the request, so the first card that asks puts the reason there for each
- *  card, and a card drawn later leaves the text as the person changed it. */
+ *  the draft belongs to the request, so the first ask body that asks puts the reason there for
+ *  each ask body, and an ask body drawn later leaves the text as the person changed it. */
 export function takeFormRefusalReason(key: string): boolean {
   const refusal = refusals.get(key);
   if (refusal === undefined || !refusal.reasonOwed) return false;
