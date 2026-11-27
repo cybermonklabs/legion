@@ -2705,10 +2705,6 @@ export const dispatchToolSpecs = [
           "With project: the id of one check of the spec files, whose results alone the read prints."
         )
         .optional(),
-      json: z
-        .boolean()
-        .describe("With project: print the stored results as JSON, one in-toto statement each.")
-        .optional(),
       at: z
         .string()
         .describe(
@@ -2721,7 +2717,12 @@ export const dispatchToolSpecs = [
           "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
         )
         .optional(),
-      json: z.boolean().describe("Print the complete results wire answer as JSON.").optional(),
+      json: z
+        .boolean()
+        .describe(
+          "Print the complete results wire answer as JSON; with project, the stored results, one in-toto statement each."
+        )
+        .optional(),
     }),
     validation: {
       check: (value) => resultsProblem(value) === undefined,

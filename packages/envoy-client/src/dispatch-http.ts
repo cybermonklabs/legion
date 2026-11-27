@@ -2343,7 +2343,7 @@ export class DispatchClient {
 
   /** Record a build using the credential's own writer, never an actor selected in the body. */
   async recordDeploy(input: DeployInput): Promise<DeployResponse> {
-    return this.#json("POST", ["api", "v1", "deploys"], input);
+    return this.#write("POST", ["api", "v1", "deploys"], WRITE_ROWS.recordDeploy, input);
   }
 
   /** Each program's current deploy, including its source and the GitHub attempt when known. */
@@ -3937,7 +3937,7 @@ export class DispatchClient {
             ...refusal,
             textRefusal: response.headers.has(TEXT_REFUSAL_HEADER),
           },
-          retryAfterMs(response) || null
+          retryAfterMs(response.headers) || null
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

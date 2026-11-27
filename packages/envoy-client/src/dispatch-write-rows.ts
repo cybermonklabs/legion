@@ -291,6 +291,18 @@ export const WRITE_ROWS = {
     approval: z.looseObject({ by: z.looseObject({ id: z.string() }).nullish() }),
   }),
   planApprove: z.looseObject({ version: z.number().int() }),
+  /** `deployCommand` prints the recorded build: its program, commit, time, source, recorder and
+   *  link, and the whole answer under `--json`. */
+  recordDeploy: z.looseObject({
+    deploy: z.looseObject({
+      program: z.string(),
+      commit: z.string(),
+      deployed_at: z.string(),
+      source: z.string(),
+      url: z.string(),
+      recorded_by: actor,
+    }),
+  }),
   reviewArtifact: z.looseObject({
     version: z.number().int(),
     state: z.string(),

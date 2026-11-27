@@ -140,6 +140,10 @@ type workflowJobs struct {
 	Problem string   `json:"problem,omitempty"`
 	Matrix  []string `json:"matrix,omitempty"`
 	Plain   []string `json:"plain,omitempty"`
+	// Expressions is whether a job of the file is named by something a run evaluates: its name
+	// holds an expression, or is no scalar. The name of a check run such a job makes is known only
+	// to that run, so no name of the file's own says which job made a given check run.
+	Expressions bool `json:"expressions,omitempty"`
 }
 
 // specResultReads keeps what the route reads of GitHub for the life of the process, since none
@@ -268,8 +272,9 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, leg := checkRun.Name, ""
+	candidate, isLeg := "", false
 	if checkRun.Name != check.Job {
-		candidate, isLeg := legOf(checkRun.Name, check.Job)
+		candidate, isLeg = legOf(checkRun.Name, check.Job)
 		if !isLeg {
 			named := "names no job"
 			if check.Job != "" {
@@ -280,25 +285,36 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 				input.Check, named, checkRun.Name, run.CheckRun, checkRun.Name))
 			return
 		}
-		jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, run.Workflow)
-		switch {
-		case errors.Is(err, githubapp.ErrRepositoryUnreadable):
-			writeError(w, codeWorkflowNotShown, http.StatusConflict, fmt.Sprintf(
-				"GitHub refuses Dispatch the read of %s of %s at %s, the run's workflow file, which says whether check run %d, %q, is a leg of the job %q: the result is refused, and a write again is refused the same: %v",
-				run.Workflow, run.Repository, run.SHA, run.CheckRun, checkRun.Name, check.Job, err))
-			return
-		case err != nil:
-			writeError(w, codeWorkflowUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
-				"GitHub did not answer the read of %s of %s at %s, the run's workflow file, so the result was not judged; write it again: %v", run.Workflow, run.Repository, run.SHA, err))
-			return
-		}
-		if why := jobs.whyNotALeg(checkRun.Name, check.Job, run.Workflow+" at "+run.SHA); why != "" {
+	}
+	// Either way the run's workflow file at the commit says which job made this check run: a name
+	// the file gives two jobs, or a name a run evaluates, says nothing, and a leg is a leg only
+	// where the file makes its job a matrix job.
+	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, run.Workflow)
+	switch {
+	case errors.Is(err, githubapp.ErrRepositoryUnreadable):
+		writeError(w, codeWorkflowNotShown, http.StatusConflict, fmt.Sprintf(
+			"GitHub refuses Dispatch the read of %s of %s at %s, the run's workflow file, which says which job makes the check run %d, %q: the result is refused, and a write again is refused the same: %v",
+			run.Workflow, run.Repository, run.SHA, run.CheckRun, checkRun.Name, err))
+		return
+	case err != nil:
+		writeError(w, codeWorkflowUnreadable, http.StatusServiceUnavailable, fmt.Sprintf(
+			"GitHub did not answer the read of %s of %s at %s, the run's workflow file, so the result was not judged; write it again: %v", run.Workflow, run.Repository, run.SHA, err))
+		return
+	}
+	where := run.Workflow + " at " + run.SHA
+	if isLeg {
+		if why := jobs.whyNotALeg(checkRun.Name, check.Job, where); why != "" {
 			writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
 				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the run's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
 				input.Check, check.Job, run.CheckRun, checkRun.Name, check.Job, check.Job, why))
 			return
 		}
 		job, leg = check.Job, candidate
+	} else if why := jobs.whyNotTheJob(checkRun.Name, where); why != "" {
+		writeError(w, codeCheckNotThisJobs, http.StatusConflict, fmt.Sprintf(
+			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the run's workflow file says so, and %s: a job writes results only for the checks that name it",
+			input.Check, check.Job, run.CheckRun, checkRun.Name, why))
+		return
 	}
 
 	row := specCheckRow{
@@ -521,21 +537,57 @@ func legOf(name, job string) (leg string, ok bool) {
 	return leg, ok && leg != ""
 }
 
+// whyNotTheJob is why jobs, the jobs of the run's workflow file (where names that file at its
+// commit), do not show the check run called name to be the job of that very name, or "" where they
+// show it. They show it where exactly one job with no matrix is named name and no job's name holds
+// an expression: a matrix job named name makes no check run of that name, since every leg's name
+// carries its values, while a second job of the name, or a name a run evaluates, makes a check run
+// of that name whose job the name does not say.
+func (jobs workflowJobs) whyNotTheJob(name, where string) string {
+	switch {
+	case jobs.Problem != "":
+		return fmt.Sprintf("%s does not say which jobs make a check run of that name: %s", where, jobs.Problem)
+	case jobs.Expressions:
+		return fmt.Sprintf("a job in %s is named by an expression, so the name of a check run its run makes is known only to that run, and this name does not say which job ran", where)
+	case jobs.named(name) > 1:
+		return fmt.Sprintf("%d jobs in %s are named %q, so the name does not say which job ran", jobs.named(name), where, name)
+	case !slices.Contains(jobs.Plain, name):
+		return fmt.Sprintf("no job with no matrix in %s is named %q, and a matrix job of that name makes no check run of it", where, name)
+	}
+	return ""
+}
+
 // whyNotALeg is why jobs, the jobs of the run's workflow file (where names that file at its
 // commit), do not show the check run called name, which legOf reads as a leg of job, to be a leg
-// of job, or "" where they show it. They show it where some job named job has a matrix and no job
-// with no matrix is named name: such a job makes a check run of that very name, so the name would
-// not say which of the two jobs ran. A file that says nothing of its jobs shows nothing.
+// of job, or "" where they show it. They show it where some job named job has a matrix, no job
+// with no matrix is named name, and no job's name holds an expression: such a job, or a name a run
+// evaluates, makes a check run of that very name, so the name would not say which job ran. A file
+// that says nothing of its jobs shows nothing.
 func (jobs workflowJobs) whyNotALeg(name, job, where string) string {
 	switch {
 	case jobs.Problem != "":
 		return fmt.Sprintf("%s does not say which jobs have a matrix: %s", where, jobs.Problem)
+	case jobs.Expressions:
+		return fmt.Sprintf("a job in %s is named by an expression, so the name of a check run its run makes is known only to that run, and this name does not say which job ran", where)
 	case !slices.Contains(jobs.Matrix, job):
 		return fmt.Sprintf("no job named %q in %s has a matrix", job, where)
 	case slices.Contains(jobs.Plain, name):
 		return fmt.Sprintf("the job named %q in %s has no matrix, so its check run has that name too, and the name does not say which job ran", name, where)
 	}
 	return ""
+}
+
+// named is how many of the file's jobs, with a matrix or without, are named name.
+func (jobs workflowJobs) named(name string) int {
+	count := 0
+	for _, held := range [][]string{jobs.Matrix, jobs.Plain} {
+		for _, job := range held {
+			if job == name {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // specWorkflowAt is what the workflow file at path in repository at commit says of its jobs: the
@@ -585,11 +637,13 @@ func readWorkflowJobs(content []byte) workflowJobs {
 		name := id
 		if node := yamlValue(&job.Name); node.Kind != 0 && node.Tag != "!!null" {
 			if node.Kind != yaml.ScalarNode {
+				jobs.Expressions = true
 				continue
 			}
 			name = node.Value
 		}
 		if strings.Contains(name, "${{") {
+			jobs.Expressions = true
 			continue
 		}
 		matrix := yamlValue(&job.Strategy.Matrix)

@@ -155,6 +155,17 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.planApprove("doc-1", { actor, version: 2 }),
   },
   {
+    method: "recordDeploy",
+    route: "POST /api/v1/deploys",
+    call: (client) =>
+      client.recordDeploy({
+        repo: "acme/widgets",
+        program: "widgets",
+        commit: "c8".repeat(20),
+        source: "github",
+      } as Parameters<DispatchClient["recordDeploy"]>[0]),
+  },
+  {
     method: "reviewArtifact",
     route: "POST /api/v1/artifacts/{id}/versions/{number}/reviews",
     call: (client) => client.reviewArtifact("doc-1", 2, { state: "approved" }),
