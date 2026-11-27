@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
@@ -21,10 +22,28 @@ var browserWrites = map[string]string{
 	"/":                 "the dashboard's files are read and never written",
 }
 
-// mounted is a ServeMux the server's own mounting code (mount) filled.
-func mounted(t *testing.T) *http.ServeMux {
+// recordingMux is the ServeMux the census hands the real mounting code (mount), keeping the
+// pattern of each route mounted on it.
+type recordingMux struct {
+	http.ServeMux
+	patterns []string
+}
+
+var _ api.RouteMux = (*recordingMux)(nil)
+
+func (m *recordingMux) Handle(pattern string, handler http.Handler) {
+	m.ServeMux.Handle(pattern, handler)
+	m.patterns = append(m.patterns, pattern)
+}
+
+func (m *recordingMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
+	m.Handle(pattern, http.HandlerFunc(handler))
+}
+
+// mounted is a recordingMux the server's own mounting code (mount) filled.
+func mounted(t *testing.T) *recordingMux {
 	t.Helper()
-	mux := http.NewServeMux()
+	mux := &recordingMux{}
 	_, background := mount(newKeyedCensusContext(t), mux)
 	t.Cleanup(background.Wait)
 	return mux
@@ -37,6 +56,7 @@ func mounted(t *testing.T) *http.ServeMux {
 // (the api package's TestAKeyedWriteNeverRunsUnkeyed), or one of browserWrites. A write mounted
 // later beside them fails here, as the control's does.
 func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
+	t.Parallel()
 	t.Run("control", func(t *testing.T) {
 		mux := mounted(t)
 		const planted = "POST /api/v1/planted-outside-the-table"
@@ -81,31 +101,27 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 	return ctx
 }
 
-// writesBesideTheTable is every pattern mux serves (servedPatterns, read from the mux itself, so
-// a pattern mounted on it by any means is read) that serves a write and is no row of the API's
-// table, which GET /api/v1 lists, sorted. The index is read as a signed-in caller, as the POST
-// below is made.
-func writesBesideTheTable(t *testing.T, mux *http.ServeMux) []string {
+// writesBesideTheTable is every pattern of mux that serves a write and is no row of the API's
+// table, which GET /api/v1 lists, sorted.
+func writesBesideTheTable(t *testing.T, mux *recordingMux) []string {
 	t.Helper()
 	response := httptest.NewRecorder()
-	index := httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil)
-	index.Header.Set("X-Dispatch-User", "alice@d.example")
-	mux.ServeHTTP(response, index)
-	var listed struct {
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1", nil))
+	var index struct {
 		Routes []struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
 		} `json:"routes"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil || len(listed.Routes) == 0 {
+	if err := json.Unmarshal(response.Body.Bytes(), &index); err != nil || len(index.Routes) == 0 {
 		t.Fatalf("GET /api/v1 answered %d %s (%v), want the table's index", response.Code, response.Body.String(), err)
 	}
 	table := map[string]bool{}
-	for _, route := range listed.Routes {
+	for _, route := range index.Routes {
 		table[route.Method+" "+route.Path] = true
 	}
 	var outside []string
-	for _, pattern := range servedPatterns(t, mux) {
+	for _, pattern := range mux.patterns {
 		method, _, named := strings.Cut(pattern, " ")
 		if (!named || method == http.MethodPost || method == http.MethodPatch) && !table[pattern] {
 			outside = append(outside, pattern)

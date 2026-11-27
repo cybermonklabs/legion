@@ -1,11 +1,13 @@
 package pmdoc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -121,6 +123,62 @@ func TestParseStampsBlocksWithInjectedGenerator(t *testing.T) {
 	if got, want := blockIDs(tree), []string{"b-000001", "b-000002", "b-000003", "b-000004"}; !equalStrings(got, want) {
 		t.Fatalf("parsed block ids = %q, want %q", got, want)
 	}
+}
+
+// ParseWithBlockIDs stamps every block from the generator its caller hands it and from nothing
+// else: two parses running at once, each with a counter of its own, each number their blocks 1,
+// 2, … in document order under their own prefix, and each tree is Parse's apart from its ids.
+// A generator installed for the whole process (SetBlockIDGenerator) fails this.
+func TestParseWithBlockIDsStampsFromItsCallersGeneratorAlone(t *testing.T) {
+	t.Parallel()
+	var builder strings.Builder
+	builder.WriteString("# Title\n\n")
+	for index := range 200 {
+		fmt.Fprintf(&builder, "Paragraph %d.\n\n- item %d\n\n", index, index)
+	}
+	markdown := builder.String()
+	want, err := Parse(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := len(blockIDs(want))
+
+	const parses = 25
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for _, prefix := range []string{"first", "second"} {
+		group.Go(func() {
+			<-start
+			for parse := range parses {
+				minted := 0
+				tree, err := ParseWithBlockIDs(markdown, func() string {
+					minted++
+					return fmt.Sprintf("%s-%d", prefix, minted)
+				})
+				if err != nil {
+					t.Errorf("parse %d under the %s counter: %v", parse+1, prefix, err)
+					return
+				}
+				ids := blockIDs(tree)
+				if len(ids) != blocks {
+					t.Errorf("parse %d under the %s counter stamped %d blocks, not %d", parse+1, prefix, len(ids), blocks)
+					return
+				}
+				for index, id := range ids {
+					if own := fmt.Sprintf("%s-%d", prefix, index+1); id != own {
+						t.Errorf("parse %d under the %s counter stamped block %d %q, not %q", parse+1, prefix, index+1, id, own)
+						return
+					}
+				}
+				if !reflect.DeepEqual(withoutBlockIDs(tree), withoutBlockIDs(want)) {
+					t.Errorf("parse %d under the %s counter is not Parse's tree apart from its ids", parse+1, prefix)
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	group.Wait()
 }
 
 func installCounterBlockIDs(t *testing.T) {
@@ -249,6 +307,60 @@ func TestRepeatedBlockIDJudgesOnlyWhatTheWriteAdds(t *testing.T) {
 			}
 			if want := fmt.Sprintf("block id %q would name two blocks", test.want); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("RepeatedBlockID = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// ParseWrittenAsReplacement is the parse a replacement makes over a live document that holds what
+// its markdown holds. It makes neither refusal such a document relaxes - a block id named on two
+// blocks and an element this build cannot create yet - which ParseWritten over no live document
+// makes, and which ParseWritten over a live document holding the same does not make either. A
+// repeated id stays on its first block and the next is minted another, as any write's ids are
+// (EnsureBlockIDs), and an element this build cannot create is rendered as it is written. Every
+// other refusal of ParseWritten it makes alike: the read-back's among them, which the relaxed
+// refusal no longer comes before.
+func TestParseWrittenAsReplacementMakesNoRefusalALiveDocumentRelaxes(t *testing.T) {
+	restore, err := UseStagedBlockForTest("future", false)
+	if err != nil {
+		t.Fatalf("stage the future block as not creatable: %v", err)
+	}
+	t.Cleanup(restore)
+	const note = ":::callout{#note}\nA note.\n:::\n"
+	const future = ":::future{#future-1}\nBody.\n:::\n"
+	const misread = "2. [^N]:\n       12. *\n       --\n"
+	repeated, err := Parse(note + "\n" + ":::callout{#other}\nA note.\n:::\n")
+	if err != nil {
+		t.Fatalf("parse the live document: %v", err)
+	}
+	repeated.Children[1].Attrs[BlockIDAttr] = "note"
+	held, err := Parse(future)
+	if err != nil {
+		t.Fatalf("parse the live document: %v", err)
+	}
+	for _, test := range []struct {
+		name, markdown, refusal, rendering string
+		live                               *Node
+	}{
+		{name: "a block id named on two blocks", markdown: note + "\n" + note, refusal: `block id "note" would name two blocks`,
+			rendering: ":::callout{#note kind=\"note\" title=\"\"}\nA note.\n:::\n\n:::callout{#b-000002 kind=\"note\" title=\"\"}\nA note.\n:::\n",
+			live:      repeated},
+		{name: "an element this build cannot create yet", markdown: future, refusal: "cannot write it yet", rendering: future, live: held},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := ParseWritten(test.markdown, nil); err == nil || !strings.Contains(err.Error(), test.refusal) {
+				t.Fatalf("ParseWritten over no live document = %v, want the refusal a live document relaxes, naming %q", err, test.refusal)
+			}
+			if _, _, err := ParseWritten(test.markdown, test.live); err != nil {
+				t.Fatalf("ParseWritten over a live document holding the same = %v, want it taken", err)
+			}
+			installCounterBlockIDs(t)
+			if _, read, err := ParseWrittenAsReplacement(test.markdown); err != nil || read.Markdown != test.rendering {
+				t.Fatalf("ParseWrittenAsReplacement = %q, %v; want %q", read.Markdown, err, test.rendering)
+			}
+			_, _, err := ParseWrittenAsReplacement(test.markdown + "\n" + misread)
+			if !errors.Is(err, ErrRenderingRefused) || strings.Contains(err.Error(), test.refusal) {
+				t.Fatalf("ParseWrittenAsReplacement beside a rendering no reader reads back = %v, want ErrRenderingRefused", err)
 			}
 		})
 	}

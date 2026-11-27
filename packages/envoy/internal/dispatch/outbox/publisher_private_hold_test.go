@@ -188,11 +188,11 @@ func TestAHeldPrivateEventPublishesOnceItsHubsAreProven(t *testing.T) {
 
 	private := appendHoldMessage(t, database, broker, "PRIV-1")
 	public := appendHoldMessage(t, database, broker, "PUB-1")
-	waitFor(t, 10*time.Second, "PUB's event published while the hubs are unproven", func() bool {
+	waitFor(t, "PUB's event published while the hubs are unproven", func() bool {
 		return publishedAt(t, database, public.ID) != nil
 	})
 	before := asked.Load()
-	waitFor(t, 10*time.Second, "the outbox asking the hubs' proof again on its re-poll", func() bool {
+	waitFor(t, "the outbox asking the hubs' proof again on its re-poll", func() bool {
 		return asked.Load() >= before+10
 	})
 	if sent := topicsNaming(publisher, ".PRIV-1."); len(sent) != 0 || publishedAt(t, database, private.ID) != nil {
@@ -200,7 +200,7 @@ func TestAHeldPrivateEventPublishesOnceItsHubsAreProven(t *testing.T) {
 	}
 
 	proven.Store(true)
-	waitFor(t, 10*time.Second, "PRIV's event published once the hubs are proven", func() bool {
+	waitFor(t, "PRIV's event published once the hubs are proven", func() bool {
 		return publishedAt(t, database, private.ID) != nil
 	})
 	if sent := topicsNaming(publisher, ".PRIV-1."); len(sent) != 1 {

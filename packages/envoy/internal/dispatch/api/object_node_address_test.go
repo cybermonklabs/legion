@@ -46,6 +46,7 @@ import (
 // for a live node alone, which moves the marked node live with no gone statement between; and
 // the removal's owner lock taken out, which deadlocks the last row.
 func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T) {
+	t.Parallel()
 	for _, orphan := range []struct {
 		name, state string
 		settling    bool
@@ -133,6 +134,7 @@ func markNodeState(t *testing.T, database *store.Store, kind, id, state string) 
 // cause: the mark is then the newest, at the sentinel, and the row has its own create event, so
 // the census names the row gone, and the backfill states the node gone and then live.
 func TestADocumentALaterReleaseMarkedWhileItStandsIsComplete(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "MRK", "A document a later release marked", "The spec.\n")
@@ -178,6 +180,7 @@ func TestADocumentALaterReleaseMarkedWhileItStandsIsComplete(t *testing.T) {
 // Its control is the create dated at its transaction's start (now()): its live statement is then
 // dated before the removal's gone one, and a read of the node's state as of now answers gone.
 func TestACreateThatWaitedOnARemovalDatesItsDocumentAfterIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "CLK", "A document made while its namesake is removed", "The spec.\n")
@@ -264,6 +267,7 @@ func TestACreateThatWaitedOnARemovalDatesItsDocumentAfterIt(t *testing.T) {
 // Its control is the removal's first-node write made whatever the store holds: the history then
 // gains a live statement dated before the gone one it follows.
 func TestARemovalLeavesTheGoneNodeOfAnEarlierBuildsDocumentGone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "GNE", "A document an earlier build made where one was removed", "The spec.\n")

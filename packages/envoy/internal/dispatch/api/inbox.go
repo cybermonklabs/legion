@@ -68,9 +68,9 @@ type inboxAsk struct {
 
 // inboxAssigneeFilter turns ?assignee= into the SQL mode and email the inbox query binds:
 // "" (no filter), "unassigned", or "login" with the canonical email of a person who has signed
-// in. `me` is the caller; a named person is canonicalised first so a shared `?assignee=Alice@…`
-// link never 400s.
-func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller model.Actor) (mode, login string, err error) {
+// in and whom who, the caller's reader, may see (allowedLogin). `me` is the caller; a named person
+// is canonicalised first so a shared `?assignee=Alice@…` link never 400s.
+func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller, who model.Actor) (mode, login string, err error) {
 	switch value := strings.TrimSpace(raw); value {
 	case "":
 		return "", "", nil
@@ -79,7 +79,7 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 	case "me":
 		return "login", model.CanonicalLogin(caller.ID), nil
 	default:
-		login, err := s.allowedLogin(ctx, value)
+		login, err := s.allowedLogin(ctx, who, value)
 		if err != nil {
 			return "", "", err
 		}
@@ -99,7 +99,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
-	assigneeMode, assigneeLogin, err := s.inboxAssigneeFilter(r.Context(), r.URL.Query().Get("assignee"), caller)
+	assigneeMode, assigneeLogin, err := s.inboxAssigneeFilter(r.Context(), r.URL.Query().Get("assignee"), caller, who)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

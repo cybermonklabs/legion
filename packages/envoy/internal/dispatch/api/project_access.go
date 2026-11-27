@@ -10,10 +10,3 @@ import (
 func viewerSees(viewer *model.Viewer, project string) bool {
 	return viewer == nil || viewer.All || slices.Contains(viewer.Sees, project)
 }
-
-func ownerName(owner *string) string {
-	if owner == nil {
-		return "whom the operator names"
-	}
-	return *owner
-}

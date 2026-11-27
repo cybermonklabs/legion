@@ -15,8 +15,10 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -127,7 +129,7 @@ type Runtime interface {
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
 	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
@@ -177,6 +179,43 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrAwaitingPodRound is a launch refused because the live pod it would keep cannot give its role a
+// Dispatch credential: under dispatch_token_broker a launch carries no Dispatch token, and its role
+// trades its pod's exchange identity for one of its own, but this pod was built before that
+// identity and dispatch_token_transition_file, the shared token such a pod's launch carries
+// instead, is not set. Only the pod's update round, which replaces it with a pod that carries the
+// identity, cures it, and a launch never replaces a pod a round covers (the sandbox runtime's
+// relaunch). It is not the claim's own failure: the caller charges nothing and starts again every
+// minute until the pod it finds carries the identity (supervise's startWaitsForPodRound). Nothing
+// of the pod was touched and nothing was started. The Sandbox runtime refuses with an
+// AwaitingPodRound, which names the pod the launch waits on.
+var ErrAwaitingPodRound = errors.New("the launch waits for its pod's update round")
+
+// AwaitingPodRound is ErrAwaitingPodRound with the pod it is about: Pod is the live pod the
+// refused launch would keep, as the locator of a process of the refused claim in that pod is made
+// (its namespace, its Sandbox's name, the pod's uid, its container and the launch's generation),
+// so PodDrift and ReplacePod take it as they take the locator of a process there; Reason is the
+// refusal's own sentence, which names the pod.
+//
+// The claim records no process while it waits, so the pod is what the daemon's update round has
+// of it: the claim's machine keeps Pod (supervise's Claim.AwaitsPod) until a later try is
+// not refused for want of the round, or the claim's process is let go (supervise's letGo: a
+// suspension, a retirement or a failure of the claim), and the round opens over that pod and
+// replaces it through this locator where no claim records a process in it (internal/daemon's
+// groupPod, podProcess). Without it, a pod whose only claim is the one refused would never have a
+// round, and the claim would be refused at every try.
+type AwaitingPodRound struct {
+	Pod    Locator
+	Reason string
+}
+
+// Error is ErrAwaitingPodRound's words followed by the refusal's own sentence.
+func (e *AwaitingPodRound) Error() string { return ErrAwaitingPodRound.Error() + ": " + e.Reason }
+
+// Is makes every AwaitingPodRound an ErrAwaitingPodRound: errors.Is(err, ErrAwaitingPodRound)
+// holds for an err that is or wraps one.
+func (e *AwaitingPodRound) Is(target error) bool { return target == ErrAwaitingPodRound }
+
 // ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
 // that the runtime did not send, because the pod's launcher has not said that it can look a
 // session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
@@ -184,6 +223,168 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // the id instead (supervise's start). The sandbox runtime wraps it in an error that names the
 // claim, the Sandbox and the pod uid.
 var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
+
+// BreakingDrift is the mark a reason of PodDrift starts with where the drift breaks the pod: no
+// role can keep working in it (R7 of #5285). The runtime sets it where it decides
+// the drift, at the start of that drift's reason (Breaks), and nowhere else: a value a reason
+// displays, an image name or an account among them, follows the reason's own first words, so it
+// can hold the mark's words without making the drift one that breaks the pod. The Sandbox
+// runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v23:
+// a role must not be able to keep a pod on an account the operator replaced by leaving its
+// working copy dirty or its read failing), and a drift of the pod's exchange identity only where a
+// launch into the pod is refused until its round replaces it (spec v26, unchanged since: the
+// deployment sets dispatch_token_broker, names no dispatch_token_transition_file, and the pod
+// carries no identity the exchange trades, the condition the Sandbox runtime's awaitsPodRound reads
+// for the refusal and the mark alike), since a keep of that pod could leave an issue whose only
+// claim waits on it unable to run. Any other drift of the exchange identity, a token of another
+// lifetime among them, is one the roles keep working under. A later change declares which
+// other kinds of drift break a pod, and a pod below a declared contract floor breaks too, and it
+// opens an update round over such a pod at once, whatever its spec names as the cause. A round
+// records its reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons),
+// with every marked reason first, so the string opens on the mark exactly where one of its
+// reasons does (Breaks). Such a round replaces its pod whatever the read of its workspace finds,
+// and tells the issue's architect what it took. Every other round is one the pod's roles can keep
+// working under, and a read that finds work, or that cannot be made, keeps that pod. The leak
+// check digest's drift is not marked: a later change declares that it drains, and a kept pod's
+// roles are told the checker they run.
+const BreakingDrift = "[breaks the pod] "
+
+// Breaks is whether reason is of a drift that breaks the pod: it opens on BreakingDrift. It reads
+// one reason PodDrift gave, and a round's recorded reasons alike (RoundReasons): those open on the
+// mark exactly where one of the round's reasons does, and the mark inside a displayed value
+// further on says nothing.
+func Breaks(reason string) bool { return strings.HasPrefix(reason, BreakingDrift) }
+
+// RoundReasons is the one string an update round records of the reasons PodDrift gave for its pod
+// (supervise.Claim.UpdateReasons): each reason of a drift that breaks the pod (Breaks) first, then
+// every other, each group in the order given, joined with ", ". The string opens on BreakingDrift
+// exactly where a reason does (Breaks).
+func RoundReasons(reasons []string) string {
+	ordered := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		if Breaks(reason) {
+			ordered = append(ordered, reason)
+		}
+	}
+	for _, reason := range reasons {
+		if !Breaks(reason) {
+			ordered = append(ordered, reason)
+		}
+	}
+	return strings.Join(ordered, ", ")
+}
+
+// TakenPod is what a launch's own replacement of an issue pod takes (R7 of #5285):
+// the claim whose launch makes it, the issue, the pod ("" where the issue's Sandbox runs no pod of
+// its own: a kept volume a launch deletes with its Sandbox), why the launch replaces the
+// pod rather than keep it — the pod is not live, a facet of it fixed for its life moved, its
+// Sandbox has another disk shape or a kept volume to reset, its launchers are not bound to it, or
+// its stored template cannot be read — and what a read of the workspace through a launcher of the
+// pod found before the replacement (Work), or why no read could be made (Err). The daemon records
+// it before the replacement (LaunchTakes) and tells the issue's architect what such a replacement
+// took once it is made (LaunchTook).
+//
+// Operation is the replacement's own identity, which the runtime makes for each replacement and
+// hands in both calls: the daemon's record of it is keyed by it, never by the pod, so no later
+// replacement of the same pod writes over it (GPT-6.1 Sol's point 3 on #5285 at fa9deb04). Act is
+// what the act takes and the uid of its target (RecordedAct; GPT-6.1 Sol's point 4): the pod
+// (PodAct), or the Sandbox and the kept volume it owns (VolumeAct).
+//
+// WithPod is an act that takes the volume (VolumeAct) of a Sandbox that runs PodUID, a live pod of
+// its own, and so takes that pod with it: what the act took is the pod and the volume, and a
+// record of the pod's own act (PodAct) is over with it (the Legion reviewer's Important 1 on #5285
+// at acda4d1e).
+type TakenPod struct {
+	Operation string
+	Claim     claim.Token
+	Issue     string
+	PodUID    string
+	Why       string
+	Act       RecordedAct
+	WithPod   bool
+	Work      WorkspaceWork
+	Err       error
+}
+
+// Tells is whether the replacement may have taken work that origin does not hold: the read found
+// such work, or no read could be made.
+func (t TakenPod) Tells() bool { return t.Err != nil || t.Work.HoldsWork() }
+
+// LaunchTakes is the daemon's record of a launch's own replacement of an issue pod, which the
+// runtime hands it before the replacement takes anything (internal/daemon's recordLaunchTakes):
+// the daemon keeps what the replacement is about to take, durably, so that the architect's notice
+// of it goes out even where the launch or the daemon stops once the disk is taken (Sol's points 1
+// and 2 on #5285). An error is the launch's, which then takes nothing.
+type LaunchTakes func(ctx context.Context, taken TakenPod) error
+
+// LaunchTook is the daemon's word of a launch's own replacement of an issue pod, which the runtime
+// hands it once the act is made and confirmed (internal/daemon's tellLaunchTook): the pod gone,
+// and, for an act that takes the volume (TakesVolume), the Sandbox of its target uid gone with the
+// volume (GPT-6.1 Sol's point 4 on #5285 at fa9deb04). The daemon tells the issue's architect once
+// what the replacement took, each commit and the working-copy change by name, or that no read could
+// be made. It returns nothing: the replacement is made, and a notice the store does not take now
+// stays on the daemon's record (LaunchTakes) until it does.
+type LaunchTook func(ctx context.Context, taken TakenPod)
+
+// Takes is what a destructive act on an issue's pod takes, which says what shows the act made
+// (ActReader): the pod (TakesPod), or the kept volume the issue's Sandbox owns (TakesVolume).
+type Takes string
+
+const (
+	// TakesPod is an act that takes the pod: the suspension of the issue's Sandbox over it, which
+	// takes a disk that is the pod's own with it. Its target is the pod's uid.
+	TakesPod Takes = "pod"
+	// TakesVolume is an act that takes the kept volume the issue's Sandbox owns: the delete of that
+	// Sandbox, which takes the volume with it. Its target is the Sandbox's uid.
+	TakesVolume Takes = "volume"
+)
+
+// RecordedAct is a destructive act on an issue's pod that the daemon recorded before the runtime
+// made it (internal/daemon's finishReplacements): what it takes, and the uid of its target. A
+// target is taken once, so every act recorded on one target is over once one of them is made
+// (store.Store.FinishPodReplacement).
+type RecordedAct struct {
+	Takes  Takes
+	Target string
+}
+
+// PodAct is the act that takes the pod of uid pod: the suspension of the issue's Sandbox over it.
+func PodAct(pod string) RecordedAct { return RecordedAct{Takes: TakesPod, Target: pod} }
+
+// VolumeAct is the act that takes the kept volume the issue's Sandbox of uid sandbox owns: the
+// delete of that Sandbox.
+func VolumeAct(sandbox string) RecordedAct { return RecordedAct{Takes: TakesVolume, Target: sandbox} }
+
+// ActState is what the runtime reads of a recorded act (ActReader).
+type ActState int
+
+const (
+	// ActUncertain is an act of which the runtime cannot say whether it was made: its record
+	// stands for a later read.
+	ActUncertain ActState = iota
+	// ActNotMade is an act that was not made, and that nothing is making now.
+	ActNotMade
+	// ActMade is an act that was made.
+	ActMade
+)
+
+// ActReader reads whether a recorded act on issue's pod was made (GPT-6.1 Sol's point 2 on #5285
+// at fa9deb04, the Legion reviewer's point A). It takes the pod's launch turn without waiting for
+// it, so no act on the pod runs while it reads, and answers ErrTurnBusy, calling nothing, where
+// another holds the turn. Under the turn it reads the target from the cluster's API, never from a
+// store that may be stale, and hands decide what that says (ActState); decide runs under the turn,
+// and its error is the answer. A read that fails is the answer too, and decide is not called. The
+// daemon asks it of a replacement it recorded before the runtime acted (internal/daemon's
+// finishReplacements): a replacement whose call failed, or whose daemon stopped, after its act
+// landed is a replacement made, and one whose pod still runs is none. A runtime whose processes run
+// in no pod implements nothing here.
+type ActReader interface {
+	ReadAct(ctx context.Context, issue string, act RecordedAct, decide func(context.Context, ActState) error) error
+}
+
+// ErrTurnBusy is ActReader asked while another holds the pod's launch turn: an act on the pod may
+// be under way, so nothing is decided of it.
+var ErrTurnBusy = errors.New("another holds the pod's launch turn")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
@@ -245,12 +446,16 @@ type IssuePodReplacer interface {
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
-// prepares the launch (claudeInputs). It answers for the incarnation loc records, and false for
-// any other — an Oh My Pi role, whose id its agent mints and reports at its registration, a
-// launch the runtime does not remember (a daemon restarted since), or an earlier incarnation. It
-// is what lets the daemon register a Claude role's session for its pod at the shim's hello, before
-// the agent registers (supervise's ensureRegistered). A runtime that names no session implements
-// nothing here.
+// prepares the launch (claudeInputs), and an Oh My Pi role's whose pod trades an exchange
+// identity, which it decides the same way (ompInputs): `--session-id <id>` for a launch that
+// starts a session, `--resume <id>` for a resume by a recorded file, and the one word
+// `--resume=<id>` for a resume of a session the claim records with no file. It answers for the
+// incarnation loc records, and false for any other — an Oh My Pi launch that named no id (one
+// into a kept pod that trades nothing, whose agent mints its id and reports it at its
+// registration), a launch the runtime does not remember (a daemon restarted since), or an earlier
+// incarnation. It is what lets the daemon register a role's chosen session for its pod at the
+// shim's hello, before the agent registers (supervise's ensureRegistered). A runtime that names no
+// session implements nothing here.
 type LaunchSessionNamer interface {
 	LaunchSession(loc Locator) (session string, named bool)
 }
@@ -296,22 +501,28 @@ type IssueReleaser interface {
 // kept volume, was made before since, carries no reset mark, and has the disk shape that the
 // configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
 // which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
-// mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
-// its update round is over, with the time the round opened, to tell the issue whether the work its
-// roles did not push is still on the volume, and in the rename pass's live-pod rules, at each boot
-// and each pod end, with the present time, to keep the issue on the name its workspace on the
-// volume is under. Every runtime that runs a pod per issue implements it, since the daemon's test
-// of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
+// mark or that has another disk shape, with its volume. The daemon asks it of an update round's
+// pod, with the time the round opened, once the pod is replaced or went before its round was over,
+// to tell the issue whether the work its roles did not push is still on the volume. It asks it
+// with the present time of the release of a pod no claim owns, where the release's decision turns
+// on it (workflow.IdleDecision.TurnsOnKeptVolume), since that release keeps such a volume, reads
+// nothing and is held by no failed read; and in the rename pass's live-pod rules, at each boot
+// and each pod end, to keep the issue on the name its workspace on the volume is under. Every
+// runtime that runs a pod per issue implements it, since the daemon's test of such a runtime
+// (issuePods) needs it; one whose pods keep no volume answers false.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }
 
 // WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
-// issue shares holds work that no branch or tag on origin holds. Two decisions rest on the read. A
-// pod update round makes it before it replaces a pod without waiting for every role, so that the
-// replacement can name what goes with the pod. The idle release makes it before it takes an
-// issue's pod, and takes the pod only when the read finds no work: nothing keeps a copy of work a
-// released pod's workspace held. The role named must be one whose process runs in the issue's pod:
+// issue shares holds work that no branch or tag on origin holds. A pod update round makes it before
+// each replacement it makes through a role, and replaces the pod only over a read that found
+// nothing, unless the round is over a drift that breaks the pod (R7 of #5285; a kept volume is no
+// exception); the read that may end an earlier round's keep of the pod is made through a live
+// role in the pod too, where one runs (internal/daemon's readKeptPod). The idle release and
+// the close of a left pod with a live claim make it before they take the pod, and take it only
+// when the read finds no work: nothing keeps a copy of work a taken pod's workspace held. The role
+// named must be one whose process runs in the issue's pod:
 // its shim reads the workspace with the jj it already works with. The read keeps nothing of the
 // work; the one thing it writes is jj's snapshot of the working copy (Conn.WorkspaceWork). A
 // runtime whose processes share no workspace implements nothing here.
@@ -319,11 +530,27 @@ type WorkspaceWorkReader interface {
 	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
 }
 
-// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a
-// commit under a workspace's working copy or a local bookmark that no branch or tag on origin
-// holds. A commit with no change and no description is no work, and neither is a commit a fetch
-// left visible or a side head that no working copy and no bookmark reaches (the shim's
-// workspaceWorkRevset says why).
+// PodWorkspaceReader asks the issue pod's launcher, which runs in the pod whether or not a role
+// process does, to make WorkspaceWorkReader's read of the issue workspace, with the same count
+// (R6 of #5285). The release of a pod no claim owns and the close of a left pod
+// with no live claim make it before they delete a disk, an update round before a replacement it
+// makes by issue or at a launch, and the read that may end an earlier round's keep of a pod in
+// which no role runs (internal/daemon's readKeptPod), since no role's shim runs there to read
+// through. A launch's own replacement reads through a launcher of the pod it names
+// (internal/runtime/sandbox's launchTaken). The pod read
+// is the one the runtime holds for the issue now; a pod with no launcher
+// that says it reads a workspace, a pod the runtime cannot name, and a launcher that refuses are
+// each an error, never an answer of no work. A runtime whose processes run in no pod implements
+// nothing here.
+type PodWorkspaceReader interface {
+	PodWorkspaceWork(ctx context.Context, issue string) (WorkspaceWork, error)
+}
+
+// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader,
+// PodWorkspaceReader). Work is a commit under a workspace's working copy or a local bookmark that
+// no branch or tag on origin holds. A commit with no change and no description is no work, and
+// neither is a commit a fetch left visible or a side head that no working copy and no bookmark
+// reaches (workspace.WorkRevset says why).
 type WorkspaceWork struct {
 	// Head is the commit id of the working copy the read was made in.
 	Head string
@@ -334,11 +561,67 @@ type WorkspaceWork struct {
 	Commits []string
 	// Count is how many work commits there are in all, those Commits lists included.
 	Count int
+	// PodUID is the pod whose workspace the read was made in, which a read through the pod's
+	// launcher names (PodWorkspaceReader), with its error too once it has chosen the pod; "" where
+	// the runtime cannot say. A read is evidence of that pod alone: a pod that took its place since
+	// holds another disk (R6 of #5285, Sol's point 2).
+	PodUID string
 }
 
 // HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
 // not hold.
 func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
+
+// WorkspaceWorkOf is the read that a reader's answer to a `workspace-work` request carries, for
+// each caller that asks one: internal/stream's Conn.WorkspaceWork, through a role's shim, and
+// internal/runtime/sandbox's read through a pod's launcher (R6 of #5285). An answer
+// the wire refuses (shimwire.WorkspaceWorkResult.Validate) is err; a reader's refusal is refused,
+// its reason, which the wire requires to be set; otherwise the answer is the work read. A refusal
+// is a read that could not be made, and never the empty read: the caller names it as an error. The
+// caller names the pod where it knows it (WorkspaceWork.PodUID).
+func WorkspaceWorkOf(answer shimwire.WorkspaceWorkResult) (work WorkspaceWork, refused string, err error) {
+	if err := answer.Validate(); err != nil {
+		return WorkspaceWork{}, "", err
+	}
+	if !answer.OK {
+		return WorkspaceWork{}, answer.Error, nil
+	}
+	return WorkspaceWork{Head: answer.Head, Changed: answer.Changed, Commits: answer.Commits, Count: answer.Count}, "", nil
+}
+
+// KeptPodStart is a role's start in the pod of podUID whose Sandbox owns the issue's kept volume
+// and was created at keptSince, as the daemon's store makes it (store.Store.StartKeptPod, bound to
+// the daemon's project where the daemon wires it). It records that pod with its volume for the
+// issue's update round (store.Store.PodHoldsEarlierWork): a kept volume outlives its pod, so a
+// later pod of the same volume holds on its disk what the roles of an earlier pod of it left
+// unpushed. A call for an issue the daemon's project does not record records nothing.
+//
+// The runtime calls it at every role's start in a pod whose Sandbox owns a kept volume, and starts
+// no role there while the call fails: it refuses that start with KeptPodUnrecorded before the
+// start is sent.
+type KeptPodStart func(ctx context.Context, issue, podUID string, keptSince time.Time) error
+
+// KeptPodUnrecorded is a role's start refused because the daemon's store could not record the
+// role's pod with the issue's kept volume (KeptPodStart). PodUID is the pod, KeptSince is when the
+// API server created the pod's Sandbox, which names the volume, and Err is the store's error. An
+// end of the issue's update round over a later pod of that volume reads the record for whom it
+// names (store.Store.PodHoldsEarlierWork), so a role that ran in a pod the store does not record
+// could leave work on the volume that no end names it for. The runtime refuses with it before it
+// sends the start, so no process of the role was started, and the supervisor charges it as a launch
+// failure: its text is the claim's last start failure, and where the launches run out, the sentence
+// of the claim's failure and the held notice's start failure.
+type KeptPodUnrecorded struct {
+	PodUID    string
+	KeptSince time.Time
+	Err       error
+}
+
+func (e KeptPodUnrecorded) Error() string {
+	return fmt.Sprintf("pod %s of the kept volume made %s could not be recorded for the issue's update round, so no role starts in it: %v",
+		e.PodUID, e.KeptSince.UTC().Format(time.RFC3339), e.Err)
+}
+
+func (e KeptPodUnrecorded) Unwrap() error { return e.Err }
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
@@ -458,10 +741,15 @@ func (k Known) Validate() error {
 // values — each is written to a 0600 file and reaches the process as a `<NAME>_FILE` pointer — and
 // carries only what is the claim's to carry: a credential every agent of the deployment shares,
 // like the Dispatch bearer, is a runtime option. ResumeSessionFile is set only by `Resume`, and it
-// names the transcript the same agent continues from. ResumeSession is the session id a `Resume`
+// names the transcript the same agent continues from. ResumeSessionID is set with it, to the
+// session id the claim recorded beside that file ("" for a claim that recorded none): the id the
+// Sandbox runtime resumes an Oh My Pi role by (`--resume <id>`) where its pod trades an exchange
+// identity (its launch's ompInputs). The tmux runtime, and a Sandbox launch whose pod trades
+// nothing, resume by the file and read no id. ResumeSession is the session id a `Resume`
 // continues when the claim records no file of it: it is set only by supervise's Machine.start, in
-// its branch that resumes a session by its id, and only when ResumeSessionFile is empty.
-// ResumeByAgent is read only with ResumeSession: the agent's own command resolves the id
+// its branch that resumes a session by its id, and only when ResumeSessionFile (and so
+// ResumeSessionID) is empty; a Sandbox launch that trades resumes under that id too. ResumeByAgent
+// is read only with ResumeSession: the agent's own command resolves the id
 // (`--resume=<ResumeSession>`), and the runtime names no session and no file to the pod's
 // launcher. Machine.start sets it only on the second `Resume` of a try whose first `Resume`
 // answered ErrSessionLookupUnavailable.
@@ -496,6 +784,7 @@ type SpawnSpec struct {
 	Repository        ghrepo.Repository
 	DefaultBranch     string
 	ResumeSessionFile string
+	ResumeSessionID   string
 	ResumeSession     string
 	ResumeByAgent     bool
 	Plugins           *PluginInstall
@@ -778,4 +1067,66 @@ func (id GitIdentity) Env() map[string]string {
 		"GIT_AUTHOR_NAME": id.Name, "GIT_AUTHOR_EMAIL": id.Email,
 		"GIT_COMMITTER_NAME": id.Name, "GIT_COMMITTER_EMAIL": id.Email,
 	}
+}
+
+// RoleIdentitiesVariable is the table of every role's git identity that the daemon writes into
+// each workflow role's process environment (spec.Env, which a tmux pane and a pod's role carry):
+// the value RoleIdentities spells, which the author step of `legion jj` reads
+// (ReadRoleIdentities) before a push, to set the author of a commit a push sends from the role
+// its first Legion-Role trailer names, where the step's rules let it. A controller's process has
+// none. An operator may not set it (PaneVariableRefusal, the pod's own list), and it is no
+// runtime-owned name, since ValidateSpawnSpec refuses a spec.Env name a runtime owns.
+const RoleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
+
+// roleIdentity is one role's identity in the table, as the JSON spells it.
+type roleIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// RoleIdentities is the value of RoleIdentitiesVariable for identities: one JSON object from each
+// role to {"name": …, "email": …}, the identity that sets that role's JJ_USER and JJ_EMAIL, keys
+// sorted. A table may hold a subset of the roles.
+func RoleIdentities(identities map[claim.Role]GitIdentity) string {
+	table := make(map[claim.Role]roleIdentity, len(identities))
+	for role, id := range identities {
+		table[role] = roleIdentity(id)
+	}
+	// A map of string keys to two strings always encodes, its keys in sorted order.
+	encoded, _ := json.Marshal(table)
+	return string(encoded)
+}
+
+// ReadRoleIdentities reads the table, value, as RoleIdentities writes it. It answers the table and
+// "", or why value cannot be used: empty, not one JSON object of identities (trailing data after
+// the object included), a role outside claim.Roles, or a name or an email that is empty or holds a
+// line break. An identity may hold fields it does not know, which it passes over: a role's image
+// may run a `legion` of another release than the daemon's, and a field a later daemon adds must not
+// turn its step off. The reason names no value, so the line it goes into stays one line.
+func ReadRoleIdentities(value string) (map[claim.Role]GitIdentity, string) {
+	if value == "" {
+		return nil, "empty"
+	}
+	var read map[string]*roleIdentity
+	if err := json.Unmarshal([]byte(value), &read); err != nil || read == nil {
+		return nil, "not a JSON object of each role's name and email"
+	}
+	table := map[claim.Role]GitIdentity{}
+	for _, name := range slices.Sorted(maps.Keys(read)) {
+		role, identity := claim.Role(name), read[name]
+		switch {
+		case !claim.IsRole(role):
+			return nil, fmt.Sprintf("a table with %q, which is no role", name)
+		case identity == nil || identity.Name == "":
+			return nil, "a table with an empty name for " + name
+		case identity.Email == "":
+			return nil, "a table with an empty email for " + name
+		case strings.ContainsAny(identity.Name, "\r\n"):
+			return nil, "a table with a line break in the name of " + name
+		case strings.ContainsAny(identity.Email, "\r\n"):
+			return nil, "a table with a line break in the email of " + name
+		}
+		table[role] = GitIdentity(*identity)
+	}
+	return table, ""
 }

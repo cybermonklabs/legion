@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -29,8 +30,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -44,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -575,6 +580,101 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE") {
 		t.Fatalf("err = %v, want a refusal naming DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", err)
 	}
+}
+
+// TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
+// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
+// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
+// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
+// a proof signed for either is accepted, and one for an origin neither setting names is refused.
+// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
+// scheme, each refuse the start naming it.
+func TestDispatchReadsItsProofOrigins(t *testing.T) {
+	const (
+		public    = "https://dispatch.example"
+		inCluster = "http://dispatch.internal.example:8766"
+		elsewhere = "https://dispatch.elsewhere.example"
+		route     = "/api/v1/whoami"
+		token     = "a-session-token-the-broker-issued"
+	)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	broker.Says(token, ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_proof_origins",
+		Person:       "alice",
+		ProjectScope: ciphertoken.ProjectScopeNamed,
+		Projects:     []string{"INFRA"},
+		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   caller.JKT(),
+	})
+	accountToken := writeFile(t, "account-token", "dispatchs-own-account-token")
+	// start is what main does with values: the boot config, the server URL, the verifier.
+	start := func(t *testing.T, values map[string]string) ([]string, *ciphertoken.Verifier) {
+		t.Helper()
+		values["DISPATCH_SERVER_URL"] = public
+		values["DISPATCH_AGENT_SECRETS_URL"] = broker.Server.URL
+		values["DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"] = accountToken
+		env := bootEnvironment(values)
+		boot, err := resolveBootConfig(env)
+		if err != nil {
+			t.Fatalf("resolve boot config: %v", err)
+		}
+		envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
+		if err != nil {
+			t.Fatalf("load envoy config: %v", err)
+		}
+		serverURL := envoyConfig.Dispatch.ServerURL
+		verifier, err := brokerTokenVerifier(boot, storetest.Open(t), serverURL)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+	}
+	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
+		t.Helper()
+		_, err := verifier.Verify(t.Context(), caller.Signed(t, http.MethodGet, origin+route, token))
+		return err
+	}
+
+	t.Run("production's shape", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "})
+		if !slices.Equal(origins, []string{public, inCluster}) {
+			t.Fatalf("the verifier's origins are %q, want %q and %q, each once", origins, public, inCluster)
+		}
+		for _, origin := range []string{public, inCluster} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("unset", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{})
+		if !slices.Equal(origins, []string{public}) {
+			t.Fatalf("the verifier's origins are %q, want DISPATCH_SERVER_URL's %q alone", origins, public)
+		}
+		if err := verify(t, verifier, public); err != nil {
+			t.Errorf("a proof for DISPATCH_SERVER_URL's origin was refused: %v", err)
+		}
+		if err := verify(t, verifier, inCluster); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("unset, a proof for %s answered %v, want ErrProofInvalid", inCluster, err)
+		}
+	})
+
+	t.Run("an entry that is no origin", func(t *testing.T) {
+		for entry, naming := range map[string]string{
+			inCluster + "/dispatch":           `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + inCluster + `/dispatch"`,
+			"ftp://dispatch.internal.example": `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + redact.NotPrinted + `"`,
+		} {
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "," + entry}, naming)
+		}
+	})
 }
 
 // The issuer and the audience are one setting in two variables: half of it is a
@@ -1400,7 +1500,11 @@ var dispatchTestParallelism = 8
 
 // TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
 // test's Dispatch server. It sets the package's default -parallel (dispatchTestParallelism); go
-// test parses its flags inside m.Run, so a -parallel on the command line still wins.
+// test parses its flags inside m.Run, so a -parallel on the command line still wins. Only TestMain
+// makes a server of a copy a test starts: in a build of these tests without it, such a copy runs
+// the tests, each of which starts copies that run them again. dispatchCopy refuses to start a copy
+// in such a process (dispatchCopyRefusal), and TestACopyStartedAsTheServerRunsMain fails in such a
+// build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(memoryTestServeEnv) == "1" {
 		main()
@@ -1412,6 +1516,57 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
+}
+
+// dispatchCopy is the path of this test binary, which a memory test runs as its Dispatch server
+// with memoryTestServeEnv=1 in the copy's environment. It fails t where dispatchCopyRefusal
+// refuses.
+func dispatchCopy(t *testing.T) string {
+	t.Helper()
+	if err := dispatchCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// dispatchCopyRefusal is why this process may start no copy of this test binary, nil when it may.
+// A process that has memoryTestServeEnv=1 was started as a Dispatch server, and TestMain runs such
+// a process as the server, so one that runs the tests runs in a build without TestMain, and a copy
+// started there would run the tests again.
+func dispatchCopyRefusal() error {
+	if os.Getenv(memoryTestServeEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as a Dispatch server, but it runs the tests: this build of the tests has no TestMain that runs the server, and a copy started here would run the tests again", memoryTestServeEnv)
+	}
+	return nil
+}
+
+// dispatchCopyRefusal, which dispatchCopy asks before any copy starts, refuses a process that has
+// memoryTestServeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheServerStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, memoryTestServeEnv)
+	if err := dispatchCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", memoryTestServeEnv, err)
+	}
+	t.Setenv(memoryTestServeEnv, "1")
+	if err := dispatchCopyRefusal(); err == nil || !strings.Contains(err.Error(), memoryTestServeEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", memoryTestServeEnv, err)
+	}
+}
+
+// A copy started with memoryTestServeEnv=1 runs main: given -h, main reads it as a subcommand it
+// does not know and refuses it, exit 2. In a build without TestMain, the testing package reads -h
+// before any test runs, prints its own flag usage and exits 0, so this test fails there by name and
+// its copy starts no copy of its own.
+func TestACopyStartedAsTheServerRunsMain(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(dispatchCopy(t), "-h")
+	cmd.Env = append(os.Environ(), memoryTestServeEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if want := `envoy-dispatch: unknown subcommand "-h"`; !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as the Dispatch server with -h: %v, want exit 2 and a refusal that starts %q\n%s", err, want, out)
+	}
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {

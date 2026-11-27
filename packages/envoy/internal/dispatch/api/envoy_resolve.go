@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -149,14 +150,17 @@ func resolveThenLock[R, T any](
 // of a private project it does not see by the role's own name (legion-<project>-…,
 // contracts.RoleProject), whoever holds it, is answered as a role no session claims
 // (dispatchenvoy.NoRoleHolder), in the listener's words.
-// A role resolved with no reader at all - the delivery sweep's resume of a message attempt nothing
-// resolved before a crash - is answered so too while the deployment holds a private project
+// A role resolved with no reader at all is answered so too while the deployment holds a private project
 // (roleResolvesWithoutAReader): its holder is chosen now, and could be a session the author may not
-// see. The sweep resumes a comment mention's attempt as the comment's author (resumeOwedDelivery).
-// A session route was held to its author's reader when it was written. The role's reads run
+// see. The role's reads run
 // whatever the listener answers, a holder or none, so a role held by a session the reader may not
 // see costs what an unheld role costs, and the time a resolve takes tells nothing of the holder
-// (roleHolderHidden).
+// (roleHolderHidden). The reader is the one
+// in ctx: the request's, which its gate put there, the comment's author's for a mention send
+// queued with one (mentionSendContext), and everyReader, by name, for the delivery sweep's resume
+// of what a writer already wrote (resumeOwedDelivery). The sweep resumes a comment mention's attempt
+// as the comment's author (resumeOwedDelivery). A context with no reader reads as the closed
+// viewer, so a session route resolved with none is a session nobody sees.
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string, bool) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText, false
@@ -174,16 +178,7 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 			target, err = dispatchenvoy.Session{}, dispatchenvoy.NoRoleHolder(route.ID)
 		}
 	} else {
-		// A session route was held to its author's reader when it was written, so a resolve with
-		// no reader in ctx - the delivery sweep's resume of a message attempt, a mention send
-		// queued with none - reads the session as the server's own reader, by name, where
-		// sessionHiddenFromReader answers a context with no reader hidden. The listener's read
-		// below takes ctx as it came.
-		seen := ctx
-		if _, ok := readerFromContext(ctx); !ok {
-			seen = withReader(ctx, everyReader)
-		}
-		hidden, hiddenErr := s.sessionHiddenFromReader(seen, route.ID)
+		hidden, hiddenErr := s.sessionHiddenFromReader(ctx, route.ID)
 		if hiddenErr != nil {
 			return "", "", hiddenErr.Error(), false
 		}
@@ -383,6 +378,10 @@ func retryableDeliveryFailure(failure string) bool {
 // commit together, unless the send waits on a held lane first, which starts a window of its own at
 // its delivery (mentionSend.takeover).
 type takeoverRetry struct {
+	// clock is the server's: the moment the first try was made, the span since it and the wait
+	// between two tries are all read from it, so a test that drives a fake decides when the
+	// window runs out rather than racing the wall clock (again).
+	clock   clock.Clock
 	first   time.Time
 	backoff time.Duration
 	// window is how long after first a try may still start: listenerTakeoverWindow, or the
@@ -391,10 +390,11 @@ type takeoverRetry struct {
 }
 
 // newTakeoverRetry starts the pacing of a sender about to make its first try, in this server's
-// take-over window.
+// take-over window and on this server's clock.
 func (s *server) newTakeoverRetry() takeoverRetry {
 	return takeoverRetry{
-		first:   time.Now(),
+		clock:   s.clock(),
+		first:   s.clock().Now(),
 		backoff: takeoverFirstBackoff,
 		window:  cmp.Or(s.deps.ListenerTakeoverWindow, listenerTakeoverWindow),
 	}
@@ -477,15 +477,11 @@ func (s *server) commentLookupBound(target string) time.Duration {
 // is still trying: the delivery sweep finds nothing to take, and a person's Retry finds the
 // attempt held.
 func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
-	if !retryableDeliveryFailure(failure) || time.Since(r.first)+r.backoff > r.window {
+	if !retryableDeliveryFailure(failure) || r.clock.Now().Sub(r.first)+r.backoff > r.window {
 		return false
 	}
-	wait := time.NewTimer(r.backoff)
-	defer wait.Stop()
-	select {
-	case <-ctx.Done():
+	if r.clock.Sleep(ctx, r.backoff) != nil {
 		return false
-	case <-wait.C:
 	}
 	r.backoff = min(2*r.backoff, takeoverMaxBackoff)
 	return true
@@ -497,12 +493,12 @@ func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
 // A claim transaction takes a pending attempt only while no sender holds it
 // (model.DeliveryClaimFreeSQL, selected beside the row it locks): nobody claimed it, or whoever
 // did never came back within model.DeliveryClaimLapse. A sender renews its claim before every
-// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds by
-// default, DepsInput.EnvoyTimeout in a test) and the short transaction that records its outcome,
-// so a claim older than the lease was left by a process that died before its settle. Postgres
-// judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran ahead
-// of the database would otherwise read every live claim as lapsed, and one that ran behind could
-// never resume a stranded attempt.
+// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds on
+// the server's clock, DepsInput.EnvoyTimeout in a test) and the short transaction that records
+// its outcome, so a claim older than the lease was left by a process that died before its settle.
+// Postgres judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran
+// ahead of the database would otherwise read every live claim as lapsed, and one that ran behind
+// could never resume a stranded attempt.
 //
 // A retry beside a live claim takes an attempt of its own rather than two senders driving one. A
 // retry beside a lapsed claim resumes that attempt under its original number, and so its

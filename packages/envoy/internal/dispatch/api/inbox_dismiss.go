@@ -687,7 +687,7 @@ func (s *server) dismissInboxThreads(
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
+	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the dismissal's statements: %w", err)
 	}
 	read, err := readInboxDismissThreads(ctx, tx, who, actor, login, plan, rows, scope)

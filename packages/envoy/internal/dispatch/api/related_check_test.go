@@ -902,7 +902,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
 
-	served.suggestionTimeout = time.Nanosecond
+	served.suggestionTimeout = spentRelatedAllowance
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "FORCE", "title": title, "force": true,
 	}, "alice")
@@ -1635,7 +1635,7 @@ func TestRelatedCheckKeepsOneRowPerOwnerInEveryArrivalOrder(t *testing.T) {
 				}
 			}
 			var suggestions model.Suggestions
-			srv.fillRelatedItems(context.Background(), relatedInput{project: "SWEEP"}, results, &suggestions)
+			srv.fillRelatedItems(context.Background(), relatedInput{who: everyReader, project: "SWEEP"}, results, &suggestions)
 			if len(suggestions.Related) != 1 || suggestions.Related[0].ID != results[test.want].ID {
 				t.Fatalf("rows %v kept %+v, want the %s row at %d (%s) alone: %s",
 					test.arrived, suggestions.Related, test.arrived[test.want], test.want, results[test.want].ID, test.why)

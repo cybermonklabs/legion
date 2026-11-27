@@ -135,11 +135,23 @@ const heldBlockRefGuardAsItStood = `exists (select 1 from graph_nodes block
 // off and under each plan-cache mode the analyzed plan must answer all 200 rows and read at most
 // those 200 rows of each table (relationReads). The control is the read with the guard as it
 // stood, an exists: it must plan, run, and read every block node.
+//
+// Those statistics are the control's whole footing: once graph_nodes is analyzed after the
+// write, the planner probes the exists by each row's key too and the control reads 200 rows, so
+// the test can no longer tell the two reads apart and fails at the control. The 20,000 rows the
+// test writes are past autovacuum's analyze threshold (50 rows and a tenth of the table), and
+// autovacuum visits a database once a minute: on a loaded runner its analyze landed during the
+// plan loop, after the custom pass, and the control read 200 rows under force_generic_plan alone
+// (envoy-go of #4726 at 6aeba5f7, run 45524193041). So autovacuum is off for graph_nodes on this
+// test's own database before it is analyzed, and its statistics stay as the write left them.
 func TestTheHeldBlockRefReadProbesEachRowsBlockNode(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	pool := database.Pool
 	seedWalkPlan(t, pool)
+	if _, err := pool.Exec(ctx, `alter table graph_nodes set (autovacuum_enabled = false)`); err != nil {
+		t.Fatalf("keep autovacuum from analyzing graph_nodes during the test: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `analyze graph_nodes`); err != nil {
 		t.Fatalf("analyze graph_nodes before the block nodes: %v", err)
 	}

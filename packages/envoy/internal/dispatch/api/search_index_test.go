@@ -174,11 +174,9 @@ func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 	}
 
 	// The six parameters relatedOtherProjects binds, in its own order: the question's vector,
-	// the project that asks, the embedder's identity, the floor, the depth and the writer's
-	// visibility argument, here the server's own viewer, which sees every project.
+	// the project that asks, the embedder's identity, the floor, the depth and the viewer.
 	root, planJSON := planTreeOf(t, database, relatedOtherProjectsSQL, []any{
-		embed.Literal(queryVector()), "XPLAN", embedder.Identity(), searchMeaningFloor, contracts.SearchKindDepth,
-		relatedViewer(everyReader),
+		embed.Literal(queryVector()), "XPLAN", embedder.Identity(), searchMeaningFloor, contracts.SearchKindDepth, relatedViewer(everyReader),
 	}, "set local enable_seqscan = off", "set local enable_sort = off")
 
 	if scan := root.find(func(node planNode) bool { return node.NodeType == "Seq Scan" }); scan != nil {
@@ -312,7 +310,8 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 		t.Fatalf("begin a transaction to read the fill's progress in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
+	// The statements of a search naming no kind, which is what this helper's callers run.
+	return meaningStatementFor(searchKinds(0).statements(), project, embeddingProjectKeysFilled(ctx, tx), false)
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a

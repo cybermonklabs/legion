@@ -33,6 +33,7 @@ var stillReachedElsewhere = map[string]bool{
 // The sub-test is the walk's control: GET /api/v1/priorities with the description it carried at
 // 6237057940, which said any authenticated caller makes the read, fails it, named.
 func TestNoReadDescriptionPromisesEveryCaller(t *testing.T) {
+	t.Parallel()
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	held := 0
 	for _, route := range routes {

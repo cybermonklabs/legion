@@ -105,17 +105,13 @@ func walkBlockRows(t *testing.T, pool *store.Pool, statement, mode string, batch
 		}
 		read := 0
 		for rows.Next() {
-			// The statement also answers each block's project and conversation, the scope its node
-			// carries (readBlockRows reads them too); both lookups must answer those alike as well.
 			var artifact, block, address, refKey, project, session string
 			var created time.Time
 			var event int64
 			if err := rows.Scan(&artifact, &block, &address, &refKey, &created, &event, &project, &session); err != nil {
 				t.Fatalf("read a row after %q: %v", after, err)
 			}
-			// The event stays last: the sentinel count below reads it as the row's suffix.
-			walked = append(walked, fmt.Sprintf("%s %s %s %s %s project=%s session=%s event=%d", artifact, block, address, refKey,
-				created.UTC().Format(time.RFC3339Nano), project, session, event))
+			walked = append(walked, fmt.Sprintf("%s %s %s %s %s project=%s session=%s event=%d", artifact, block, address, refKey, created.UTC().Format(time.RFC3339Nano), project, session, event))
 			after = address
 			read++
 		}

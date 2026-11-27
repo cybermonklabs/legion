@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -60,8 +61,10 @@ var collaboratorEventTypes = slices.Sorted(maps.Keys(collaboratorEventReasons))
 
 // legionDaemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
 // lifecycle messages under (legion-daemon:<PROJECT>, packages/daemon's DaemonSession). It holds no
-// conversation, so it is nobody to ask and never a collaborator.
-const legionDaemonSessionPrefix = "legion-daemon:"
+// conversation, so it is nobody to ask and never a collaborator. It is the broker's spelling
+// (ciphertoken.LegionDaemonSessionPrefix), so the session a daemon's broker token proves and the
+// session Dispatch takes for the daemon's are one string (putIssueRoleHolders).
+const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
 // Registry states the collaborators answer names.
 const (

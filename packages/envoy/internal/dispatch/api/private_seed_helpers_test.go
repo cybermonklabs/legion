@@ -423,11 +423,6 @@ func (held heldLock) letGo(t *testing.T, answered <-chan *httptest.ResponseRecor
 	}
 }
 
-// askBlockMarkdown is a free-text ask block, block, asking question.
-func askBlockMarkdown(block, question string) string {
-	return ":::ask{#" + block + ` urgency="high" multiple="false"}` + "\n" + question + "\n:::\n"
-}
-
 // documentObjects are the objects of one project a document read names: the project, its issue,
 // a document of the project and one of the issue, each document with its slug. The missing
 // objects are names nobody holds, each spelled as a real one is, so the answer for a hidden

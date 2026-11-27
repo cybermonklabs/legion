@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The private-delivery hold beside the retry timer (Outbox.serve, Outbox.nextRetry): a holder's
@@ -69,13 +70,7 @@ func runToFirstWait(t *testing.T, deps Deps, asked *atomic.Int64, publisher *rec
 	done := make(chan struct{})
 	go func() { outbox.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	select {
-	case got := <-first:
-		return got
-	case <-time.After(outboxHangGuard):
-		t.Fatalf("the outbox did not wait within %v of its start", outboxHangGuard)
-		return firstWait{}
-	}
+	return testwait.Receive(t, "the outbox's first wait", first)
 }
 
 // TestAnEventAScanHeldPublishesWhenTheHubsTurnProvenBeforeTheTimerReads: PRIV-1's event is due
@@ -108,7 +103,7 @@ func TestAnEventAScanHeldPublishesWhenTheHubsTurnProvenBeforeTheTimerReads(t *te
 		t.Fatalf("the outbox first waited with its retry timer armed for %v, want one wait of %v at most: the scan's read held PRIV-1's event and the hubs turned proven before the timer's read, so only that timer looks at the event again",
 			first.armed, deps.privateHoldWait)
 	}
-	waitFor(t, 10*time.Second, "PRIV-1's event published by the scan the timer starts", func() bool {
+	waitFor(t, "PRIV-1's event published by the scan the timer starts", func() bool {
 		return publishedAt(t, database, private.ID) != nil
 	})
 	if sent := topicsNaming(publisher, ".PRIV-1."); len(sent) != 1 {
@@ -145,7 +140,7 @@ func TestACopyAPassHeldPublishesWhenTheHubsTurnProvenBeforeTheTimerReads(t *test
 		t.Fatalf("the outbox first waited with its retry timer armed for %v, want one wait of %v at most: the pass's claim held PRIV-1's copy and the hubs turned proven before the timer's read, so only that timer looks at the copy again",
 			first.armed, deps.privateHoldWait)
 	}
-	waitFor(t, 10*time.Second, "PRIV-1's copy published by the pass after the scan the timer starts", func() bool {
+	waitFor(t, "PRIV-1's copy published by the pass after the scan the timer starts", func() bool {
 		row := readHeldCopy(t, database, private, "notifications.agent.s-priv")
 		return row.settled && row.published
 	})
@@ -209,7 +204,7 @@ func TestANilPrivateHubsReadyLeavesTheTimersReadAsBefore(t *testing.T) {
 	tracer := &statementTracer{}
 	timerReads := func() []tracedStatement { return tracer.matching("select (extract(epoch from least(") }
 	stop := runDeps(t, Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: quietListen})
-	waitFor(t, 10*time.Second, "both events published and the retry timer read", func() bool {
+	waitFor(t, "both events published and the retry timer read", func() bool {
 		return publishedAt(t, database, private.ID) != nil && publishedAt(t, database, public.ID) != nil && len(timerReads()) > 0
 	})
 	stop()

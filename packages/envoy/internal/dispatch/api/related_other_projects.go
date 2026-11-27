@@ -21,7 +21,7 @@ import (
 // It reads the windows of embeddings of kind ask_part and joins asks as the same-project ask arm
 // joins them (meaning_ask_candidates in search.go), then issues and artifacts for the owner. A
 // row qualifies when the ask is a question, somebody answered it, the answer carries text, and
-// the ask belongs to another project than the one that asks, one the writer whose check this is
+// the ask belongs to another project than the one that asks, one the reader whose check this is
 // sees (access.ProjectClause over its viewer). The project test has three parts, and the
 // `is not null` part is necessary: `null <> $2` is unknown, so an ask that belongs to no project
 // would drop out of the answer and nothing would say so.
@@ -40,7 +40,7 @@ import (
 //
 // Parameters: $1 the question's embedding (a vector literal), $2 the project that asks, $3 the
 // embedder's identity (embed.Embedder.Identity), $4 searchMeaningFloor, $5
-// contracts.SearchKindDepth, $6 the writer's visibility argument (relatedViewer).
+// contracts.SearchKindDepth, $6 the reader's visibility argument (relatedViewer).
 //
 // Columns: the owner (an issue's key, title and status, or an owning project document's id, slug
 // and name), the project of the row, the document the ask stands on (its slug, its name and
@@ -102,8 +102,9 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 // document owner alone, and the items of the asking project keep that shape. The row carries its
 // own state and answer, so this leg reads no ask state a second time (attachAskStates).
 //
-// who is the writer whose check this is (relatedInput.who): the leg offers the answered questions
-// of the projects its viewer sees alone (relatedViewer).
+// who is the reader whose check this is (relatedInput.who): the leg offers the answered questions
+// of the projects its viewer sees alone (relatedViewer), so a project it does not see offers it
+// nothing, and a reader with no viewer is offered nothing at all.
 //
 // reader is the display tree reader each answer's text is registered with, which is the leg's
 // own and never the request's: this runs on a goroutine the check may abandon at its grace, and

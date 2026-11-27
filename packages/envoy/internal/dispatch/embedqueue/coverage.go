@@ -29,9 +29,9 @@ const coverageStatementRows = 500
 // after a failed run before it tries that run again. While a rolling deploy that changes the
 // identity still has an old-configuration process embedding, that process commits vectors the
 // new identity must drop; ten minutes was the whole pass's period before, and nothing faster is
-// owed to a vector search already filters out by identity. A var, not a const, so a test can
-// shrink it rather than wait out ten minutes.
-var identityRecheckInterval = 10 * time.Minute
+// owed to a vector search already filters out by identity. A test of the recheck shortens it for
+// its own Run alone (Deps.identityRecheck).
+const identityRecheckInterval = 10 * time.Minute
 
 // issueKind is the one kind of row meaning search ranks that no indexer owns, and so the one
 // kind this pass builds: insertMissingIssues and repairStaleIssues, the two statements that
@@ -655,6 +655,9 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // before its later steps: every step is idempotent and safe beside a live write, so nothing is
 // lost by waiting. A boot pass whose report alone failed has done every step, so it does not
 // fail (coverPass). The context ending returns at once.
+//
+// After each pass that succeeded it reports the wait it settles into to a test of this package
+// (reportParked).
 func runCoverage(ctx context.Context, deps Deps) {
 	pass := coverPass
 	for {
@@ -664,14 +667,15 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", identityRecheckInterval)
+			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", deps.identityRecheck)
 		default:
 			pass = recheckCoverage
 			if steps.skipped && steps.mine {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := time.NewTimer(duty.Jittered(identityRecheckInterval))
+		timer := time.NewTimer(duty.Jittered(deps.identityRecheck))
+		deps.reportParked(err, answered)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -680,6 +684,25 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case <-answered:
 			timer.Stop()
 		}
+	}
+}
+
+// reportParked tells a test of this package (Deps.coverageParked) that the coverage loop has
+// settled into its wait after a pass that succeeded, which is what a test waits for to know the
+// pass is done, since the loop returns only when the process stops. awaitingAnswer is false for
+// the wait that owes nothing until the interval is out, when the loop reads nothing, writes
+// nothing and wakes nobody; and true for the wait on the embedder's first answer after a run that
+// skipped the identity steps for want of one, made only while that answer has not come, so a test
+// that takes it knows the run proved nothing and left the rows it skipped alone. The wait after a
+// failed pass is not reported.
+func (d Deps) reportParked(err error, answered <-chan struct{}) {
+	if d.coverageParked == nil || err != nil {
+		return
+	}
+	select {
+	case <-answered:
+	default:
+		d.coverageParked(answered != nil)
 	}
 }
 

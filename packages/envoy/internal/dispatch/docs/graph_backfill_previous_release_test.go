@@ -364,9 +364,28 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // its line breaks and indentation, which the text it splices in from another place gives it -
 // moves no digest, and a change of any word does.
 //
+// Rule 1's digest was re-recorded when the node store's project columns joined these statements:
+// they read and write each comment's and each block's project beside what they read before
+// (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
+// refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
+// of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
+// re-recorded rather than raised.
+//
+// It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
+// `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
+// node's cause: the statement reads the same event id, only through events' primary key, so it
+// moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
+// text of LatestEventID the statements give the digest recorded before.
+//
+// It was re-recorded once more when the digest came to fold each statement's whitespace and to
+// cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
+// statement moved a row in or out of what a pass owes.
+//
 // A change of words that keeps every statement's rows keeps the rule, and records its digest in
 // place of the rule's old one, with the test that proves the rows unchanged. Rule 1's digest moved
-// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea: the backfill's
+// once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea, main's before
+// #5491, and from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
+// before the hint below, whose statements also read the project columns above: the backfill's
 // block selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as
 // materialized (`, a planner hint that runs them once per batch, which changes the statement's plan
 // and not its rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot
@@ -374,12 +393,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // same rows). The documents a pass of rule 1 marks are the same, so a build of either text beside
 // the other reads rule 1's cursors, horizons and marks as its own rightly.
 var markingStatementDigests = map[int]string{
-	1: "86cea356636cc095fe73ddbd7a74a7c96b9d1fcfccb154be4773ba0a3b970887",
-	// Rule 2: every node's scope - the project or the parties the comment write and the backfill's
-	// block and comment reads carry, and the node write that states them. Its digest moved as rule
-	// 1's did, from 52743f9e06e54d437dfc5631bd5c3ce1c53a5386516f0ece2e23d624c30428bb: rule 2's
-	// block selection carries the same `materialized` word, which keeps its rows.
-	2: "a91a82cf300c1e0ef800e0cccc03b003e89cc906702a34e3d3510e1b2ccf6d05",
+	1: "c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

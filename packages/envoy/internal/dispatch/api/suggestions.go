@@ -126,14 +126,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so a decision block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -656,6 +659,9 @@ func (s *server) runRelatedCheck(
 // still registers with it is a data race. Its own reader is written by that one goroutine
 // alone, and resolved there before the results are handed over, so an answer that reaches the
 // check carries its trees filled and one the grace left behind is read by nobody.
+//
+// who is the check's reader (relatedInput.who), whose viewer both the meaning query and the
+// cross-project leg bind (relatedViewer).
 func (s *server) relatedMeaningStage(
 	ctx, crossRead context.Context, who model.Actor, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
@@ -825,10 +831,11 @@ func (s *server) relatedSearch(
 }
 
 // relatedViewer is the visibility argument every search of a check binds: the viewer of who, the
-// writer whose write triggered it (relatedInput.who), so the check offers nothing of a project
-// or a conversation that writer may not read, and no author, so a node reserved for its author
-// is suggested to nobody, which is the answer that can mislead no reader - the check's answer is
-// recorded (write_suggestions) as well as handed to the writer.
+// writer whose write triggered it or the caller of the no-write route (relatedInput.who), so the
+// check offers nothing of a project or a conversation that reader may not read, and no author, so
+// a node reserved for its author is suggested to nobody, which is the answer that can mislead no
+// reader: the check's answer is recorded (write_suggestions) as well as handed to the writer. A
+// reader with no viewer binds the closed viewer, which is offered nothing.
 func relatedViewer(who model.Actor) any {
 	return refs.VisibilityArg(model.Actor{Viewer: who.Viewer})
 }
@@ -889,7 +896,8 @@ func (s *server) fillRelatedItems(
 	// The answers are read as the check's reader (input.who): the writer whose write ran it, with the
 	// viewer its handler resolved from the request's credential (readerOf), so a token's list holds
 	// here as on every read. The writer's recorded actor carries no credential to resolve
-	// (access.ErrUnresolvedActor), and the zero reader is the closed viewer, which reads no answer.
+	// (access.ErrUnresolvedActor), and a check with no reader reads as the closed viewer, which reads
+	// no answer: a check run for no request names everyReader as its reader.
 	who := input.source.actor.Reader()
 	who.Viewer = input.who.Viewer
 	if err := s.attachAskStates(ctx, s.deps.Store.Pool, who, candidates, input.trees); err != nil {

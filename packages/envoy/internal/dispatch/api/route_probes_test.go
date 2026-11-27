@@ -18,6 +18,7 @@ import (
 // pattern's wildcards; and a row no table gives a Probe read as null in the JSON the driver reads,
 // so the driver can tell it from a row that names no wildcard ({}).
 func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
+	t.Parallel()
 	table := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	probes := RouteProbes()
 	if len(probes) != len(table) {
@@ -88,6 +89,7 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 // installed:true for PRIV's repository and installed:false for a repository nobody holds, to
 // whoever asked. The driver reads the class as the word none, so the JSON must spell it so.
 func TestRouteProbesNameEachGETRowsReadClasses(t *testing.T) {
+	t.Parallel()
 	printed, err := json.Marshal(RouteProbes())
 	if err != nil {
 		t.Fatalf("encode RouteProbes: %v", err)

@@ -60,8 +60,8 @@ type writersRig struct {
 	arrived chan struct{}
 	release func()
 	// The issue and its spec, the issue's notes document and the slug an anchor names it by, the
-	// comment whose held send the settle settles, the ask the follower follows, the targeted
-	// message the session's reply answers, and the untouched document the removal removes.
+	// comment whose held send the settle settles, the ask the follower follows, the targeted message
+	// the session's reply answers, and the untouched document the removal removes.
 	issue, spec, notes, notesSlug, mentioned, ask, message, removable string
 }
 

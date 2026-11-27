@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"net/http"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an ask's
@@ -29,11 +29,12 @@ import (
 // runs, are paths of TestEveryApiStoreWriterTakesTheStoreLockOrder, which holds that node step
 // with the block index's.
 //
-// What each create is held to is the order this slice adds: its owner lock first, then the
-// object's node, written before the row that holds the object, the event, appended after that
-// row, and the facts the node write stated, appended after the event that causes them. The id of
-// each object is drawn inside its own transaction, so no other transaction can hold its node or
-// its row before they exist: those steps are held as the tables they are written to.
+// What each create is held to is the store's lock order for its object's node: its owner lock
+// first, then the object's node, written before the row that holds the object, the event,
+// appended after that row, and the facts the node write stated, appended after the event that
+// causes them. The id of each object is drawn inside its own transaction, so no other transaction
+// can hold its node or its row before they exist: those steps are held as the tables they are
+// written to.
 //
 // Its controls are the ask create's node write skipped (api/asks.go): held at the ask's node, the
 // path then waits at the author follow's node write rather than its own, or at none; the session
@@ -42,6 +43,7 @@ import (
 // no lock of its node; and the removal's gone statement moved after the row's delete
 // (api/artifact_removal.go), which fails the same two ways.
 func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{
@@ -240,7 +242,7 @@ func (r *storeWriterRig) sessionReply() storeWriter {
 // documentRemoval is the removal of an untouched document of the issue (removeArtifact), through
 // its route: it takes the issue's owner lock (beginArtifactWrite) and the document's room, clears
 // what the document's own delete would leave behind, states the document's node gone
-// (graphstore.PlanUncaused and QueueNodes, an update of the node its create wrote), deletes the
+// (graphstore's PlanUncaused and QueueNodes, an update of the node its create wrote), deletes the
 // document's row, which names that node, and appends artifact.removed and the gone statement
 // under it in one batch (appendCausingEvent).
 // Each run removes a document of its own, made just before it by typing a title (emptyDocument).

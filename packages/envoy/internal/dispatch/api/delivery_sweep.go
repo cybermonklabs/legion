@@ -231,6 +231,10 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 // rule failed (mentionHeldForOrder), is handed, under the claim the send took, to this process's
 // mention sender, whose lane for that session sends it once the outbox has sent that event.
 //
+// The sweep answers no request, so it reads as the server's own reader, by name: what it loads, and
+// the session a session route names (resolveDeliveryTarget, which reads the reader in ctx), whose
+// route was held to its author's reader when the write made it.
+//
 // A mention attempt resolves as the comment's author, with what that person sees now
 // (attemptWriter, access.RecordedViewer), not as the server: an attempt stranded before anything
 // was resolved - a lookup cut short by its bound (resolveMentionTarget), or a Retry's attempt whose
@@ -268,6 +272,7 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 		}
 		return err
 	}
+	ctx = withReader(ctx, everyReader)
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, everyReader, "", owed.messageID)
 	if err != nil {
 		return err

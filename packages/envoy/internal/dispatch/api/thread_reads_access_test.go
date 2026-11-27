@@ -233,7 +233,7 @@ func requireSameAnswer(t *testing.T, seed privateSeed, caller privateCaller, nam
 func requireMissingOwnerETags(t *testing.T, threads threadSeed, caller privateCaller, key string) {
 	t.Helper()
 	comments := threads.request(t, caller, http.MethodGet, "/api/v1/issues/"+key+"/comments", nil)
-	if want := threads.server.commentListETag(issueOwner(key), "", 0, 0, false); comments.Header().Get("ETag") != want {
+	if want := threads.server.commentListETag(issueOwner(key), "", commentListBasis{}, false); comments.Header().Get("ETag") != want {
 		t.Errorf("%s reads %s's comment list under ETag %s; a missing owner answers %s", caller, key, comments.Header().Get("ETag"), want)
 	}
 	feedPath := "/api/v1/issues/" + key + "/events"

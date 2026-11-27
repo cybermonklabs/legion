@@ -12,6 +12,7 @@ import (
 // bearer and no body at all, and prints what the daemon answered: the session was compacted, and
 // whatever task the claim owed went to it again.
 func TestClaimsCompactPostsToTheClaimsCompactRoute(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	if code, _, _ := d.claims(d.spawnArgs()...); code != 0 {
 		t.Fatalf("spawn exited %d, want 0", code)
@@ -31,28 +32,30 @@ func TestClaimsCompactPostsToTheClaimsCompactRoute(t *testing.T) {
 	}
 }
 
-// A compaction Oh My Pi refused or skipped is printed with its reason and the command succeeds:
-// the daemon did the whole of what the command asks — it tried, and whatever task the claim
-// owed went again — so a session too small to compact is news rather than a failure.
+// A handoff Oh My Pi refused is printed with its reason and the command succeeds: the daemon did
+// the whole of what the command asks — it tried, and whatever task the claim owed went again — so
+// a session with nothing to hand off is news rather than a failure.
 func TestClaimsCompactPrintsWhyASessionWasNotCompacted(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	if code, _, _ := d.claims(d.spawnArgs()...); code != 0 {
 		t.Fatalf("spawn exited %d, want 0", code)
 	}
 	conn := fake.NewConn()
-	conn.RefuseCompact("Nothing to compact (session too small)")
+	conn.RefuseCompact("Nothing to hand off (already compacted)")
 	d.conns.Register(architectClaim, conn)
 	d.ready(architectClaim)
 
 	out := d.succeed(append(append([]string{"compact"}, d.reach()...), "--claim", string(architectClaim))...)
 
-	if want := "not compacted: Nothing to compact (session too small); whatever task the claim owed has gone again"; !strings.Contains(out, want) {
+	if want := "not compacted: Nothing to hand off (already compacted); whatever task the claim owed has gone again"; !strings.Contains(out, want) {
 		t.Fatalf("compact stdout = %q, want it to say %q", out, want)
 	}
 }
 
 // --claim is required, and nothing is reached without it.
 func TestClaimsCompactRequiresAClaim(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	code, _, stderr := d.claims(append([]string{"compact"}, d.reach()...)...)

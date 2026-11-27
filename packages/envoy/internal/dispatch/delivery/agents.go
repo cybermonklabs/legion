@@ -6,24 +6,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 )
 
-// resolveSessionTitlesQuery answers, for each id it is given, that session's newest event whose
-// stamped title is not empty, as one ordered read a session that stops at that session's newest
-// titled row. It reads events_session_actor_created_at_idx (migration 0026), the partial index
-// on ((actor->>'id'), created_at desc) for a session actor, once per id.
-//
-// It replaced `select distinct on (actor->>'id') … order by actor->>'id', created_at desc` over
-// that same index: `Unique` consumes its whole input, so that read walked every event of every
-// listed session to keep one of them, and this read's largest caller (sessionsTitled,
-// groups.go) lists every session of the stored delivery population at once. The lateral is the
-// shape this repository already uses for the same table and the same index, for the same
-// question of the same population (agentLastActivityQuery, dispatch/api/agents.go; the 1,875
-// rows and 470 buffers against 20 cited there were measured on that statement, not on this one).
-// This statement's own measurement is the plan test of this package
-// (session_titles_plan_test.go): over a fixture of 14 events across three listed sessions, the
-// one node that reads events runs one loop a session -- three -- and touches no more of those 14
-// rows than stopping at each session's newest titled row costs, which is 8 here. The `distinct
-// on` it replaced was measured once on the same fixture when this change was made, not by that
-// test: a single loop over all 14.
+// resolveSessionTitlesQuery answers, for each id it is given, that session's stored title: one
+// read of session_titles_pkey (migration 20261117100008) for the whole list, and no row for a
+// session that has none. It reads no events. Each title used to be resolved out of events on
+// every page read: the read before cybermonklabs/legion#3517, a `distinct on` that sorted every
+// event of the listed sessions, cost 42 to 133 ms a paint of the Delivery page over three
+// projects and 812,386 events (dispatch://INFRA-2916, R13), and #3517's ordered read a session of
+// events_session_actor_created_at_idx, which has no measurement at that size, still read events
+// on each one. The table is written where the title is stamped instead (20261117100015's
+// trigger). The plan test of this package holds the read there (session_titles_plan_test.go).
+// It is the server's own read (events.EveryEvent): the table holds each session's newest title
+// whatever event stamped it, so a reader bound to a rule reads readableSessionTitlesQuery.
+const resolveSessionTitlesQuery = `select session_id, title from session_titles where session_id = any($1)`
+
+// readableSessionTitlesQuery answers, for each id it is given, that session's newest event whose
+// stamped title is not empty among the events its reader may read, as one ordered read a session
+// that stops at that session's newest titled row. It reads events_session_actor_created_at_idx
+// (migration 0026), the partial index on ((actor->>'id'), created_at desc) for a session actor,
+// once per id; the api package's plan test of a reader's read measures it
+// (session_titles_reader_plan_test.go).
 //
 // The lateral repeats actor->>'kind' = 'session' because that index is partial on it, and it is
 // joined with `cross join`, not a left join: a session with no titled event must answer no row,
@@ -35,7 +36,7 @@ import (
 // readable holds the read to the events its reader may read (events.Readable): a title stamped on
 // an event of a project the reader does not see names nothing for that reader, which reads the
 // newest title among the events it sees instead.
-func resolveSessionTitlesQuery(readable string) string {
+func readableSessionTitlesQuery(readable string) string {
 	return `
 		select s.id, e.session_title
 		from unnest($1::text[]) s(id)
@@ -56,27 +57,34 @@ func resolveSessionTitlesQuery(readable string) string {
 // reference, so a pull request's Parent agent is the first session its Omp-Session trailers name,
 // shown by that title, unless a session group holds it (ParentAgents, parent_agent.go; LEGION-682).
 //
-// A session's title is never stored in a dedicated table; every write stamps a model.Actor
-// (including its ActorOrigin.SessionTitle) as JSONB onto the row it wrote and onto the matching
-// events row, and events_session_actor_created_at_idx (migration 0026) makes this one indexed
-// read per id. The name is the newest title the session stamped, not the title on its newest
-// event: a later write carrying none -- a delivery reply stamps no origin at all
-// (postDeliveryReply) -- does not take the name away (INFRA-1368). It is durable -- it survives
-// the session ending, unlike Envoy's live, TTL-expiring session registry -- for any session that
-// ever claimed an issue, posted a message/comment/ask, or wrote a document under a title. A
-// session that never stamped one is simply absent from the returned map, and nothing here
-// backfills a name for it; SessionTitle falls back to its bare id. Each title is read among the
-// events readable passes: a read answered to one caller binds that caller's rule, and so does the
-// group rule, which holds a group's name to the titles its writer reads (groups.go
-// sessionsTitled); a writer that sees every object reads every event (events.EveryEvent).
+// Every write stamps a model.Actor (including its ActorOrigin.SessionTitle) as JSONB onto the row
+// it wrote and onto the matching events row, and the trigger on events (migration
+// 20261117100015) records the title of each such event in session_titles, in the event's own
+// transaction, with the boot's fill (store.FillSessionTitles) covering the events stored before
+// it; this reads that table by primary key. The name is the newest title the session stamped,
+// not the title on its newest event: a later write carrying none -- a delivery reply stamps no
+// origin at all (postDeliveryReply) -- does not take the name away (INFRA-1368). It is durable --
+// it survives the session ending, unlike Envoy's live, TTL-expiring session registry -- for any
+// session that ever claimed an issue, posted a message/comment/ask, or wrote a document under a
+// title. A session that never stamped one is simply absent from the returned map, and nothing
+// here backfills a name for it; SessionTitle falls back to its bare id. Each title is read among
+// the events readable passes: a read answered to one caller binds that caller's rule, and so
+// does the group rule, which holds a group's name to the titles its writer reads (groups.go
+// sessionsTitled), and either reads events (readableSessionTitlesQuery); the server's own read,
+// which binds no viewer (events.EveryEvent), reads session_titles.
 func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string, readable events.Readable) (map[string]string, error) {
 	titles := make(map[string]string, len(sessionIDs))
 	if len(sessionIDs) == 0 {
 		return titles, nil
 	}
-	// One statement for every id of the read, over that index, rather than one query per id: a
-	// Delivery timeline page can name hundreds of distinct sessions across its window.
-	rows, err := q.Query(ctx, resolveSessionTitlesQuery(readable.Where), readable.Args(sessionIDs)...)
+	// One statement for every id of the read, over the primary key, or over the session actor index
+	// for a read that binds a viewer, rather than one query per id: a Delivery timeline page can
+	// name hundreds of distinct sessions across its window.
+	query, arguments := resolveSessionTitlesQuery, []any{sessionIDs}
+	if readable.Viewer != nil {
+		query, arguments = readableSessionTitlesQuery(readable.Where), readable.Args(sessionIDs)
+	}
+	rows, err := q.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}

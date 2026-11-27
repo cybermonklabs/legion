@@ -30,6 +30,7 @@ import (
 // Its control is the sweep's gone statement caused at the sentinel: the swept node's gone
 // statement then names no event, where the removal's names its own.
 func TestTheSweepStatesAnOrphanGoneAsTheRemovalStatesIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "SWP", "A document each build removes", "The spec.\n")

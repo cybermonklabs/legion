@@ -353,7 +353,7 @@ func (item recallItem) String() string { return item.owner + "(" + item.kind + "
 // done issue owns, and the best three of those.
 func recallListed(ctx context.Context, srv *server, project, query string, results []model.SearchResult) []recallItem {
 	suggestions := &model.Suggestions{}
-	srv.fillRelatedItems(ctx, relatedInput{project: project, source: suggestionSource{kind: "issue", issueKey: query}}, results, suggestions)
+	srv.fillRelatedItems(ctx, relatedInput{who: everyReader, project: project, source: suggestionSource{kind: "issue", issueKey: query}}, results, suggestions)
 	listed := make([]recallItem, 0, len(suggestions.Related))
 	for _, item := range suggestions.Related {
 		owner := item.Owner.ArtifactID

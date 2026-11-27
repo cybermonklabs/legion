@@ -184,12 +184,18 @@ type fakeBroker struct {
 	// authorization, answering 200 with no device_code or user_code.
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
+	// deviceAuthFields, when set, replaces the device authorization answer's own pairs with its
+	// own, a nil value removing its pair: a broker naming another interval or lifetime, or none.
+	deviceAuthFields map[string]any
 	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
 	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
 	// still names access_denied, expired_token or invalid_grant, or another refusal status.
 	// devicePolls counts every device code grant the token endpoint receives, whatever it answers.
 	oauthErrorStatus int
 	devicePolls      int
+	// devicePollAnswer, when set, is handed each device code grant with a known code and a valid
+	// proof, by its count among devicePolls, and answers it where it returns true. It runs under mu.
+	devicePollAnswer func(poll int, w http.ResponseWriter) bool
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -435,7 +441,15 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.next++
 		f.deviceCode = fmt.Sprintf("device-%d", f.next)
 		f.pendingCode = fakeConfirmationCode()
-		writeJSON(w, 200, map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1})
+		answer := map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1}
+		for name, value := range f.deviceAuthFields {
+			if value == nil {
+				delete(answer, name)
+			} else {
+				answer[name] = value
+			}
+		}
+		writeJSON(w, 200, answer)
 	})
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -471,6 +485,9 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			}
 			if !dpopProves(r, f.srv.URL+"/v1/oauth/token", f.pendingThumbprint) {
 				oauthError(400, "invalid_dpop_proof")
+				return
+			}
+			if f.devicePollAnswer != nil && f.devicePollAnswer(f.devicePolls, w) {
 				return
 			}
 			switch f.loginOutcome {

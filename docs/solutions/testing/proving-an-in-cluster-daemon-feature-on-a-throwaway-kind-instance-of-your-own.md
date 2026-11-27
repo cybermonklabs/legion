@@ -74,8 +74,9 @@ legion/<KEY>` builds the branch head; off `main` the workflow publishes
 digest from the run's summary and pin it in *both*
 places — the overlay's kustomize `images:` and `runtime.kubernetes.image` in the overlay's
 `legion.yaml`. The probe pod is your first assertion: its log must read `probe-image: OK (…)
-… daemon-api-version=<the branch's LEGION_DAEMON_API_VERSION>`; with the branch's contract
-bumped, main's image fails that line by design (`plugin-daemon-api-contract-version-gate`).
+… daemon-api-version=<n>`, `<n>` being the branch's number, which `bash scripts/daemon-contract.sh
+<the image's commit>` prints; with the branch adding a contract entry, main's image fails that line
+by design (`plugin-daemon-api-contract-version-gate`).
 Note the code head the image was built from in the proof: a later conflict-forced rebase
 carries the same code under a new SHA, and the record has to say which one the pod ran.
 

@@ -95,21 +95,21 @@ func (r *existenceTrace) take() []string {
 	return taken
 }
 
-// listenerCalls keeps every request the walk's fake Envoy listener was sent, as "METHOD path", in
-// the order it was sent them.
-type listenerCalls struct {
+// walkListenerCalls keeps every request the walk's fake Envoy listener was sent, as "METHOD path",
+// in the order it was sent them.
+type walkListenerCalls struct {
 	mu    sync.Mutex
 	calls []string
 }
 
-func (c *listenerCalls) add(r *http.Request) {
+func (c *walkListenerCalls) add(r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, r.Method+" "+r.URL.RequestURI())
 }
 
 // take answers the calls held and empties the record.
-func (c *listenerCalls) take() []string {
+func (c *walkListenerCalls) take() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	taken := c.calls

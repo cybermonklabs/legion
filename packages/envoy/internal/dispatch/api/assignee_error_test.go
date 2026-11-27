@@ -14,7 +14,7 @@ func TestAnAssigneeReadFailureNamesNoPerson(t *testing.T) {
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	database.Pool.Close()
 	const login = "dana@example.com"
-	_, err := served.allowedLogin(t.Context(), login)
+	_, err := served.allowedLogin(t.Context(), everyReader, login)
 	if err == nil {
 		t.Fatal("a read on a closed pool answered no error")
 	}

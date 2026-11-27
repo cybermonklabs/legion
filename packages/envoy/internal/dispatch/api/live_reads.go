@@ -61,8 +61,8 @@ func liveReadRefusal(ctx context.Context, sub, kind string, holds func(string) b
 }
 
 // sessionHiddenFrom reports whether reader may not see session id (access.SessionClause): the rule
-// every read of one session keeps, over HTTP (sessionHiddenFromReader, and listAgentMessages's
-// statement) and on the live socket's agent view. An open reader of a deployment that holds no
+// every read of one session keeps over HTTP (sessionHiddenFromReader, and listAgentMessages's
+// statement). An open reader of a deployment that holds no
 // private project sees every session and costs no read (R9); a server with no database sees none,
 // failing closed.
 func (s *server) sessionHiddenFrom(ctx context.Context, reader model.Actor, id string) (bool, error) {

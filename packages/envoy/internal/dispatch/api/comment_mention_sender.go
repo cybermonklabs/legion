@@ -85,9 +85,11 @@ type mentionSend struct {
 	// settle the attempt failed with no try again.
 	takeover takeoverRetry
 	// reader is the reader the comment was written under, which enqueue takes from the request's
-	// context: the send resolves a role's holder under it (mentionSendContext), as the request
-	// itself would have, so a mention reaches no session its author may not see. nil is a send
-	// queued with no reader in its context, which resolves as one does (resolveDeliveryTarget).
+	// context, or, for a send the delivery sweep hands over (resumeOwedDelivery), the comment's
+	// author as that person sees now (attemptWriter): the send resolves a session or a role's
+	// holder under it (mentionSendContext), as the request itself would have, so a mention reaches
+	// no session its author may not see. nil is a send queued with no reader in its context, which
+	// resolves as the closed viewer: a session route reaches no session (resolveDeliveryTarget).
 	reader *model.Actor
 	// fromHeldLane is that the lane this send was last taken from is a held lane (next), so its
 	// whole delivery starts its take-over window again (takeover).
@@ -721,6 +723,7 @@ func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (ment
 
 // mentionSendContext is ctx, the sender's own, holding the reader item's comment was written under
 // (mentionSend.reader) where it carries one, so every resolve the send makes reads as its author.
+// A send that carries none resolves as the closed viewer (resolveDeliveryTarget).
 func mentionSendContext(ctx context.Context, item mentionSend) context.Context {
 	if item.reader == nil {
 		return ctx

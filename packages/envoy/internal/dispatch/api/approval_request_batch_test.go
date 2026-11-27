@@ -122,12 +122,14 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 
 // One approval request on a document with no request open costs at most twenty-five round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
-// for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
-// is where it goes today: the first reads the caller's viewer, once a request; the eight after it
-// read the coverage the answer reports, before the request's transaction opens
-// (approvalCoverage); the fourteen after them are the transaction itself, and all but two of
-// those are reads: this route's writes are queued and sent as one batch before the commit, which
-// is what holds its transaction id to its database work. The last two store the
+// for each batch, whatever that batch holds. The count includes the statement that resolves the
+// caller's viewer, which main's request, binding no viewer, did not make: main's ceiling was
+// twenty-four, and the viewer is the one round trip this count adds. The budget is a ceiling, and
+// the enumeration below is where it goes today: the first reads the caller's viewer, once a
+// request; the eight after it read the coverage the answer reports, before the request's
+// transaction opens (approvalCoverage); the fourteen after them are the transaction itself, and
+// all but two of those are reads: this route's writes are queued and sent as one batch before the
+// commit, which is what holds its transaction id to its database work. The last two store the
 // display trees of the texts it wrote, after the commit. In the order it sends them:
 //
 //  1. what the caller sees (access.Resolve, through readerOf), resolved before the request holds
@@ -215,6 +217,7 @@ func TestApprovalRequestsCostAtMostTwentyFiveRoundTrips(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("request approval: status=%d body=%s", response.Code, response.Body.String())
 	}
+	requireViewerResolvedFirst(t, "the approval request", counted)
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above

@@ -96,6 +96,7 @@ func documentSocketOutcome(t *testing.T, serverURL, room, login string) (outcome
 // closes bob's socket with the code on which the provider reconnects, and bob's reconnect is
 // refused as carol's upgrade was. alice's socket stays open.
 func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@outside.example", "carol@example.com"
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -159,6 +160,7 @@ func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 // his socket is recorded and walks it (recheckAccess), each on a cold room and on a warm one, which
 // alice holds open.
 func TestAPersonWhoLosesTheRoomDuringTheirOwnAdmissionIsRefusedAsAReaderWhoCannotReadIt(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@outside.example", "carol@example.com"
 	owner := model.Actor{Kind: "user", ID: "alice"}
 	for _, recheck := range []struct {
@@ -236,6 +238,7 @@ func (w *recordingHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // would send the person the room's document - and is answered as a hidden room is. A socket whose
 // admission stands is upgraded, with nothing written in its place.
 func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
+	t.Parallel()
 	hidden := httptest.NewRecorder()
 	refuseHiddenRoom(hidden)
 	for _, revoked := range []bool{false, true} {
@@ -260,6 +263,85 @@ func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
 	}
 }
 
+func TestARevocableSocketWriterAnswersPlainTextBeforeUpgrade(t *testing.T) {
+	t.Parallel()
+	under := httptest.NewRecorder()
+	writer := &revocableSocketWriter{ResponseWriter: under, ctx: context.Background()}
+	if _, err := writer.Write([]byte("<socket error>")); err != nil {
+		t.Fatalf("write pre-upgrade response: %v", err)
+	}
+	if got := under.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	if got := under.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := under.Body.String(); got != "<socket error>" {
+		t.Errorf("body = %q, want <socket error>", got)
+	}
+}
+
+// TestARecheckAccessWhileTheServerStopsRevokesNoSocket: cmd/dispatch's process context
+// (processContext) ends with ErrServerStopping as its cause on SIGTERM and on every other stop of
+// the process, and it ends before the HTTP drain and before documentService.Shutdown closes the
+// rooms. A re-check that runs under that context returns without revoking, so no socket gets
+// errAccessRevoked's close code 4412, and shutdown closes each with its own going-away code.
+//
+// The control is m12's "the re-check's context has ended" row
+// (TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain): a context cancelled
+// without the cause still closes both sockets with 4412.
+func TestARecheckAccessWhileTheServerStopsRevokesNoSocket(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	service := New(Deps{
+		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database),
+		Origins: text.NewOrigins("https://dispatch.example"),
+		Settle:  time.Hour, MaxLiveRooms: 2, MaxDocConnections: 6,
+	})
+	testcleanup.Add(t, func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	service.srv.RoomIdleTimeout = time.Hour
+	ids := createDocuments(t, database, 1)
+	owner := model.Actor{Kind: "user", ID: "alice"}
+	writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := access.SetVisibility(ctx, tx, service.events, "DOC", model.ProjectPrivate, owner)
+		return err
+	})
+	writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := access.AddPrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, "alice@example.com", owner)
+		return err
+	})
+	runRoomSync(t, newRoomSync(service))
+	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	testcleanup.Add(t, server.Close)
+	peer := connectPeer(t, server.URL, ids[0], "alice@example.com")
+
+	// End the process context as processContext does, with ErrServerStopping as its cause, before
+	// any Shutdown call. The re-check then revokes no socket.
+	lifetime, cancelCause := context.WithCancelCause(context.Background())
+	cancelCause(ErrServerStopping)
+	service.recheckAccess(lifetime)
+
+	// The socket is still alive: the cause guard returned before the loop.
+	select {
+	case <-peer.Ended:
+		t.Fatalf("socket was revoked while the server stops (close code %d); want no revocation", peer.CloseCode())
+	case <-time.After(time.Second):
+	}
+
+	// The room still reads: a live-context recheck keeps alice's socket.
+	service.recheckAccess(context.Background())
+	select {
+	case <-peer.Ended:
+		t.Fatalf("socket was revoked on a live context while alice is still on the list (close code %d)", peer.CloseCode())
+	case <-time.After(time.Second):
+	}
+	peer.Close()
+}
+
 // TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson: an access re-check walks the
 // sockets recorded when it begins, so a socket whose admission read its room before a re-check
 // began, and that is recorded only after it, is one that re-check never walked. Its admission reads
@@ -269,6 +351,7 @@ func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
 // and his socket's record, has it revoked with the cause on which the provider reconnects, and
 // refused before ygo joins him to the room (revocableSocketWriter answers it as a hidden room).
 func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T) {
+	t.Parallel()
 	const bob = "bob@outside.example"
 	owner := model.Actor{Kind: "user", ID: "alice"}
 	for _, row := range []struct {
@@ -330,6 +413,9 @@ func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T)
 // service must be collected within the leak report's budget (leakWaitBudget), as TestMain
 // requires of every service a test builds.
 func TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive(t *testing.T) {
+	// Not parallel: requireServiceCollected forces collections of the whole process (runtime.GC)
+	// until the service is gone, and the collector is the process's, which the package's parallel
+	// tests run on.
 	var built weak.Pointer[Service]
 	t.Run("the burst", func(t *testing.T) { socketBurstDuringAccessRechecks(t, &built) })
 	requireServiceCollected(t, built)

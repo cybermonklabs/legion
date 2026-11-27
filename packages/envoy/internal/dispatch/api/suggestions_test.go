@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type testSuggestionOwner struct {
@@ -239,22 +242,21 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 	}
 }
 
-// lockedSuggestionAllowance bounds only the time from the call's start to its query queuing
-// behind the test's lock: the project lookup's first statement, or the term picker's statement.
-// The worst whole filing on record under load was 737 ms.
-const lockedSuggestionAllowance = 5 * time.Second
+// lockedCheckStart is where the fake clock of a check suggestionsBehindLock runs stands when the
+// check starts: the check arms its allowance from here.
+var lockedCheckStart = time.Date(2026, time.November, 14, 12, 0, 0, 0, time.UTC)
 
 // suggestionsBehindLock locks table in ACCESS EXCLUSIVE mode, runs the related-item check on a
-// server whose allowance is lockedSuggestionAllowance, and answers what it returned. The call
-// runs on a one-connection store of its own, so the backend the wait watches
+// server whose clock the test moves past the check's allowance (relatedCheckAllowance, the
+// deployment's own) once the call has queued behind the lock, and answers what it returned. The
+// call runs on a one-connection store of its own, so the backend the wait watches
 // (storetest.WaitForQueuedBehind) is the call's and no other. Counting every backend queued
 // behind the lock is not enough: the issue create the tests seed schedules the spec's settlement,
 // which queues behind the same locks on the shared pool, so that count passed a call that never
 // waited (sjawhar/legion#2217 review). It fails at once when the call answers before its own
 // backend has queued behind that lock, so a passing caller's answer is one the allowance ended
-// while the query waited there. Nothing here times the call once it has queued: a step run outside
-// the allowance waits behind the lock until go test's -timeout ends the run, naming the test. The
-// check records nothing: its records are not what these tests are about.
+// while the query waited there, however long a loaded machine took to queue it. The check records
+// nothing: its records are not what these tests are about.
 func suggestionsBehindLock(
 	t *testing.T, deps Deps, table, project, text string, source suggestionSource,
 ) *model.Suggestions {
@@ -279,15 +281,16 @@ func suggestionsBehindLock(
 
 	callDeps := deps
 	callDeps.Store = callStore
+	clock := clocktest.New(lockedCheckStart)
+	callDeps.Clock = clock
 	srv := directServer(callDeps)
-	srv.suggestionTimeout = lockedSuggestionAllowance
 
 	lockTx, err := deps.Store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin lock tx: %v", err)
 	}
-	// The call below ends on its own once its allowance does, so the receive that answers it
-	// returns before this rollback releases the lock.
+	// The call below ends once its allowance does, which the move past it reaches, so the receive
+	// that answers it returns before this rollback releases the lock.
 	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
 	// table is a literal from this file's callers, never input.
 	if _, err := lockTx.Exec(context.Background(), "lock table "+table+" in access exclusive mode"); err != nil {
@@ -299,13 +302,19 @@ func suggestionsBehindLock(
 		answered <- srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: project, text: text, source: source})
 	}()
 	// The wait ends on one of two facts: the call's backend queued behind the lock, which takes
-	// milliseconds, or the call's answer arriving first, which fails the row. It has no bound of its
-	// own: a call that does neither, one stuck somewhere other than this lock, holds it until the
-	// test binary's deadline less testwait's margin, where it fails by name.
+	// milliseconds, or the call's answer arriving first, which fails the row; the call's allowance
+	// ends only by the move below. It has no bound of its own: a call that does neither, one stuck
+	// somewhere other than this lock, holds it until the test binary's deadline less testwait's
+	// margin, where it fails by name.
 	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
-		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want the %s allowance to end while it waits", s, table, lockedSuggestionAllowance)
+		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want its allowance to end while it waits", s, table)
 	}
-	return <-answered
+	// The allowance the check armed on the fake, and the move that reaches it: what ends the call
+	// is the deadline the code set, read from the clock it set it on, and never real time.
+	allowanceEnds := lockedCheckStart.Add(relatedCheckAllowance)
+	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
+	clock.Set(allowanceEnds)
+	return testwait.Receive(t, "the related-item check's answer once its allowance ended", answered)
 }
 
 // TestRelatedCheckRespectsDeadlineUnderLock: a reviewer once measured the decision lookup alone
@@ -350,9 +359,9 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 }
 
 // spentRelatedAllowance is the allowance a case gives the related-item check when its outcome is
-// that no check was made: one already spent, so the check's context ends as relatedBounds makes it
-// (context.WithTimeoutCause ends at once a context whose deadline has passed) and the check reads
-// nothing on any machine. A positive allowance, however small, arms a timer instead, which races
+// that no check was made: one already spent, which relatedBounds ends before it returns
+// (WithTimeoutCause, on either clock), so the check reads nothing on any machine. A positive
+// allowance, however small, arms a timer instead, which races
 // the check's first read on a machine whose clock moves in coarse steps, and whichever won would be
 // the machine's choice.
 const spentRelatedAllowance = -time.Nanosecond

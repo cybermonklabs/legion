@@ -21,6 +21,7 @@ import (
 // Control: refs.CommentsNamingNoNode keeping such a row (the PartiesValue skip in
 // scanCommentRows taken out), under which the tick fails with ErrBadParty and its cursor stays.
 func TestATickPassesOverACommentBetweenRefusedParties(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

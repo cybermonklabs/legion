@@ -131,6 +131,7 @@ func podQOS(spec corev1.PodSpec) corev1.PodQOSClass {
 // the probe's own, which the daemon hands it. A deployment with no `resources` block therefore runs
 // only Guaranteed pods.
 func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -181,16 +182,17 @@ func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 // created the pod, and every issue pod is Burstable. The controller's pod, sized by its own
 // reservation, and the image probe's, sized by the probe's, stay Guaranteed.
 func TestARequestBelowItsLimitRendersABurstablePod(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
-	bursting := config.Reservation{CPU: "3", CPURequest: "3", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
+	bursting := config.Reservation{CPU: "2", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
 	opts.Resources.Issue = requirementsOf(bursting)
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatalf("configure with the issue pod requesting 8Gi under a 32Gi limit: %v", err)
 	}
 	want := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("32Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("32Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 	}
 	for name, spec := range map[string]runtime.SpawnSpec{"root": rootSpec(t), "implementer": childSpec(t)} {
 		t.Run(name, func(t *testing.T) {
@@ -240,12 +242,12 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		"worker":            {spec: workerSpec(t)},
 		"claude-worker":     {spec: claudeWorkerSpec(t)},
 		"resume":            {spec: resume},
-		"controller":        {spec: controllerSpec(t)},
+		"controller":        {spec: controllerSpec(t), controllerAccount: goldenControllerAccount},
 		"controller-resume": {spec: controllerResume},
 		// controller-microvm is the controller's pod of root-microvm's project, whose type is
 		// microvm: the pod runs in a microVM and serves the metadata endpoint, on its Sandbox's disk
 		// of runtime.kubernetes.storage_class (TestTheControllerPodRunsInTheProjectsSandbox).
-		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, controllerAccount: goldenControllerAccount},
 		"root-enrolled":      {spec: rootSpec(t), agentSecrets: rootEnrolled()},
 		"root-microvm":       {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
 		// root-microvm-kept is root-microvm with keep_volume on: the one case whose issue Sandbox
@@ -258,22 +260,31 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 	}
 }
 
+// goldenControllerAccount is the controller goldens'
+// runtime.kubernetes.pod.controller_service_account.
+const goldenControllerAccount = "legion-controller"
+
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the
 // runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled and
-// root-exchange-identity alone, and sandbox, the sandbox block, for root-microvm,
-// root-microvm-kept and controller-microvm alone. The tests that build every case's manifest on one
-// shared runtime apply each case to it first (apply), so every other case runs unenrolled and in
-// gVisor.
+// root-exchange-identity alone, sandbox, the sandbox block, for root-microvm, root-microvm-kept and
+// controller-microvm alone, and controllerAccount, the runtime's
+// runtime.kubernetes.pod.controller_service_account, for controller and controller-microvm. The
+// tests that build every case's manifest on one shared runtime apply each case to it first
+// (apply), so every other case runs unenrolled and in gVisor, and controller-resume keeps the pods'
+// own service_account (none in these settings) where the two controller goldens pin the account
+// their pods run as when the key is set.
 type manifestCase struct {
-	spec         runtime.SpawnSpec
-	agentSecrets *AgentSecrets
-	sandbox      SandboxConfig
+	spec              runtime.SpawnSpec
+	agentSecrets      *AgentSecrets
+	sandbox           SandboxConfig
+	controllerAccount string
 }
 
 // apply sets on r what the case configures beside goldenOptions, and the pod shapes that sandbox
 // block gives r, which configure encodes once from the block it is built with (podShapes).
 func (c manifestCase) apply(r *Runtime) {
 	r.agentSecrets, r.sandboxConfig = c.agentSecrets, c.sandbox
+	r.pod.ControllerServiceAccount = c.controllerAccount
 	r.podShapes = podShapes(r)
 }
 
@@ -295,6 +306,7 @@ func manifestOf(t *testing.T, r *Runtime, spec runtime.SpawnSpec) any {
 // The goldens pin every byte of the Sandboxes a launch creates. A pod contract change shows
 // here as a diff to read, never as a surprise in a cluster.
 func TestManifestGoldens(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -312,6 +324,7 @@ func TestManifestGoldens(t *testing.T) {
 // judges: the golden is the pod a live run's daemon builds from that fixture, so the shape's rules
 // are run against what the renderer puts where (scripts/e2e/lib/stage4b-pods.test.ts).
 func TestOperatorRouteGolden(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.Pod = operatorRouteFixture(t)
 	r, err := configure(opts)
@@ -362,6 +375,7 @@ func checkGolden(t *testing.T, name string, manifest any) {
 // (podShapeDrift), written here and nowhere else; and, under a configured leak check setting, the
 // checker it was built under (leakCheckerAnnotation), which a launch keeping the pod tells its role.
 func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -391,6 +405,7 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 // an unknown field without a word, so this walk is the only place a misspelled or misplaced one
 // shows (decision 9, N18).
 func TestManifestMatchesTheSandboxCRD(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -410,6 +425,7 @@ func TestManifestMatchesTheSandboxCRD(t *testing.T) {
 // variable, an account, and the providers Secret's keys — is sent in fields the CRD declares, in
 // the worker's Sandbox and the probe's alike, so the API server keeps every one of them.
 func TestTheOperatorsPodIsSentInFieldsTheSandboxCRDDeclares(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.Pod = operatorPod()
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
@@ -519,6 +535,7 @@ func mountHolding(c corev1.Container, path string) *corev1.VolumeMount {
 // over the pod's one directory of its own — legion's in the image; no directory of the tree volume,
 // since the agent's gh is the image's — never a path list (P3).
 func TestPIShellPrefixIsTmuxsFormOverThePodsDirectories(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -539,6 +556,7 @@ func TestPIShellPrefixIsTmuxsFormOverThePodsDirectories(t *testing.T) {
 // git runs `git credential fill` in a directory that is no repository, with a stand-in `legion`
 // first on PATH, for a workflow role and the controller alike.
 func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git in this environment")
 	}
@@ -613,6 +631,7 @@ func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
 // one's PATH names the image's directories only, and neither is told a tool path (#1258 deep
 // review, finding 3).
 func TestTheInitContainersPathNamesNoIssueVolumeDirectory(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -648,6 +667,7 @@ func TestTheInitContainersPathNamesNoIssueVolumeDirectory(t *testing.T) {
 // directory ones, so nothing of the issue's scratch reaches a container that holds the
 // provisioning token or provisions the issue's clone.
 func TestBothContainersShareOneInMemoryXDGConfigHome(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -711,6 +731,7 @@ func TestBothContainersShareOneInMemoryXDGConfigHome(t *testing.T) {
 // `git status` and `git commit`. The same git without the pairs runs both, so the plant is live.
 // These are the two settings the pairs turn off; others a role can plant still run.
 func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
+	t.Parallel()
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("this test runs the real git: %v", err)
@@ -801,6 +822,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 // system file: with GIT_CONFIG_SYSTEM naming a file that sets pack.windowMemory 256m, which the
 // same git without the block reads, the role's git reads 64m.
 func TestEveryRolesGitMapsPacksInSmallWindows(t *testing.T) {
+	t.Parallel()
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("this test runs the real git: %v", err)
@@ -903,6 +925,7 @@ func mustRead(t *testing.T, path string) []byte {
 // those three, exactly as the shared six are
 // (TestTheIssuesRolesShareOneScratchAndOneGoCachePair).
 func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -974,6 +997,7 @@ func roleSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 // scratch that stays one per role, for the browser broker's lock
 // (TestEachRolesAgentIsToldAStateHomeOfItsOwn).
 func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1024,6 +1048,7 @@ func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 // installed per pod and never kept past it. The controller's pod is in the cases here too: it
 // writes to GitHub as a role does, and its one container mounts the same volume at TreeRoot.
 func TestEveryRoleIsToldTheLeakCheckItsPodInstalls(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1055,6 +1080,7 @@ func TestEveryRoleIsToldTheLeakCheckItsPodInstalls(t *testing.T) {
 // a reason of their own, so neither a new directory of the issue's scratch nor a new per-role one
 // can appear that nothing makes.
 func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1096,6 +1122,7 @@ func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
 // every pod, and the interpreter directory is the issue's, so two pods of one issue name the same
 // paths on disks of their own, and a second issue of the tree names another.
 func TestUvKeepsItsPythonsAndCacheOnTheIssueVolume(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1138,6 +1165,7 @@ func TestUvKeepsItsPythonsAndCacheOnTheIssueVolume(t *testing.T) {
 // Options field needs an IP: the manifest carries each exactly as configured, on every role
 // launcher's --connect and in the worker process the start command runs.
 func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.StreamURL = "tcp://legion-daemon-widgets.legion.svc:13371"
 	opts.DaemonURL = "http://legion-daemon-widgets.legion.svc:13370"
@@ -1193,6 +1221,7 @@ func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
 // daemon read a push's App from the App that made it, and so tell the review App's red tests
 // from the implementer's code.
 func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	// An operator pod with volumes and mounts of its own, so the no-operator-mount assertion
 	// below has something to find: with none configured, that check would pass on a manifest
@@ -1372,6 +1401,7 @@ func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testin
 
 // A launch the runtime cannot honour exactly is refused before any API call.
 func TestALaunchItCannotHonourIsRefused(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1413,6 +1443,7 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 // each refusal naming the role. A request below its limit is a reservation
 // (TestARequestBelowItsLimitRendersABurstablePod).
 func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		edit func(*Options)
 		want string
@@ -1424,7 +1455,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"relative tool":             {func(o *Options) { o.Tools.Git = "git" }, "git path \"git\" is not absolute"},
 		"bad project":               {func(o *Options) { o.Project = "s4a run" }, "is not a label value"},
 		"url no bearer":             {func(o *Options) { o.DispatchURL = "https://dispatch.internal" }, "configured together"},
-		"bearer no url":             {func(o *Options) { o.DispatchToken = "dispatch-bearer" }, "configured together"},
+		"bearer no url":             {func(o *Options) { o.Dispatch.Bearer = "dispatch-bearer" }, "configured together"},
 		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool is the runtime's"},
 		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool is the runtime's"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
@@ -1443,15 +1474,15 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"no session store": {func(o *Options) { o.SessionStore = ompsessions.Store{} }, "no session store that keeps sessions in a database"},
 		"cpu request past limit": {
 			func(o *Options) {
-				o.Resources.Issue.Requests[corev1.ResourceCPU] = resource.MustParse("3500m")
+				o.Resources.Issue.Requests[corev1.ResourceCPU] = resource.MustParse("2500m")
 			},
-			"the issue pod requests cpu 3500m past its limit 3",
+			"the issue pod requests cpu 2500m past its limit 2",
 		},
 		"memory request past limit": {
 			func(o *Options) {
-				o.Resources.Issue.Requests[corev1.ResourceMemory] = resource.MustParse("20Gi")
+				o.Resources.Issue.Requests[corev1.ResourceMemory] = resource.MustParse("9Gi")
 			},
-			"the issue pod requests memory 20Gi past its limit 19Gi",
+			"the issue pod requests memory 9Gi past its limit 8Gi",
 		},
 		"no memory": {
 			func(o *Options) {
@@ -1495,6 +1526,31 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 			},
 			"no storage class for the disks of the issue pods that run in a microVM",
 		},
+		"broker no url": {
+			func(o *Options) { o.AgentSecrets, o.Dispatch.Broker = exchangeEnrolled(), true },
+			"configured together",
+		},
+		"bearer and broker": {
+			func(o *Options) {
+				o.DispatchURL, o.AgentSecrets = "https://dispatch.internal", exchangeEnrolled()
+				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Broker: true}
+			},
+			"Dispatch.Bearer is given beside Dispatch.Broker",
+		},
+		"transition without the broker": {
+			func(o *Options) {
+				o.DispatchURL = "https://dispatch.internal"
+				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Transition: "dispatch-transition"}
+			},
+			"Dispatch.Transition is given without Dispatch.Broker",
+		},
+		"the broker without an exchange audience": {
+			func(o *Options) {
+				o.DispatchURL, o.Dispatch.Broker = "https://dispatch.internal", true
+				o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+			},
+			"Dispatch.Broker is set but AgentSecrets names no exchange audience",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
@@ -1520,13 +1576,14 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 // (roleOperatorEnv), and every launch has a role, so the spend attributes are in every one of
 // these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
+	t.Parallel()
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
 		"the exchange identity off": rootEnrolled(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
-			opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+			opts.DispatchURL, opts.Dispatch = "https://dispatch.internal", DispatchCredential{Bearer: "dispatch-bearer"}
 			opts.AgentSecrets = agentSecrets
 			opts.TestPostgres = true
 			r, err := configure(opts)
@@ -1564,6 +1621,7 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 // rather than an empty one, and the controller's pod, which works no repository and no issue,
 // carries none under any spec (validateControllerShape refuses one that asks).
 func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1607,6 +1665,7 @@ func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
 // are no part of runtimeOwned, which a spec may not set — and the controller's pod is told them
 // exactly as a phase worker's is.
 func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1643,8 +1702,9 @@ func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 // without any role it re-adopts being relaunched (evaluate). A workflow role's launch and the
 // controller's, each enrolled with the secrets broker here, are each held to that one list.
 func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
 	if err != nil {
@@ -1691,10 +1751,12 @@ func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 	}
 }
 
-// The Dispatch bearer is the runtime's to carry, not the spec's: with Dispatch configured, every
-// claim's Secret holds it as DISPATCH_TOKEN and the worker container reads it through
+// The Dispatch bearer is the runtime's to carry, not the spec's: with Dispatch configured with
+// one, every launch carries it as DISPATCH_TOKEN in its start command's Files, which the launcher
+// writes into the generation's private directory, and the worker container reads it through
 // DISPATCH_TOKEN_FILE; without it, neither exists.
 func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		url, bearer string
 	}{
@@ -1703,7 +1765,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
-			opts.DispatchURL, opts.DispatchToken = tc.url, tc.bearer
+			opts.DispatchURL, opts.Dispatch = tc.url, DispatchCredential{Bearer: tc.bearer}
 			r, err := configure(opts)
 			if err != nil {
 				t.Fatal(err)
@@ -1714,7 +1776,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 			}
 			pointer, pointed := envOf(workerOf(t, r, workerSpec(t)))["DISPATCH_TOKEN_FILE"]
 			if got := l.secrets[dispatchTokenKey]; got != tc.bearer || pointed != (tc.bearer != "") {
-				t.Fatalf("the claim's Secret carries %q as %s and DISPATCH_TOKEN_FILE is %q (set: %t), want %q",
+				t.Fatalf("the launch carries %q as %s and DISPATCH_TOKEN_FILE is %q (set: %t), want %q",
 					got, dispatchTokenKey, pointer, pointed, tc.bearer)
 			}
 			if want := generationDir(workerSpec(t).Generation) + "/" + dispatchTokenKey; pointed && pointer != want {
@@ -1728,6 +1790,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 // spec names as GitHub does, slash and all: the init container's command passes it verbatim as
 // --default-branch's value, and no container of the pod is told main.
 func TestTheInitContainerProvisionsAtTheSpecsDefaultBranch(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1750,6 +1813,7 @@ func TestTheInitContainerProvisionsAtTheSpecsDefaultBranch(t *testing.T) {
 // key directory, the two AGENT_SECRETS_* variables, and the shim's three flags. The probe pod
 // carries none of it: it runs no shim and enrolls nothing.
 func TestAPodCarriesLegionsTokenExactlyWhenItIsEnrolled(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		secrets *AgentSecrets
 		account string
@@ -1844,6 +1908,7 @@ func TestAPodCarriesLegionsTokenExactlyWhenItIsEnrolled(t *testing.T) {
 // the launch (cmd/legion/worker_shim.go). The controller's shim, whose pod has no workspace, is
 // not (TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree).
 func TestATreeRolesShimIsToldToWarmTheWorkspacesCodegraphIndex(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1870,6 +1935,7 @@ func TestATreeRolesShimIsToldToWarmTheWorkspacesCodegraphIndex(t *testing.T) {
 // enrollment's or exchange audience that is the Workload Identity pool a microVM pod's metadata
 // endpoint holds a token for (the same rule), or the image's agent-secrets binary missing.
 func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		edit func(*Options)
 		want string
@@ -1914,6 +1980,7 @@ func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 // uses (a gVisor project with no canary), since no pod carries the pool's token: a block kept for a
 // revert changes nothing.
 func TestNewAcceptsABrokerAudienceEqualToThePoolOfABlockNoPodUses(t *testing.T) {
+	t.Parallel()
 	unused := SandboxConfig{Type: SandboxGVisor, MicroVM: testMicroVM()}
 	for name, secrets := range map[string]*AgentSecrets{
 		"the enrollment's audience": {URL: "https://s", Audience: testWorkloadPool, TokenExpiry: time.Hour},
@@ -1929,6 +1996,7 @@ func TestNewAcceptsABrokerAudienceEqualToThePoolOfABlockNoPodUses(t *testing.T) 
 // (it requires compute_class only while an issue pod runs in a microVM), so a revert that empties
 // canary_issues can leave such a block in place.
 func TestNewAcceptsAMicroVMBlockNoPodUsesWithNoComputeClass(t *testing.T) {
+	t.Parallel()
 	sandboxRuntime(t, SandboxConfig{Type: SandboxGVisor, MicroVM: &MicroVM{StorageClass: testMicroVMStorageClass}})
 }
 
@@ -1971,6 +2039,7 @@ func operatorPod() Pod {
 // is what makes it the Legion daemon service's own pod to the secrets broker, so it is granted the
 // secrets that service owns.
 func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.Pod = operatorPod()
 	r, err := configure(opts)
@@ -2031,6 +2100,49 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 	}
 }
 
+// The controller's pod runs as runtime.kubernetes.pod.controller_service_account where the
+// operator names one, fresh and resuming alike, and as pod.service_account where not, so a
+// deployment that names no controller account runs its controller exactly as before. Every other
+// pod Legion runs — an issue pod, whichever role's launch builds it, the image probe's and a
+// repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
+// the controller alone.
+func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	resume := controllerSpec(t)
+	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
+	for name, tc := range map[string]struct{ pods, controller, wantController string }{
+		"both named":                              {"operator-worker", "legion-controller", "legion-controller"},
+		"the controller's alone named":            {"", "legion-controller", "legion-controller"},
+		"the pods' alone named":                   {"operator-worker", "", "operator-worker"},
+		"neither named, every pod on the default": {"", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := goldenOptions()
+			opts.Pod.ServiceAccount, opts.Pod.ControllerServiceAccount = tc.pods, tc.controller
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for pod, spec := range map[string]runtime.SpawnSpec{"controller": controllerSpec(t), "resuming controller": resume} {
+				if got := podOf(t, r, spec).ServiceAccountName; got != tc.wantController {
+					t.Errorf("the %s's pod runs as %q, want %q", pod, got, tc.wantController)
+				}
+			}
+			others := map[string]corev1.PodSpec{
+				"root":             podOf(t, r, rootSpec(t)),
+				"worker":           podOf(t, r, workerSpec(t)),
+				"implementer":      podOf(t, r, childSpec(t)),
+				"image probe":      r.probeManifest(probeSandboxName, ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec,
+				"repository cache": r.cachePodTemplate(CacheSandboxName(testProject, cacheRepo), cacheRepo).Spec,
+			}
+			for pod, spec := range others {
+				if spec.ServiceAccountName != tc.pods {
+					t.Errorf("the %s pod runs as %q, want pod.service_account %q", pod, spec.ServiceAccountName, tc.pods)
+				}
+			}
+		})
+	}
+}
+
 // The providers Secret — the TypeScript runtime's legion-<project token>-providers — reaches every
 // pod Legion runs, a worker's and the image probe's alike, as exactly its configured keys, read-only
 // at ProvidersDir in the agent's container alone: each provider key as a file named for the variable
@@ -2042,6 +2154,7 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 // is still mounted under the postgres store, holding the session database's URL alone, so no pod of
 // that store runs without the volume and no shim without the directory.
 func TestTheProvidersSecretReachesEveryPodAsItsOwnFiles(t *testing.T) {
+	t.Parallel()
 	const providersSecret = "legion-" + testProject + "-providers"
 	const seed = "SUAIBDPBAUTWCWBKIO6XHQNINK5FWJW4OHLXC3HQ2KFE4PEJUA44CNHTC4"
 	nats := []string{"NATS_NKEY_SEED"}
@@ -2153,6 +2266,7 @@ func TestTheProvidersSecretReachesEveryPodAsItsOwnFiles(t *testing.T) {
 // colliding with a launch secret's pointer, which is what keeps a providers secret's file and
 // pointer the runtime's alone.
 func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.LaunchSecrets, opts.ProvidersSecrets = []string{"ENVOY_TOKEN"}, []string{"NATS_NKEY_SEED"}
 	if _, err := configure(opts); err == nil || err.Error() != "sandbox runtime: providers secret NATS_NKEY_SEED is not a launch secret (ENVOY_TOKEN)" {
@@ -2175,8 +2289,9 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 // to a pod and not to its list is one an operator could collide with unrefused; one left in a
 // list that no pod carries is refused for nothing.
 func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
 	// With every optional piece configured: the pod's own test database is one (testPGVolume), and
 	// a microVM project's metadata endpoint another (workloadIdentityTokenVolume, under RolesDir in
@@ -2271,6 +2386,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 // profile's agent directory, and a Claude role's bun, claude-envoy root and the Claude Code pin its
 // start script installs from. Claude Code itself is not one: the image carries none.
 func TestImageOwnedPathsCoverWhatAPodRunsFromTheImage(t *testing.T) {
+	t.Parallel()
 	for _, used := range []string{
 		defaultAgent, envoyPlugin, legionPlugin, testOptions().Tools.Legion,
 		ompProfileDir + "/plugins/node_modules", ompAgentDir + "/agent.db", ompAgentDir + "/models.db",
@@ -2296,6 +2412,7 @@ func TestImageOwnedPathsCoverWhatAPodRunsFromTheImage(t *testing.T) {
 // microVM pod — an issue's whose issue runs in one (SandboxConfig.Of), or the controller's of a
 // microvm project (SandboxConfig.Controller) — those and its ComputeClass's label and taint alone.
 func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -2316,6 +2433,11 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 			expected := want
 			if tc.spec.Role == claim.RoleController {
 				expected = slices.DeleteFunc(slices.Clone(want), func(key string) bool { return key == "initContainers" })
+				if tc.controllerAccount != "" {
+					// The case's controller_service_account names the controller pod's account.
+					expected = append(expected, "serviceAccountName")
+					slices.Sort(expected)
+				}
 			}
 			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
 				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
@@ -2349,6 +2471,7 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 // (TestManifestMatchesTheSandboxCRD). The one exception is a microVM pod under keep_volume, whose
 // Sandbox owns its kept volume (TestOnlyAMicroVMPodKeepsItsVolume), so its case is left out here.
 func TestAnIssuePodOwnsItsDiskAndItsSandboxOwnsNoVolume(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	r, err := configure(opts)
 	if err != nil {
@@ -2399,6 +2522,7 @@ func TestAnIssuePodOwnsItsDiskAndItsSandboxOwnsNoVolume(t *testing.T) {
 // restricted identity has no PVC verb, so the labels the claim is created with are the labels it
 // keeps for life (LEGION-632).
 func TestTheControllersClaimTemplateCarriesItsProjectAndRoleAlone(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -2559,6 +2683,7 @@ func checkNoMetadataEndpoint(t *testing.T, pod corev1.PodSpec) {
 // legion.dev/sandbox label, no compute class selector or toleration, no --microvm — and no part of
 // the metadata endpoint, which the inert block names.
 func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
+	t.Parallel()
 	for name, block := range map[string]SandboxConfig{
 		"no sandbox block":                     {},
 		"gvisor beside an inert microvm block": {Type: SandboxGVisor, MicroVM: testMicroVM()},
@@ -2570,8 +2695,9 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 					continue
 				}
 				t.Run(name, func(t *testing.T) {
-					// The case's enrollment alone: its sandbox, gVisor's, is the block's here.
-					r.agentSecrets = tc.agentSecrets
+					// The case's enrollment and controller account alone: its sandbox, gVisor's, is
+					// the block's here.
+					r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 					checkGolden(t, name, manifestOf(t, r, tc.spec))
 					template := r.podTemplate(launchOf(t, r, tc.spec))
 					if got := renderedSandbox(t, template); got != SandboxGVisor {
@@ -2597,6 +2723,7 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 // beside them, the tolerations the pool's and the operator's with the class's taint after them, and
 // the pod is labelled legion.dev/sandbox=microvm, the label a NetworkPolicy selects it by.
 func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
+	t.Parallel()
 	dedicated := corev1.Toleration{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, func(o *Options) {
 		o.Scheduling.NodeSelector = map[string]string{"kubernetes.io/arch": "amd64"}
@@ -2631,6 +2758,7 @@ func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 // issue's exact key: a key the list's entry is only a prefix of takes the type, and the zero
 // value, which no loaded file holds, reads as gVisor.
 func TestAnIssuesSandboxIsTheTypeOrTheOtherOneForItsExactKeyOnTheCanaryList(t *testing.T) {
+	t.Parallel()
 	gVisorProject := SandboxConfig{Type: SandboxGVisor, CanaryIssues: []string{"LEGSMOKE-7"}}
 	microVMProject := SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGSMOKE-7"}}
 	for _, tc := range []struct {
@@ -2657,6 +2785,7 @@ func TestAnIssuesSandboxIsTheTypeOrTheOtherOneForItsExactKeyOnTheCanaryList(t *t
 // other issue's in gVisor, as a project with no sandbox block renders it: the root's Sandbox is its
 // golden byte for byte.
 func TestACanaryIssueOfAGVisorProjectRendersAMicroVMPod(t *testing.T) {
+	t.Parallel()
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxGVisor, CanaryIssues: []string{"LEGION-209"}, MicroVM: testMicroVM()})
 	if got := renderedSandbox(t, r.podTemplate(launchOf(t, r, childSpec(t)))); got != SandboxMicroVM {
 		t.Errorf("the canary LEGION-209's pod runs in %s, want a microVM", got)
@@ -2671,6 +2800,7 @@ func TestACanaryIssueOfAGVisorProjectRendersAMicroVMPod(t *testing.T) {
 // does not name: its Sandbox is the one a project with no sandbox block renders for it, while every
 // other issue's pod runs in a microVM.
 func TestAnIssueOfAMicroVMProjectOnTheCanaryListRendersAGVisorPod(t *testing.T) {
+	t.Parallel()
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGION-209"}, MicroVM: testMicroVM()})
 	if got := renderedSandbox(t, r.podTemplate(launchOf(t, r, childSpec(t)))); got != SandboxGVisor {
 		t.Errorf("the canary LEGION-209's pod runs in %s, want gVisor", got)
@@ -2722,6 +2852,7 @@ runtime:
 // runtime.kubernetes.storage_class (config's readMicroVM), and the daemon hands the runtime that
 // class as the block's (internal/daemon/kubernetes.go, sandboxConfig).
 func TestAMicroVMPodTakesTheMicroVMStorageClassOrTheDaemons(t *testing.T) {
+	t.Parallel()
 	t.Run("the block's own class", func(t *testing.T) {
 		r := sandboxRuntime(t, SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: testMicroVM()})
 		for what, tc := range map[string]struct {
@@ -2765,6 +2896,7 @@ func TestAMicroVMPodTakesTheMicroVMStorageClassOrTheDaemons(t *testing.T) {
 // loader refuses a value that is not a boolean with a line that names the key (config's
 // readMicroVM).
 func TestTheMicroVMKeepVolumeKey(t *testing.T) {
+	t.Parallel()
 	const key = "runtime.kubernetes.sandbox.microvm.keep_volume"
 	var row *config.ConfigNestedKey
 	for _, entry := range config.ConfigReference() {
@@ -2826,6 +2958,7 @@ func TestTheMicroVMKeepVolumeKey(t *testing.T) {
 // other Sandbox, the controller's `issue` template included, as not kept. With the setting off, a
 // microVM project's root is the root-microvm golden byte for byte.
 func TestOnlyAMicroVMPodKeepsItsVolume(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	specs := map[string]runtime.SpawnSpec{"LEGION-208": rootSpec(t), "LEGION-209": childSpec(t)}
 	for name, tc := range map[string]struct {
@@ -2892,6 +3025,8 @@ func TestOnlyAMicroVMPodKeepsItsVolume(t *testing.T) {
 			if tc.block.Controller() == SandboxMicroVM {
 				controllerGolden = "controller-microvm"
 			}
+			// Each controller golden's controller_service_account, as its manifest case sets it.
+			r.pod.ControllerServiceAccount = manifestCases(t)[controllerGolden].controllerAccount
 			checkGolden(t, controllerGolden, manifestOf(t, r, controllerSpec(t)))
 			if decoded, stored := keptReadings(t, r.sandboxManifest(launchOf(t, r, controllerSpec(t)))); decoded || stored {
 				t.Errorf("the controller's Sandbox reads as kept %v decoded and %v stored, want neither", decoded, stored)
@@ -2920,6 +3055,7 @@ func keptReadings(t *testing.T, s sandbox) (decoded, stored bool) {
 // (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction): the sandbox it runs in changes
 // nothing of what asks the autoscaler to leave its node alone.
 func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
+	t.Parallel()
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
 	template := r.podTemplate(launchOf(t, r, rootSpec(t)))
 	if got := renderedSandbox(t, template); got != SandboxMicroVM {
@@ -2940,6 +3076,7 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 // as the operator wrote it. A gVisor pod of the same project keeps the operator's class, and the
 // operator's scheduling itself is left as it was.
 func TestAMicroVMPodToleratesItsComputeClass(t *testing.T) {
+	t.Parallel()
 	scaleOut := computeClassToleration("Scale-Out")
 	dedicated := corev1.Toleration{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}
 	r := sandboxRuntime(t, SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: testMicroVM()}, func(o *Options) {
@@ -2976,6 +3113,7 @@ func TestAMicroVMPodToleratesItsComputeClass(t *testing.T) {
 // this gVisor project: its canary list names an issue, which never moves the controller's pod into
 // a microVM (SandboxConfig.Controller; TestTheControllerPodRunsInTheProjectsSandbox).
 func TestOnlyAMicroVMPodCarriesTheSandboxLabel(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Sandbox = SandboxConfig{CanaryIssues: []string{testTree}, MicroVM: testMicroVM()}
 	}))
@@ -3031,6 +3169,7 @@ func TestOnlyAMicroVMPodCarriesTheSandboxLabel(t *testing.T) {
 // project with no sandbox block renders, byte for byte. Each pod logs one line of its placement
 // and of its launcher's sandbox flags, and the controller's pod one of its disk.
 func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
+	t.Parallel()
 	scaleOut := computeClassToleration("Scale-Out")
 	dedicated := corev1.Toleration{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}
 	scheduling := func(o *Options) {
@@ -3237,6 +3376,7 @@ func sandboxFlags(command []string) string {
 // namespace covers, and in no role's own directory there, which role-init binds back, nor in the
 // role homes. The launcher is told --microvm and the endpoint's pool and identity provider.
 func TestAMicroVMPodWithMetadataMountsAProjectedTokenNoRoleSees(t *testing.T) {
+	t.Parallel()
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
 	pod := podOf(t, r, rootSpec(t))
 	var tokens []corev1.Volume
@@ -3295,6 +3435,7 @@ func TestAMicroVMPodWithMetadataMountsAProjectedTokenNoRoleSees(t *testing.T) {
 // carries none of them and no --microvm either, beside a canary whose block names the endpoint as
 // in a project that names no sandbox.
 func TestAMicroVMPodWithoutMetadataMountsNoToken(t *testing.T) {
+	t.Parallel()
 	block := testMicroVM()
 	block.Metadata = nil
 	r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block})
@@ -3353,6 +3494,7 @@ func kubeExpand(input string, env map[string]string) string {
 // env values mean what they say in a pod as in a pane. The `roles` container's own command and
 // env, which the kubelet does expand, still survive it.
 func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -3396,9 +3538,9 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 	}
 }
 
-// uuid is the form a Claude Code session id takes (claudelaunch.NewSessionID), the only word of a
-// Claude launch's agent command that is not fixed.
-var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+// claudeSessionForm is the form a Claude Code session id takes (claudelaunch.NewSessionID), the
+// only word of a Claude launch's agent command that is not fixed.
+var claudeSessionForm = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // A Claude Code role's pod runs Claude Code under `legion claude-bridge`, word for word: the
 // Claude Code this generation's start script installed under the role's state home on the issue's
@@ -3413,6 +3555,7 @@ var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a
 // own, so a later generation names its own install, never the one its start script has just
 // removed.
 func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	r, err := configure(opts)
 	if err != nil {
@@ -3430,7 +3573,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	session := ""
 	if at := slices.Index(argv, "--session-id"); at < 0 || at+1 == len(argv) {
 		t.Fatalf("the agent command %q names no --session-id", argv)
-	} else if session = argv[at+1]; !uuid.MatchString(session) {
+	} else if session = argv[at+1]; !claudeSessionForm.MatchString(session) {
 		t.Errorf("the session is %q, want a version 4 uuid", session)
 	}
 	claude := func(generation uint64) string {
@@ -3476,6 +3619,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 // that finishes wakes a turn of Claude Code's own, which the bridge reports to the daemon as a
 // turn, so the name is not the runtime's and an operator's pod may carry it.
 func TestOnlyAClaudeWorkerIsToldClaudeCodesOwnVariables(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -3509,6 +3653,7 @@ func TestOnlyAClaudeWorkerIsToldClaudeCodesOwnVariables(t *testing.T) {
 // starts (internal/launcher). prepare is where the rule is applied, so a Claude claim still
 // recording an Oh My Pi session is refused there, naming the backend change that left it recorded.
 func TestAResumingClaudePodContinuesItsTranscriptByItsID(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -3544,6 +3689,7 @@ func TestAResumingClaudePodContinuesItsTranscriptByItsID(t *testing.T) {
 // Oh My Pi session file, or a name that is no session id is refused, and a session of the other
 // harness is refused naming the backend change that left it recorded.
 func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -3584,6 +3730,7 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 // binary.) Its place in the argv is fixed here, after the two extension roots and before
 // `--resume`. A Claude role's command is claudelaunch's and names no model at all.
 func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -3620,6 +3767,7 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 // Claude Code role that resumes its transcript. The variable is the start command's alone: no
 // container of the pod carries it, so a resume changes nothing of the pod it relaunches in.
 func TestOnlyAResumedOhMyPiLaunchIsHeldToItsSession(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // readCountingDocs counts every read of a document's rendering a route can make.
@@ -78,7 +78,7 @@ func renderedMentionExcerpt(t *testing.T, service *docs.Service, artifactID, ref
 		t.Fatalf("no block of %s holds %s at %d: %#v", artifactID, reference, offset, blocks)
 	}
 	block := blocks[holder]
-	return model.GraphExcerpt{BlockID: block.ID, Text: text.HeadRunes(markdown[block.From:block.To], refs.BlockExcerptRunes)}
+	return model.GraphExcerpt{BlockID: block.ID, Text: refs.BlockExcerpt(markdown[block.From:block.To], "https://dispatch.example")}
 }
 
 // documentMention is the mention of reference written by the document artifactID, whose ref_key

@@ -628,10 +628,13 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 		t.Fatalf("resolved %q (%q), want the unresponsive holder s1", id, title)
 	}
 
-	gone, _, refused, _ := served.resolveDeliveryTarget(
-		context.Background(), model.Route{Kind: "session", ID: "s2"}, "steer",
+	// The session is resolved as the server's own reader, by name, as the delivery sweep resolves
+	// one: with no reader in ctx the resolve answers a session nobody sees, in the same words, and
+	// the gone record would decide nothing.
+	gone, _, refused, hidden := served.resolveDeliveryTarget(
+		withReader(context.Background(), everyReader), model.Route{Kind: "session", ID: "s2"}, "steer",
 	)
-	if gone != "s2" || refused != "no live session s2" {
-		t.Fatalf("a session the registry calls gone resolved %q with %q, want it refused as no live session", gone, refused)
+	if gone != "s2" || refused != "no live session s2" || hidden {
+		t.Fatalf("a session the registry calls gone resolved %q with %q (hidden %t), want it refused as no live session by its record", gone, refused, hidden)
 	}
 }

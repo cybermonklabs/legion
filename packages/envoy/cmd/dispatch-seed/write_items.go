@@ -77,7 +77,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if err := store.LockOwners(ctx, tx, owners...); err != nil {
 			return fmt.Errorf("the asks' owners: %w", err)
 		}
-		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
 			return fmt.Errorf("the asks' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
@@ -184,7 +184,10 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// and runs the plan's statements at once, as a batch of their own, the way a writer
 			// that queues no write phase indexes an item it wrote (refs.IndexItem). The parts
 			// are read through a reader of the ask's own (refs.NewReader), as every other write
-			// of an ask reads them.
+			// of an ask reads them. A write of the parts alone reconciles the question's own
+			// references after them and settles the ask's row of the forms queue there
+			// (refs.Replacement.SettlingForms), planned against no edge: the ask's row has just
+			// been inserted, so it holds none yet.
 			partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
@@ -194,8 +197,10 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			questionRefs := refs.PlanReplaceFrom(nil, "ask", stored.ID, text.Refs(reader.Mentions(stored.Question)), &ask.CreatedAt).SettlingForms()
 			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 				parts.Queue(b)
+				questionRefs.Queue(b)
 				return nil
 			}); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
@@ -226,14 +231,6 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
-}
-
-// writeItemNodes writes the nodes of the asks or the messages one batch copies, before any row of
-// the batch, each in its project (seedRun.itemProject), at the sentinel, as every write of the
-// seed's is. The rows carry no foreign key into the store, so where they fall beside this moves no
-// lock of the store's order.
-func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
-	return graphstore.Write(ctx, tx, nodes, nil)
 }
 
 // itemProject is the project of an item of the plan: its issue's, or its document's where it
@@ -404,7 +401,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// stored body second is the order the write and the edit ran in, and it leaves
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
+				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer, seedOrigins.Canonical(),
 					comment.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
 				}
@@ -414,7 +411,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
 			located := text.ExtractAt(body, seedOrigins)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, seedOrigins.Canonical(), at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
 			}
@@ -499,7 +496,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		if err := store.LockOwners(ctx, tx, owners...); err != nil {
 			return fmt.Errorf("the messages' owners: %w", err)
 		}
-		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
 			return fmt.Errorf("the messages' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
@@ -526,13 +523,13 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
+				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer, seedOrigins.Canonical(),
 					message.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
 				}
 			}
 			located := text.ExtractAt(body, seedOrigins)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body, seedOrigins.Canonical(),
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)
 			}

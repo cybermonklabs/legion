@@ -545,7 +545,7 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 	t.Run("the socket ends", func(t *testing.T) {
 		// The socket's end ends the subscription's context too, which derives from the socket's, and
 		// SendWait answers the socket's end whichever of the two it sees first.
-		socket := newLiveSocket(context.Background(), nil, model.Actor{})
+		socket := newLiveSocket(context.Background(), nil, model.Actor{}, nil)
 		socket.stream = make(chan liveStreamFrame, 1)
 		stream := &liveSubscriptionStream{socket: socket}
 		ctx, cancel := context.WithCancel(socket.ctx)

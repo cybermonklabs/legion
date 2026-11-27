@@ -141,12 +141,12 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 			answers[index].Ambiguous = true
 			continue
 		}
-		// Every kind parseRequestRef admits has a target; only an external URL has none, and
-		// that is no reference.
+		// Every reference parseRequestRef answers has a target: it refuses a party, and the
+		// grammar reads no external URL as one.
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named)
+	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named, s.deps.Origins.Canonical())
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +192,7 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, &who, asked)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, &who, asked, s.deps.Origins.Canonical())
 	if err != nil {
 		return nil, err
 	}

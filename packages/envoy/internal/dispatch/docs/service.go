@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -80,9 +81,10 @@ type Deps struct {
 	Events      *events.Broker
 	Identity    identity.Identity
 	// Origins is the web origins the server answers at, the canonical one (DISPATCH_SERVER_URL)
-	// first, then the outside one (DISPATCH_OUTSIDE_ORIGIN) when it has one: a dashboard URL of
-	// either that a text writes is read as the reference its page names. The zero value reads only
-	// `dispatch://` references.
+	// first: a dashboard URL of any of them that a text writes is read as the reference its page
+	// names. cmd/dispatch passes the canonical origin alone; the second origin
+	// (DISPATCH_OUTSIDE_ORIGIN) is set from slice S6a. The zero value reads only `dispatch://`
+	// references.
 	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
@@ -105,6 +107,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -187,10 +196,11 @@ type Service struct {
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
-	// objectPassFinished is when this process's last object pass finished with nothing left, in
-	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
-	// owes the pass on the process's first tick and once objectPassInterval has passed since
-	// (readEventsAfterCursor).
+	// objectPassFinished is when this process's last object pass that a cursor row records
+	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
+	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
+	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
 	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
@@ -256,6 +266,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -287,9 +302,16 @@ type Service struct {
 	// describe its fork, at names where: "fork" once forkLive has brought the fork up to date,
 	// "margin", "docTree" and "capture" as a margin write (applyMargin) or a read joined to the
 	// write's transaction takes the rendering in place of reading the fork (reuseRendering), and
-	// "publish" just before publishLiveWrite releases the fork. Nil outside tests; tests use it to
-	// compare the rendering with a fresh read and render of the fork.
+	// "commit" as the commit hands the fork to the room's shadow (Ledger.commit), the last point
+	// the fork is the write's own: the room's worker measures on the shadow the browser updates
+	// the transaction's advisory lock held back (roomShadow.measure), whether the write's publish
+	// has begun or not. Nil outside tests; tests use it to compare the rendering with a fresh read
+	// and render of the fork.
 	checkRendering func(at string, write *liveWrite)
+	// beforePublish runs as a committed write's publish begins (publishLiveWrite), after the
+	// pause armed there (PauseAfterCommit) and before the publish releases the fork. Nil outside
+	// tests; tests use it to read the write and its room as the publish finds them.
+	beforePublish func(write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
 	// room in that window.
@@ -461,6 +483,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
@@ -930,6 +956,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
@@ -942,6 +969,7 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,

@@ -1,11 +1,11 @@
 // packages/cipher-client/test/device-logins.ts
 //
-// A machine's device login as `dispatch login --device` leaves it (`src/device-login.ts`), and a
+// A machine's device login as `dispatch login --device` leaves it (`src/device-login.ts`), a
 // secrets broker serving the three routes a device login meets: the device authorization, the
 // token endpoint's device code, refresh and exchange grants, as `internal/cipher/oauth` serves
-// them. It is for every suite that drives a device login: this package's own, and envoy-client's
-// broker credential and `dispatch login --device`. Every key is made at run time, so the
-// repository holds no private key.
+// them, and the sleeps a test hands the poll. It is for every suite that drives a device login:
+// this package's own, and envoy-client's broker credential and `dispatch login --device`. Every
+// key is made at run time, so the repository holds no private key.
 
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
@@ -24,13 +24,15 @@ export interface DeviceLoginRequest {
   readonly proofThumbprint: string;
 }
 
-/** How the stand-in answers one poll of a device code: `invalid_client` is an OAuth refusal the
- *  poll does not expect, which the broker answers a client it does not know, and `unknown-code`
- *  one under a code no client knows; `invalid_grant` is the broker's answer to a code it no
- *  longer knows; `html-403` and `challenge-401` are 4xx answers with no OAuth error in them, as a
- *  proxy or a load balancer in front of the broker gives (an HTML page, a bare
- *  `WWW-Authenticate: DPoP` challenge); `busy-429` and `unavailable-503` are answers a later poll
- *  can get past. */
+/** How the stand-in answers one poll of a device code: `deny` is `access_denied` at 403, the
+ *  status the broker's OAuth library (authelia.com/provider/oauth2) answers it with, and every
+ *  other OAuth error is at 400 but `invalid_client`; `invalid_client` is an OAuth refusal the poll
+ *  does not expect, which the broker answers a client it does not know, and `unknown-code` one
+ *  under a code no client knows; `invalid_grant` is the broker's answer to a code it no longer
+ *  knows; `html-403` and `challenge-401` are 4xx answers with no OAuth error in them, as a proxy
+ *  or a load balancer in front of the broker gives (an HTML page, a bare
+ *  `WWW-Authenticate: DPoP` challenge); `busy-429`, `empty-429`, `empty-408` and
+ *  `unavailable-503` are answers a later poll can get past, the two `empty-` ones with no body. */
 export type PollAnswer =
   | "pending"
   | "slow_down"
@@ -43,6 +45,8 @@ export type PollAnswer =
   | "html-403"
   | "challenge-401"
   | "busy-429"
+  | "empty-429"
+  | "empty-408"
   | "unavailable-503";
 
 /** The OAuth error code the stand-in answers an `unknown-code` poll with: one no client knows,
@@ -101,6 +105,14 @@ export interface DeviceLoginBrokerOptions {
   readonly verificationUriComplete?: string;
   /** The credential id a grant answers, in place of {@link STAND_IN_CREDENTIAL}. */
   readonly credentialId?: string;
+  /** The status of every OAuth error the token endpoint answers a poll or a refresh with, in place
+   *  of its own, as Go's fake broker's `oauthErrorStatus` (`internal/cipher/helper`'s
+   *  broker_test.go): a broker, or a proxy before it, answering a 408, a 429 or a 5xx with a body
+   *  that still names an OAuth error, or naming one at another refusal status. */
+  readonly oauthErrorStatus?: number;
+  /** The `Retry-After` a `busy-429` answer carries, in seconds or as an HTTP date, as the broker's
+   *  own 429 carries one (its token endpoint's asks 1 s) and a proxy's may; none where unset. */
+  readonly retryAfter?: string;
 }
 
 /** The credential every device login of this stand-in holds. */
@@ -166,13 +178,14 @@ function oauthError(error: string, status = 400): Response {
  * code, {@link STAND_IN_USER_CODE} and a verification URI on its own origin, with no
  * `verification_uri_complete`, as the broker omits it; `POST /v1/oauth/token` answers a device
  * code as `polls` says, a refresh by minting a new refresh token and a new access token (or
- * `invalid_grant` under `refuseRefresh`), and an RFC 8693 exchange with a DPoP-bound access
- * token. The device code grant and a refresh carry the credential's id and expiry, as the
- * broker's token hooks add them (`machine.Service.TokenHooks`). A refresh revokes every access
- * token of the login but the one it answers, as the broker's `RotateRefreshToken` does, so an
- * exchange presenting any other after a refresh is refused `400 invalid_request`, with the
- * broker's own description of a token it no longer honours. Before the first refresh, any subject
- * token is taken, so a test may keep an access token of its own in the file.
+ * `invalid_grant` under `refuseRefresh`), each OAuth error at `oauthErrorStatus` where it is set,
+ * and an RFC 8693 exchange with a DPoP-bound access token. The device code grant and a refresh
+ * carry the credential's id and expiry, as the broker's token hooks add them
+ * (`machine.Service.TokenHooks`). A refresh revokes every access token of the login but the one
+ * it answers, as the broker's `RotateRefreshToken` does, so an exchange presenting any other after
+ * a refresh is refused `400 invalid_request`, with the broker's own description of a token it no
+ * longer honours. Before the first refresh, any subject token is taken, so a test may keep an
+ * access token of its own in the file.
  *
  * Every token lives {@link DeviceLoginBrokerOptions.accessSeconds} on the clock of the process,
  * which a test may move (`setSystemTime`). An exchange presenting an access token this stand-in
@@ -184,6 +197,9 @@ function oauthError(error: string, status = 400): Response {
 export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): DeviceLoginBroker {
   const polls = options.polls ?? ["approve"];
   const accessSeconds = options.accessSeconds ?? STAND_IN_ACCESS_SECONDS;
+  // An OAuth error of a poll or a refresh, at `oauthErrorStatus` in place of its own where set.
+  const tokenError = (error: string, status = 400): Response =>
+    oauthError(error, options.oauthErrorStatus ?? status);
   const authorizations: DeviceLoginRequest[] = [];
   const pollsSeen: DeviceLoginRequest[] = [];
   const refreshes: DeviceLoginRequest[] = [];
@@ -270,23 +286,23 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       switch (seen.form.get("grant_type")) {
         case "urn:ietf:params:oauth:grant-type:device_code": {
           pollsSeen.push(seen);
-          if (seen.form.get("device_code") !== deviceCode) return oauthError("invalid_grant");
+          if (seen.form.get("device_code") !== deviceCode) return tokenError("invalid_grant");
           const answer = polls[Math.min(pollsSeen.length, polls.length) - 1];
           switch (answer) {
             case "pending":
-              return oauthError("authorization_pending");
+              return tokenError("authorization_pending");
             case "slow_down":
-              return oauthError("slow_down");
+              return tokenError("slow_down");
             case "deny":
-              return oauthError("access_denied");
+              return tokenError("access_denied", 403);
             case "expired":
-              return oauthError("expired_token");
+              return tokenError("expired_token");
             case "invalid_grant":
-              return oauthError("invalid_grant");
+              return tokenError("invalid_grant");
             case "invalid_client":
-              return oauthError("invalid_client", 401);
+              return tokenError("invalid_client", 401);
             case "unknown-code":
-              return oauthError(STAND_IN_UNKNOWN_CODE);
+              return tokenError(STAND_IN_UNKNOWN_CODE);
             case "html-403":
               return new Response("<html><body><h1>403 Forbidden</h1></body></html>", {
                 status: 403,
@@ -298,7 +314,15 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
                 headers: { "WWW-Authenticate": 'DPoP algs="ES256"' },
               });
             case "busy-429":
-              return new Response("too many requests", { status: 429 });
+              return new Response("too many requests", {
+                status: 429,
+                headers:
+                  options.retryAfter === undefined ? {} : { "Retry-After": options.retryAfter },
+              });
+            case "empty-429":
+              return new Response(null, { status: 429 });
+            case "empty-408":
+              return new Response(null, { status: 408 });
             case "unavailable-503":
               return new Response("<html><body>503 Service Unavailable</body></html>", {
                 status: 503,
@@ -313,8 +337,8 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
           for (const release of holding.splice(0)) release();
           releaseReached(awaitingRefreshes);
           if (options.refreshOverlapMs !== undefined) await hold(holding, options.refreshOverlapMs);
-          if (options.refuseRefresh === true) return oauthError("invalid_grant");
-          if (options.refuseRefresh === "invalid_client") return oauthError("invalid_client", 401);
+          if (options.refuseRefresh === true) return tokenError("invalid_grant");
+          if (options.refuseRefresh === "invalid_client") return tokenError("invalid_client", 401);
           const answer = loginAnswer();
           live = loginTokens.at(-1);
           for (const release of trading.splice(0)) release();
@@ -418,5 +442,34 @@ export async function writeDeviceLoginFile(
     key: privateKey,
     thumbprint: await calculateJwkThumbprint(publicKey.export({ format: "jwk" }) as JWK),
     refreshToken,
+  };
+}
+
+/** A sleep that waits for nothing and records each wait it was asked for. */
+export function recordedWaits(): { waits: number[]; sleep: (ms: number) => Promise<void> } {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  };
+}
+
+/** A sleep that waits for nothing, records each wait, and moves `clock` by it. */
+export function advancingWaits(): {
+  waits: number[];
+  sleep: (ms: number) => Promise<void>;
+  clock: () => number;
+} {
+  let now = 0;
+  const waits: number[] = [];
+  return {
+    waits,
+    clock: () => now,
+    sleep: async (ms) => {
+      waits.push(ms);
+      now += ms;
+    },
   };
 }

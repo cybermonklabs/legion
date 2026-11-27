@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -274,7 +275,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		Timeouts: supervise.Timeouts{
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 		},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
@@ -400,7 +401,7 @@ func (d *operatorDaemon) ready(token legionclaim.Token) {
 	var registered legionclaim.RegisterResponse
 	d.post("/legion/v1/claims/register", legionclaim.RegisterRequest{
 		BootToken: bootToken, SessionID: "ses_" + string(token), OmpSessionFile: "/sessions/" + string(token) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, &registered)
 	d.post("/legion/v1/claims/ready", legionclaim.ReadyRequest{
 		ClaimToken: token, SessionID: "ses_" + string(token), Secret: registered.Secret, Generation: registered.Generation,
@@ -444,6 +445,7 @@ func wantOperatorRequest(t *testing.T, seen seenRequest, method, path string) {
 // sent as it is, the first task with it, the operator's bearer on the request — and the claim the
 // daemon answered, printed on one line.
 func TestClaimsSpawnPostsTheClaimWithTheOperatorBearer(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	out := d.succeed(d.spawnArgs("--task", "Say hello.")...)
@@ -473,6 +475,7 @@ func TestClaimsSpawnPostsTheClaimWithTheOperatorBearer(t *testing.T) {
 // prompt override, because an absent override is what lets a resumed claim use the same composed
 // role parts.
 func TestClaimsSpawnWithoutPromptFileUsesTheDaemonRolePrompt(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	args := append([]string{"spawn"}, d.reach()...)
@@ -488,6 +491,7 @@ func TestClaimsSpawnWithoutPromptFileUsesTheDaemonRolePrompt(t *testing.T) {
 
 // A spawn without --task sends no task: the claim launches with nothing queued.
 func TestClaimsSpawnWithoutATaskSendsNone(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	d.succeed(d.spawnArgs()...)
@@ -500,6 +504,7 @@ func TestClaimsSpawnWithoutATaskSendsNone(t *testing.T) {
 }
 
 func TestClaimsDeliverPostsTheTask(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 
@@ -526,6 +531,7 @@ func TestClaimsDeliverPostsTheTask(t *testing.T) {
 // print the claim as the request left it. The stop is a worker's: the tree's root claim ends only
 // when its tree closes, and the daemon refuses the operator's stop of it.
 func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 	d.ready(architectClaim)
@@ -560,6 +566,7 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 // close posts to the root claim's close route, with no body: the operator's close of a tree no
 // workflow issue backs, which the daemon decides (internal/api/operator.go).
 func TestClaimsClosePostsToTheClaimsCloseRoute(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 
@@ -576,6 +583,7 @@ func TestClaimsClosePostsToTheClaimsCloseRoute(t *testing.T) {
 // a claim whose launches the runtime refused until its budget ran out launches again. A retry of a
 // claim that has not failed is the daemon's refusal, naming its state.
 func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}
 	d.runtime.ScriptSpawn(refused, refused, refused)
@@ -608,6 +616,7 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 // forget-session posts the exact session the operator is abandoning and prints the failed claim as
 // the daemon left it.
 func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 	d.ready(architectClaim)
@@ -643,6 +652,7 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 // the names of the session it records, which the release keeps, so it frees none and says it
 // asked no broker.
 func TestClaimsReleaseNamesPostsToTheClaimRoute(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 	d.ready(architectClaim)
@@ -664,6 +674,7 @@ func TestClaimsReleaseNamesPostsToTheClaimRoute(t *testing.T) {
 // failed; with none failed it retries nothing and exits 0. --claim and --failed name what to retry,
 // so the command takes exactly one of them.
 func TestClaimsRetryFailedRetriesEveryFailedClaim(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}
 	d.runtime.ScriptSpawn(refused, refused, refused)
@@ -713,6 +724,7 @@ const podUpdateNotSwept = "pod update rounds: the daemon has not swept yet"
 // each `-` when there is none — in the daemon's token order, then the one line of what the last
 // pod-update sweep decided, and --json prints the daemon's answer byte for byte.
 func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 	worker := append(append([]string{"spawn"}, d.reach()...), "--tree", "LEGION-208", "--issue", "LEGION-209",
@@ -754,6 +766,7 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 // member it does not find — so the line says what that daemon is rather than printing the
 // not-swept sentence, which would be false of a daemon sweeping every minute.
 func TestClaimsListPodUpdateLine(t *testing.T) {
+	t.Parallel()
 	waiting := make([]string, 25)
 	for i := range waiting {
 		waiting[i] = fmt.Sprintf("INFRA-%d", 100+i)
@@ -826,6 +839,7 @@ func TestClaimsListPodUpdateLine(t *testing.T) {
 // `legion claims list`, and the open-rounds line of `legion state`. A newline in it would forge a
 // row of either — a claim that is not there, a round nobody opened — so each prints it quoted.
 func TestAWorkerReportedHeadIsPrintedQuoted(t *testing.T) {
+	t.Parallel()
 	const forged = "c0ffee\nlegion-legion-legion-299-tester tester LEGION-299 ready - 1 0 - - -"
 	const round = "pod:0f3c8d21-5b47-4e90-9a16-2c7d5e8b40af"
 
@@ -858,6 +872,7 @@ func TestAWorkerReportedHeadIsPrintedQuoted(t *testing.T) {
 // could not tell a daemon that holds no issue back from a binary too old to know the limits.
 // --json stays the daemon's own answer, the empty claim list with that record beside it.
 func TestClaimsListOfNoClaimsPrintsThePodUpdateLineAlone(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	if out := d.succeed(append([]string{"list"}, d.reach()...)...); out != podUpdateNotSwept+"\n" {
@@ -873,6 +888,7 @@ func TestClaimsListOfNoClaimsPrintsThePodUpdateLineAlone(t *testing.T) {
 // Every answer that is not a 2xx is the daemon's refusal: printed with its status and sentence on
 // stderr, nothing on stdout, and the command fails — under --json too.
 func TestClaimsPrintsTheDaemonsRefusalAndFails(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name string
 		// args builds the command against a daemon that holds a launched, not yet ready architect.
@@ -949,26 +965,27 @@ func TestClaimsPrintsTheDaemonsRefusalAndFails(t *testing.T) {
 	}
 }
 
-// A daemon that does not answer at all fails the command, naming where it looked.
+// A daemon that does not answer at all fails the command, naming where it looked: a port the test
+// holds and nothing listens on, so every dial to it is refused.
 func TestClaimsFailsWhenNoDaemonAnswers(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	t.Parallel()
+	_, port, err := net.SplitHostPort(testport.Refused(t))
 	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
+		t.Fatal(err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
 	d := &operatorDaemon{t: t, tokenFile: writeFile(t, "operator-token", claimsOperatorToken)}
 
-	code, out, errb := d.claims("list", "--port", strconv.Itoa(port), "--operator-token-file", d.tokenFile)
+	code, out, errb := d.claims("list", "--port", port, "--operator-token-file", d.tokenFile)
 
-	if code != 1 || out != "" || !strings.Contains(errb, "127.0.0.1:"+strconv.Itoa(port)) {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming 127.0.0.1:%d", code, out, errb, port)
+	if code != 1 || out != "" || !strings.Contains(errb, "127.0.0.1:"+port) {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming 127.0.0.1:%s", code, out, errb, port)
 	}
 }
 
 // Without --port, the daemon is found the way `legion state` finds it: the configuration's bind
 // and port.
 func TestClaimsFindsTheDaemonFromTheConfiguration(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	dir := t.TempDir()
 	config := filepath.Join(dir, "legion.yaml")
@@ -985,6 +1002,7 @@ func TestClaimsFindsTheDaemonFromTheConfiguration(t *testing.T) {
 // A required flag left out — or given empty — is a usage error named by the flag, and nothing is
 // sent.
 func TestClaimsRefusesAMissingFlagBeforeReachingTheDaemon(t *testing.T) {
+	t.Parallel()
 	token := writeFile(t, "operator-token", claimsOperatorToken)
 	for _, sub := range []struct {
 		name  string
@@ -1032,6 +1050,7 @@ func TestClaimsRefusesAMissingFlagBeforeReachingTheDaemon(t *testing.T) {
 // holds nothing but whitespace, is not a regular file, or that its group or others can read fails
 // the command naming the path, and nothing is sent.
 func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
+	t.Parallel()
 	files := map[string]func(t *testing.T) string{
 		"absent": func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") },
 		"empty":  func(t *testing.T) string { return writeFile(t, "operator-token", "") },
@@ -1092,6 +1111,7 @@ func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 
 // The role prompt is a file too: one that cannot be read fails the spawn naming the path.
 func TestClaimsSpawnRefusesAPromptFileItCannotRead(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	absent := filepath.Join(t.TempDir(), "absent.md")
 	args := append(append([]string{"spawn"}, d.reach()...),
@@ -1106,6 +1126,7 @@ func TestClaimsSpawnRefusesAPromptFileItCannotRead(t *testing.T) {
 }
 
 func TestClaimsWithoutAKnownSubcommandIsAUsageError(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		args []string
 		want string
@@ -1124,6 +1145,7 @@ func TestClaimsWithoutAKnownSubcommandIsAUsageError(t *testing.T) {
 // A word after the flags is not a flag the command reads: refused, so `claims stop <token>` is
 // never read as a stop of no claim.
 func TestClaimsRefusesAPositionalArgument(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	code, _, errb := d.claims(append(append([]string{"stop"}, d.reach()...), string(architectClaim))...)
@@ -1135,6 +1157,7 @@ func TestClaimsRefusesAPositionalArgument(t *testing.T) {
 }
 
 func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 
 	code, out, errb := d.claims(append(append([]string{"forget-session"}, d.reach()...), "--claim", string(architectClaim))...)
@@ -1146,13 +1169,18 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 }
 
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
-// operator reading `legion claims list` does not read it as a suspension someone must lift. Every
-// other claim prints the state it is in, suspended by an operator among them. None of the three
-// is in an update round, in a tool call or refused by the leak check, so each line ends in the
-// round, head, call and leak-check cause columns' `-`, and none carries a failure record — the
-// failed one is a claim served by a daemon older than that record — so each prints `-` for the
-// cause beside its state as well (TestTheClaimsListPrintsTheCause reads a line that carries one).
+// operator reading `legion claims list` does not read it as a suspension someone must lift. A
+// claim of an agent the project's controller suspended says so too (#4065), so the operator
+// tells that suspension from its own: the controller's resume_agent lifts the controller's
+// suspension, where the operator's own is the operator's alone to lift. Every other claim prints
+// the state it is in, suspended by an operator among them. None of the four is in an update
+// round, in a tool call or refused by the leak check, so each line ends in the round, head, call
+// and leak-check cause columns' `-`, and none carries a failure record — the failed one is a
+// claim served by a
+// daemon older than that record — so each prints `-` for the cause beside its state as well
+// (TestTheClaimsListPrintsTheCause reads a line that carries one).
 func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		claim api.OperatorClaim
@@ -1161,19 +1189,25 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 		{
 			name: "released",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
-				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released - 3 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "suspended by the operator",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "operator", Generation: 1, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-209-tester tester LEGION-209 suspended - 1 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "suspended by the controller",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-211-merger", Role: "merger", Issue: "LEGION-211",
+				State: "suspended", SuspendedBy: "controller", Generation: 4, PluginContract: api.DaemonAPIVersion()},
+			want: "legion-legion-legion-211-merger merger LEGION-211 suspended:controller - 4 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "failed",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
-				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion},
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed - 2 " + thisBinarysContract + " - - - -\n",
 		},
 	} {
@@ -1195,6 +1229,7 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 // is in none, which the column prints as `-`; the arguments are in no column at all, because a
 // shell command routinely holds a credential.
 func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Date(2026, 11, 7, 4, 15, 9, 0, time.UTC)
 	endedAt := startedAt.Add(3 * time.Second)
 	controller := api.OperatorClaim{
@@ -1242,11 +1277,12 @@ func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
 // are in the --json answer, which is where a line of one row per claim cannot carry them. A
 // claim the daemon holds no cause for prints `-`, as every other absent value of the line does.
 func TestTheClaimsListPrintsTheCause(t *testing.T) {
+	t.Parallel()
 	failedAt := time.Date(2026, 11, 11, 18, 22, 14, 0, time.UTC)
 	list := api.OperatorClaims{Claims: []api.OperatorClaim{
 		{
 			Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
-			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion,
+			State: "failed", Generation: 4, PluginContract: api.DaemonAPIVersion(),
 			Budgets: api.BudgetsView{LaunchFailures: 4, Deaths: 1},
 			Failure: &api.ClaimFailureView{
 				Cause: supervise.CauseDied, Detail: "launch failures ran out", At: &failedAt,
@@ -1255,7 +1291,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 		},
 		{
 			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion,
+			State: "working", Generation: 1, PluginContract: api.DaemonAPIVersion(),
 		},
 	}}
 	answer, err := json.Marshal(list)
@@ -1283,6 +1319,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 // Go-quoted, as the head and the call are: it carries spaces and the pod's own words, and a
 // newline in it would forge a row of this listing.
 func TestTheClaimsListPrintsTheLeakCheckCause(t *testing.T) {
+	t.Parallel()
 	const sentence = "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s"
 	failedAt := time.Date(2026, 11, 12, 18, 5, 48, 0, time.UTC)
 	list := api.OperatorClaims{Claims: []api.OperatorClaim{
@@ -1293,7 +1330,7 @@ func TestTheClaimsListPrintsTheLeakCheckCause(t *testing.T) {
 		},
 		{
 			Token: "legion-legion-legion-209-tester", Role: "tester", Issue: "LEGION-209",
-			State: "failed", Generation: 3, PluginContract: api.DaemonAPIVersion,
+			State: "failed", Generation: 3, PluginContract: api.DaemonAPIVersion(),
 			Budgets: api.BudgetsView{LaunchFailures: 3},
 			Failure: &api.ClaimFailureView{
 				Cause:  supervise.CauseLaunchRefused,

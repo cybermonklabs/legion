@@ -20,6 +20,7 @@ import (
 // OnceItsSourceIsRetracted reads the room only once the settlement has ended, so it cannot see
 // that moment; this test does.
 func TestNoReaderFindsACopiedAsksRowWhileItsRoomStillOwesTheAuthor(t *testing.T) {
+	t.Parallel()
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service, original := newTestService(t)
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"

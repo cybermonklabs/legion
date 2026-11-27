@@ -8,10 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The Agent rows of GET /api/v1/me/replies: the statements each state reads them through, the
@@ -454,8 +454,8 @@ func (s *server) readMyAgentRows(
 			return nil, 0, fmt.Errorf("decode my agent reply author: %w", err)
 		}
 		row.Ref = "/agents/" + session + "/live"
-		row.Subject = contracts.OneLineSummary(subject)
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
+		row.Subject = refs.FirstLine(subject, s.deps.Origins.Canonical())
+		row.Reply.FirstLine = refs.FirstLine(body, s.deps.Origins.Canonical())
 		row.Unread = row.UnreadCount > 0
 		row.Session = &model.MyReplySession{ID: session}
 		read = append(read, row)

@@ -56,6 +56,7 @@ const (
 // the id of its first comments row stops it at that insert, by which time it holds graph_nodes
 // and graph_tuples, the two steps before it.
 func TestTheSeedsCommentWriteTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	f := newSeedLockFixture(t)
 

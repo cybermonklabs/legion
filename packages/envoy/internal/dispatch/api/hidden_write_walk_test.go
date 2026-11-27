@@ -337,7 +337,7 @@ type hiddenWriteSeed struct {
 	fills  map[probeObject]probeFill
 	digest string
 	trace  *existenceTrace
-	calls  *listenerCalls
+	calls  *walkListenerCalls
 }
 
 // callerAlicePubToken is alice's token that lists PUB: a full member's, so it sees PUB and is open,
@@ -425,7 +425,7 @@ const privateSession = "s-priv"
 // each subscribed to every topic topics holds (both projects' issue and project document), so a
 // write that removes a subscriber reaches the removal, whichever of them it names. It records every
 // request it is sent in calls.
-func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptest.Server {
+func walkListener(t *testing.T, topics *[]string, calls *walkListenerCalls) *httptest.Server {
 	t.Helper()
 	// s1's and s-pub's records carry no projects key: the listener does not know their
 	// credentials' lists, so what each session may be sent is its person's sight
@@ -490,7 +490,7 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	t.Helper()
 	topics := []string{}
-	calls := &listenerCalls{}
+	calls := &walkListenerCalls{}
 	trace := &existenceTrace{}
 	listener := walkListener(t, &topics, calls)
 	t.Cleanup(listener.Close)

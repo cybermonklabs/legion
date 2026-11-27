@@ -77,16 +77,18 @@ var storeWriteCallSites = map[string]string{
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
 	// create would have written, for a document an earlier build made with none, then
-	// QueueNodes, then the event and the gone statement in one batch, appendCausingEvent).
+	// node write it holds for its cause (PlanUncaused, QueueNodes), then the event and the gone
+	// statement in one batch, appendCausingEvent).
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
 	// each written in the batch that copies their rows, in its project, before any row of it.
 	"cmd/dispatch-seed/write_core.go#writeIssues":         "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeAsks":          "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
-	"cmd/dispatch-seed/write_items.go#writeItemNodes":     "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeMessages":      "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
@@ -100,11 +102,11 @@ var storeWriteCallSites = map[string]string{
 	"graphcensus/backfill_roles.go#writeRoleBatch":          "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_sessions.go#writeSessionBatch":    "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The backfill's passes over the project of every node: the nodes of the issues, documents,
-	// asks and messages that their marker does not mark, in QueueNodes and Caused over each run
-	// of the batch's nodes of one cause (a row's own create event, or the sentinel), after the
-	// owner locks a document's removal takes (lockObjectOwners) and under them, and the project of
-	// the comment and block nodes written before a node named one (graphstore.FillScopes), the
-	// block batch under the revision fence (lockBlockDocuments).
+	// asks and messages that their marker does not mark, in one node write (PlanUncaused,
+	// QueueNodes) and Caused over each run of the batch's nodes of one cause (a row's own create
+	// event, or the sentinel), after the owner locks a document's removal takes (lockObjectOwners)
+	// and under them, and the project of the comment and block nodes written before a node named
+	// one (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
 	"graphcensus/projects_backfill.go#writeObjectBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/projects_backfill.go#writeScopeBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The fill itself appends what it states through Write; writeScopeBatch is its one caller, and

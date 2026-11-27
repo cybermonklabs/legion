@@ -248,16 +248,20 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// whole seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is
 	// settled here — the check's words and its `when` are the document's, not the issue's — and
 	// what it does protect, the block's indexed version and digest, is read again under it
-	// below.
-	check, err := s.resolveCheck(r.Context(), pool, who, issueKey, input.Check)
+	// below. It reads as who reads, and a credential scoped to one project does not see a check of a
+	// private project that it does not name, which resolveCheck leaves out before it counts the
+	// matches: a private check alone is 400 UNKNOWN_CHECK there, the answer of a check that does not
+	// exist.
+	callerProject, _ := s.callerProject(r)
+	check, err := s.resolveCheck(r.Context(), pool, who, issueKey, callerProject, input.Check)
 	if err != nil {
 		return refused(err)
 	}
 	// The check may be on an issue of another project, which a parent of another project puts
 	// above the recording issue, and the result is appended to that issue. The pre-handler
-	// check read only the path's issue, so a credential scoped to one project is refused such a
-	// check here, before anything is written.
-	if err := refuseCheckOutsideCallerProject(r.Context(), pool, who, check.IssueKey); err != nil {
+	// check read only the path's issue, so a credential scoped to one project is asked about
+	// such a check here, before anything is written (refuseUncoveredCheck).
+	if err := refuseUncoveredCheck(r.Context(), pool, callerProject, check.IssueKey, input.Check); err != nil {
 		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
@@ -331,6 +335,29 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 		issueKey: issueKey, input: input, actor: actor, who: who, check: check,
 		repo: checkRepo, linkedCommitRepo: linkedCommitRepo, words: words,
 	}, true
+}
+
+// refuseUncoveredCheck asks, for a result on a check of the issue checkIssue, whether the
+// request's credential covers that issue's project, with the visibility of that project read in
+// the same statement (checkIssueProject). caller is the one project the credential names, empty
+// for a credential that names none, which is refused nothing here. A credential that names one
+// project records on the check of every project that access.CredentialCovers covers. A check of a
+// private project that the credential does not name answers as a check that does not exist,
+// unknownCheck of check, the value the body names, for the record and its dry run. resolveCheck
+// has left out such a check already, so this check refuses one only where its project became
+// private between the two reads.
+func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue, check string) error {
+	if caller == "" {
+		return nil
+	}
+	project, private, err := checkIssueProject(ctx, q, caller, checkIssue)
+	if err != nil {
+		return err
+	}
+	if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return unknownCheck(check)
+	}
+	return nil
 }
 
 // checkContended is the code of a results write whose check a document version moved at every
@@ -757,7 +784,13 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, who model.
 // Verification document of the set holds — or one that is not a `check` block — is 400
 // UNKNOWN_CHECK. It reads as who reads: an issue of a project who does not see holds no check, as
 // a key no issue carries holds none.
-func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, issueKey, value string) (resolvedCheck, error) {
+//
+// caller is the one project the request's credential names, empty for a credential that names
+// none. Such a caller does not see a check of an issue of a private project that the credential
+// does not name, so resolveCheck leaves out each such check before it counts the matches (seenBy):
+// a private check alone is 400 UNKNOWN_CHECK, the answer of a check that does not exist, and a
+// 409 CHECK_AMBIGUOUS names no issue that the caller does not see.
+func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, issueKey, caller, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -783,9 +816,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, i
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
+		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256,
+		       i.project_key, p.visibility = 'private'
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
+		join issues i on i.key = a.issue_key
+		join projects p on p.key = i.project_key
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
 		  and ($3 = '' or d.artifact_id = $3::uuid)
@@ -795,38 +831,44 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, i
 	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
-	defer rows.Close()
-	var found []resolvedCheck
-	var references []string
-	for rows.Next() {
-		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
-		var slug string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256); err != nil {
-			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-		}
-		found = append(found, check)
-		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
-		}); ok {
-			references = append(references, reference)
-		}
+	// matchedCheck is one check the value matches, with its document's slug, which its reference
+	// names, and its issue's project and whether that project is private.
+	type matchedCheck struct {
+		check         resolvedCheck
+		slug, project string
+		private       bool
 	}
-	if err := rows.Err(); err != nil {
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (matchedCheck, error) {
+		match := matchedCheck{check: resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}}
+		err := row.Scan(&match.check.IssueKey, &match.slug, &match.check.ArtifactID, &match.check.Version, &match.check.SHA256,
+			&match.project, &match.private)
+		return match, err
+	})
+	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
+	}
+	if caller != "" {
+		found = seenBy(caller, found, func(match matchedCheck) (string, bool) { return match.project, match.private })
 	}
 	if len(found) == 0 {
 		return resolvedCheck{}, unknownCheck(value)
 	}
 	if len(found) > 1 {
 		issues := make([]string, len(found))
-		for index, check := range found {
-			issues[index] = check.IssueKey
+		var references []string
+		for index, match := range found {
+			issues[index] = match.check.IssueKey
+			if reference, ok := text.FormatBlockRef(text.Ref{
+				Kind: "block", IssueKey: match.check.IssueKey, ID: match.slug, Block: blockID,
+			}); ok {
+				references = append(references, reference)
+			}
 		}
 		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
 			"check %s is a check of the Verification document of %s: name one with its reference, %s",
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
-	check := found[0]
+	check := found[0].check
 	if check.Attributes, err = s.checkBlockAttributes(ctx, who, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
@@ -1130,9 +1172,10 @@ type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
-	// hosts are the host names of this Dispatch's own origins in lower case (text.Origins.Hosts:
-	// DISPATCH_SERVER_URL's, and DISPATCH_OUTSIDE_ORIGIN's where it answers there too), so a link
-	// to either written without its scheme is dropped too; none when no origin is configured.
+	// hosts are the host names text.Origins.Hosts returns in lower case:
+	// DISPATCH_SERVER_URL's host today, and the outside host once S6a reads
+	// DISPATCH_OUTSIDE_ORIGIN. A link to either written without its scheme is dropped too; none
+	// when no origin is configured.
 	hosts []string
 	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
 	// sets, and which a test widens by one rune to show its property can fail.

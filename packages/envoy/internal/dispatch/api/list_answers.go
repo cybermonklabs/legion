@@ -186,18 +186,16 @@ func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encod
 
 // keepsListAnswerFor reports whether a list answer read for who may be kept here and handed to the
 // next reader whose request names the same key, and whether such a reader may be handed one. The
-// answer's bytes turn on what who sees: the sessions a comment's mentions and deliveries name and
-// the references an event's payload and its backlink counts name are left out or counted by the
-// access clauses, and those read rows of their own beside the viewer - a session's pairs, its
-// listener record, the fill marker, its reached projects - which move with no write to the list
-// and so with no move of its validator, while the key names only the viewer itself
-// (commentListViewOf, keptViewOf). A session that becomes hidden from alice after she read a list
-// would then be handed back to her from the kept bytes. So while a project is private no answer is
-// kept for a reader that does not see every object (seesEveryObject), and every such read builds
-// its own; a reader that sees every object reads every object whatever those rows hold, and keeps
-// as before. A deployment that holds no private project keeps every answer as before (R9), as
-// does a nil viewer's, which reads nothing of any project. What this costs the readers it holds
-// back is measured by TestAKeptListServesNoReaderWhoseViewMovedUnderIt's report.
+// answer's bytes turn on what who sees: the references an event's payload and its backlink counts
+// name are counted by the access clauses, and those read rows of their own beside the viewer - a
+// session's pairs, its listener record, the fill marker, its reached projects - which move with no
+// write to the list and so with no move of its validator, while the key names only the viewer
+// itself (keptViewOf). A session that becomes hidden from alice after she read a list would then
+// be handed back to her from the kept bytes. So while a project is private no answer is kept for a
+// reader that does not see every object (seesEveryObject), and every such read builds its own; a
+// reader that sees every object reads every object whatever those rows hold, and keeps as before.
+// A deployment that holds no private project keeps every answer as before (R9), as does a nil
+// viewer's, which reads nothing of any project.
 func keepsListAnswerFor(who model.Actor) bool {
 	return seesEveryObject(who) || who.Viewer == nil || !who.Viewer.AnyPrivate
 }
@@ -243,13 +241,14 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 	}
 }
 
-// listETag closes a list's hash with the three lines both lists' ETags carry and answers the
-// validator itself: the hash's hex in double quotes. The trees variant is in the hash rather than left
-// to `Vary: Dispatch-Trees` alone, so a caller that gains or drops the header can never match an
-// ETag given for the other reading however a cache between it and Dispatch behaves - a list of
-// nothing answers the same bytes either way, and would otherwise share one. The parser version
-// is in it for the same reason across a deploy: a build that reads markdown differently answers
-// different trees, and every validator the build before it gave is then another reading's.
+// listETag closes a hash with the three lines both lists' ETags and an issue's references read's
+// (referencesETag) carry, and answers the validator itself: the hash's hex in double quotes. The
+// trees variant is in the hash rather than left to `Vary: Dispatch-Trees` alone, so a caller that
+// gains or drops the header can never match an ETag given for the other reading however a cache
+// between it and Dispatch behaves - a list of nothing answers the same bytes either way, and
+// would otherwise share one. The parser version is in it for the same reason across a deploy: a
+// build that reads markdown differently answers different trees, and every validator the build
+// before it gave is then another reading's.
 //
 // The build commit is in it because the parser version moves for a change to what a tree holds
 // and for nothing else, while a deploy can change what these lists carry in a dozen other ways:

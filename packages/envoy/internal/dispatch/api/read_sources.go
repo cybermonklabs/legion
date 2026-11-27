@@ -109,9 +109,11 @@ var readSources = map[string]readSource{
 	"GET /api/v1/me/agents/state": reads("the caller's own state of each agent session it talks to", nil, readclass.Caller, readclass.Agents),
 
 	// Agent sessions, and what reached them.
-	"GET /api/v1/agents":                       reads("the live sessions of the listener's roster", nil, readclass.Agents),
-	"GET /api/v1/agents/{session_id}/answers":  reads("what reached one session: answers, comments and messages of projects or of its own conversations", bySession, readclass.Agents, readclass.Project),
-	"GET /api/v1/agents/{session_id}/messages": reads("one session's targeted messages, on issues of projects or in its own conversations", bySession, readclass.Agents, readclass.Project),
+	"GET /api/v1/agents":                        reads("the live sessions of the listener's roster", nil, readclass.Agents),
+	"GET /api/v1/agents/known":                  reads("every session the deployment has recorded, live or not", nil, readclass.Agents),
+	"GET /api/v1/agents/{session_id}/answers":   reads("what reached one session: answers, comments and messages of projects or of its own conversations", bySession, readclass.Agents, readclass.Project),
+	"GET /api/v1/agents/{session_id}/messages":  reads("one session's targeted messages, on issues of projects or in its own conversations", bySession, readclass.Agents, readclass.Project),
+	"GET /api/v1/agents/{session_id}/artifacts": reads("the files of one conversation, which a party of it reads", bySession, readclass.Agents),
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": reads("a file of one agent conversation, which belongs to no project and is held to its parties",
 		readProbe{"session_id": probeSession, "slug": probeDocumentSlug}, readclass.Project),
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": reads("a version of a file of one agent conversation, held to its parties",

@@ -138,8 +138,10 @@ func IssueRunsRevision(ctx context.Context, q Queryer, who model.Actor, issue st
 // closed_at is set, newest close first, its close within window ([Since, Until), each nil for no
 // bound, each rounded up to the microsecond). Each issue carries its plan (the node of its newest
 // generation, nil where it has none), the rating of each retro in the order the retros ran, the
-// earliest start and the latest end its runs hold (nil where none holds one), and its count of
-// runs of kind step that failed. A finished issue Legion never ran is listed with none of these.
+// earliest start and the latest end its runs hold (nil where none holds one), its count of runs of
+// kind step that failed, and the experiment and the variant the runs of its newest generation name
+// (nil where none of them names one). A finished issue Legion never ran is listed with none of
+// these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
@@ -214,7 +216,16 @@ func ProjectPlans(ctx context.Context, q Queryer, who model.Actor, project strin
 			issue.Plan = &gathered.plan.Plan
 		}
 		slices.SortFunc(gathered.runs, compareRuns)
+		// The runs come in the order of their generation, so a run of a newer generation than the
+		// one read so far drops the variant an older generation named.
+		var newest int64
 		for _, step := range gathered.runs {
+			if step.Generation > newest {
+				newest, issue.Experiment = step.Generation, nil
+			}
+			if issue.Experiment == nil {
+				issue.Experiment = step.Experiment
+			}
 			if step.StartedAt != nil && (issue.StartedAt == nil || step.StartedAt.Before(*issue.StartedAt)) {
 				issue.StartedAt = step.StartedAt
 			}
