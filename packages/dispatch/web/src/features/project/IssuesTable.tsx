@@ -1,10 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { userStateQuery } from "../../api/queries";
 import {
   DataTable,
   type DataTableNames,
+  HAND_OFF_CONTAINER,
+  HAND_OFF_CONTAINER_ATTRIBUTE,
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
@@ -382,19 +392,23 @@ export function IssuesTable({
   // answers a dialog the bar opened arms the bar's hand-off (`armAtBar`, below).
   const barRef = useRef<HTMLElement>(null);
   // A control of the table's head - a column filter, or the list it opened in a portal of its
-  // own - goes with the table when a press in it sends the List back to its skeleton. A notice's
-  // button under the toolbar goes with the notice it answers - the interrupted action's Finish
-  // and Dismiss, the possible duplicate's Create anyway and Cancel new epic, the unanswered
-  // epic's Dismiss - and its focus goes to the control now at its place among the notices, else
-  // the one before it. Each of these takes the focus only while the reader can see it; where none
-  // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Where the
-  // head or the notices hold no other control, this hand-off walks back over the main content to
-  // the nearest control before them that the reader can see and that takes no typed text, so
-  // never into the search box. Only the head and the notices are counted: the selection bar, the
-  // rows and the dialogs each hand the focus on themselves. The handler sits on the List's
-  // section, which stays in every branch, beside the capture handlers that arm it at a press
-  // inside the section (`armOnPress`): React bubbles a column filter's portalled list's events to
-  // it too.
+  // own - goes with the table when a press in it sends the List back to its skeleton. Each notice
+  // under the toolbar is a container of its own for this hand-off (`HAND_OFF_CONTAINER`): the
+  // interrupted action's, with Finish and Dismiss; the unanswered epic's, with Dismiss; and the
+  // possible duplicate's, with Create anyway and Cancel new epic. A control a commit takes out of
+  // a notice that stays hands the focus to the control now at its place in that notice, else the
+  // one before it there: the other notices' controls are not counted. Each of these takes the
+  // focus only while the reader can see it; where none is in sight, the main content's own stop
+  // takes it with no scroll (`useFocusPlace`). Where the head or the notice holds no other
+  // control - it went with its control, as a notice goes with the button that answers it - this
+  // hand-off walks back over the main content from where that control stood (`walkBackInRegion`):
+  // to the control now at its place where neither of the two stands in a row (`atPlaceOf`) - after
+  // a notice that went, the first control of the notice after it - else to the nearest control
+  // before it that the reader can see and that takes no typed text, so never into the search box.
+  // Only the head and the notices are counted: the selection bar, the rows and the dialogs each
+  // hand the focus on themselves. The handler sits on the List's section, which stays in every
+  // branch, beside the capture handlers that arm it at a press inside the section (`armOnPress`):
+  // React bubbles a column filter's portalled list's events to it too.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
@@ -404,7 +418,9 @@ export function IssuesTable({
       // A portal's element is counted only where a control of the head was before it.
       if (!section.contains(element)) return section.querySelector("thead");
       const notices = noticesRef.current;
-      return notices?.contains(element) ? notices : element.closest("thead");
+      return notices?.contains(element)
+        ? element.closest(`[${HAND_OFF_CONTAINER_ATTRIBUTE}]`)
+        : element.closest("thead");
     },
     () => null
   );
@@ -493,8 +509,31 @@ export function IssuesTable({
     const bar = barRef.current;
     if (bar !== null) armHandOff(control, bar);
   };
+  // An epic group's Merge…, from the press on it: the element the group's Epic actions are drawn
+  // in, and, from the first commit after the press that finds the List idle (`busy` false), the
+  // question that commit shows, which is the merge's own; a merge refused before it asks shows
+  // none and leaves nothing here. A press in a dialog is a press outside the group's heading line
+  // too, so the confirm of that question arms the hand-off at those actions as well, as the bar's
+  // questions arm it at the bar: the line's going, once the merge has moved the epic's last issue
+  // out, is the reader's doing, and the table's hand-off walks the focus on from where the Epic
+  // actions stood (`issues-table-rows.tsx`'s `EpicActions`).
+  const mergeAsked = useRef<{ readonly actions: Element; readonly question?: object } | null>(null);
+  useLayoutEffect(() => {
+    const asked = mergeAsked.current;
+    if (asked === null || asked.question !== undefined || busy) return;
+    mergeAsked.current =
+      confirming === undefined ? null : { actions: asked.actions, question: confirming };
+  });
+  const askMerge = (from: string, into: string, actions: Element | null) => {
+    mergeAsked.current = actions === null ? null : { actions };
+    mergeEpic?.(from, into);
+  };
   const confirmQuestion = (control: HTMLButtonElement) => {
     if (confirming?.fromBar === true) armAtBar(control);
+    const asked = mergeAsked.current;
+    if (confirming !== undefined && asked?.question === confirming) {
+      armHandOff(control, asked.actions);
+    }
     confirmed();
   };
   const nameNewEpic = (keys: readonly string[], name: string, control: HTMLElement) => {
@@ -624,7 +663,11 @@ export function IssuesTable({
               {notice?.text}
             </p>
             {interrupted ? (
-              <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
+              <section
+                aria-label="Interrupted table action"
+                className={textSecondaryOnCanvas}
+                {...HAND_OFF_CONTAINER}
+              >
                 <p>{interruptedDescription}</p>
                 <button
                   type="button"
@@ -643,16 +686,18 @@ export function IssuesTable({
               </section>
             ) : null}
             {unansweredEpic ? (
-              <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-                The selected issues have not been moved. Find the epic in the project before moving
-                them.{" "}
-                <button type="button" onClick={dismissUnansweredEpic}>
-                  Dismiss
-                </button>
-              </LandedWithoutAnswer>
+              <div {...HAND_OFF_CONTAINER}>
+                <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
+                  The selected issues have not been moved. Find the epic in the project before
+                  moving them.{" "}
+                  <button type="button" onClick={dismissUnansweredEpic}>
+                    Dismiss
+                  </button>
+                </LandedWithoutAnswer>
+              </div>
             ) : null}
             {duplicateEpic && newEpic ? (
-              <div role="alert" className={textSecondaryOnCanvas}>
+              <div role="alert" className={textSecondaryOnCanvas} {...HAND_OFF_CONTAINER}>
                 <p>{duplicateEpic.message}</p>
                 <button
                   type="button"
@@ -720,7 +765,7 @@ export function IssuesTable({
                 grouping={grouping[0] ?? ""}
                 index={index}
                 measure={measure}
-                onMerge={mergeEpic}
+                onMerge={mergeEpic === undefined ? undefined : askMerge}
                 shown={entry.shown}
                 onRename={renameEpic}
                 onStartAll={(key) =>

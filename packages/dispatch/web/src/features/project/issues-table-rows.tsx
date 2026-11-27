@@ -1,5 +1,5 @@
 import type { Row } from "@tanstack/react-table";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
@@ -112,9 +112,11 @@ export function GroupRow({
   viewportWidth: number;
   epics: readonly IssueSummary[];
   onRename: (key: string) => void;
-  /** How an epic is merged into another; absent on a table that stands on no project, where
-   *  the issues of a group come from several and no epic can take them all. */
-  onMerge?: (from: string, into: string) => void;
+  /** How an epic is merged into another, told the element the epic's actions are drawn in, where
+   *  the confirm of the merge's question arms the hand-off too (`IssuesTable`); absent on a table
+   *  that stands on no project, where the issues of a group come from several and no epic can
+   *  take them all. */
+  onMerge?: (from: string, into: string, actions: Element | null) => void;
   onStartAll: (epic: string) => void;
 }): ReactNode {
   const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
@@ -190,7 +192,11 @@ export function GroupRow({
               busy={busy}
               epicKey={epicKey}
               epics={epics}
-              onMerge={onMerge === undefined ? undefined : (into) => onMerge(epicKey, into)}
+              onMerge={
+                onMerge === undefined
+                  ? undefined
+                  : (into, actions) => onMerge(epicKey, into, actions)
+              }
               onRename={() => onRename(epicKey)}
               onStartAll={() => onStartAll(epicKey)}
             />
@@ -204,9 +210,14 @@ export function GroupRow({
 
 /** An epic's actions, behind one trigger. While a table action is out (`busy`) the trigger is
  *  held (`PanelTrigger`'s `ariaDisabled`): it keeps the focus the closed panel or the merge's
- *  confirmation handed back to it until the group row goes with it - the merge moving the epic's
- *  last issue out - and the action's hold keeps the reader's press live through that
- *  (`holdHandOff`), so the row's going reads as the reader's own (`causedByReader`). */
+ *  confirmation handed back to it until the group's heading line goes with it - the merge moving
+ *  the epic's last issue out. The confirm of the merge's question arms the hand-off at the element
+ *  these actions are drawn in as well (`onMerge`, `IssuesTable`), and the action's hold keeps that
+ *  press live through the merge (`holdHandOff`), so the heading line's going reads as the reader's
+ *  own (`causedByReader`). The table counts its heading line as a row for its hand-off
+ *  (`DataTable`, `HAND_OFF_CONTAINER`), which then walks the focus back over the main content from
+ *  where the trigger stood, to the nearest control before it that the reader can see, rather than
+ *  leave it on the body. */
 function EpicActions({
   busy,
   epicKey,
@@ -219,15 +230,17 @@ function EpicActions({
   epicKey: string;
   epics: readonly IssueSummary[];
   onRename: () => void;
-  onMerge?: (into: string) => void;
+  /** Asks the merge into `into`, told the element these actions are drawn in. */
+  onMerge?: (into: string, actions: Element | null) => void;
   onStartAll: () => void;
 }): ReactNode {
   /** The epic the reader has picked to merge into, which no write has been sent for yet. */
   const [target, setTarget] = useState("");
   const [open, setOpen] = useState(false);
   const innerPanel = useNestedPanels<"merge">(open);
+  const actionsRef = useRef<HTMLSpanElement>(null);
   return (
-    <span className="ml-auto">
+    <span className="ml-auto" ref={actionsRef}>
       <PanelTrigger
         align="right"
         ariaDisabled={busy}
@@ -295,7 +308,7 @@ function EpicActions({
                     disabled={target === ""}
                     onClick={() => {
                       close();
-                      onMerge(target);
+                      onMerge(target, actionsRef.current);
                     }}
                     type="button"
                   >
