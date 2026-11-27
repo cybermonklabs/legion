@@ -49,16 +49,13 @@ func ciNewsRows(t *testing.T, tx pgx.Tx) []CINews {
 // delivered, join into one row of kind ci_news and purpose state for the reviewer, its reader and
 // head X, its set of checks kept, whose snapshot is the no. The body comes from ReadPromptBody,
 // which takes the head and the names of the checks and no state; the test reads no body.
-//
-// The control, a kept subtest: with the seam lowerSeqWins, the join keeping the older snapshot,
-// the row holds the yes, which the subtest asserts.
 func TestAQueuedPromptCarriesNoVerdict(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	yes := CIStateSnapshot{Check: "k-ci", State: "yes", Reason: "pass", CICase: "success", Roles: []string{"tester"}, Seq: 5}
 	no := CIStateSnapshot{Check: "k-ci", State: "no", Reason: "fail", CICase: "failure", Roles: []string{"tester"}, Seq: 6}
-	queue := func(t *testing.T, records *Postgres) []CINews {
+	queue := func(t *testing.T) []CINews {
 		t.Helper()
-		st := migratedStore(t)
+		records, st := NewStore(), migratedStore(t)
 		ctx := context.Background()
 		var news []CINews
 		inTx(t, st, func(tx pgx.Tx) {
@@ -83,15 +80,9 @@ func TestAQueuedPromptCarriesNoVerdict(t *testing.T) {
 		return news
 	}
 	t.Run("the higher sequence's snapshot is the one held", func(t *testing.T) {
-		news := queue(t, NewStore())
+		news := queue(t)
 		if !reflect.DeepEqual(news[0].States, []CIStateSnapshot{no}) {
 			t.Errorf("the joined prompt's snapshots = %+v, want the no at sequence 6 alone", news[0].States)
-		}
-	})
-	t.Run("control: lowerSeqWins holds the yes", func(t *testing.T) {
-		news := queue(t, &Postgres{lowerSeqWins: true})
-		if !reflect.DeepEqual(news[0].States, []CIStateSnapshot{yes}) {
-			t.Errorf("the joined prompt's snapshots with the older kept = %+v, want the yes, the fault the rule takes out", news[0].States)
 		}
 	})
 }
@@ -102,10 +93,6 @@ func TestAQueuedPromptCarriesNoVerdict(t *testing.T) {
 // another reader phase or another fix whose other members match. A change of the same complete
 // identity joins once, and a matching row a lane leases joins nothing: the change gets a row of its
 // own. The delivery of these rows is TestAStalePromptCannotAbsorbANewReadersChangeAtDelivery's.
-//
-// The control, a kept subtest: with the seam promptWithoutWorkIdentity, the read without the
-// generation, the task and the reader, the new generation's change joins the stale row, which the
-// subtest asserts.
 func TestAStalePromptCannotAbsorbANewReadersChange(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	owner := func(generation uint64, task string, reader CIReader) CINews {
@@ -125,9 +112,9 @@ func TestAStalePromptCannotAbsorbANewReadersChange(t *testing.T) {
 		{name: "the same complete identity", stale: owner(2, "a", accepting), change: owner(2, "a", accepting), joins: true},
 		{name: "the same identity under a lease", stale: owner(2, "a", accepting), change: owner(2, "a", accepting), leased: true},
 	}
-	play := func(t *testing.T, records *Postgres, stale, change CINews, leased bool) (bool, []CINews) {
+	play := func(t *testing.T, stale, change CINews, leased bool) (bool, []CINews) {
 		t.Helper()
-		st := migratedStore(t)
+		records, st := NewStore(), migratedStore(t)
 		ctx := context.Background()
 		var joined bool
 		var news []CINews
@@ -149,7 +136,7 @@ func TestAStalePromptCannotAbsorbANewReadersChange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			joined, news := play(t, NewStore(), tc.stale, tc.change, tc.leased)
+			joined, news := play(t, tc.stale, tc.change, tc.leased)
 			if tc.joins {
 				if !joined || len(news) != 1 {
 					t.Fatalf("the change = joined %t with %d rows, want it joined to the one row", joined, len(news))
@@ -168,10 +155,4 @@ func TestAStalePromptCannotAbsorbANewReadersChange(t *testing.T) {
 			}
 		})
 	}
-	t.Run("control: promptWithoutWorkIdentity absorbs the new generation's change", func(t *testing.T) {
-		joined, news := play(t, &Postgres{promptWithoutWorkIdentity: true}, cases[0].stale, cases[0].change, false)
-		if !joined || len(news) != 1 || news[0].Generation != 1 {
-			t.Fatalf("the change with the identity taken out = joined %t with rows %+v, want it absorbed into the stale row of generation 1", joined, news)
-		}
-	})
 }

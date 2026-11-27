@@ -192,16 +192,6 @@ type outbox struct {
 	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
 	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
 	controllerLaunched bool
-	// ciNewsAsRoleMessage delivers every CI news row as a role message, its reader's included;
-	// noHolderDelivers finishes a CI news row whose role has no live holder as delivered;
-	// noCurrentWorkFence delivers a CI news row whatever its work is now; and delete422AsGone
-	// finishes a branch beside a fix whose DELETE GitHub answered 422 as gone, unconfirmed. Only
-	// tests set any of them, as the control of the rule each takes out (ciNews,
-	// besideBranchesDelete).
-	ciNewsAsRoleMessage bool
-	noHolderDelivers    bool
-	noCurrentWorkFence  bool
-	delete422AsGone     bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -2202,7 +2192,7 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, r
 // second time. A reader whose claim failed or retired will hold its role no more, and the row
 // finishes undelivered.
 func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload record.CINews) error {
-	if payload.Reader == nil || r.ciNewsAsRoleMessage {
+	if payload.Reader == nil {
 		return r.deliverRoleMessage(ctx, row, payload.Role, payload.Body)
 	}
 	if r.notices == nil {
@@ -2216,15 +2206,13 @@ func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload recor
 	attributes := []any{"row", row.ID, "issue", row.Issue, "purpose", payload.Purpose, "role", payload.Role, "task", payload.Task,
 		"generation", payload.Generation, "head", payload.Head, "readerPhase", payload.Reader.Phase, "readerFix", payload.Reader.Fix,
 		"readerEntry", payload.Reader.Entry}
-	if !r.noCurrentWorkFence {
-		stale, err := r.ciNewsStale(ctx, row.Issue, role, payload)
-		if err != nil {
-			return err
-		}
-		if stale != "" {
-			r.log.Info("outbox CI news finished undelivered: the work it is for is no longer current", append(attributes, "why", stale)...)
-			return nil
-		}
+	stale, err := r.ciNewsStale(ctx, row.Issue, role, payload)
+	if err != nil {
+		return err
+	}
+	if stale != "" {
+		r.log.Info("outbox CI news finished undelivered: the work it is for is no longer current", append(attributes, "why", stale)...)
+		return nil
 	}
 	if r.supervisor != nil {
 		if held := r.supervisedClaim(token); held.State == supervise.StateFailed || held.State == supervise.StateRetired {
@@ -2242,10 +2230,6 @@ func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload recor
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if published == nil {
-		r.log.Info("outbox CI news delivered to its reader", attributes...)
-		return nil
-	}
-	if r.noHolderDelivers && errors.Is(published, notify.ErrNoHolder) {
 		r.log.Info("outbox CI news delivered to its reader", attributes...)
 		return nil
 	}
@@ -2350,13 +2334,16 @@ func (r *outbox) ciNewsStale(ctx context.Context, key string, role claim.Role, p
 // while the row waits on its retries, and the branches of each fix opened then stand under a
 // higher number. It mints the implement App's token for the owner of the repository GitHub holds
 // the issue's under now, as createBranch does, lists each prefix (git/matching-refs) and deletes
-// each branch it names. A deletion logs the branch and the commit it stood at. GitHub answers 404
-// for a branch already gone, which finishes that branch as absent with a line of its own; and 422
-// both for a branch that is gone and for one it refuses to delete, so a 422 is read again by the
-// branch's exact ref, and only that read's 404 finishes it as absent. A branch still there, a read
-// or a list that failed, and any other answer fail the row, which keeps it on its backoff, and log
-// no deletion; its replay lists each prefix again, so a branch deleted meanwhile is not asked for
-// twice.
+// each branch it names. The list is GitHub's answer, and a delete removes whatever ref it names, so
+// each entry is checked before either request: an entry that is not a branch under the prefix the
+// list asked for, `refs/heads/` and the prefix, is refused with a Warn line naming its ref, asks
+// nothing of GitHub and fails the row. A deletion logs the branch and the commit it stood at.
+// GitHub answers 404 for a branch already gone, which finishes that branch as absent with a line
+// of its own; and 422 both for a branch that is gone and for one it refuses to delete, so a 422 is
+// read again by the branch's exact ref, and only that read's 404 finishes it as absent. A branch
+// still there, a refused entry, a read or a list that failed, and any other answer fail the row,
+// which keeps it on its backoff, and log no deletion; its replay lists each prefix again, so a
+// branch deleted meanwhile is not asked for twice.
 func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow, payload record.BesideBranchesDelete) error {
 	fixes := []int{payload.Fix}
 	if payload.Fix == 0 {
@@ -2403,6 +2390,13 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 		}
 		attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", fixes[i], "prefix", prefix}
 		for _, found := range listed {
+			if !strings.HasPrefix(found.Ref, "refs/heads/"+prefix) {
+				refused := fmt.Errorf("GitHub listed %s under %s, which is no branch under that prefix", found.Ref, prefix)
+				r.log.Warn("outbox refused a ref GitHub listed outside the branches beside a fix; it deletes nothing for it, and the row keeps it for its retry",
+					append(slices.Clone(attributes), "ref", found.Ref, "commit", found.Object.SHA)...)
+				failed = append(failed, refused)
+				continue
+			}
 			branch := strings.TrimPrefix(found.Ref, "refs/heads/")
 			at := append(slices.Clone(attributes), "branch", branch, "commit", found.Object.SHA)
 			deleted := github.Delete(ctx, "/git/refs/heads/"+branch)
@@ -2414,9 +2408,6 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 			case !errors.As(deleted, &answer):
 			case answer.Status == http.StatusNotFound:
 				r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 404", at...)
-				continue
-			case answer.Status == http.StatusUnprocessableEntity && r.delete422AsGone:
-				r.log.Info("outbox deleted a branch beside a fix", at...)
 				continue
 			case answer.Status == http.StatusUnprocessableEntity:
 				var still ref

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -161,21 +160,10 @@ func (s *Postgres) PutFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
 // other field as f carries it but Pushed, which RecordBesidePush alone writes: a fix read before
 // a push and written after it keeps that push. A fix the store does not hold is refused.
 func (s *Postgres) UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error {
-	values, setPushed := fixValues(f), ""
-	if s.rewritePushedWithFix {
-		pushed, err := json.Marshal(f.Pushed)
-		if err != nil {
-			return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
-		}
-		if f.Pushed == nil {
-			pushed = []byte(`{}`)
-		}
-		values, setPushed = append(values, pushed), ", pushed = $24"
-	}
 	tag, err := tx.Exec(ctx, `update task_fixes set state = $5, check_id = $6, head = $7, place = $8, entry = $9, got_report = $10,
 			return_to = $11, failed = $12, end_head = $13, result = $14, job_name = $15, job_url = $16, read_failed = $17,
-			claim_failed = $18, way = $19, move_carried = $20, reports = $21, started_at = $22, ended_at = $23`+setPushed+`
-		where `+fixKey+` and fix = $4`, values...)
+			claim_failed = $18, way = $19, move_carried = $20, reports = $21, started_at = $22, ended_at = $23
+		where `+fixKey+` and fix = $4`, fixValues(f)...)
 	if err != nil {
 		return fmt.Errorf("update fix %d of task %s of %s at generation %d: %w", f.Fix, f.Task, f.Issue, f.Generation, err)
 	}
@@ -199,23 +187,6 @@ func fixValues(f TaskFix) []any {
 func (s *Postgres) RecordBesidePush(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int, role, head string) error {
 	if role == "" {
 		return nil
-	}
-	if s.rewritePushedWithFix {
-		stored, err := s.FixAt(ctx, tx, issue, generation, task, fix)
-		if err != nil || stored == nil {
-			return err
-		}
-		pushed := maps.Clone(stored.Pushed)
-		if pushed == nil {
-			pushed = map[string]string{}
-		}
-		if head == "" {
-			delete(pushed, role)
-		} else {
-			pushed[role] = head
-		}
-		stored.Pushed = pushed
-		return s.UpdateFix(ctx, tx, *stored)
 	}
 	if _, err := tx.Exec(ctx, `update task_fixes
 		set pushed = case when $6::text = '' then pushed - $5::text else pushed || jsonb_build_object($5::text, $6::text) end

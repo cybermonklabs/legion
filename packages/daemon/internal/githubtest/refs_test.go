@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -80,6 +81,65 @@ func TestRefsServesTheListTheExactReadAndTheDeleteAsGitHubDoes(t *testing.T) {
 	}
 	if got := len(refs.Requests()); got != 8 {
 		t.Fatalf("Refs kept %d requests, want the 8 it answered: %+v", got, refs.Requests())
+	}
+}
+
+// An entry ListAlso plans is answered by every later list under its prefix, after the branches
+// Refs holds there and whatever ref it names, and by no list under another prefix or of another
+// repository; a list made before the plan names none of it. Nothing else changes: the branch the
+// entry names stands, and no request but the lists is answered.
+func TestRefsAnswersAListEntryOutsideItsPrefix(t *testing.T) {
+	ctx := context.Background()
+	refs := NewRefs()
+	const (
+		repo   = "acme/widgets"
+		prefix = "legion-beside/LEGION-208/3/a/fix-1/"
+	)
+	refs.Set(repo, prefix+"tester", "1111")
+	refs.Set(repo, "legion/LEGION-208", "4444")
+	root := refs.Serve(t)
+	type ref struct {
+		Ref    string `json:"ref"`
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	list := func(of, under string) []string {
+		t.Helper()
+		listed, err := githubrest.GetPages[ref](ctx, githubrest.Client{Token: "t", API: root + "/repos/" + of}, "/git/matching-refs/heads/"+under)
+		if err != nil {
+			t.Fatalf("list under %s of %s: %v", under, of, err)
+		}
+		var names []string
+		for _, r := range listed {
+			names = append(names, r.Ref+"@"+r.Object.SHA)
+		}
+		return names
+	}
+	if got, want := list(repo, prefix), []string{"refs/heads/" + prefix + "tester@1111"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the list before the plan = %v, want %v", got, want)
+	}
+	refs.ListAlso(repo, prefix, "refs/heads/legion/LEGION-208", "4444")
+	refs.ListAlso(repo, prefix, "refs/tags/"+prefix+"tester", "5555")
+	want := []string{"refs/heads/" + prefix + "tester@1111", "refs/heads/legion/LEGION-208@4444", "refs/tags/" + prefix + "tester@5555"}
+	for range 2 {
+		if got := list(repo, prefix); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the list under the planned prefix = %v, want %v", got, want)
+		}
+	}
+	if got := list(repo, "legion-beside/LEGION-208/3/a/fix-2/"); len(got) != 0 {
+		t.Fatalf("the list under another prefix = %v, want none", got)
+	}
+	if got := list("acme/other", prefix); len(got) != 0 {
+		t.Fatalf("the list of another repository = %v, want none", got)
+	}
+	if got := refs.Branches(repo, ""); !reflect.DeepEqual(got, []string{prefix + "tester", "legion/LEGION-208"}) {
+		t.Fatalf("the branches after the lists = %v, want both as Set made them", got)
+	}
+	for _, request := range refs.Requests() {
+		if request.Method != http.MethodGet || !strings.HasPrefix(request.Path, "/git/matching-refs/heads/") {
+			t.Fatalf("Refs answered %+v, want lists alone", request)
+		}
 	}
 }
 

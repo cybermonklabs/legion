@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -602,12 +601,9 @@ func (e *fixEnd) walkToTheEndWhileTheJobRuns() api.Issue {
 //   - The records: each record of each task holds its start and end commits, each fix's record
 //     names k-ci, the record of E's fix ends at Y, and the project's read gives each finished
 //     issue's fixes, B's one among them.
-//
-// The control is a test of its own (TestVFixEndWithoutTheEndHold), since its daemon needs the
-// shared NATS server, which one test takes once.
 func TestVFixEnd(t *testing.T) {
 	t.Parallel()
-	r := newFixRig(t, nil, fixEndIssues...)
+	r := newFixRig(t, fixEndIssues...)
 	a, b, c, d, e, f := r.walking(0), r.walking(1), r.walking(2), r.walking(3), r.walking(4), r.walking(5)
 
 	t.Run("A is not done while its job runs, and its fix ends at its one notice", func(t *testing.T) {
@@ -843,18 +839,4 @@ func TestVFixEnd(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestVFixEndWithoutTheEndHold is the control of TestVFixEnd, kept: on a daemon whose engine has
-// the end hold taken out (WithoutEndHold), task A's walk reaches its retro while unit runs at X,
-// so A's first assertion, held for its CI, fails.
-func TestVFixEndWithoutTheEndHold(t *testing.T) {
-	t.Parallel()
-	control := newFixRig(t, func(engine *workflow.Engine) { engine.WithoutEndHold() }, fixEndIssues[0])
-	a := control.walking(0)
-	stands := a.walkToTheEndWhileTheJobRuns()
-	if stands.Phase == phase.Held && stands.HoldReason == string(record.HoldForCI) {
-		t.Fatalf("%s stands held for %q with the end hold taken out, want it in its retro: the control cannot fail", a.key, stands.HoldReason)
-	}
-	t.Logf("with the end hold taken out %s stands in %s while unit runs at X: A's first assertion, held for CI, fails as it must", a.key, stands.Phase)
 }

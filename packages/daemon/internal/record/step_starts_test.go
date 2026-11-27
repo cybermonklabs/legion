@@ -386,9 +386,6 @@ func TestAStepStartKeepsItsCommitsAndItsFixCheck(t *testing.T) {
 // later fix asks for keeps B. It ends with the start's run: an ended run takes no binding, the
 // next start of the place reads no branch and no fix, and a write naming the old count changes
 // nothing and answers ErrStepStartMismatch.
-//
-// The control, a kept subtest: with the seam keepPreviousPushBranch the next start keeps B, which
-// the subtest asserts, so the reset is what clears it.
 func TestAStepKeepsItsBoundBranchUntilItsEntryEnds(t *testing.T) {
 	const (
 		issue  = "LEGION-1"
@@ -399,10 +396,10 @@ func TestAStepKeepsItsBoundBranchUntilItsEntryEnds(t *testing.T) {
 	testing2 := StepPlace{Task: "a", Kind: "step", Place: 2}
 	at := time.Date(2026, 11, 24, 15, 0, 0, 0, time.UTC)
 	// play binds B to the tester's start beside fix 1, ends fix 1, ends the tester's run and starts
-	// it again, on records, and answers the start after the fix ended and after the next start.
-	play := func(t *testing.T, records *Postgres) (afterFix, next StepStart) {
+	// it again, and answers the start after the fix ended and after the next start.
+	play := func(t *testing.T) (afterFix, next StepStart) {
 		t.Helper()
-		st := migratedStore(t)
+		records, st := NewStore(), migratedStore(t)
 		ctx := t.Context()
 		inTx(t, st, func(tx pgx.Tx) {
 			fix := TaskFix{Issue: issue, Generation: 3, Task: "a", Fix: 1, State: FixReading, Check: fixCheck, Head: fixHeadX, Place: 1}
@@ -452,7 +449,7 @@ func TestAStepKeepsItsBoundBranchUntilItsEntryEnds(t *testing.T) {
 	}
 
 	t.Run("the binding lasts until the start's run ends", func(t *testing.T) {
-		afterFix, next := play(t, NewStore())
+		afterFix, next := play(t)
 		want := StepStart{Starts: 1, Agent: tester, StartedAt: at, Run: RunOpen, BesideFix: 1, PushBranch: bound}
 		if afterFix != want {
 			t.Errorf("the tester's start after fix 1 ended = %+v, want B kept at the same count with BesideFix 1: %+v", afterFix, want)
@@ -460,13 +457,6 @@ func TestAStepKeepsItsBoundBranchUntilItsEntryEnds(t *testing.T) {
 		want = StepStart{Starts: 2, Agent: tester, StartedAt: at, Run: RunOpen}
 		if next != want {
 			t.Errorf("the tester's next start = %+v, want no branch and no fix: %+v", next, want)
-		}
-	})
-
-	t.Run("control: keepPreviousPushBranch carries B into the next start", func(t *testing.T) {
-		_, next := play(t, &Postgres{keepPreviousPushBranch: true})
-		if next.Starts != 2 || next.PushBranch != bound {
-			t.Errorf("the next start with the reset taken out = %+v, want count 2 still bound to %s, the fault the reset clears", next, bound)
 		}
 	})
 }

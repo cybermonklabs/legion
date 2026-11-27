@@ -15,11 +15,13 @@ import (
 // /repos/{owner}/{repo}/git/refs/heads/{branch} from the branches Set gives it, as GitHub answers
 // them: a list in name order, one ref or 404, and 204 or GitHub's 422 "Reference does not exist"
 // for a branch it does not hold. Fail plans one answer of its own for the next request of a method
-// and a branch. It keeps each request it answers (Requests).
+// and a branch, and ListAlso an entry a list answers outside its prefix. It keeps each request it
+// answers (Requests).
 type Refs struct {
 	mu       sync.Mutex
 	branches map[string]map[string]string
 	planned  map[refKey][]plannedAnswer
+	also     map[listKey][]refObject
 	requests []RefRequest
 }
 
@@ -33,6 +35,9 @@ type RefRequest struct {
 // refKey is one method on one branch of one repository.
 type refKey struct{ method, repo, branch string }
 
+// listKey is the list under one prefix of one repository.
+type listKey struct{ repo, prefix string }
+
 // plannedAnswer is a status Refs answers instead of its own, and whether the branch is gone after
 // it: a 422 GitHub answered for a branch someone deleted at the same time leaves it gone.
 type plannedAnswer struct {
@@ -42,7 +47,7 @@ type plannedAnswer struct {
 
 // NewRefs is a Refs that holds no branch.
 func NewRefs() *Refs {
-	return &Refs{branches: map[string]map[string]string{}, planned: map[refKey][]plannedAnswer{}}
+	return &Refs{branches: map[string]map[string]string{}, planned: map[refKey][]plannedAnswer{}, also: map[listKey][]refObject{}}
 }
 
 // Set makes branch of repo, owner/name, stand at sha.
@@ -63,6 +68,19 @@ func (r *Refs) Fail(method, repo, branch string, status int, remove bool) {
 	defer r.mu.Unlock()
 	key := refKey{method, repo, branch}
 	r.planned[key] = append(r.planned[key], plannedAnswer{status: status, remove: remove})
+}
+
+// ListAlso makes every later list under prefix of repo answer the entry ref at sha after the
+// branches it holds there, whatever ref names: a ref outside the prefix, or no branch at all, as
+// an answer a caller asked nothing about. The code that reads the list must not take that entry
+// for a branch under the prefix. Entries are answered in the order they were planned.
+func (r *Refs) ListAlso(repo, prefix, ref, sha string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := refObject{Ref: ref}
+	entry.Object.SHA, entry.Object.Type = sha, "commit"
+	key := listKey{repo, prefix}
+	r.also[key] = append(r.also[key], entry)
 }
 
 // Branches is every branch of repo whose name starts with prefix, in name order.
@@ -106,7 +124,7 @@ func (r *Refs) Handle(w http.ResponseWriter, req *http.Request) bool {
 			for _, branch := range r.matching(repo, prefix) {
 				refs = append(refs, refOf(branch, r.branches[repo][branch]))
 			}
-			return http.StatusOK, refs
+			return http.StatusOK, append(refs, r.also[listKey{repo, prefix}]...)
 		}
 	case req.Method == http.MethodGet && strings.HasPrefix(rest, "ref/heads/"):
 		branch := strings.TrimPrefix(rest, "ref/heads/")

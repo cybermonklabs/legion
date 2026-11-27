@@ -495,7 +495,7 @@ func (e *fixEnd) k1PassesAt(commit string) {
 // (secondReadNow), so no check waits out that minute.
 func TestFixBesideReviewThroughDispatch(t *testing.T) {
 	t.Parallel()
-	r := newFixRig(t, nil, fixBesideIssues...)
+	r := newFixRig(t, fixBesideIssues...)
 	r.logOutbox()
 	one, two, three, four, five := r.walking(0), r.walking(1), r.walking(2), r.walking(3), r.walking(4)
 	entries := map[*fixEnd]int64{}

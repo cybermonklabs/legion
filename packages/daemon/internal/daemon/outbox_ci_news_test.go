@@ -149,9 +149,6 @@ func (d *ciDaemon) wokenThenDelivered(role claim.Role, id int64, wakes int) {
 // the reviewer, a running fix and the merger in merging each get one wake reservation, no publish
 // while no session holds the role's topic, and then one publish under the row's own key, after
 // which the row is finished. Each runs on a whole daemon (ciDaemon).
-//
-// The control, a kept subtest: delivered as a role message (the seam ciNewsAsRoleMessage), the row
-// to the released reviewer finishes undelivered, with no wake.
 func TestACINewsRowWakesItsReleasedReader(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -168,7 +165,7 @@ func TestACINewsRowWakesItsReleasedReader(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			d := newCIDaemon(t, nil)
+			d := newCIDaemon(t)
 			d.seedIssue(tc.at, 1, ciHeadX, d.releasedReader(tc.role, 1, tc.entry))
 			if tc.fix {
 				d.runningFix(tc.entry, ciHeadX)
@@ -180,23 +177,6 @@ func TestACINewsRowWakesItsReleasedReader(t *testing.T) {
 			d.wokenThenDelivered(tc.role, id, 1)
 		})
 	}
-	t.Run("control: ciNewsAsRoleMessage finishes the row undelivered with no wake", func(t *testing.T) {
-		t.Parallel()
-		d := newCIDaemon(t, func(o *outbox) { o.ciNewsAsRoleMessage = true })
-		token := d.token(d.key, claim.RoleReviewer)
-		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
-		d.entry(claim.RoleReviewer, ciReviewerEntry)
-		d.boot()
-		id := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}, "k-ci"))
-		d.until(token, "the row delivered as a role message to finish", func() bool { return !d.rowLeft(id) })
-		if wakes, refused, taken := d.wakes(claim.RoleReviewer), d.listener.refusedTo(token), len(d.listener.takenTo(token, "")); wakes != 0 || refused != 0 || taken != 0 {
-			t.Fatalf("the row as a role message: %d wakes, %d publishes refused, %d taken; want it finished undelivered with no wake, the fault the reader's delivery takes out",
-				wakes, refused, taken)
-		}
-		if lines := d.ciLines(releasedLine, id); len(lines) != 1 {
-			t.Fatalf("the role message's lines = %v, want main's one", lines)
-		}
-	})
 }
 
 // A reader released a second time is woken a second time: a report of the listener's runs wakes
@@ -204,50 +184,28 @@ func TestACINewsRowWakesItsReleasedReader(t *testing.T) {
 // up, takes the task the daemon gives a ready worker, ends its turn and reports no background
 // work, and the idle release takes its pod again; a prompt to read Dispatch then wakes it again
 // and reaches it once. Two wakes in all, two launches, and each row published once under its key.
-//
-// The control, a kept subtest: delivered as role messages (the seam ciNewsAsRoleMessage), neither
-// row wakes the released reviewer, so no wake follows the state.
 func TestASecondReleaseIsWokenByTheStatePrompt(t *testing.T) {
 	t.Parallel()
 	reader := record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}
-	t.Run("the prompt wakes the reviewer the idle release took again", func(t *testing.T) {
-		t.Parallel()
-		d := newCIDaemon(t, nil)
-		token := d.token(d.key, claim.RoleReviewer)
-		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
-		d.entry(claim.RoleReviewer, ciReviewerEntry)
-		d.boot()
-		first := d.queue(d.report(claim.RoleReviewer, ciHeadX, reader))
-		d.wokenThenDelivered(claim.RoleReviewer, first, 1)
+	d := newCIDaemon(t)
+	token := d.token(d.key, claim.RoleReviewer)
+	d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
+	d.entry(claim.RoleReviewer, ciReviewerEntry)
+	d.boot()
+	first := d.queue(d.report(claim.RoleReviewer, ciHeadX, reader))
+	d.wokenThenDelivered(claim.RoleReviewer, first, 1)
 
-		d.upAndIdle(token)
-		d.listener.unhold(token)
-		d.advance(pauseRigIdleMinutes*time.Minute + 5*time.Minute)
-		if released := d.awaitState(token, supervise.StateSuspended, "the idle release takes the reviewer's pod again"); !released.Released() {
-			t.Fatalf("the reviewer after the idle pass is suspended by %s, want released", released.SuspendedBy)
-		}
-		second := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, reader, "k-ci"))
-		d.wokenThenDelivered(claim.RoleReviewer, second, 2)
-		if launches := len(d.rt.launchesOf(token)); launches != 2 {
-			t.Fatalf("the reviewer was launched %d times, want twice: once for each wake", launches)
-		}
-	})
-	t.Run("control: ciNewsAsRoleMessage, and no wake follows the state", func(t *testing.T) {
-		t.Parallel()
-		d := newCIDaemon(t, func(o *outbox) { o.ciNewsAsRoleMessage = true })
-		token := d.token(d.key, claim.RoleReviewer)
-		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
-		d.entry(claim.RoleReviewer, ciReviewerEntry)
-		d.boot()
-		first := d.queue(d.report(claim.RoleReviewer, ciHeadX, reader))
-		d.until(token, "the report delivered as a role message to finish", func() bool { return !d.rowLeft(first) })
-		second := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, reader, "k-ci"))
-		d.until(token, "the prompt delivered as a role message to finish", func() bool { return !d.rowLeft(second) })
-		if wakes, launches := d.wakes(claim.RoleReviewer), len(d.rt.launchesOf(token)); wakes != 0 || launches != 0 {
-			t.Fatalf("as role messages the rows took %d wakes and %d launches, want none: no wake follows the state, the fault the reader's delivery takes out",
-				wakes, launches)
-		}
-	})
+	d.upAndIdle(token)
+	d.listener.unhold(token)
+	d.advance(pauseRigIdleMinutes*time.Minute + 5*time.Minute)
+	if released := d.awaitState(token, supervise.StateSuspended, "the idle release takes the reviewer's pod again"); !released.Released() {
+		t.Fatalf("the reviewer after the idle pass is suspended by %s, want released", released.SuspendedBy)
+	}
+	second := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, reader, "k-ci"))
+	d.wokenThenDelivered(claim.RoleReviewer, second, 2)
+	if launches := len(d.rt.launchesOf(token)); launches != 2 {
+		t.Fatalf("the reviewer was launched %d times, want twice: once for each wake", launches)
+	}
 }
 
 // A release between the executor's read of the claim and its publish is a publish the listener
@@ -255,48 +213,29 @@ func TestASecondReleaseIsWokenByTheStatePrompt(t *testing.T) {
 // so the row wakes nothing, its publish is refused, and the row stays. The pod is then released,
 // as the idle release stops a claim (supervise.RequestSuspend by SuspendedByReleased), and the
 // row's retry wakes the released reviewer and, once a session holds the role's topic again,
-// publishes once, under the row's key. Each runs on a whole daemon.
-//
-// The control, a kept subtest: with no holder taken as delivered (the seam noHolderDelivers), the
-// row finishes unpublished at the refused publish, which the subtest asserts.
+// publishes once, under the row's key. It runs on a whole daemon.
 func TestAReleaseDuringDeliveryKeepsTheRow(t *testing.T) {
 	t.Parallel()
-	play := func(t *testing.T, noHolderDelivers bool) (*ciDaemon, claim.Token, int64) {
-		t.Helper()
-		d := newCIDaemon(t, func(o *outbox) { o.noHolderDelivers = noHolderDelivers })
-		token := d.token(d.key, claim.RoleReviewer)
-		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.launchingReader(claim.RoleReviewer, ciReviewerEntry))
-		d.entry(claim.RoleReviewer, ciReviewerEntry)
-		d.boot()
-		d.until(token, "the boot's launch of the reviewer", func() bool { return len(d.rt.launchesOf(token)) >= 1 })
-		d.upAndIdle(token)
-		id := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}, "k-ci"))
-		d.until(token, "the row's publish refused for want of a holder", func() bool { return d.listener.refusedTo(token) >= 1 })
-		return d, token, id
+	d := newCIDaemon(t)
+	token := d.token(d.key, claim.RoleReviewer)
+	d.seedIssue(phase.Reviewing, 1, ciHeadX, d.launchingReader(claim.RoleReviewer, ciReviewerEntry))
+	d.entry(claim.RoleReviewer, ciReviewerEntry)
+	d.boot()
+	d.until(token, "the boot's launch of the reviewer", func() bool { return len(d.rt.launchesOf(token)) >= 1 })
+	d.upAndIdle(token)
+	id := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}, "k-ci"))
+	d.until(token, "the row's publish refused for want of a holder", func() bool { return d.listener.refusedTo(token) >= 1 })
+	key := record.OutboxKey(id)
+	if !d.rowLeft(id) || len(d.listener.takenTo(token, key)) != 0 || d.wakes(claim.RoleReviewer) != 0 {
+		t.Fatalf("the publish no holder took: the row left %t, %d taken, %d wakes; want the row kept, nothing taken and no wake",
+			d.rowLeft(id), len(d.listener.takenTo(token, key)), d.wakes(claim.RoleReviewer))
 	}
-	t.Run("the row stays, and its retry wakes the released claim and publishes once", func(t *testing.T) {
-		t.Parallel()
-		d, token, id := play(t, false)
-		key := record.OutboxKey(id)
-		if !d.rowLeft(id) || len(d.listener.takenTo(token, key)) != 0 || d.wakes(claim.RoleReviewer) != 0 {
-			t.Fatalf("the publish no holder took: the row left %t, %d taken, %d wakes; want the row kept, nothing taken and no wake",
-				d.rowLeft(id), len(d.listener.takenTo(token, key)), d.wakes(claim.RoleReviewer))
-		}
-		d.handle(token, supervise.RequestSuspend{Claim: token, Reason: "the idle release takes the reviewer's pod", By: supervise.SuspendedByReleased})
-		if released := d.awaitState(token, supervise.StateSuspended, "the release stops the reviewer"); !released.Released() {
-			t.Fatalf("the reviewer after the release is suspended by %s, want released", released.SuspendedBy)
-		}
-		d.hurry(record.OutboxKindCINews)
-		d.wokenThenDelivered(claim.RoleReviewer, id, 1)
-	})
-	t.Run("control: noHolderDelivers finishes the row unpublished", func(t *testing.T) {
-		t.Parallel()
-		d, token, id := play(t, true)
-		d.until(token, "the row taken as delivered to finish", func() bool { return !d.rowLeft(id) })
-		if taken := len(d.listener.takenTo(token, "")); taken != 0 {
-			t.Fatalf("with no holder taken as delivered: %d publishes taken; want the row finished unpublished, the fault the wait takes out", taken)
-		}
-	})
+	d.handle(token, supervise.RequestSuspend{Claim: token, Reason: "the idle release takes the reviewer's pod", By: supervise.SuspendedByReleased})
+	if released := d.awaitState(token, supervise.StateSuspended, "the release stops the reviewer"); !released.Released() {
+		t.Fatalf("the reviewer after the release is suspended by %s, want released", released.SuspendedBy)
+	}
+	d.hurry(record.OutboxKindCINews)
+	d.wokenThenDelivered(claim.RoleReviewer, id, 1)
 }
 
 // A daemon that stops in the middle of a row's delivery delivers the row once after its restart.
@@ -317,7 +256,7 @@ func TestARestartDuringTheWakeOrThePublishDeliversOnce(t *testing.T) {
 	// takes it; leave runs on the stopped daemon's row, and the daemon then boots again.
 	gated := func(t *testing.T, afterTake bool, leave func(*ciDaemon, int64)) (*ciDaemon, claim.Token, int64) {
 		t.Helper()
-		d := newCIDaemon(t, nil)
+		d := newCIDaemon(t)
 		token := d.token(d.key, claim.RoleReviewer)
 		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.launchingReader(claim.RoleReviewer, ciReviewerEntry))
 		d.entry(claim.RoleReviewer, ciReviewerEntry)
@@ -342,7 +281,7 @@ func TestARestartDuringTheWakeOrThePublishDeliversOnce(t *testing.T) {
 	}
 	t.Run("stopped after the wake's reservation", func(t *testing.T) {
 		t.Parallel()
-		d := newCIDaemon(t, nil)
+		d := newCIDaemon(t)
 		token := d.token(d.key, claim.RoleReviewer)
 		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
 		d.entry(claim.RoleReviewer, ciReviewerEntry)
@@ -391,9 +330,6 @@ func TestARestartDuringTheWakeOrThePublishDeliversOnce(t *testing.T) {
 // request has left each finish with one INFO line, no wake and no publish. A stale prompt of the
 // owner of the generation before, beside the current owner's own prompt at the same head and entry
 // 0, wakes nobody, and the current prompt reaches the owner once. Each runs on a whole daemon.
-//
-// The control, a kept subtest: with the fence taken out (the seam noCurrentWorkFence), the row
-// whose reader's entry was raised wakes the claim, which the subtest asserts.
 func TestARowForWorkNoLongerCurrentWakesNothing(t *testing.T) {
 	t.Parallel()
 	reviewer := record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}
@@ -410,7 +346,7 @@ func TestARowForWorkNoLongerCurrentWakesNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			d := newCIDaemon(t, nil)
+			d := newCIDaemon(t)
 			token := d.token(d.key, claim.RoleReviewer)
 			d.seedIssue(phase.Reviewing, tc.generation, tc.head, d.releasedReader(claim.RoleReviewer, tc.generation, tc.given))
 			d.entry(claim.RoleReviewer, tc.row)
@@ -427,7 +363,7 @@ func TestARowForWorkNoLongerCurrentWakesNothing(t *testing.T) {
 	}
 	t.Run("a stale owner's prompt beside the current one", func(t *testing.T) {
 		t.Parallel()
-		d := newCIDaemon(t, nil)
+		d := newCIDaemon(t)
 		token := d.token(d.key, claim.RoleArchitect)
 		d.seedIssue(phase.Accepting, 2, ciHeadX, d.releasedReader(claim.RoleArchitect, 2, 0))
 		d.boot()
@@ -464,19 +400,6 @@ func TestARowForWorkNoLongerCurrentWakesNothing(t *testing.T) {
 			t.Fatalf("the stale prompt was published %d times, want never", taken)
 		}
 	})
-	t.Run("control: noCurrentWorkFence wakes the claim of a raised entry", func(t *testing.T) {
-		t.Parallel()
-		d := newCIDaemon(t, func(o *outbox) { o.noCurrentWorkFence = true })
-		token := d.token(d.key, claim.RoleReviewer)
-		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry+1))
-		d.entry(claim.RoleReviewer, ciReviewerEntry+1)
-		d.boot()
-		id := d.queue(d.prompt(claim.RoleReviewer, 1, ciHeadX, reviewer, "k-ci"))
-		d.until(token, "the stale row to wake the claim with the fence taken out", func() bool { return d.wakes(claim.RoleReviewer) == 1 })
-		if !d.rowLeft(id) {
-			t.Fatal("with the fence taken out the stale row finished, want it kept waiting for the claim it woke, the fault the fence takes out")
-		}
-	})
 }
 
 // A row of CI news that a project's pause holds is owed to its reader all the same: while the
@@ -486,7 +409,7 @@ func TestARowForWorkNoLongerCurrentWakesNothing(t *testing.T) {
 // prompt (record's pauseHolds).
 func TestAPauseKeepsAnOwedCIRow(t *testing.T) {
 	t.Parallel()
-	d := newCIDaemon(t, nil)
+	d := newCIDaemon(t)
 	token := d.token(d.key, claim.RoleReviewer)
 	d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
 	d.entry(claim.RoleReviewer, ciReviewerEntry)
@@ -514,7 +437,7 @@ func TestAnInformationalRowIsDeliveredAsARoleMessage(t *testing.T) {
 	}
 	t.Run("to a released claim", func(t *testing.T) {
 		t.Parallel()
-		d := newCIDaemon(t, nil)
+		d := newCIDaemon(t)
 		token := d.token(d.key, claim.RoleReviewer)
 		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
 		d.boot()
@@ -529,7 +452,7 @@ func TestAnInformationalRowIsDeliveredAsARoleMessage(t *testing.T) {
 	})
 	t.Run("to a holder", func(t *testing.T) {
 		t.Parallel()
-		d := newCIDaemon(t, nil)
+		d := newCIDaemon(t)
 		token := d.token(d.key, claim.RoleReviewer)
 		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.launchingReader(claim.RoleReviewer, ciReviewerEntry))
 		d.listener.hold(token)
@@ -546,7 +469,7 @@ func TestAnInformationalRowIsDeliveredAsARoleMessage(t *testing.T) {
 // one wake of the released reviewer and one publish.
 func TestTenChecksOfOneRunGiveOneWake(t *testing.T) {
 	t.Parallel()
-	d := newCIDaemon(t, nil)
+	d := newCIDaemon(t)
 	d.seedIssue(phase.Reviewing, 1, ciHeadX, d.releasedReader(claim.RoleReviewer, 1, ciReviewerEntry))
 	d.entry(claim.RoleReviewer, ciReviewerEntry)
 	d.boot()
@@ -587,7 +510,7 @@ func TestAnEmptyReplacementSetSurvivesTheOutbox(t *testing.T) {
 	reader := record.CIReader{Phase: phase.Reviewing, Entry: ciReviewerEntry}
 	t.Run("the replacement of no checks is kept, joined and delivered once", func(t *testing.T) {
 		t.Parallel()
-		d := newCIDaemon(t, nil)
+		d := newCIDaemon(t)
 		token := d.token(d.key, claim.RoleReviewer)
 		d.seedIssue(phase.Reviewing, 1, ciHeadX, d.launchingReader(claim.RoleReviewer, ciReviewerEntry))
 		d.entry(claim.RoleReviewer, ciReviewerEntry)
