@@ -186,11 +186,12 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // second resume by rule of a claim the first already launched finds it running and does nothing.
 // What the first run's commit owes once it lands — the lanes of the rows it queued or made due
 // woken, the released row's line and the owed spawn's resume (stopCommitted) — is that commit's
-// hook, and so is the wake of the role-holder publication the claim's write queued, which the
-// store's claim write registers itself (store.PutClaimTx): a stop whose commit's answer was lost
-// and that the store says committed still does each once, and the run made again, which writes
-// none of those rows and changes no holder, does none of them a second time. It writes no log line
-// of the stop itself: the machine writes supervise.PauseRoleStoppedMessage once it lands.
+// hook, and so are the wakes of the role-holder publication and the state event the claim's write
+// queued, which the store's claim write registers itself (store.PutClaimTx): a stop whose commit's
+// answer was lost and that the store says committed still does each once, and the run made again,
+// which writes none of those rows and changes neither the holder nor the claim's state, does none
+// of them a second time. It writes no log line of the stop itself: the machine writes
+// supervise.PauseRoleStoppedMessage once it lands.
 func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supervise.PauseStop) error {
 	at := p.now().UTC()
 	if err := store.Transact(ctx, p.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {

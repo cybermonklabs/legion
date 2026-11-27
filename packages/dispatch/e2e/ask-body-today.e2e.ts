@@ -1474,8 +1474,9 @@ test("the first line's shape holds when the Conversation marks the issue read be
   // the read mark unmounts (a label's wrapper where the label is the wrapper's only child, as on
   // an ask or a thread turn, and else the label alone, as in a message's header line) and records
   // how many labels it hid and how far the ask body moved. So `readFirstLine` must make its range
-  // before it reads any box: a check that reads a box before that call, or reads boxes at
-  // different moments, reads the parts from one layout and the words from another. The held
+  // before it reads any box: a check that reads a box before it makes its range reads that box
+  // from one layout and the rest from another. The row does not catch a check that makes its
+  // range first and reads a box in a later call, since the trap has fired by then. The held
   // write goes on after 10 s, so a check that waits for the read mark sees it land.
   await page.route("**/api/v1/me/issues/*/state", async (route) => {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -1531,14 +1532,12 @@ test("the first line's shape holds when the Conversation marks the issue read be
     hidden: Number(document.documentElement.dataset.readMarkHidden ?? "0"),
     moved: Number(document.documentElement.dataset.readMarkMoved ?? "0"),
   }));
-  const lineHeight = await body
-    .getByText(surface.question, { exact: true })
-    .first()
-    .evaluate((element) => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      return (range.getClientRects()[0] ?? element.getBoundingClientRect()).height;
-    });
+  // The trap fires once, so this read of the words' first line sees the layout after it.
+  const { first } = await readFirstLine(
+    body.getByText(surface.question, { exact: true }).first(),
+    []
+  );
+  const lineHeight = first.bottom - first.top;
   expect(trap.hidden, "the trap hid no New label").toBeGreaterThanOrEqual(1);
   expect(trap.moved, "the hidden labels moved the ask by less than its first line").toBeGreaterThan(
     lineHeight

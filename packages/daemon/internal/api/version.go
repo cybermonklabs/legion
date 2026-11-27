@@ -3272,10 +3272,10 @@ package api
 // process of 193 or later states its contract in `Legion-Plugin-Contract` and is served by it,
 // and an older one is placed by the lowest contract its pod records. Those are the callers the
 // strip serves.
-// A renumber moves `cachesSourceContract` in shaping.go with it, and that one constant alone: it
-// is the arrival answers.go's `capabilitySources` records for `caches`, and it is a number of
-// answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.
+// Until it landed, a renumber moved `cachesSourceContract` in shaping.go with it, and that one
+// constant alone: it is the arrival answers.go's `capabilitySources` records for `caches`, and it
+// was then the last number of answers.go's SupportedContracts, which names the constant rather
+// than its number for that reason.
 // (This entry first took 197, the lowest number above main's 189 that no open pull request
 // declared when the merge of 2026-11-20 brought main in at f21107b285, and took 201 at the merge
 // that brought main in at 193 (8a9540682d, #3659 having declared 193): a reading of `const
@@ -3908,12 +3908,12 @@ package api
 // that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
 // (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
 // changes, so this entry moved to 256, above every number an open pull request
-// declares or a change had been named for. From this entry the last number of answers.go's
-// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// declares or a change had been named for. At this entry the last number of answers.go's
+// SupportedContracts was `api.causeTimesContract`, after podHoldContract's 246. The forward merge
 // of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
-// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line.)
+// 256, so this entry kept 256, and the list then ended priorityContract, causeTimesContract.
+// Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
 //
 // Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
 // `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and

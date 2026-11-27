@@ -560,7 +560,8 @@ html:has([data-issue-page]) {
    give it, which the floor's `inline-flex`, in no layer, would outrank: a kind's chip is hidden at
    760 px and below until the box holds the caret (`pageComposer.chip`). A menu or a dialog the
    box opens, and the reference picker's list, keep the floor, as every box's do. */
-html:has([data-issue-page]) [data-issue-composer]
+html:has([data-issue-page])
+  [data-issue-composer]
   button:not([role="menu"] *):not([role="dialog"] *):not([role="listbox"] *) {
   min-width: 24px;
   min-height: 24px;
@@ -966,7 +967,8 @@ html:has([data-issue-page]) [data-issue-composer]
    and the card's own spacing and type survive intact. The selector must outrank `.milkdown x`
    (0,1,1) for the rollback to be the cascaded value; the property list is the union of what
    those library rules set. */
-.dispatch-doc .proof-typed-block-ask
+.dispatch-doc
+  .proof-typed-block-ask
   :is([data-dispatch-ask-header], [data-dispatch-ask-footer])
   :is(h1, h2, h3, h4, h5, h6, p, ul, ol, li, code, pre, blockquote, a, hr) {
   background: revert-layer;
@@ -1373,6 +1375,9 @@ html:has([data-issue-page]) [data-issue-composer]
   margin-block: 0.5714286em;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: this rule sets list-style-type alone, which no
+   option-list rule above it sets (they set display, margin-top, font-size and opacity), so the
+   order of the two decides nothing. */
 :is(.dispatch-doc, .dispatch-markdown)
   .proof-typed-block-ask
   [data-dispatch-ask-footer]

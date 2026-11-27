@@ -311,46 +311,47 @@ async function stopWithSigterm(
 }
 
 describe("a stopping session gives back its role claims before it deletes its record", () => {
-  test.each([
-    "rpc",
-    "interactive",
-  ] as const)("on SIGTERM in %s mode, and the session's next process then claims the role with no refusal", async (mode) => {
-    const listener = startListener({ releaseAnswers: true });
-    const first = await startInstance(listener, { mode, role: ROLE });
-    expect(first.claim).toBe(`Now holding role: ${ROLE}`);
-    const [firstInstance] = registeredInstances(listener);
-    expect(firstInstance).toMatch(/^[0-9a-f]{32}$/);
-    expect(listener.claims.get(ROLE)).toEqual({ session: SESSION, instance: firstInstance });
+  test.each(["rpc", "interactive"] as const)(
+    "on SIGTERM in %s mode, and the session's next process then claims the role with no refusal",
+    async (mode) => {
+      const listener = startListener({ releaseAnswers: true });
+      const first = await startInstance(listener, { mode, role: ROLE });
+      expect(first.claim).toBe(`Now holding role: ${ROLE}`);
+      const [firstInstance] = registeredInstances(listener);
+      expect(firstInstance).toMatch(/^[0-9a-f]{32}$/);
+      expect(listener.claims.get(ROLE)).toEqual({ session: SESSION, instance: firstInstance });
 
-    const signalled = listener.calls.length;
-    const stopped = await stopWithSigterm(first);
-    expect(stopped.status).toBe(143);
-    expect(listener.calls.slice(signalled)).toEqual([
-      { kind: "release", topics: [ROLE_TOPIC], session: SESSION, instance: firstInstance },
-      { kind: "delete", session: SESSION, instance: firstInstance ?? null },
-    ]);
-    expect(listener.claims.has(ROLE)).toBe(false);
+      const signalled = listener.calls.length;
+      const stopped = await stopWithSigterm(first);
+      expect(stopped.status).toBe(143);
+      expect(listener.calls.slice(signalled)).toEqual([
+        { kind: "release", topics: [ROLE_TOPIC], session: SESSION, instance: firstInstance },
+        { kind: "delete", session: SESSION, instance: firstInstance ?? null },
+      ]);
+      expect(listener.claims.has(ROLE)).toBe(false);
 
-    // The relaunch: a new process of the same session, carrying its transcript, whose start
-    // claims the role the transcript records, softly, as every pass does.
-    const relaunched = listener.calls.length;
-    const second = await startInstance(listener, { mode, transcript: first.entries });
-    const [secondInstance] = registeredInstances(listener, relaunched);
-    expect(secondInstance).toMatch(/^[0-9a-f]{32}$/);
-    expect(secondInstance).not.toBe(firstInstance);
-    expect(listener.calls.slice(relaunched).filter((call) => call.kind === "claim")).toEqual([
-      {
-        kind: "claim",
-        role: ROLE,
-        session: SESSION,
-        instance: secondInstance,
-        soft: true,
-        status: 200,
-      },
-    ]);
-    expect(listener.claims.get(ROLE)).toEqual({ session: SESSION, instance: secondInstance });
-    expect((await stopWithSigterm(second)).status).toBe(143);
-  }, 60_000);
+      // The relaunch: a new process of the same session, carrying its transcript, whose start
+      // claims the role the transcript records, softly, as every pass does.
+      const relaunched = listener.calls.length;
+      const second = await startInstance(listener, { mode, transcript: first.entries });
+      const [secondInstance] = registeredInstances(listener, relaunched);
+      expect(secondInstance).toMatch(/^[0-9a-f]{32}$/);
+      expect(secondInstance).not.toBe(firstInstance);
+      expect(listener.calls.slice(relaunched).filter((call) => call.kind === "claim")).toEqual([
+        {
+          kind: "claim",
+          role: ROLE,
+          session: SESSION,
+          instance: secondInstance,
+          soft: true,
+          status: 200,
+        },
+      ]);
+      expect(listener.claims.get(ROLE)).toEqual({ session: SESSION, instance: secondInstance });
+      expect((await stopWithSigterm(second)).status).toBe(143);
+    },
+    60_000
+  );
 
   test("a stop whose release never answers still deletes the record, inside the shim's grace, and frees no claim", async () => {
     const listener = startListener({ releaseAnswers: false });

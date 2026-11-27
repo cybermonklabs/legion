@@ -52,7 +52,9 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	})
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	awaitAckPending(t, publisher, 3)
+	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 2 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second and third messages: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
+	})
 
 	wait := tuning.callWait.Swap(int64(30 * time.Second))
 	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
@@ -93,7 +95,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	if !row.handBackPending() {
 		t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 	}
-	if !holdLive(t, row.pool) {
+	if !holdLive(t, row.pool, row.holder.intake.holder) {
 		t.Fatal("control: the stop released its hold with its hand-back pending")
 	}
 	row.holder.leases.cut.Store(true)
@@ -159,7 +161,9 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, inFlight)
-	awaitAckPending(t, publisher, 2)
+	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
+	})
 
 	// The stop's hand-backs go out only once its drain has answered; the row gives the stop's calls
 	// a 30 s guard, and puts the wait back as the hand-back's publish begins (stopWithAHeldHandBack).
@@ -202,7 +206,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the hand-back's publish did not land in the frozen link's socket")
 	}
-	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool) {
+	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool, holder.intake.holder) {
 		t.Fatalf("control: the stop released its hold although no flush could confirm its hand-back; logged %q", loggedMessages(logs()))
 	}
 	thaw := link.HoldStalledWrite(t, holderConn)

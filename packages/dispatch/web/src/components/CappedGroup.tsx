@@ -1,4 +1,4 @@
-import { Children, isValidElement, type ReactNode, useId, useState } from "react";
+import { Children, isValidElement, type ReactNode, useId, useMemo, useState } from "react";
 
 import {
   focusVisibleRing,
@@ -9,6 +9,40 @@ import {
 /** The most entries a group whose length comes from data shows before its "+N" control, the
  *  layout rule's cap (`packages/dispatch/web/src/AGENTS.md`, Layout; INFRA-1196's R13). */
 export const LAYOUT_GROUP_MAX = 10;
+
+/** Who keeps whether the group is open: its host, which passes both props, or the group itself,
+ *  given neither. A host that passed only `open` would draw a "+N" that nothing could open. */
+export type CappedGroupOpenState =
+  | { open: boolean; onOpenChange: (open: boolean) => void }
+  | { open?: never; onOpenChange?: never };
+
+/** The open state of many groups, one per key, for a host whose groups can be drawn again from
+ *  nothing (`CappedGroup`'s `open`): a windowed list's rows, a board's cards that move between
+ *  columns. `stateFor` gives a group's `open` and `onOpenChange`. */
+export interface OpenedGroups {
+  readonly stateFor: (key: string) => { open: boolean; onOpenChange: (open: boolean) => void };
+}
+
+/** Holds which groups the reader opened past their "+N", by key, for as long as the host is
+ *  mounted. */
+export function useOpenedGroups(): OpenedGroups {
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  return useMemo(
+    () => ({
+      stateFor: (key: string) => ({
+        onOpenChange: (open: boolean) =>
+          setOpened((current) => {
+            const next = new Set(current);
+            if (open) next.add(key);
+            else next.delete(key);
+            return next;
+          }),
+        open: opened.has(key),
+      }),
+    }),
+    [opened]
+  );
+}
 
 /**
  * A group whose length comes from data - labels, components, links, checks, subscribers,
@@ -36,6 +70,11 @@ export const LAYOUT_GROUP_MAX = 10;
  * Given `list`, the group is a list named by it: a `ul` with each entry in an `li`, and the
  * control in an `li` of its own, which then carries `data-layout-more`, since the measure skips
  * only a direct child that carries it.
+ *
+ * Given `open` and `onOpenChange`, whether the group is open is its host's: a host whose group
+ * can be drawn again from nothing - a row a windowed list unmounts when it scrolls out and
+ * mounts when it scrolls back - keeps the reader's choice there, so the group comes back as the
+ * reader left it. Without them the group keeps the choice itself.
  */
 export function CappedGroup({
   children,
@@ -44,6 +83,8 @@ export function CappedGroup({
   list,
   max = LAYOUT_GROUP_MAX,
   name,
+  onOpenChange,
+  open: heldOpen,
 }: {
   children: ReactNode;
   className?: string;
@@ -51,8 +92,13 @@ export function CappedGroup({
   list?: string;
   max?: number;
   name: string;
-}): ReactNode {
-  const [open, setOpen] = useState(false);
+} & CappedGroupOpenState): ReactNode {
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = heldOpen ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    if (heldOpen === undefined) setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const groupId = useId();
   const entries = Children.toArray(children);
   const hidden = entries.length - max;
@@ -67,7 +113,7 @@ export function CappedGroup({
         }
         className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
         data-layout-more={list === undefined ? "" : undefined}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => setOpen(!open)}
         type="button"
       >
         <span
