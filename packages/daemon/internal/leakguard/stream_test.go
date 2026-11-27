@@ -509,11 +509,12 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 	hold := holdUntilEnd(t)
 	guard := gitFirst(t, "case \" $* \" in\n"+
 		"*\" --unified=0 \"*) setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  '"+git+"' \"$@\"\n  "+hold+" ;;\n"+
-		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+		"*) [ -e "+shQuote(push.req.Dir+".stalled")+" ] || { : > "+shQuote(push.req.Dir+".stalled")+"; sleep 4.5; }\n  exec '"+git+"' \"$@\" ;;\nesac\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	var err error
 	answered(t, "the push whose diff an escaped process holds", func() { err = guard.Push(ctx, push.req) })
+	t.Logf("CONTROL: the push answered %v", err)
 	says(t, setupFailure(t, err), "was stopped by its bound")
 }
 
