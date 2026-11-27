@@ -536,9 +536,12 @@ func TestTheMergersCompletionLandsBeforeTheNextChange(t *testing.T) {
 		if result.Refusal != nil {
 			t.Fatalf("the merger's completion in verifying = %+v, want it recorded", result.Refusal)
 		}
+		// The completion is recorded on the merger's row, and the change it starts clears that
+		// row's handoff in the same transaction (record.Store.ClearChangeGeneration), which keeps
+		// the moment it completed: that moment is the completion the daemon took.
 		row := issuePhaseRow(t, rig, waitRoot, claim.RoleMerger)
-		if !row.Completed() || row.HandoffCommit != headOne {
-			t.Fatalf("the merger's row after its completion = %+v, want it completed at %s", row, headOne)
+		if row.CompletedAt.IsZero() {
+			t.Fatalf("the merger's row after its completion = %+v, want the moment it completed", row)
 		}
 		got := rig.started(waitRoot, changeGeneration, 1)
 		if got.MergerCompletionOwed {

@@ -243,7 +243,11 @@ func (e *Engine) recordCheckReasons(ctx context.Context, tx pgx.Tx, issue record
 				known = true
 				break
 			}
-			if defect.Check == failed.Check && defect.Open() {
+			// A check that is already a reason adds none: one waiting for a change to start
+			// (carried by none) and one the issue's open change carries. A reason a change that
+			// has ended carries holds nothing: that change answered it, and a fail after it is
+			// the check failing again, which is a reason of its own.
+			if defect.Check == failed.Check && defect.Open() && (defect.CarriedBy == 0 || defect.CarriedBy == issue.NextChange) {
 				known = true
 				break
 			}
