@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The command bar offers `dispatch_project_update`, which turns a project's proven-sessions
+  setting on or off, as a row of a run's plan, and `going.UnofferedTools` no longer leaves it out.
+  The row is named by the project, shows the setting before and after as `GET /api/v1/projects`
+  lists it, and waits for the person in Ask and in Auto-review, as every change of a setting of
+  Dispatch does. Once approved it sends `PUT /api/v1/projects/{key}/proven-sessions` to turn the
+  setting on and `DELETE` on the same path, which needs the person scope, to turn it off. Undo
+  sends the other route, only while the project still holds the setting the run left and no event
+  since has changed it, one that changed it back included: the route decides this under the
+  project's lock, refusing `409 PROJECT_CHANGED`, and a setting another writer changed is kept and
+  its writer named. A write that found the setting as asked changes nothing and has nothing to
+  undo.

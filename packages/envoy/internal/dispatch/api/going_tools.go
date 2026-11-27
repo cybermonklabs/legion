@@ -88,6 +88,13 @@ const (
 	goingAgentUploadRoute   = http.MethodPost + " /api/v1/agents/{session_id}/artifacts"
 )
 
+// The two routes of a project's proven-sessions setting, each the other's undo
+// (dispatch_project_update).
+const (
+	goingProvenSessionsOnRoute  = http.MethodPut + " /api/v1/projects/{key}/proven-sessions"
+	goingProvenSessionsOffRoute = http.MethodDelete + " /api/v1/projects/{key}/proven-sessions"
+)
+
 // goingUploadNames is the argument of each action that names the document its upload writes, by
 // action: an upload whose name is the name or the slug of a document its owner already holds is
 // that document's next version (artifactByNameOrSlugSQL), so a plan's row of such an action reads
@@ -118,7 +125,8 @@ const (
 	// goingUndoReverse runs the write's reverse, a route of the table whether or not a tool
 	// calls it: a claim is released, a follow unfollowed, a resolved comment reopened and a
 	// reopened one resolved again, an ask the run opened retracted, a suggestion the run posted
-	// rejected while it is still open.
+	// rejected while it is still open, a project's proven-sessions setting turned back the way
+	// it came.
 	goingUndoReverse goingUndoKind = "reverse"
 	// goingUndoWriteBack writes the value the write found back over it: an issue's fields, an
 	// ask's text, a document's content, a comment's or an issue message's body.
@@ -726,6 +734,33 @@ var goingWriteTools = map[string]goingWriteTool{
 		Observe: goingObserver.deployRecorded, Undo: goingUndoNotUndone,
 		Class: goingClassResult, Event: "deploy.recorded",
 	},
+	// A project's proven-sessions setting is one tool and two rows of one path, told apart by
+	// proven_sessions: on is the PUT and off the DELETE, which needs the person scope, so a run
+	// whose credential holds none is refused 403 OAUTH_SCOPE_REQUIRED at the row. Each is the
+	// other's undo, which puts the setting back only while the project holds what the run left
+	// and no write since has changed it (goingUndoer.provenSessions). A write that finds the
+	// setting as asked changes nothing and lands nothing, so it has nothing to undo. Its class
+	// is a setting of Dispatch, so its row waits for the person in both modes; it is no action
+	// of the answer run's decision (Proposed), as dispatch_deploy is none.
+	"dispatch_project_update": {
+		Routes: []goingToolRoute{
+			{
+				Method: http.MethodDelete, Pattern: "/api/v1/projects/{key}/proven-sessions",
+				Path:         map[string]string{"key": "project"},
+				WhenArgument: "proven_sessions", WhenValue: "off",
+				Translate:  goingTranslateNoBody,
+				UndoRoutes: []string{goingProvenSessionsOnRoute},
+			},
+			{
+				Method: http.MethodPut, Pattern: "/api/v1/projects/{key}/proven-sessions",
+				Path:       map[string]string{"key": "project"},
+				Translate:  goingTranslateNoBody,
+				UndoRoutes: []string{goingProvenSessionsOffRoute},
+			},
+		},
+		Observe: goingObserver.provenSessionsSet, Undo: goingUndoReverse,
+		Class: goingClassSetting, Event: "project.updated",
+	},
 	// The person's own state of one issue. Its route replaces the stored list of the issue's
 	// pinned and dismissed items whole, so the translation reads that state first and sends the
 	// list with the call's items added, under the next seq of the row it read
@@ -1013,9 +1048,6 @@ const (
 	goingExcludedTestHook   = "a test hook, which a deployment serves only with its test hooks on"
 	goingExcludedBar        = "the command bar's own route"
 	goingExcludedDaemon     = "only the Legion daemon writes it: every other caller is refused (403)"
-	// dispatch_project_update's two routes (going.UnofferedTools says why the bar offers no tool
-	// of them).
-	goingExcludedProvenSessions = "a project's proven-sessions check, which the bar never turns on or off"
 	// The status change writes several issues, each in a transaction of its own, so no landing of
 	// one request records it and no Undo walks it back. The bar never calls it: a plan that sets
 	// an option of dispatch_issue_update is written out as one update row for each issue the
@@ -1071,8 +1103,6 @@ var goingExcludedRoutes = map[string]string{
 	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemon + " STEP_WRITER",
 	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
-	"PUT /api/v1/projects/{key}/proven-sessions":                    goingExcludedProvenSessions,
-	"DELETE /api/v1/projects/{key}/proven-sessions":                 goingExcludedProvenSessions,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

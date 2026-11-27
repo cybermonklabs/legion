@@ -185,6 +185,7 @@ var goingWriteFields = map[string]string{
 	"dispatch_result":            "result",
 	"dispatch_artifact":          "artifact",
 	"dispatch_project":           "project",
+	"dispatch_project_update":    goingProvenSessionsField,
 	"dispatch_architecture_sync": "architecture",
 	"dispatch_handoff_write":     "handoff",
 	"dispatch_edit_comment":      "body",
@@ -316,6 +317,71 @@ func (o goingObserver) deployRecorded(ctx context.Context, prepared goingPrepare
 		}
 	}
 	return observed, nil
+}
+
+// goingProvenSessionsField is the one field a change of a project's proven-sessions setting
+// writes: the field its row names, and the member of its value the setting is under.
+const goingProvenSessionsField = "proven_sessions"
+
+// provenSessionsSet reads, before a change of a project's proven-sessions setting, the setting as
+// GET /api/v1/projects lists it, and after it the setting the route answered, as the answer of the
+// route (the project as the list shows it) and the record it hands its landing
+// (provenSessionsLanded) both say it. The value is the setting as {proven_sessions} before and
+// after. What the change found is the setting it left turned over where its landing says it
+// changed the setting, as a follow's is (followed): both routes answer 200 whether or not they
+// changed it, and commit nothing, so land nothing, where it stood as asked.
+func (o goingObserver) provenSessionsSet(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	fields, issue := goingObservedOf(prepared)
+	observed := goingObservation{target: cmp.Or(prepared.call.path["key"], before.target), fields: fields, issue: issue}
+	if answer == nil {
+		setting, err := o.provenSessions(ctx, observed.target)
+		if err != nil {
+			return observed, err
+		}
+		observed.value = map[string]any{goingProvenSessionsField: setting}
+		return observed, nil
+	}
+	var answered struct {
+		Key            string `json:"key"`
+		ProvenSessions *bool  `json:"proven_sessions"`
+	}
+	if err := json.Unmarshal(answer, &answered); err != nil {
+		return observed, fmt.Errorf("read the project's answer: %w", err)
+	}
+	if answered.ProvenSessions == nil {
+		return observed, errors.New("the project's answer names no proven_sessions")
+	}
+	setting := *answered.ProvenSessions
+	observed.target = cmp.Or(answered.Key, observed.target)
+	observed.value = map[string]any{goingProvenSessionsField: setting}
+	if o.landed == nil {
+		return observed, errors.New("whether the change changed the setting is unknown")
+	}
+	landed, err := o.landed(ctx)
+	if err != nil {
+		return observed, err
+	}
+	observed.stood = goingJSONOrNull(map[string]any{goingProvenSessionsField: setting != landed})
+	return observed, nil
+}
+
+// provenSessions is the proven_sessions of the project key as GET /api/v1/projects lists it. A
+// project the list does not hold, none the caller may read among them, is the 404 the setting's
+// routes answer for it.
+func (o goingObserver) provenSessions(ctx context.Context, key string) (bool, error) {
+	var projects []struct {
+		Key            string `json:"key"`
+		ProvenSessions bool   `json:"proven_sessions"`
+	}
+	if err := o.read.get(ctx, "/api/v1/projects", &projects); err != nil {
+		return false, err
+	}
+	for _, project := range projects {
+		if project.Key == key {
+			return project.ProvenSessions, nil
+		}
+	}
+	return false, goingRefusal{Status: http.StatusNotFound, Code: "PROJECT_NOT_FOUND", Message: "project not found"}
 }
 
 // issueUpdated reads the issue's fields the update writes before it, and after it what the

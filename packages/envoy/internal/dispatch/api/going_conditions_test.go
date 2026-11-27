@@ -92,8 +92,8 @@ func goingAnswerCode(t *testing.T, answer string) string {
 
 // goingConditionState is what the items the condition tests write hold, read off the store: the
 // issue's title, the ask's question, the number of versions of each document and file, who holds
-// each of the two issues, whether the thread is resolved, and the thread's and the message's
-// bodies. A refused write leaves it as it was.
+// each of the two issues, whether the thread is resolved, the thread's and the message's bodies,
+// and DEMO's proven-sessions setting. A refused write leaves it as it was.
 func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtures) string {
 	t.Helper()
 	var state string
@@ -106,7 +106,8 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 			(select coalesce(claimed_by::text, 'unclaimed') from issues where key = $4),
 			(select resolved::text from comments where id = $5::uuid),
 			(select body from comments where id = $5::uuid),
-			(select body from messages where id = $6::uuid))`,
+			(select body from messages where id = $6::uuid),
+			(select proven_sessions::text from projects where key = 'DEMO'))`,
 		f.issue, f.ask, f.claimed, f.unclaimed, f.comment, f.message).Scan(&state); err != nil {
 		t.Fatalf("read what the items hold: %v", err)
 	}
@@ -116,7 +117,8 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 // goingConditionWrites is one write of each route that takes a condition, by name: the issue
 // update, the ask edit, the issue's, the project's and a session's upload, the claim of an issue
 // nobody holds and of one alice holds, the release, the reopen, the resolve, and the edits of a
-// comment and of an issue message. The issue's and the project's uploads replace a document, so
+// comment and of an issue message, and the PUT and the DELETE of DEMO's proven-sessions setting.
+// The issue's and the project's uploads replace a document, so
 // each names the token of the version it replaces, read off handler when it is sent, as the
 // command bar's upload names it (main's upload precondition); each is there naming no token too,
 // since the token a write back names is a condition its route decides. Each edit of a post
@@ -172,6 +174,12 @@ var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f
 	"message edit": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/messages/"+f.message, map[string]any{"body": goingConditionEditBody()})
 	},
+	"proven sessions on": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingSend{method: http.MethodPut, path: "/api/v1/projects/DEMO/proven-sessions"}
+	},
+	"proven sessions off": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
+		return goingSend{method: http.MethodDelete, path: "/api/v1/projects/DEMO/proven-sessions"}
+	},
 }
 
 // goingConditionEdits counts the post edits goingConditionWrites built, across the tests that run
@@ -213,6 +221,9 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 		{"resolve", codeCommentChanged, goingCondition{ExpectOpen: true}},
 		{"comment edit", codeCommentChanged, goingCondition{ExpectBody: &other}},
 		{"message edit", codeMessageChanged, goingCondition{ExpectBody: &other}},
+		// DEMO's setting is off, which neither write back expects: an undo of a change that left it on.
+		{"proven sessions on", codeProjectChanged, goingCondition{ExpectProvenSessions: &goingProvenSessionsExpected{Setting: true, AfterSeq: 1}}},
+		{"proven sessions off", codeProjectChanged, goingCondition{ExpectProvenSessions: &goingProvenSessionsExpected{Setting: true, AfterSeq: 1}}},
 	} {
 		t.Run(tc.write+" "+tc.code, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
@@ -479,6 +490,8 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 		{"a resolve with no condition", "resolve", goingCondition{WriteBack: true}},
 		{"a comment edit with no condition", "comment edit", goingCondition{WriteBack: true}},
 		{"a message edit with no condition", "message edit", goingCondition{WriteBack: true}},
+		{"a proven-sessions PUT with no condition", "proven sessions on", goingCondition{WriteBack: true}},
+		{"a proven-sessions DELETE with no condition", "proven sessions off", goingCondition{WriteBack: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
@@ -493,7 +506,7 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 	}
 	// Unmarked, each of the same writes is made: the refusal is the mark's.
 	for _, write := range []string{"issue update", "ask edit", "issue upload", "issue upload naming no token", "project upload", "project upload naming no token",
-		"session upload", "claim", "release", "reopen", "resolve", "comment edit", "message edit"} {
+		"session upload", "claim", "release", "reopen", "resolve", "comment edit", "message edit", "proven sessions on", "proven sessions off"} {
 		t.Run("unmarked "+write, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
 			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[write](t, rig.mux, f), goingCondition{})
@@ -504,6 +517,42 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 				t.Fatalf("the unmarked %s left everything as it was (%s), want its write", write, after)
 			}
 		})
+	}
+}
+
+// TestAProvenSessionsWriteBackIsRefusedWhereTheSettingChangedAndChangedBack: the condition of the
+// command bar's undo of a change of a project's proven-sessions setting holds the project to the
+// setting the change left and to the event that recorded it, after which no event may have
+// changed the setting. A project that holds the setting again after another writer turned it off
+// and on is refused 409 PROJECT_CHANGED, with nothing written; one whose last change is the event
+// the condition names is not, and the write back is made.
+func TestAProvenSessionsWriteBackIsRefusedWhereTheSettingChangedAndChangedBack(t *testing.T) {
+	t.Parallel()
+	rig := newGoingWritesRig(t)
+	rig.fixture(t, "alice", http.MethodPost, "/api/v1/projects", map[string]any{"key": "PSEQ", "name": "Sequence"})
+	path := "/api/v1/projects/PSEQ/proven-sessions"
+	lastSeq := func() int { return rigCount(t, rig, `select last_seq from projects where key = 'PSEQ'`) }
+	isOn := func() bool {
+		return rigCount(t, rig, `select count(*) from projects where key = 'PSEQ' and proven_sessions`) == 1
+	}
+	rig.fixture(t, "alice", http.MethodPut, path, nil)
+	left := lastSeq()
+	rig.fixture(t, "bob", http.MethodDelete, path, nil)
+	rig.fixture(t, "bob", http.MethodPut, path, nil)
+	if !isOn() {
+		t.Fatalf("after bob turned the setting off and on it is off, want it on")
+	}
+	off := goingSend{method: http.MethodDelete, path: path}
+	status, answer := goingConditioned(t, rig.mux, "alice", off,
+		goingCondition{WriteBack: true, ExpectProvenSessions: &goingProvenSessionsExpected{Setting: true, AfterSeq: left}})
+	if status != http.StatusConflict || goingAnswerCode(t, answer) != codeProjectChanged || !isOn() {
+		t.Fatalf("a DELETE expecting the setting on as event %d left it, which bob turned off and on since, answered %d %s and left it on %v, want 409 %s with it on",
+			left, status, answer, isOn(), codeProjectChanged)
+	}
+	status, answer = goingConditioned(t, rig.mux, "alice", off,
+		goingCondition{WriteBack: true, ExpectProvenSessions: &goingProvenSessionsExpected{Setting: true, AfterSeq: lastSeq()}})
+	if status != http.StatusOK || isOn() {
+		t.Fatalf("a DELETE expecting the setting on as its last event left it answered %d %s and left it on %v, want 200 with it off", status, answer, isOn())
 	}
 }
 

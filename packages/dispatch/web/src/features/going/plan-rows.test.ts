@@ -33,6 +33,7 @@ import {
   undoRecord,
   undoWords,
   valueWords,
+  wasReverted,
   withChangesUnticked,
 } from "./plan-rows";
 
@@ -1060,6 +1061,66 @@ test("a record of a deploy shows what it records, and reads Recorded, not undone
   expect(undoWords(undoLine({ tool: "dispatch_message", undo: "not_undone" }))).toBe(
     "Sent, not undone"
   );
+});
+
+/** A change of CORE's proven-sessions setting to `setting`, as the plan reads it beside the setting
+ *  now (going_observe.go `provenSessionsSet`). */
+function provenSessions(number: number, setting: "on" | "off", now: boolean): GoingPlanRow {
+  return row(number, {
+    arguments: { project: "CORE", proven_sessions: setting },
+    class: "setting",
+    fields: ["proven_sessions"],
+    item: "CORE",
+    now: { proven_sessions: now },
+    tool: "dispatch_project_update",
+    waits: ["setting"],
+  });
+}
+
+// The architect's ruling on dispatch_project_update: a change of a project's proven-sessions
+// setting is a row of the plan that names the project and shows the setting before and after, on
+// or off, which the person cannot type over; it waits in Auto-review as every change of a setting
+// of Dispatch does, and says nothing of its own once it ran. Undo sends the other route, so its
+// line reads as any reverse reads: "Reverted", or the setting another writer left, kept and named.
+test("a change of a project's proven-sessions setting shows it before and after, waits as a setting, and its Undo line reads as a reverse's", () => {
+  const reads = (planned: GoingPlanRow) => [
+    rowLabel(planned),
+    ...rowChanges(planned, undefined, new Map()).map(
+      (change) =>
+        `${fieldWords(change.field)}: ${valueWords(change.field, change.now)} → ${valueWords(change.field, change.next)}`
+    ),
+  ];
+  const on = provenSessions(0, "on", false);
+  const off = provenSessions(1, "off", true);
+  expect([reads(on), reads(off)]).toEqual([
+    ["Set the proven-sessions check of CORE", "Proven sessions: Off → On"],
+    ["Set the proven-sessions check of CORE", "Proven sessions: On → Off"],
+  ]);
+  // The setting is no text to type over, and it takes no value out.
+  expect(rowChanges(on, undefined, new Map()).map((change) => change.edit)).toEqual([undefined]);
+  expect(rowRemoves(on, rowChanges(on, undefined, new Map()))).toBe(false);
+  expect(reviewWords({ ...plan, mode: "auto_review" }, on)).toBe(
+    "Waits for you: it changes a setting of Dispatch"
+  );
+  expect(reviewWords(plan, on)).toBeUndefined();
+  expect(rowOutcome({ ...on, state: "done" })).toBeUndefined();
+  // Undo's line is a reverse's: reverted, or kept as another writer left it, in the page's words.
+  const reverse = undoLine({ item: "CORE", tool: "dispatch_project_update", undo: "reverse" });
+  expect(undoWords(reverse)).toBe("Reverted");
+  expect(wasReverted(reverse)).toBe(true);
+  expect(undoLineLabel(reverse, on)).toBe("Set the proven-sessions check of CORE");
+  expect(
+    keptValue({
+      by: { id: "bob", kind: "user" },
+      field: "proven_sessions",
+      message: "holds true now, which user bob wrote after this run, so it is kept",
+      now: true,
+      ok: false,
+    })
+  ).toEqual({ by: { id: "bob", kind: "user" }, now: true });
+  expect(valueWords("proven_sessions", true)).toBe("On");
+  expect(valueWords("proven_sessions", false)).toBe("Off");
+  expect(valueWords("multiple", true)).toBe("Yes");
 });
 
 test("Undo's answer names a kept value as data, and a message sent, not undone", () => {

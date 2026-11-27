@@ -88,6 +88,11 @@ function issueText(value: string, newIssues: ReadonlyMap<number, string>): strin
   return title === undefined ? value : `${title} (new)`;
 }
 
+/** The field of a project's proven-sessions setting, which `dispatch_project_update` writes: on or
+ *  off in the call, and the project's yes or no in its read (going_observe.go
+ *  `provenSessionsSet`), said on or off. */
+const PROVEN_SESSIONS = "proven_sessions";
+
 /** The name of each field a row writes, as the issue page names it beside its value
  *  (`PROPERTY_LABELS`), and of the fields the page has no row for: a place on the board, the parts
  *  of an ask, a new issue's project. */
@@ -160,8 +165,9 @@ function placeWords(place: Arguments): string {
  * A value as the issue page shows it, in words (design v3, rule 6): a priority as "P2" or "No
  * priority", a status by its word, a list (labels, the issues it waits on, links, an ask's options)
  * with a comma between its items, the priorities an issue advances by their count, a place on the
- * board by the issues beside it, a claim's holder by name, a yes or no, a text as it is, and no
- * value as the page's "None". A value that may name a new issue of the plan ("$N") is given
+ * board by the issues beside it, a claim's holder by name, a yes or no (on or off for a project's
+ * proven-sessions setting), a text as it is, and no value as the page's "None". A value that may
+ * name a new issue of the plan ("$N") is given
  * `newIssues`, and shows that issue's title and "(new)", as the issue has no key before the plan
  * runs; without it every text shows as written, so a title "$100" shows "$100". No value shows as
  * its JSON.
@@ -185,7 +191,10 @@ export function valueWords(
     if (field === "status") return issueStatusWord(value);
     return field === "urgency" ? capitalized(value) : issueText(value, newIssues);
   }
-  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "boolean") {
+    if (field === PROVEN_SESSIONS) return value ? "On" : "Off";
+    return value ? "Yes" : "No";
+  }
   if (typeof value === "number") return String(value);
   if (field === "rank") return placeWords(objectOf(value));
   if (field === "components" && objectOf(value).mode === "inherit") {
@@ -307,9 +316,11 @@ function editOf(field: string, value: unknown): FieldEdit {
  *  labels (`labels_add`) the labels now with those it adds (`withLabelsAdded`), a claim's holder
  *  now and after; a new issue's title, project, parent, priority and labels, none of which has a
  *  value now; an edit of a comment or an issue message its body, whose value now is the body the
- *  plan read (`postRead`), and a delete of one nothing. A row that names no field shows its item
- *  alone. The person's edit of the labels a row adds is the whole set they chose, which the
- *  approval writes as labels in place of labels_add (going_plan.go `goingEditReplaces`). */
+ *  plan read (`postRead`), and a delete of one nothing; a project's proven-sessions setting its
+ *  value now and, as the call asks it, on or off as a yes or no. A row that names no field shows
+ *  its item alone. The person's edit of the labels a row adds is the whole set they chose,
+ *  which the approval writes as labels in place of labels_add (going_plan.go
+ *  `goingEditReplaces`). */
 export function rowChanges(
   row: GoingPlanRow,
   edits: Arguments | undefined,
@@ -363,6 +374,9 @@ export function rowChanges(
         : fields.length === 1
           ? row.now
           : undefined;
+      // A setting is asked as on or off, and read as the project's yes or no.
+      const sets = row.tool === "dispatch_project_update" && field === PROVEN_SESSIONS;
+      const written = sets ? args[field] === "on" : args[field];
       const next = moves
         ? moveText(args, newIssues)
         : claims
@@ -371,7 +385,7 @@ export function rowChanges(
             : CLAIMED_BY_YOU
           : adds
             ? withLabelsAdded(valueNow, args.labels_add)
-            : args[field];
+            : written;
       return {
         edit: moves || claims ? undefined : editOf(field, next),
         edited: editedField(field),

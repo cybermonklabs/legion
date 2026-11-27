@@ -195,6 +195,11 @@ var goingToolRules = map[string]goingToolRule{
 		owner, name, whole := strings.Cut(repo, "/")
 		return goingIfBroken(!named || (whole && goingSourceOwner.MatchString(owner) && goingSourceName.MatchString(name) && name != "." && name != ".."), rule)
 	},
+	// The project key the setting's routes take in their path (`projectKeyValidation`).
+	"dispatch_project_update": func(call goingRuleCall, rule string) string {
+		project, named := call.text("project")
+		return goingIfBroken(!named || projectKeyPattern.MatchString(project), rule)
+	},
 	"dispatch_handoff_write": func(call goingRuleCall, _ string) string {
 		if phase, named := call.text("phase"); named && !handoffPhasePattern.MatchString(phase) {
 			return goingHandoffPhaseRule

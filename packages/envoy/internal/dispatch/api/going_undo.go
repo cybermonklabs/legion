@@ -13,7 +13,8 @@ package api
 //     body, of which a post deleted since is kept, named deleted, with no word of its body;
 //   - reverse calls the row's reverse route (goingToolRoute.UndoRoutes): a claim released or taken
 //     back, a follow unfollowed, a resolved thread reopened and a reopened one resolved again, an
-//     opened ask retracted, and a suggestion of the run that is still open rejected;
+//     opened ask retracted, a suggestion of the run that is still open rejected, and a project's
+//     proven-sessions setting turned back;
 //   - close_created closes the issue the call created, with no message and no comment;
 //   - not_undone names the call "sent, not undone": a message, a broadcast, a review; a delete
 //     of a comment or an issue message "deleted, not undone", since nothing restores a deleted
@@ -518,6 +519,8 @@ func (u goingUndoer) kind(line goingUndoLine, undone goingUndone) goingUndoPlan 
 		return u.claim(line, undone)
 	case line.Undo == goingUndoReverse && undone.tool == "dispatch_follow":
 		return u.follow(line, undone)
+	case line.Undo == goingUndoReverse && undone.tool == "dispatch_project_update":
+		return u.provenSessions(line, undone)
 	case line.Undo == goingUndoReverse && undone.tool == "dispatch_resolve_comment":
 		return u.comment(line, undone)
 	case line.Undo == goingUndoReverse && undone.tool == "dispatch_reopen_comment":
@@ -1583,6 +1586,92 @@ func (u goingUndoer) follow(line goingUndoLine, undone goingUndone) goingUndoPla
 		return line, &goingUndoSend{route: route, values: map[string]string{"id": undone.target, "session_id": after.Session},
 			landed: goingLineOf(reversed, undone.fields)}
 	}}
+}
+
+// goingProvenSessionsValue is a project's proven-sessions setting as the record of a change of it
+// holds it, before and after, nil where the record holds none.
+type goingProvenSessionsValue struct {
+	ProvenSessions *bool `json:"proven_sessions"`
+}
+
+// goingUndoProvenSessionsChanged is what an undo says of a setting another writer changed between
+// its read and its write, which the route refused (codeProjectChanged).
+const goingUndoProvenSessionsChanged = "the setting was changed by another writer after this run, between Undo's read and its write, so it is kept"
+
+// provenSessions undoes a change of a project's proven-sessions setting by the reverse route: a
+// change that turned the setting on by the DELETE, and one that turned it off by the PUT, only
+// while the project stands as the change left it - it holds the setting the change left, and no
+// project.updated event since has changed it, one that changed it back included
+// (provenSessionsChangedAfter). A setting another writer changed since is kept, naming what it
+// holds and who changed it (provenSessionsWriter). The reverse route decides the same under the
+// project's lock (goingCondition.ExpectProvenSessions), so a change made between the undo's read
+// and its write is kept too, the route's 409 PROJECT_CHANGED. A change that left the setting as it
+// found it changed nothing, and is undone by nothing. The DELETE needs the person scope: a
+// credential without it is refused 403 OAUTH_SCOPE_REQUIRED, which the line says as the route
+// answered it, the change standing.
+func (u goingUndoer) provenSessions(line goingUndoLine, undone goingUndone) goingUndoPlan {
+	var before, after goingProvenSessionsValue
+	if json.Unmarshal(undone.before, &before) != nil || json.Unmarshal(undone.after, &after) != nil ||
+		before.ProvenSessions == nil || after.ProvenSessions == nil || undone.seq <= 0 {
+		return goingStanding(func() goingUndoLine {
+			line.Outcome = goingFailed(errors.New("the change's record holds no setting to undo"))
+			return goingLineOf(line, undone.fields)
+		})
+	}
+	left := *after.ProvenSessions
+	if *before.ProvenSessions == left {
+		return goingNotTried(func() goingUndoLine {
+			line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the change changed nothing, so there is nothing to undo"}
+			return goingLineOf(line, undone.fields)
+		})
+	}
+	return goingUndoPlan{next: func(ctx context.Context) (goingUndoLine, *goingUndoSend) {
+		now, err := u.observer.provenSessions(ctx, undone.target)
+		if err != nil {
+			line.Outcome = goingFailed(err)
+			return goingLineOf(line, undone.fields), nil
+		}
+		writer, changed, err := u.provenSessionsWriter(ctx, undone.target, undone.seq)
+		if err != nil {
+			line.Outcome = goingFailed(err)
+			return goingLineOf(line, undone.fields), nil
+		}
+		if now != left || changed {
+			kept := goingKeptField(json.RawMessage(strconv.FormatBool(now)), writer)
+			kept.Field = goingProvenSessionsField
+			line.Outcome = goingChanged([]string{goingFieldChange(kept.Field, kept.Message)}, nil)
+			line.Fields = []goingUndoField{kept}
+			return line, nil
+		}
+		route := goingProvenSessionsOffRoute
+		if !left {
+			route = goingProvenSessionsOnRoute
+		}
+		reversed := line
+		reversed.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "reversed"}
+		return line, &goingUndoSend{route: route, values: map[string]string{"key": undone.target},
+			condition: &goingCondition{WriteBack: true, ExpectProvenSessions: &goingProvenSessionsExpected{Setting: left, AfterSeq: undone.seq}},
+			landed:    goingLineOf(reversed, undone.fields), changed: []string{codeProjectChanged}, changedMessage: goingUndoProvenSessionsChanged}
+	}}
+}
+
+// provenSessionsWriter is who changed the setting of the project after the event at seq, the one
+// the change left the project at: the writer of the newest project.updated event after it that
+// changed the setting (provenSessionsChangedAfter), nil where that event names none, and whether
+// any event did, one that changed it back included. A change no event records, a write straight
+// to the store, is none here, which the setting read now keeps.
+func (u goingUndoer) provenSessionsWriter(ctx context.Context, project string, seq int) (*model.Actor, bool, error) {
+	var writer model.Actor
+	err := u.s.deps.Store.Pool.QueryRow(ctx, provenSessionsChangedAfter, project, seq).Scan(&writer)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, fmt.Errorf("read who changed the setting of %s: %w", project, err)
+	case writer.ID == "":
+		return nil, true, nil
+	}
+	return &writer, true, nil
 }
 
 // goingCommentResolution is a resolve's value: whether the thread is resolved, and the resolution

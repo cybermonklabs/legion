@@ -1366,6 +1366,13 @@ var goingUndoRuns = map[string]func(t *testing.T, rig goingPlanRig){
 			t.Fatalf("the approval request's ask is %s after Undo, want it retracted", state)
 		}
 	},
+	"dispatch_project_update": func(t *testing.T, rig goingPlanRig) {
+		project := rig.provenSessionsProject(t, "PSUNDO", false)
+		rig.undoneOnce(t, "turn the proven sessions of "+project+" on", goingChange("dispatch_project_update", map[string]any{"project": project, "proven_sessions": "on"}))
+		if listedProvenSessions(t, rig.mux, project) {
+			t.Fatalf("%s holds proven_sessions on after Undo, want it off again", project)
+		}
+	},
 	"dispatch_edit_comment": goingPostCases[0].undoneEdit,
 	"dispatch_edit_message": goingPostCases[1].undoneEdit,
 }
@@ -1639,6 +1646,200 @@ func TestADeployRecordWaitsAndIsNotUndone(t *testing.T) {
 		t.Fatalf("after Undo the bar has sent %d deploys and the current one is %s, want the one approved and %s current", len(bodies), commit, recorded)
 	}
 	rig.requireNeverUndoable(t, run, "after Undo")
+}
+
+// provenSessionsProject makes the project key, alice's, and turns its proven-sessions setting on
+// where on is true, and answers its key.
+func (rig goingPlanRig) provenSessionsProject(t *testing.T, key string, on bool) string {
+	t.Helper()
+	rig.fixture(t, "alice", http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key + " project"})
+	if on {
+		rig.fixture(t, "alice", http.MethodPut, "/api/v1/projects/"+key+"/proven-sessions", nil)
+	}
+	return key
+}
+
+// TestAProvenSessionsChangeWaitsAndIsUndoneUnlessItChangedSince (the architect's ruling on
+// dispatch_project_update, R5, R6, R12): a run's change of a project's proven-sessions setting is
+// a row of its plan that waits for the person in Ask and in Auto-review, as a setting of
+// Dispatch, and shows the setting now. Once approved it sends the PUT that turns the setting on
+// or the DELETE that turns it off, and Undo sends the other, while the project still holds what
+// the run left. A write that found the setting as asked landed nothing, so it has nothing to
+// undo. A setting another writer changed since the run is kept and its writer named - one turned
+// off, and one turned off and on again, which holds the value the run left and is another
+// writer's all the same - and a DELETE the route refuses is told as the route answered it, the
+// change standing.
+func TestAProvenSessionsChangeWaitsAndIsUndoneUnlessItChangedSince(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	bob := goingHolder{Kind: "user", ID: "bob"}
+	endpoint := func(project string) string { return "/api/v1/projects/" + project + "/proven-sessions" }
+	asked := func(project, setting string) map[string]any {
+		return goingChange("dispatch_project_update", map[string]any{"project": project, "proven_sessions": setting})
+	}
+	// proposed starts alice's run in mode, whose model proposes turning project's setting on or off
+	// (setting), and answers the run and its one row once its plan waits for her.
+	proposed := func(t *testing.T, mode, project, setting string) (string, goingPlanRow) {
+		t.Helper()
+		words := "turn the proven sessions of " + project + " " + setting
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			switch {
+			case n == 1:
+				return proposing(asked(project, setting))
+			case n == 2 && mode == goingModeAutoReview:
+				return toolCall(toolReviewPlanName, map[string]any{"asked": []int{0}})
+			}
+			return answered("The setting is changed.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words, mode: mode})
+		plan := rig.waiting(t, run)
+		if len(plan.Rows) != 1 {
+			t.Fatalf("the plan holds %d rows, want the setting's", len(plan.Rows))
+		}
+		return run, plan.Rows[0]
+	}
+	// approved approves the plan of run and answers once the run ended done.
+	approved := func(t *testing.T, run string) {
+		t.Helper()
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("after the person's approval the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+		}
+	}
+	// landed is how many requests of phase (do or undo) with method run landed on project's route.
+	landed := func(t *testing.T, run, phase, method, project string) int {
+		t.Helper()
+		return rig.count(t, `
+			select count(*) from going_landings
+			where run_id = $1::uuid and phase = $2 and method = $3 and path = $4`, run, phase, method, endpoint(project))
+	}
+	read := func(t *testing.T, run string) goingRun {
+		t.Helper()
+		return decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
+	}
+	// kept fails t unless line is Undo's answer that kept the setting as another writer left it:
+	// it holds now, by is the one who wrote it, and the run's one change stands.
+	kept := func(t *testing.T, run string, line goingUndoLine, now string, by goingHolder) {
+		t.Helper()
+		if line.Undo != goingUndoReverse || line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged || len(line.Fields) != 1 {
+			t.Fatalf("Undo answered %+v, want the setting kept, %s", line, codeGoingUndoChanged)
+		}
+		if field := line.Fields[0]; field.Field != "proven_sessions" || field.OK || string(field.Now) != now || field.By == nil || *field.By != by {
+			t.Fatalf("the setting answered %+v, want it kept holding %s, naming %+v", field, now, by)
+		}
+		if got := read(t, run); got.Undoable || goingUndoCountsOf(got) != (goingUndoCounts{standing: 1}) {
+			t.Fatalf("after Undo the run reads undoable %v, counts %+v; want it not undoable, its one change standing", got.Undoable, goingUndoCountsOf(got))
+		}
+	}
+
+	for _, c := range []struct{ mode, project string }{{goingModeAsk, "PSASK"}, {goingModeAutoReview, "PSAUTO"}} {
+		t.Run("in "+c.mode+" the row waits and is approved, and Undo's DELETE turns the setting off again", func(t *testing.T) {
+			rig.provenSessionsProject(t, c.project, false)
+			run, row := proposed(t, c.mode, c.project, "on")
+			if row.Tool != "dispatch_project_update" || row.State != "waiting" || row.Class != string(goingClassSetting) || !slices.Contains(row.Waits, string(goingClassSetting)) {
+				t.Fatalf("the row of %s is %s, of class %s, waiting for %v; want the project's row waiting for the person as a %s", row.Tool, row.State, row.Class, row.Waits, goingClassSetting)
+			}
+			if want := `{"proven_sessions":false}`; row.Item != c.project || !slices.Equal(row.Fields, []string{"proven_sessions"}) || !goingJSONEqual(row.Now, json.RawMessage(want)) {
+				t.Fatalf("the row shows the item %q, the fields %v, now %s; want %s, proven_sessions, now %s", row.Item, row.Fields, row.Now, c.project, want)
+			}
+			if on, sent := listedProvenSessions(t, rig.mux, c.project), rig.count(t, `select count(*) from going_landings where run_id = $1::uuid`, run); on || sent != 0 {
+				t.Fatalf("before the approval the setting is on %v and the run landed %d requests, want it off and nothing landed", on, sent)
+			}
+
+			approved(t, run)
+			if on, puts := listedProvenSessions(t, rig.mux, c.project), landed(t, run, "do", http.MethodPut, c.project); !on || puts != 1 {
+				t.Fatalf("after the approval the setting is on %v and the run landed %d PUTs, want it on and one PUT", on, puts)
+			}
+			if got := read(t, run); !got.Undoable {
+				t.Fatalf("before Undo the run reads undoable %v, want it undoable", got.Undoable)
+			}
+
+			line := rig.undone(t, run, "dispatch_project_update")[0]
+			if line.Undo != goingUndoReverse || !line.Outcome.OK || line.Outcome.Message == goingUndoChangedNothing || line.Item != c.project {
+				t.Fatalf("Undo answered %+v, want the setting of %s reversed", line, c.project)
+			}
+			if on, deletes := listedProvenSessions(t, rig.mux, c.project), landed(t, run, "undo", http.MethodDelete, c.project); on || deletes != 1 {
+				t.Fatalf("after Undo the setting is on %v and Undo landed %d DELETEs, want it off and one DELETE", on, deletes)
+			}
+			if got := read(t, run); goingUndoCountsOf(got) != (goingUndoCounts{undone: 1}) {
+				t.Fatalf("after Undo the run counts %+v, want its one change taken back", goingUndoCountsOf(got))
+			}
+		})
+	}
+
+	t.Run("a row that turns the setting off is undone by the PUT", func(t *testing.T) {
+		project := rig.provenSessionsProject(t, "PSOFF", true)
+		run, row := proposed(t, goingModeAsk, project, "off")
+		if !goingJSONEqual(row.Now, json.RawMessage(`{"proven_sessions":true}`)) || !slices.Contains(row.Waits, string(goingClassSetting)) {
+			t.Fatalf("the row shows now %s and waits for %v, want the setting on and a wait of class %s", row.Now, row.Waits, goingClassSetting)
+		}
+		approved(t, run)
+		if on, deletes := listedProvenSessions(t, rig.mux, project), landed(t, run, "do", http.MethodDelete, project); on || deletes != 1 {
+			t.Fatalf("after the approval the setting is on %v and the run landed %d DELETEs, want it off and one DELETE", on, deletes)
+		}
+		line := rig.undone(t, run, "dispatch_project_update")[0]
+		if line.Undo != goingUndoReverse || !line.Outcome.OK || line.Outcome.Message == goingUndoChangedNothing {
+			t.Fatalf("Undo answered %+v, want the setting reversed", line)
+		}
+		if on, puts := listedProvenSessions(t, rig.mux, project), landed(t, run, "undo", http.MethodPut, project); !on || puts != 1 {
+			t.Fatalf("after Undo the setting is on %v and Undo landed %d PUTs, want it on and one PUT", on, puts)
+		}
+	})
+
+	t.Run("a write that finds the setting as asked changes nothing and has nothing to undo", func(t *testing.T) {
+		project := rig.provenSessionsProject(t, "PSSAME", true)
+		run := rig.ran(t, "turn the proven sessions of "+project+" on", asked(project, "on"))
+		if sent := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid`, run); sent != 0 {
+			t.Fatalf("the run landed %d requests, want none: the setting already stood as asked", sent)
+		}
+		rig.requireNeverUndoable(t, run, "before Undo")
+		if status, answer := rig.undo(t, "alice", run); status != http.StatusOK || len(answer.Lines) != 0 {
+			t.Fatalf("Undo answered %d %+v, want 200 and no line: nothing landed", status, answer.Lines)
+		}
+		rig.requireNeverUndoable(t, run, "after Undo")
+		if !listedProvenSessions(t, rig.mux, project) {
+			t.Fatalf("after Undo the setting is off, want it on as it stood")
+		}
+	})
+
+	t.Run("a setting another writer turned off since the run is kept, naming them", func(t *testing.T) {
+		project := rig.provenSessionsProject(t, "PSKEPT", false)
+		run := rig.ran(t, "turn the proven sessions of "+project+" on", asked(project, "on"))
+		rig.fixture(t, "bob", http.MethodDelete, endpoint(project), nil)
+		kept(t, run, rig.undone(t, run, "dispatch_project_update")[0], "false", bob)
+		if on, deletes := listedProvenSessions(t, rig.mux, project), landed(t, run, "undo", http.MethodDelete, project); on || deletes != 0 {
+			t.Fatalf("after Undo the setting is on %v and Undo landed %d DELETEs, want bob's off kept and nothing sent", on, deletes)
+		}
+	})
+
+	t.Run("a setting another writer turned off and on again since the run is kept, naming them", func(t *testing.T) {
+		project := rig.provenSessionsProject(t, "PSAGAIN", false)
+		run := rig.ran(t, "turn the proven sessions of "+project+" on", asked(project, "on"))
+		rig.fixture(t, "bob", http.MethodDelete, endpoint(project), nil)
+		rig.fixture(t, "bob", http.MethodPut, endpoint(project), nil)
+		kept(t, run, rig.undone(t, run, "dispatch_project_update")[0], "true", bob)
+		if on, deletes := listedProvenSessions(t, rig.mux, project), landed(t, run, "undo", http.MethodDelete, project); !on || deletes != 0 {
+			t.Fatalf("after Undo the setting is on %v and Undo landed %d DELETEs, want bob's on kept and nothing sent", on, deletes)
+		}
+	})
+
+	t.Run("a DELETE the route refuses for want of the person scope is told as it answered, the change standing", func(t *testing.T) {
+		project := rig.provenSessionsProject(t, "PSSCOPE", false)
+		run := rig.ran(t, "turn the proven sessions of "+project+" on", asked(project, "on"))
+		rig.hooks.set(t, http.MethodDelete, endpoint(project), func(w http.ResponseWriter, _ *http.Request, _ http.Handler) {
+			writeError(w, "OAUTH_SCOPE_REQUIRED", http.StatusForbidden, "this request's credential does not hold the person scope, which this route requires")
+		})
+		line := rig.undone(t, run, "dispatch_project_update")[0]
+		if line.Outcome.OK || line.Outcome.Status != http.StatusForbidden || line.Outcome.Code != "OAUTH_SCOPE_REQUIRED" || len(line.Fields) != 1 || line.Fields[0].OK {
+			t.Fatalf("Undo answered %+v, want the route's 403 OAUTH_SCOPE_REQUIRED, the change not reverted", line)
+		}
+		if !listedProvenSessions(t, rig.mux, project) {
+			t.Fatalf("after the refused Undo the setting is off, want it on: the change stands")
+		}
+		if undone := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); undone != 0 {
+			t.Fatalf("the refused Undo landed %d requests, want none, so a later press tries again", undone)
+		}
+	})
 }
 
 // requireNeverUndoable fails t unless alice's read of run says, at when, that the run is never

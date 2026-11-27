@@ -3,7 +3,8 @@ package api
 // going_conditions.go is how a request the command bar sends in-process is made conditional. An
 // undo's write back (going_undo.go) - an issue's fields, an ask's parts, a document's content, a
 // comment's or an issue message's body, a claim taken back or released, a thread reopened or
-// resolved again, a created issue closed - puts its value back only where the item still holds
+// resolved again, a created issue closed, a project's proven-sessions setting turned back -
+// puts its value back only where the item still holds
 // what the undone write left, and every upload the bar sends is conditional too: a create alone,
 // which makes a document only where its owner holds none of the name, or, for a row of a plan
 // whose approval showed the document or file of its name and whose read before finds it as the
@@ -87,6 +88,21 @@ type goingCondition struct {
 	// post must hold, or the edit is refused, 409 COMMENT_CHANGED or MESSAGE_CHANGED. While nil it
 	// is left out of the request's digest (goingSend.digest), as ExpectOpen is.
 	ExpectBody *string `json:",omitempty"`
+	// ExpectProvenSessions is PUT's and DELETE /api/v1/projects/{key}/proven-sessions's: what the
+	// project's setting must be and the last event it was left at, or the write is refused, 409
+	// PROJECT_CHANGED. While nil it is left out of the request's digest (goingSend.digest), as
+	// ExpectOpen is.
+	ExpectProvenSessions *goingProvenSessionsExpected `json:",omitempty"`
+}
+
+// goingProvenSessionsExpected is what an undo of a change of a project's proven-sessions setting
+// expects of the project when its route takes the project's lock: the setting the change left,
+// and the sequence of the project's event that recorded it, after which no project.updated event
+// may have changed the setting, one that changed it back included. Another writer's change that
+// puts the setting where the run left it is another writer's all the same.
+type goingProvenSessionsExpected struct {
+	Setting  bool
+	AfterSeq int
 }
 
 // goingArtifactVersion is an artifact and the number of its latest version, as a read found them.
