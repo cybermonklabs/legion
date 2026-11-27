@@ -1,7 +1,7 @@
 package textcheck
 
 //ci:reads packages/envoy/**/*.go !packages/envoy/infra/** !packages/envoy/testdata/** TestEveryTestReadsALockWaitThroughLockwaittest calls lockWaitReads on ../.. (lockWaitRoots), whose walk passes over node_modules, vendor, testdata and dot directories and infra, a directory holding a go.mod of its own, and reads every .go file it finds, test files included
-//ci:reads packages/envoy/infra/**/*.go TestEveryTestReadsALockWaitThroughLockwaittest calls lockWaitReads on ../../infra (lockWaitRoots), whose walk reads every .go file under packages/envoy/infra, test files included
+//ci:reads packages/envoy/infra-not-there/**/*.go TestEveryTestReadsALockWaitThroughLockwaittest calls lockWaitReads on ../../infra (lockWaitRoots), whose walk reads every .go file under packages/envoy/infra, test files included
 //ci:reads packages/daemon/**/*.go TestEveryTestReadsALockWaitThroughLockwaittest calls lockWaitReads on ../../../daemon (lockWaitRoots), whose walk reads every .go file under packages/daemon, test files included
 
 import (
