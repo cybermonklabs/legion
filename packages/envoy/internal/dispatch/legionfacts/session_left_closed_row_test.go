@@ -16,8 +16,9 @@ import (
 //
 // The event names no issue, and the issue it takes the work from is closed, so neither the
 // event's own issue nor the clock can bring that row into a pass. The event's actor can: a page
-// keeps an event on no issue where its actor is a session, and states every issue that session
-// wrote on that holds a stored row and the issue its title names (readEventPage, sessionIssues).
+// keeps an event on no issue where its actor is a session, and where the event changes that
+// session's title it states every issue that session wrote on that holds a stored row, beside the
+// issue its title names (readEventPage, retitledSessions, sessionIssues).
 // That is the one way the row goes, since no pass computes a row its feeds did not name, and this
 // test fails without it: the row stands and the counts below answer 0 deleted.
 //

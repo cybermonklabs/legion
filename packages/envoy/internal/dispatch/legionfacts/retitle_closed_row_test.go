@@ -18,9 +18,10 @@ import (
 // hours the computation answers. No event is written on that issue, and no pass computes a row
 // its feeds did not name.
 //
-// The pass reaches it through the stored-row arm of the session read: a page that names a
-// session states every issue that session wrote an event on and that holds a stored row
-// (readEventPage, sessionIssues). This issue holds one, because its handoff earned it.
+// The pass reaches it through the stored-row arm of the session read: a page on which an event
+// changes a session's title states every issue that session wrote an event on and that holds a
+// stored row (readEventPage, retitledSessions, sessionIssues). This issue holds one, because its
+// handoff earned it.
 func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)

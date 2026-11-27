@@ -1,12 +1,18 @@
 package legionfacts
 
 import (
+	"context"
 	"maps"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // writers is the build each stored row of the history's project records as its writer, by key.
@@ -58,6 +64,32 @@ func writtenBy(writers map[string]string, build string) []string {
 	return keys
 }
 
+// deliveriesWake is the consumer's Deps.Deliveries as the server wires it: the wake of a real
+// LISTEN on delivery.ChangesChannel (pglisten.Hub, the hub's wake cmd/dispatch hands the loop),
+// once that LISTEN holds. The hub signals every wake once its LISTEN holds, so a subscriber
+// catches up what it missed; that one signal is taken here, and the wake then carries the
+// notifications of changes drained after it alone.
+func deliveriesWake(t *testing.T, c *consumer) <-chan struct{} {
+	t.Helper()
+	hub := &pglisten.Hub{Owner: "legionfacts roll test", Dial: c.database.Pool.Listener}
+	wake := hub.Wake(delivery.ChangesChannel)
+	connected := make(chan struct{})
+	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		stop()
+		<-done
+	})
+	testwait.Receive(t, "the LISTEN on delivery.ChangesChannel", connected)
+	testwait.Receive(t, "the wake the LISTEN on delivery.ChangesChannel sends once it holds", wake)
+	return wake
+}
+
 // TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput is how a roll ends with no
 // timer (R27, otherBuildsRows, otherBuildsFilings): two loops of two builds on one database,
 // sharing its cursors as two processes of a roll do, the newer started after the older read the
@@ -68,8 +100,10 @@ func writtenBy(writers map[string]string, build string) []string {
 //  2. The older process, still serving, writes rows by its own rule for an event its feed reads,
 //     and neither reads the project whole nor takes the record back, since the record names a
 //     build recorded after it started.
-//  3. The newer process's next pass, which the older write's change notifies, computes every row
-//     and filing the older wrote again, so none is left that another build wrote.
+//  3. The newer process's next pass, which the older write's change wakes - the newer process's
+//     Deps.Deliveries is a real LISTEN on delivery.ChangesChannel (pglisten.Hub), as the server
+//     wires it, and the pass runs once that wake arrives - computes every row and filing the
+//     older wrote again, so none is left that another build wrote.
 //  4. The older process meets a row and a filing its rule computes none for and the newer
 //     build's keeps. It deletes neither, since one it deleted would leave the newer build
 //     nothing to compute again, and stamps both with its own build; the newer process's next
@@ -99,6 +133,7 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		t.Errorf("after the newer build's whole read %d filings still name the older build as their writer: %v", len(left), left)
 	}
 	recordedAt := computedWholeAt(t, newer)[project]
+	newer.deps.Deliveries = deliveriesWake(t, newer)
 
 	// 2. The older build writes rows for an event its feed reads.
 	older.at = newer.at.Add(time.Minute)
@@ -119,7 +154,8 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		t.Errorf("the rows that name the older build are %v, want the %v its pass wrote", stamped, olderWrote)
 	}
 
-	// 3. The newer build's next pass computes them again.
+	// 3. The older build's write wakes the newer build, whose next pass computes them again.
+	testwait.Receive(t, "the wake the older build's write sends the newer build on delivery.ChangesChannel", newer.deps.Deliveries)
 	newer.at = older.at.Add(time.Second)
 	corrected := newer.pass(t)
 	if left := writtenBy(newer.writers(t), testBuild); len(left) != 0 {
@@ -237,4 +273,151 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 	t.Logf("the newer build's whole read changed %d rows; the older build then wrote %d rows by its own rule (%v); the newer build's next pass computed %d again (%v); the older build stamped %s's row and filing rather than delete them (its pass changed %v) and the newer build's next pass decided them (%v); %d rows and %d filings name the newer build; three passes of each with no input wrote nothing",
 		len(first), len(olderWrote), olderWrote, len(corrected), corrected, kept, handed, decided,
 		len(writtenBy(writers, otherBuild)), len(writtenBy(filingWriters, otherBuild)))
+}
+
+// The two releases of TestAPreviousReleaseThatStartsAgainDuringARollDoesNotKeepItsRowsAfterItStops:
+// commits as the image build stamps them (40 hex characters), which the registry of live
+// processes names each process by.
+const (
+	previousRelease = "1111111111111111111111111111111111111111"
+	newRelease      = "2222222222222222222222222222222222222222"
+)
+
+// register records the consumer's process in the registry of live processes (processes.Register),
+// as the server registers itself, under the commit a release stamped or "" for a build no release
+// stamped, and answers the stop of that process: its registration ends (Deregister), and the
+// process leaves processes.Live. The test's cleanup stops a process the test left running.
+func register(t *testing.T, c *consumer, commit string) func() {
+	t.Helper()
+	registration, err := processes.Register(t.Context(), c.database.Pool, processes.Instance{
+		Commit: commit, SigningKeys: []string{"legionfacts-roll-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("register the process of build %q: %v", c.deps.Build, err)
+	}
+	stop := sync.OnceFunc(func() {
+		if err := registration.Deregister(context.Background()); err != nil {
+			t.Errorf("deregister the process of build %q: %v", c.deps.Build, err)
+		}
+	})
+	t.Cleanup(stop)
+	return stop
+}
+
+// TestAPreviousReleaseThatStartsAgainDuringARollDoesNotKeepItsRowsAfterItStops is k30 (R3): a
+// process yields to a record of another build written after it started, and stops yielding once
+// no live process serves that build (processes.Live), so a process of the previous release that
+// starts again during a roll and takes the record leaves no row of its rule once it stops.
+//
+// Two stamped releases share one database, each process registered as the server registers it.
+// The new release reads the project whole and records itself. A process of the previous release
+// starts, reads the project whole, takes the record and keeps it while the new release yields to
+// it. It stops, and the new release's next pass reads the project whole once, takes the record
+// and leaves every row its own; the pass after it reads nothing whole.
+//
+// Two builds no release stamped register no commit, so the registry cannot say whether the build
+// a record names still runs: the process that yields keeps yielding, as before, and the two never
+// trade whole reads however many passes each makes. The run records the whole reads of each
+// process.
+func TestAPreviousReleaseThatStartsAgainDuringARollDoesNotKeepItsRowsAfterItStops(t *testing.T) {
+	t.Run("two stamped releases", func(t *testing.T) {
+		seeded := seed(t, 3)
+		project := seeded.fixture.Project
+		newer := startConsumer(seeded, newRelease, seeded.now)
+		register(t, newer, newRelease)
+		reads := map[string]int{}
+		passOf := func(run *consumer, what string) passReading {
+			t.Helper()
+			reading := makePass(t, run)
+			if reading.whole {
+				reads[run.deps.Build]++
+			}
+			t.Logf("%s %s", what, reading)
+			return reading
+		}
+
+		if first := passOf(newer, "the new release's first pass"); !first.whole {
+			t.Fatalf("the new release's first pass read nothing of %s whole, which no build had read whole", project)
+		}
+
+		previous := startConsumer(seeded, previousRelease, newer.at.Add(time.Minute))
+		stopPrevious := register(t, previous, previousRelease)
+		if restarted := passOf(previous, "the previous release's first pass"); !restarted.whole {
+			t.Fatalf("the previous release's first pass read nothing of %s whole, whose record names a build recorded before it started", project)
+		}
+		if build, _ := markedBuild(t, previous); build != previousRelease {
+			t.Fatalf("the previous release's whole read left the record naming %q, want %q", build, previousRelease)
+		}
+
+		// The previous release still serves, so the new release yields to its record.
+		newer.at = previous.at.Add(time.Minute)
+		if yielded := passOf(newer, "the new release's pass beside the previous release"); yielded.whole {
+			t.Errorf("the new release read %s whole while a process of the previous release, whose record it names, still serves", project)
+		}
+		if build, _ := markedBuild(t, newer); build != previousRelease {
+			t.Errorf("the new release took the record while the previous release serves: it names %q", build)
+		}
+
+		// The previous release's process stops.
+		stopPrevious()
+		newer.at = newer.at.Add(time.Minute)
+		if taken := passOf(newer, "the new release's pass after the previous release stopped"); !taken.whole {
+			t.Errorf("the new release read nothing of %s whole once no live process served the build %q its record names", project, previousRelease)
+		}
+		if build, _ := markedBuild(t, newer); build != newRelease {
+			t.Errorf("after the previous release stopped the record names %q, want the new release %q", build, newRelease)
+		}
+		if left := writtenBy(newer.writers(t), previousRelease); len(left) != 0 {
+			t.Errorf("after the previous release stopped %d rows still name it as their writer: %v", len(left), left)
+		}
+		if left := writtenBy(newer.filingWriters(t), previousRelease); len(left) != 0 {
+			t.Errorf("after the previous release stopped %d filings still name it as their writer: %v", len(left), left)
+		}
+		if mine := writtenBy(newer.writers(t), newRelease); len(mine) != len(seeded.fixture.PhaseWork) {
+			t.Errorf("%d rows name the new release as their writer, want every one of the %d issues with Legion phase work", len(mine), len(seeded.fixture.PhaseWork))
+		}
+
+		newer.at = newer.at.Add(time.Minute)
+		if settled := passOf(newer, "the new release's next pass"); settled.whole || settled.wrote != 0 {
+			t.Errorf("the new release's pass after it took the record back read whole (%t) and wrote %d rows, want neither", settled.whole, settled.wrote)
+		}
+		if reads[newRelease] != 2 || reads[previousRelease] != 1 {
+			t.Errorf("the new release read %s whole %d times and the previous release %d times, want 2 and 1", project, reads[newRelease], reads[previousRelease])
+		}
+		t.Logf("whole reads of %s: the new release %d, the previous release %d", project, reads[newRelease], reads[previousRelease])
+	})
+
+	t.Run("two builds no release stamped", func(t *testing.T) {
+		seeded := seed(t, 3)
+		project := seeded.fixture.Project
+		first := startConsumer(seeded, "devel first-process", seeded.now)
+		register(t, first, "")
+		reads := map[string]int{}
+		passOf := func(run *consumer, what string) {
+			t.Helper()
+			reading := makePass(t, run)
+			if reading.whole {
+				reads[run.deps.Build]++
+			}
+			t.Logf("%s %s", what, reading)
+		}
+		passOf(first, "the first process's first pass")
+		second := startConsumer(seeded, "devel second-process", first.at.Add(time.Minute))
+		register(t, second, "")
+		passOf(second, "the second process's first pass")
+		for round := range 3 {
+			first.at = second.at.Add(time.Minute)
+			passOf(first, "the first process's pass")
+			second.at = first.at.Add(time.Minute)
+			passOf(second, "the second process's pass")
+			if build, _ := markedBuild(t, first); build != second.deps.Build {
+				t.Errorf("after round %d the record names %q, want the second process's %q", round+1, build, second.deps.Build)
+			}
+		}
+		if reads[first.deps.Build] != 1 || reads[second.deps.Build] != 1 {
+			t.Errorf("the two processes read %s whole %d and %d times, want once each: they traded whole reads",
+				project, reads[first.deps.Build], reads[second.deps.Build])
+		}
+		t.Logf("whole reads of %s: the first process %d, the second process %d", project, reads[first.deps.Build], reads[second.deps.Build])
+	})
 }

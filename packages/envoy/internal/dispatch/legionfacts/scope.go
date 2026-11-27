@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
 // scope.go holds the scope of one page: the projects this loop computes and which of them are
@@ -17,14 +21,17 @@ import (
 // rows and from the record of each project's whole read rather than from the feeds.
 
 // projectStanding is what one pass owes one project beyond what its feeds name: whether to read
-// it whole (whole), and whether the project's record names a newer build this process yields to
+// it whole (whole), whether the project's record names a newer build this process yields to
 // (yielded): another build, which recorded itself after this process started and is rolling in
-// while this one still serves. A write of a yielded project deletes no row or filing, and stamps
-// each it would have deleted for the newer build to compute again (ProjectWrite.Yielded,
+// while this one still serves, and the build of a record this process takes from a build no live
+// process serves any more (taken, "" for none), which its whole read records itself over
+// (markComputedWhole). A write of a yielded project deletes no row or filing, and stamps each it
+// would have deleted for the newer build to compute again (ProjectWrite.Yielded,
 // FilingsWrite.Yielded).
 type projectStanding struct {
 	whole   bool
 	yielded bool
+	taken   string
 }
 
 // legionProjects is every project this loop computes, by key, each with its standing on this
@@ -83,6 +90,22 @@ type projectStanding struct {
 // loss reads every project whole, and the newer build then computes again the rows that read
 // wrote, or stamped, under the older rule.
 //
+// A yield ends when no live process serves the build the record names (processes.Live, which
+// names each process by the commit the image build stamped into it): the yielding process then
+// reads the project whole once and takes the record (projectStanding.taken). The build a record
+// names is not always the newer one. A process of the previous release that starts again during
+// a roll finds the new release's record written before it started, reads the project whole and
+// takes the record, and the new release then yields to it; without this end the new release
+// would yield for as long as it runs, and the rows of the previous release's rule would stay
+// after that release's last process stopped. The registry is read only where a project would
+// yield, which is during a roll alone, and only for a record written registryLag or more before
+// the pass's moment: a process registers only once it serves, after its first pass may have
+// recorded itself, and Register waits up to LiveWindow and one HeartbeatInterval for its
+// admission, so a younger record may name a process that runs and is not yet in the registry. A
+// build no release stamped registers no commit, so the registry cannot say whether the process
+// of such a record still runs: a record whose build is no stamped commit (releaseCommit) keeps
+// the yield, and two such processes never trade whole reads.
+//
 // The build the pass compares is the one the process runs under. The server gives it to the
 // loop (Deps.Build), and the pass carries it both to this read and to the record it writes
 // (markComputedWhole). In the image it is the commit the image build stamped into the binary:
@@ -119,29 +142,34 @@ type projectStanding struct {
 // no narrow pass can name rows that are not there. It costs one whole read, because that read
 // writes the count it answered: a project that truly holds no row any more is marked with none
 // and is left alone from then on.
-func legionProjects(ctx context.Context, q Querier, self process, lost bool) (map[string]projectStanding, error) {
+func legionProjects(ctx context.Context, q Querier, self process, now time.Time, lost bool) (map[string]projectStanding, error) {
 	rows, err := q.Query(ctx, `
 		select project.key,
 		       mark.project_key is null,
 		       mark.computed_build is not distinct from $1,
 		       coalesce(mark.computed_at < $2, false),
 		       coalesce(mark.computed_rows > 0, false)
-		           and not exists (select 1 from issue_facts where project_key = project.key)
+		           and not exists (select 1 from issue_facts where project_key = project.key),
+		       coalesce(mark.computed_build, ''),
+		       coalesce(mark.computed_at <= $3, false)
 		from projects project
 		left join issue_facts_computed mark on mark.project_key = project.key
 		where exists (select 1 from legion_settings where project = project.key)
 		   or exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
-	`, self.build, self.started)
+	`, self.build, self.started, now.Add(-registryLag()))
 	if err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
 	}
 	defer rows.Close()
 	projects := map[string]projectStanding{}
+	// settled is the build of each project's record that this process yields to and the registry
+	// can judge: a stamped commit, recorded registryLag or more before now.
+	settled := map[string]string{}
 	for rows.Next() {
-		var key string
-		var unrecorded, ours, before, emptied bool
-		if err := rows.Scan(&key, &unrecorded, &ours, &before, &emptied); err != nil {
+		var key, recorded string
+		var unrecorded, ours, before, emptied, aged bool
+		if err := rows.Scan(&key, &unrecorded, &ours, &before, &emptied, &recorded, &aged); err != nil {
 			return nil, fmt.Errorf("read the projects Legion works: %w", err)
 		}
 		recordedOther := !unrecorded && !ours
@@ -149,11 +177,46 @@ func legionProjects(ctx context.Context, q Querier, self process, lost bool) (ma
 			whole:   lost || unrecorded || (recordedOther && before) || (ours && emptied),
 			yielded: recordedOther && !before,
 		}
+		if recordedOther && !before && aged && releaseCommit.MatchString(recorded) {
+			settled[key] = recorded
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
 	}
+	rows.Close()
+	if len(settled) == 0 {
+		return projects, nil
+	}
+	live, err := processes.Live(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	serving := map[string]bool{}
+	for _, one := range live {
+		serving[one.Commit] = true
+	}
+	for key, build := range settled {
+		if !serving[build] {
+			projects[key] = projectStanding{whole: true, taken: build}
+		}
+	}
 	return projects, nil
+}
+
+// releaseCommit is the build a stamped release runs under: the commit the image build stamped
+// into the binary, 40 hex characters (packages/envoy/docker/Dockerfile), which the registry of
+// live processes records for each process (processes.Instance.Commit). A build no release stamped
+// answers a string of its process that is no commit (cmd/dispatch's processBuild) and registers
+// none.
+var releaseCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// registryLag is how long after a process's first pass the registry of live processes may still
+// not name it: Register writes a process's row only once it serves, and waits up to LiveWindow
+// and one HeartbeatInterval for its admission (processes.Register). A function rather than a
+// constant because the two are processes' variables.
+func registryLag() time.Duration {
+	return processes.LiveWindow + processes.HeartbeatInterval
 }
 
 // otherBuildsRows is every stored row whose writer was another build than build, of a project

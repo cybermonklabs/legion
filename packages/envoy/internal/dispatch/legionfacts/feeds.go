@@ -37,10 +37,11 @@ type pages struct {
 	unfed        bool
 }
 
-// readPages is one page of each of the three feeds, read from where each cursor stands. checked
-// is this page's own reading of the consumer's clock (passPage), which the change cursor is judged
-// at and a read of the change log to its end is stamped with; the rows are computed as of the
-// pass's moment.
+// readPages is one page of each of the three feeds, read from where each cursor stands. now is
+// the pass's moment, which the rows are computed as of and the observations' page stops below a
+// row newer than (readObservationPage); checked is this page's own reading of the consumer's
+// clock (passPage), which the change cursor is judged at and a read of the change log to its end
+// is stamped with.
 //
 // A database holding no cursor row at all (committed false) has committed no pass, because every
 // pass writes the three together (advanceCursors), so every feed would be read from its start. It
@@ -77,7 +78,7 @@ type pages struct {
 // checked would take the loss away as well where its reader stalled, since the page after it
 // would find it read a moment ago. The issues that page's own changes named are kept and
 // computed, which is work the next page makes again from the held cursor.
-func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bool, safe int64, checked time.Time, limit int, unfed bool) (pages, error) {
+func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bool, safe int64, now, checked time.Time, limit int, unfed bool) (pages, error) {
 	if !committed {
 		return readFeedHeads(ctx, q, safe, checked)
 	}
@@ -86,7 +87,7 @@ func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bo
 	if read.events, err = readEventPage(ctx, q, cursors.events, safe, limit); err != nil {
 		return pages{}, err
 	}
-	if read.observations, err = readObservationPage(ctx, q, cursors.observations, limit); err != nil {
+	if read.observations, err = readObservationPage(ctx, q, cursors.observations, now, limit); err != nil {
 		return pages{}, err
 	}
 	if read.changes, read.lost, err = readChangePage(ctx, q, cursors.changes, checked, limit); err != nil {
@@ -133,11 +134,13 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64, checked time.Time
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
-// filings it read (the events feed alone reads any), and whether the page was full. at and readAt
-// are the changes feed's alone, which the change cursor keeps for the lost-cursor rule
-// (delivery.CursorLost): at is when the change at position was recorded, nil where no change holds
-// position, and readAt when a page last read the change log to its end, the page's own reading of
-// the clock where it did and the cursor's earlier one where its page was full.
+// filings it read (the events feed alone reads any), whether the page was full, and whether it
+// stopped below a row newer than the pass's moment (held, which the observations' page alone
+// answers, readObservationPage). at and readAt are the changes feed's alone, which the change
+// cursor keeps for the lost-cursor rule (delivery.CursorLost): at is when the change at position
+// was recorded, nil where no change holds position, and readAt when a page last read the change
+// log to its end, the page's own reading of the clock where it did and the cursor's earlier one
+// where its page was full.
 type feed struct {
 	position int64
 	at       *time.Time
@@ -145,6 +148,7 @@ type feed struct {
 	touches  []touch
 	filings  []filing
 	full     bool
+	held     bool
 }
 
 // filing is one issue a session of the page filed whose stored filing the page can have moved
@@ -188,9 +192,12 @@ type touch struct {
 // The page stops at safe because events.id is not commit order. An event draws its id when its
 // write inserts the row, and two writes that wait on nothing commit out of id order, so a cursor
 // moved by an uncapped `id > cursor` read could pass an event that was still committing and
-// never read it (events, the "Safe horizon" section). safe is the horizon the pass awaited, which
-// is at or above every event committed before the pass started (pass), so an event above it
-// committed after that, and its own commit's notification wakes the pass that reads it.
+// never read it (events, the "Safe horizon" section). safe is the horizon the pass read once
+// (pass, events.Horizon.SafeOrAwait), at or below which every event is final. An event above it
+// can have committed before the pass started, while a write holding a lower id was still open,
+// and its commit's notification may be the one that woke this pass: the pass then says its
+// horizon held an event back (events.Horizon.HeldBack), and the loop asks for another pass soon
+// (runPass), which reads that event once the horizon has passed it.
 //
 // `changed` holds the fields an issue write moved (api's issueChangedFields), so an event naming
 // `parent` is the parent link moving. That is one of the two rows that move an issue between
@@ -217,8 +224,8 @@ type touch struct {
 //
 // A project.updated event, a write of the project's row (its default repository among what it can
 // move, api's putProjectDefaultRepository), moves no stored row: a row's repo is the repository its
-// issue's own chain names, or ':default' where none does (ReadRepos), which the evals' reads take
-// as the project's published default repository, so a default move rewrites no row.
+// issue's own chain names, or ':default' where none does (ReadRepos), which a reader takes as the
+// project's default repository at read time (DefaultRepo), so a default move rewrites no row.
 func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
 		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
@@ -238,7 +245,7 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	defer rows.Close()
 	page := feed{position: after}
 	count := 0
-	sessions := map[string]bool{}
+	carried := map[string]map[string]bool{}
 	titles := map[string]bool{}
 	for rows.Next() {
 		var touched touch
@@ -248,7 +255,12 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		}
 		count++
 		if session != "" {
-			sessions[session] = true
+			if carried[session] == nil {
+				carried[session] = map[string]bool{}
+			}
+			if title != "" {
+				carried[session][title] = true
+			}
 		}
 		if title != "" {
 			titles[title] = true
@@ -261,8 +273,11 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 	}
 	page.full = count == limit
-	named := slices.Sorted(maps.Keys(sessions))
-	worked, filed, err := sessionIssues(ctx, q, named, slices.Sorted(maps.Keys(titles)))
+	retitled, err := retitledSessions(ctx, q, after, carried)
+	if err != nil {
+		return feed{}, err
+	}
+	worked, filed, err := sessionIssues(ctx, q, slices.Sorted(maps.Keys(carried)), retitled, slices.Sorted(maps.Keys(titles)))
 	if err != nil {
 		return feed{}, err
 	}
@@ -272,6 +287,67 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	}
 	return page, nil
 }
+
+// retitledSessions is the sessions of the page whose title an event of the page can have changed,
+// sorted: each session whose events on the page carry a title other than the title of its newest
+// event below the page, or more than one title, or a title where no event of it below the page
+// carried one. carried is every session the page's events name, with the titles those events
+// carry; a session whose events on the page carry none changes no title.
+//
+// An event carries only its own title, and the session's title is its newest title
+// (delivery.ResolveSessionTitles), which session_titles holds with the page's events already in
+// it, so the title before the page is read from the events themselves: the session's newest
+// titled event at or below after, by the order the title rule takes (migration 20261117100015,
+// the newest created_at and, of two at one moment, the lower id). It is one probe of
+// events_session_actor_created_at_idx (migration 0026) a session, which stops at the first titled
+// event at or below after, so a session's whole history is not read for it.
+//
+// A page that carries two titles of one session, or the title it carried before again after
+// another, is read as a change, and so is an event whose title stood but committed out of
+// created_at order: each costs the session's stored issues once more, and none leaves one
+// uncomputed.
+func retitledSessions(ctx context.Context, q Querier, after int64, carried map[string]map[string]bool) ([]string, error) {
+	titled := make([]string, 0, len(carried))
+	for session, titles := range carried {
+		if len(titles) > 0 {
+			titled = append(titled, session)
+		}
+	}
+	if len(titled) == 0 {
+		return nil, nil
+	}
+	slices.Sort(titled)
+	rows, err := q.Query(ctx, titleBeforeQuery, titled, after)
+	if err != nil {
+		return nil, fmt.Errorf("read the titles of %d sessions before event %d: %w", len(titled), after, err)
+	}
+	retitled := []string{}
+	var session string
+	var before *string
+	if _, err := pgx.ForEachRow(rows, []any{&session, &before}, func() error {
+		titles := carried[session]
+		if before == nil || len(titles) != 1 || !titles[*before] {
+			retitled = append(retitled, session)
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the titles of %d sessions before event %d: %w", len(titled), after, err)
+	}
+	slices.Sort(retitled)
+	return retitled, nil
+}
+
+// titleBeforeQuery is retitledSessions' read: for each session of $1, the title of its newest
+// titled event at or below the event id $2, null where it wrote none.
+const titleBeforeQuery = `
+	select session.id, (
+		select event.actor -> 'origin' ->> 'session_title'
+		from events event
+		where event.actor ->> 'kind' = 'session' and event.actor ->> 'id' = session.id
+		  and event.id <= $2 and coalesce(event.actor -> 'origin' ->> 'session_title', '') <> ''
+		order by event.created_at desc, event.id
+		limit 1)
+	from unnest($1::text[]) as session(id)`
 
 // sessionFiling is one issue a session of the page filed, as sessionIssues reads it: the issue
 // whose `issue.created` event the session wrote, the session, and the issue_filings row that
@@ -325,16 +401,17 @@ func sessionFilings(ctx context.Context, q Querier, filed []sessionFiling) ([]fi
 }
 
 // sessionIssues is what one page of events can have moved through the titles its sessions
-// carry: of the issues those sessions wrote an event on, the ones that hold a stored row, and
-// the issues the titles on that page name. Each comes with the project it belongs to. sessions
-// is every session the page's events name and titles every session title they carry. Beside
-// them it answers every issue those sessions filed (sessionFiling), in key order, which
-// sessionFilings judges.
+// carry: of the issues the sessions whose title the page changed wrote an event on, the ones that
+// hold a stored row, and the issues the titles on that page name. Each comes with the project it
+// belongs to. sessions is every session the page's events name, retitled the ones of them whose
+// title an event of the page can have changed (retitledSessions), and titles every session title
+// the page's events carry. Beside them it answers every issue the page's sessions filed
+// (sessionFiling), in key order, which sessionFilings judges.
 //
-// It reads nothing where both inputs are empty, and it answers no issue. A page of events is
-// not known to reach that state, because a title is read off an event whose actor is a session
-// and such an event names that session as well. The guard asks for both inputs all the same,
-// since either one alone names issues the pass must compute.
+// It reads nothing where sessions and the titles' issues are both empty, and it answers no issue.
+// A page of events is not known to reach that state, because a title is read off an event whose
+// actor is a session and such an event names that session as well. The guard asks for both
+// inputs all the same, since either one alone names issues or filings the pass must compute.
 //
 // A session's newest title decides which of the issues it wrote on carry its work
 // (legion.PhaseWorkKeys), so one write anywhere by one session can take the work off one issue and
@@ -357,25 +434,30 @@ func sessionFilings(ctx context.Context, q Querier, filed []sessionFiling) ([]fi
 // rule is a handoff, which is recorded in an event on the issue it names, so the page names
 // that issue itself, and a handoff is never taken back.
 //
-// The set is narrow because a session can be broad. A controller, an architect or a person's
-// agent writes on many issues, and one event of such a session would otherwise state every one
-// of them on every page it appears in, each with its ancestors and its tree behind it
+// Only a page that changes a session's title takes that session's work away from an issue, so
+// only the sessions whose title the page changed (retitled) state the stored issues they wrote
+// on. An event under the title its session already carries moves no work between issues: the
+// issue its title names is named by that title, and the issue the event is on by the event
+// itself. The set is narrow because a session can be broad. A controller, an architect or a
+// person's agent writes on many issues, and one event of such a session would otherwise state
+// every one of them on every page it appears in, each with its ancestors and its tree behind it
 // (rowsTouchedBy). Compute takes 133 ms over 1,008 issues and 695 ms over 4,032, which is about
 // 2.3 s for each such page at INFRA's 13,103 issues.
 //
-// It is one read, and it costs the page no second read of the titles: a title is read off the
-// events the page already holds. It scans events_session_actor_created_at_idx (migration 0026),
-// the partial index on ((actor->>'id'), created_at desc) for a session actor, once for each
-// session the page named, over every event that session ever wrote, because the read has no
-// order and no limit; the scan is materialized once and read twice, for the issues worked and
-// for the `issue.created` events, which is why the filings take no scan of their own. Each issue
-// it finds is joined to the row issue_facts holds under that project and key, which is that
-// table's primary key, and each filed issue to its issue_filings row by that table's primary
-// key. The index bounds the read to the sessions the page named and not to the events the page
-// read, which is the trap delivery/agents.go documents of the same index. legion.PhaseWorkKeys
-// would answer the same pairs and reads the session half of the whole log to do it, which is why
-// a page does not call it.
-func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([]touch, []sessionFiling, error) {
+// It is one read beside retitledSessions' probe of each session's title before the page, and the
+// titles of the page cost no read: each is read off the events the page already holds. It scans
+// events_session_actor_created_at_idx (migration 0026), the partial index on ((actor->>'id'),
+// created_at desc) for a session actor, once for each session the page named, over every event
+// that session ever wrote, because the read has no order and no limit; the scan is materialized
+// once and read twice, for the issues the retitled sessions worked and for the `issue.created`
+// events of every session, which is why the filings take no scan of their own. Each issue it
+// finds is joined to the row issue_facts holds under that project and key, which is that table's
+// primary key, and each filed issue to its issue_filings row by that table's primary key. The
+// index bounds the read to the sessions the page named and not to the events the page read,
+// which is the trap delivery/agents.go documents of the same index. legion.PhaseWorkKeys would
+// answer the same pairs and reads the session half of the whole log to do it, which is why a page
+// does not call it.
+func sessionIssues(ctx context.Context, q Querier, sessions, retitled, titles []string) ([]touch, []sessionFiling, error) {
 	named := make([]string, 0, len(titles))
 	for _, title := range titles {
 		if worked, worker := legion.WorkerTitle(title); worker {
@@ -397,6 +479,7 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 		from written
 		join issues issue on issue.key = written.issue_key
 		join issue_facts fact on fact.project_key = issue.project_key and fact.issue_key = issue.key
+		where written.session = any($3::text[])
 		union
 		select false, issue.project_key, issue.key, '', '', '', 0
 		from issues issue
@@ -408,7 +491,7 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 		left join issue_filings filing on filing.issue_key = written.issue_key
 		where written.type = 'issue.created'
 		order by filed, key, id
-	`, sessions, named)
+	`, sessions, named, retitled)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the issues %d sessions can have moved: %w", len(sessions), err)
 	}
@@ -432,8 +515,16 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 }
 
 // readObservationPage is the page of the daemon's observations after the cursor: up to limit
-// rows above after, each naming its project, its issue, whether it moves that issue between
-// trees and whether it moves the project's admission block in what a waiting reason reads.
+// rows above after and observed at or before now, the pass's moment, each naming its project,
+// its issue, whether it moves that issue between trees and whether it moves the project's
+// admission block in what a waiting reason reads.
+//
+// The page stops below the first row observed after now (feed.held), as the events page stops at
+// the safe horizon, so no pass names an issue for an input newer than the moment its rows are of.
+// A row's observed_at is the read's time or the daemon's commit time of its event, which can be
+// past Dispatch's clock when the daemon's runs ahead (legion's recordObservations), and a pass
+// that catches up a backlog reads rows committed after it read its moment. The pass says it held
+// that row back, and the loop asks for another soon (runPass), whose later moment reads it.
 //
 // An observation of legion.FieldTree is the daemon naming the issue's tree, and that is a move
 // of the same kind as a parent link moving: it takes the issue out of the tree it stood in and
@@ -466,9 +557,9 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 // at once, but every insert into the table takes the observations' lock immediately before it
 // draws its ids and holds it to its commit (legion.ObservationsLockKey): no writer can hold a
 // lower id open while a higher one commits, and the ids a reader pages by are commit order.
-func readObservationPage(ctx context.Context, q Querier, after int64, limit int) (feed, error) {
+func readObservationPage(ctx context.Context, q Querier, after int64, now time.Time, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
-		select observation.id, observation.project, observation.issue_key, observation.field = $2,
+		select observation.id, observation.observed_at, observation.project, observation.issue_key, observation.field = $2,
 		       observation.issue_key = $3 and observation.field = $4,
 		       case when observation.issue_key = $3 and observation.field = $4
 		            then nullif(observation.value, 'null'::jsonb) end,
@@ -490,11 +581,18 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 	defer rows.Close()
 	page := feed{position: after}
 	for rows.Next() {
+		var id int64
+		var observed time.Time
 		var touched touch
 		var block, before []byte
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &touched.admission, &block, &before); err != nil {
+		if err := rows.Scan(&id, &observed, &touched.project, &touched.issue, &touched.moved, &touched.admission, &block, &before); err != nil {
 			return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
 		}
+		if observed.After(now) {
+			page.held = true
+			break
+		}
+		page.position = id
 		if touched.admission {
 			touched.admission = blockMoved(before, block)
 		}

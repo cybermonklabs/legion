@@ -3,18 +3,23 @@ package legionfacts
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"math"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testBuild is the build every test's loop runs under: one string for one process, as a build
@@ -208,7 +213,9 @@ func outside(got, want []string) []string {
 
 // TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor: one pass over a seeded project
 // writes a row for every issue the rig says carries Legion phase work, and leaves each of the
-// three cursors at the head of its own feed.
+// three cursors at the head of its own feed. An observation after the moment a pass computes at
+// is no input of that pass: the observations' page stops below it and the pass says it held an
+// input back, and a pass at a later moment reads it.
 func TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor(t *testing.T) {
 	run := newConsumer(t, 4)
 	// A merged pull request of one issue, whose insert the delivery trigger logs as a change,
@@ -266,9 +273,43 @@ func TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor(t *testing.T
 				name, afterwards[name].position, settled[name])
 		}
 	}
-	t.Logf("one pass: %d issues seeded, %d with Legion phase work, %d rows stored, %d rows changed; cursors events=%d observations=%d delivery_changes=%d",
+
+	// An observation of an open issue a minute after the moment the next pass computes at.
+	open := run.fixture.Open[0]
+	run.exec(t, "observe an open issue after the pass's moment", `
+		insert into legion_observations (project, issue_key, field, value, observed_at)
+		values ($1, $2, $3, '"testing"', $4)
+	`, run.fixture.Project, open, legion.FieldPhase, run.at.Add(time.Minute))
+	before := run.rows(t)[open]
+	if _, err := run.deps.Horizon.Await(t.Context()); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	early, heldBack, err := pass(t.Context(), run.deps, run.sched)
+	if err != nil {
+		t.Fatalf("the pass before the observation's moment failed: %v", err)
+	}
+	if !heldBack {
+		t.Errorf("the pass at %s met an observation of %s at %s and says it held no input back", run.at.UTC(), open, run.at.Add(time.Minute).UTC())
+	}
+	if at := run.cursors(t)[observationsCursor].position; at != settled[observationsCursor] {
+		t.Errorf("the pass at %s moved the observations cursor to %d, past the observation after its moment; want it at %d",
+			run.at.UTC(), at, settled[observationsCursor])
+	}
+	if slices.Contains(early, open) || !sameRow(run.rows(t)[open], before) {
+		t.Errorf("the pass at %s changed %v and %s's row from an observation after its moment", run.at.UTC(), early, open)
+	}
+	run.at = run.at.Add(2 * time.Minute)
+	later := run.pass(t)
+	if !slices.Contains(later, open) {
+		t.Errorf("the pass after the observation's moment changed %v, which does not hold %s", later, open)
+	}
+	if at, head := run.cursors(t)[observationsCursor].position, run.feedHeads(t)[observationsCursor]; at != head {
+		t.Errorf("after the pass past the observation's moment the observations cursor stands at %d, want its feed's head %d", at, head)
+	}
+	t.Logf("one pass: %d issues seeded, %d with Legion phase work, %d rows stored, %d rows changed; cursors events=%d observations=%d delivery_changes=%d; an observation of %s after the moment held the observations cursor at %d until a pass past it changed %v",
 		len(run.fixture.Keys), len(run.fixture.PhaseWork), len(stored), len(changed),
-		cursors[eventsCursor].position, cursors[observationsCursor].position, cursors[changesCursor].position)
+		cursors[eventsCursor].position, cursors[observationsCursor].position, cursors[changesCursor].position,
+		open, settled[observationsCursor], later)
 }
 
 // TestAnEventChangesTheIssuesRowAndItsAncestorsAndNoRowOutsideThatSet: an event on one issue
@@ -318,52 +359,61 @@ func TestAnEventChangesTheIssuesRowAndItsAncestorsAndNoRowOutsideThatSet(t *test
 
 // TestAMovedParentLinkChangesTheMovedIssuesSubtree: an issue whose parent link moved changes its
 // own row, its new ancestors' rows and the rows of its whole subtree, because the root and the
-// tree depth of every issue below it moved with the link.
+// tree depth of every issue below it moved with the link. The moved issue is the second tree's
+// root, whose subtree is two levels deep: its reviewed child is first moved under its implemented
+// child. The rows the move changes, and the root and the depth each of them stores after it, are
+// written out by hand from the rig's trees.
 func TestAMovedParentLinkChangesTheMovedIssuesSubtree(t *testing.T) {
 	run := newConsumer(t, 3)
 	run.pass(t)
+
+	// The second tree: its root, then its implemented, reviewed, open and no-measured-work
+	// children; its last child, which no Legion role worked, holds no row.
+	under := run.fixture.Roots[0]
+	moved, implemented, reviewed, open, instant := run.fixture.Keys[6], run.fixture.Keys[7], run.fixture.Keys[8], run.fixture.Keys[9], run.fixture.Keys[10]
+	if moved != run.fixture.Roots[1] {
+		t.Fatalf("the second tree's first key is %s, not its root %s", moved, run.fixture.Roots[1])
+	}
+	run.exec(t, "move the reviewed child under the implemented one", `update issues set parent_key = $1 where key = $2`, implemented, reviewed)
+	run.writeEvent(t, reviewed, "architect", "issue.updated", `{"changed":["parent"]}`, run.at.Add(-2*time.Hour))
+	run.at = run.at.Add(time.Minute)
+	run.pass(t)
+	if stood := run.rows(t)[reviewed]; stood.Tree != moved || stood.TreeDepth != 2 {
+		t.Fatalf("%s stands under %s and stores the root %s at depth %d, want %s at depth 2", reviewed, implemented, stood.Tree, stood.TreeDepth, moved)
+	}
 	before := run.rows(t)
 
-	moved, under := run.fixture.Roots[1], run.fixture.Roots[0]
 	run.exec(t, "move a root under another", `update issues set parent_key = $1 where key = $2`, under, moved)
 	run.writeEvent(t, moved, "architect", "issue.updated", `{"changed":["parent"]}`, run.at.Add(-time.Hour))
-
-	parents, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
-	if err != nil {
-		t.Fatalf("read the links above the project's issues: %v", err)
-	}
-	want := statedSet(t, run, []string{moved}, map[string]bool{moved: true})
+	run.at = run.at.Add(time.Minute)
 	changed := run.pass(t)
-	strayed := outside(changed, want)
 	after := run.rows(t)
 
-	subtree := []string{}
-	for key, parent := range parents {
-		if parent == moved {
-			subtree = append(subtree, key)
+	// The moved root now stands one link below the root it moved under, its children two and its
+	// reviewed child three, each storing that root; the root it moved under stays a root.
+	depths := map[string]int{under: 0, moved: 1, implemented: 2, open: 2, instant: 2, reviewed: 3}
+	for key, depth := range depths {
+		is, stored := after[key]
+		switch {
+		case !stored:
+			t.Errorf("%s holds no row after the move", key)
+		case is.Tree != under || is.TreeDepth != depth:
+			t.Errorf("%s stores the root %s at depth %d after the move, want %s at depth %d", key, is.Tree, is.TreeDepth, under, depth)
 		}
 	}
-	slices.Sort(subtree)
-	for _, key := range subtree {
-		was, is, stored := before[key], after[key], false
-		if _, stored = after[key]; !stored {
-			continue
-		}
-		if was.Tree == is.Tree {
-			t.Errorf("%s stands under the moved %s and its root is still %s", key, moved, is.Tree)
-		}
-		if is.Tree != under {
-			t.Errorf("%s stands under the moved %s and its root is %s, want %s", key, moved, is.Tree, under)
-		}
+	if !after[under].Root || after[moved].Root {
+		t.Errorf("after the move %s reads as a root %t and %s %t, want true and false", under, after[under].Root, moved, after[moved].Root)
+	}
+	for _, key := range []string{moved, implemented, reviewed, open, instant} {
 		if !slices.Contains(changed, key) {
-			t.Errorf("%s is in the moved subtree and the pass left its row alone", key)
+			t.Errorf("%s is the moved root or in its subtree and the pass left its row alone; it changed %v", key, changed)
 		}
 	}
-	if len(strayed) > 0 {
-		t.Errorf("the pass changed %d rows outside the set the move touches: %v", len(strayed), strayed)
+	if strayed := outside(changed, slices.Sorted(maps.Keys(depths))); len(strayed) > 0 {
+		t.Errorf("the pass changed %d rows outside the moved root, its subtree and the root it moved under: %v", len(strayed), strayed)
 	}
-	t.Logf("%s moved under %s: the set it touches is %d keys, its subtree is %d (%v), %d rows changed, %d of them outside that set",
-		moved, under, len(want), len(subtree), subtree, len(changed), len(strayed))
+	t.Logf("%s moved under %s with a subtree two levels deep: the pass changed %d rows (%v); the moved root's depth went %d to %d and its reviewed child's %d to %d",
+		moved, under, len(changed), changed, before[moved].TreeDepth, after[moved].TreeDepth, before[reviewed].TreeDepth, after[reviewed].TreeDepth)
 }
 
 // TestAChildMovedBetweenClosedRootsChangesBothRootsRows: an issue moved from one tree to
@@ -410,7 +460,28 @@ func TestAChildMovedBetweenClosedRootsChangesBothRootsRows(t *testing.T) {
 	if len(strayed) > 0 {
 		t.Errorf("the pass changed %d rows outside the set it stated: %v", len(strayed), strayed)
 	}
-	t.Logf("%s moved from %s to %s, both closed: the pass stated %v (%d keys), %d rows changed (%v), %d of them outside that set; the child's stored root went %s to %s, the root it left holds %v and the root it joined %v",
+	// Each of the two roots now holds the row a whole read of the project computes after the move.
+	whole, _, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
+	if err != nil {
+		t.Fatalf("compute the project whole after the move: %v", err)
+	}
+	checked := 0
+	for _, row := range whole {
+		if row.Issue != from && row.Issue != to {
+			continue
+		}
+		checked++
+		// The write's own moment is no fact: a rewrite at the moment of the row before it stores
+		// a microsecond past it (upsert).
+		row.UpdatedAt = after[row.Issue].UpdatedAt
+		if difference := rowDifference(after[row.Issue], row); difference != "" {
+			t.Errorf("%s, a root the move touched, stores a row a whole read of the project does not compute: %s", row.Issue, difference)
+		}
+	}
+	if checked != 2 {
+		t.Errorf("a whole read of the project computes %d of the two roots %s and %s", checked, from, to)
+	}
+	t.Logf("%s moved from %s to %s, both closed: the pass stated %v (%d keys), %d rows changed (%v), %d of them outside that set; the child's stored root went %s to %s, the root it left holds %v and the root it joined %v, each as a whole read computes it",
 		child, from, to, want, len(want), len(changed), changed, len(strayed),
 		before[child].Tree, after[child].Tree, after[from].PhaseHours, after[to].PhaseHours)
 }
@@ -501,6 +572,75 @@ func (c *consumer) factsChanges(t *testing.T) int {
 		t.Fatalf("count the issue_facts changes: %v", err)
 	}
 	return count
+}
+
+// TestAPassDrainsTheChangesItsWriteLeftPending (R7): the triggers of issue_facts and
+// issue_filings record their changes in the outbox (delivery_changes_pending) and take no lock,
+// and the pass moves them into the change log once its transaction has committed
+// (writePass, delivery.DrainPending), with no drain by anyone else. After the first pass, a whole
+// read, and after a pass that an event moves, the outbox holds nothing, and the change log holds
+// one issue_facts change for each row the pass changed, naming the project and that row's issue.
+func TestAPassDrainsTheChangesItsWriteLeftPending(t *testing.T) {
+	run := newConsumer(t, 2)
+	pending := func() int {
+		t.Helper()
+		var count int
+		if err := run.database.Pool.QueryRow(t.Context(), `select count(*) from delivery_changes_pending`).Scan(&count); err != nil {
+			t.Fatalf("count the outbox's changes: %v", err)
+		}
+		return count
+	}
+	// logged is the issue of each issue_facts change of the project the change log holds after seq.
+	logged := func(seq int64) ([]string, int64) {
+		t.Helper()
+		rows, err := run.database.Pool.Query(t.Context(), `
+			select ref, seq from delivery_changes where kind = 'issue_facts' and repo = $1 and seq > $2 order by ref`,
+			run.fixture.Project, seq)
+		if err != nil {
+			t.Fatalf("read the issue_facts changes after %d: %v", seq, err)
+		}
+		refs, head := []string{}, seq
+		var ref string
+		var at int64
+		if _, err := pgx.ForEachRow(rows, []any{&ref, &at}, func() error {
+			refs, head = append(refs, ref), max(head, at)
+			return nil
+		}); err != nil {
+			t.Fatalf("read the issue_facts changes after %d: %v", seq, err)
+		}
+		return refs, head
+	}
+	if left := pending(); left != 0 {
+		t.Fatalf("the outbox holds %d changes before any pass, so this test cannot tell what the pass left there", left)
+	}
+
+	whole := run.pass(t)
+	if len(whole) == 0 {
+		t.Fatal("the first pass changed no row, so it left nothing in the outbox to drain: this test examined nothing")
+	}
+	if left := pending(); left != 0 {
+		t.Errorf("the first pass wrote %d rows and left %d changes in the outbox", len(whole), left)
+	}
+	moved, head := logged(0)
+	if !slices.Equal(moved, whole) {
+		t.Errorf("after the first pass the change log holds issue_facts changes of %v, want one of each row it changed, %v", moved, whole)
+	}
+
+	open := run.fixture.Open[0]
+	run.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-time.Minute))
+	run.at = run.at.Add(time.Minute)
+	narrow := run.pass(t)
+	if !slices.Contains(narrow, open) {
+		t.Fatalf("the pass after an event on %s changed %v, which does not hold it: this test examined nothing", open, narrow)
+	}
+	if left := pending(); left != 0 {
+		t.Errorf("the pass after an event wrote %d rows and left %d changes in the outbox", len(narrow), left)
+	}
+	if after, _ := logged(head); !slices.Equal(after, narrow) {
+		t.Errorf("after the pass after an event the change log gained issue_facts changes of %v, want one of each row it changed, %v", after, narrow)
+	}
+	t.Logf("the first pass changed %d rows and the pass after an event %d; the outbox held nothing after either, and the change log held one issue_facts change of each changed row",
+		len(whole), len(narrow))
 }
 
 // TestABackfillOverAnEmptiedTableRestoresEveryRow: a project whose last whole computation
@@ -669,10 +809,13 @@ func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherSoon(t *testing.T)
 		t.Fatalf("the event of %s drew id %d, not above the open write's %d", open, event, held)
 	}
 
-	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Each pass gets a deadline of its own, so a pass that waited for the open write fails on its
+	// own deadline rather than on what the passes before it left of a shared one.
+	bounded := func() (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, 5*time.Second) }
+	first, cancel := bounded()
 	defer cancel()
 	started := time.Now()
-	changed, heldBack, err := pass(bounded, run.deps, run.sched)
+	changed, heldBack, err := pass(first, run.deps, run.sched)
 	took := time.Since(started)
 	if err != nil {
 		t.Fatalf("the pass below the open write failed after %s, so it waited for the write: %v", took.Round(time.Millisecond), err)
@@ -689,9 +832,11 @@ func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherSoon(t *testing.T)
 	retry := &duty.Backoff{First: horizonRetry, Max: PassRetry}
 	waits := []time.Duration{}
 	for i, want := range []time.Duration{horizonRetry, 2 * horizonRetry} {
+		within, cancel := bounded()
 		asked := time.Now()
-		due := runPass(bounded, run.deps, run.sched, retry)
+		due := runPass(within, run.deps, run.sched, retry)
 		answered := time.Now()
+		cancel()
 		waits = append(waits, due.Sub(answered))
 		if due.Before(asked.Add(want)) || due.After(answered.Add(want)) {
 			t.Errorf("pass %d below the open write, as the loop runs it, asks for its next %s after it answered, want %s",
@@ -746,7 +891,9 @@ func TestTheSetOfRowsOneChangeTouches(t *testing.T) {
 }
 
 // TestCursorAgeAnswersTheOldestCursor: the board's header reads how fresh the served facts are
-// from the cursors, and a database no pass has committed on has no cursor row at all.
+// from the cursors, and a database no pass has committed on has no cursor row at all. The three
+// cursors are stamped at three moments, the observations' the oldest, so the age read is the
+// oldest of them and neither the newest nor the change cursor's.
 func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 	run := newConsumer(t, 1)
 
@@ -759,6 +906,10 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 	}
 
 	run.pass(t)
+	stamps := map[string]time.Duration{eventsCursor: time.Minute, observationsCursor: 3 * time.Minute, changesCursor: 2 * time.Minute}
+	for name, earlier := range stamps {
+		run.exec(t, "stamp the "+name+" cursor", `update issue_facts_cursor set updated_at = $2 where name = $1`, name, run.at.Add(-earlier))
+	}
 	age, has, err = CursorAge(t.Context(), run.database.Pool, run.at.Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("read the cursors' age: %v", err)
@@ -766,22 +917,24 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 	if !has {
 		t.Fatal("a database one pass has committed on answers no age")
 	}
-	if age != 5*time.Minute {
-		t.Errorf("five minutes after the pass the facts are %s old, want 5m0s", age)
+	if want := 8 * time.Minute; age != want {
+		t.Errorf("five minutes after the pass, with the cursors stamped 1, 3 and 2 minutes before it, the facts are %s old, want the oldest cursor's %s", age, want)
 	}
-	t.Logf("the cursors' age: none before a pass, %s five minutes after one", age)
+	t.Logf("the cursors' age: none before a pass, and %s five minutes after one whose cursors were stamped %v before it", age, stamps)
 }
 
 // loopLatencyBound is how long after an event's commit the loop may take to store the row the
-// event moves: half of R14's 2 s from a write to every view, which the day-row refresher and the
-// views' own wake and recompute share.
-const loopLatencyBound = time.Second
+// event moves in TestAnEventAfterTheBootPassMovesItsRowAtOnce: half of the 10 s the loop's MinGap
+// once held a pass to after the pass before it began, so a loop that holds the pass back again
+// fails it, and a pass of the rig's size, which takes well under a second, passes it on a loaded
+// machine.
+const loopLatencyBound = 5 * time.Second
 
 // TestAnEventAfterTheBootPassMovesItsRowAtOnce: the loop as the server runs it (run, under its
-// lease), woken by hand as the hub wakes it. An event of an open issue written one second after
-// the boot pass ended wakes the pass that moves the issue's row within loopLatencyBound of the
-// event's commit, since nothing holds one pass back from the next. Before, the loop's MinGap held
-// that pass to 10 s after the boot pass began.
+// lease), woken by hand as the hub wakes it. An event of an open issue written once the boot pass
+// ended wakes the pass that moves the issue's row within loopLatencyBound of the event's commit,
+// since nothing holds one pass back from the next. Before, the loop's MinGap held that pass to
+// 10 s after the boot pass began.
 func TestAnEventAfterTheBootPassMovesItsRowAtOnce(t *testing.T) {
 	c := newConsumer(t, 2)
 	c.at = c.at.Add(10 * time.Minute)
@@ -820,13 +973,11 @@ func TestAnEventAfterTheBootPassMovesItsRowAtOnce(t *testing.T) {
 		}
 		return n
 	}
-	for deadline := time.Now().Add(time.Minute); ran() < 1; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop's boot pass had not ended within a minute")
-		}
-	}
+	testwait.Until(t, "the loop's boot pass to end", func() (int, bool) {
+		n := ran()
+		return n, n >= 1
+	})
 	booted := time.Now()
-	time.Sleep(time.Second)
 
 	before := c.rows(t)[open]
 	c.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, c.at.Add(-time.Minute))
@@ -835,14 +986,12 @@ func TestAnEventAfterTheBootPassMovesItsRowAtOnce(t *testing.T) {
 	case wake <- struct{}{}:
 	default:
 	}
-	var moved time.Time
-	for deadline := committed.Add(15 * time.Second); moved.IsZero(); time.Sleep(10 * time.Millisecond) {
-		if !sameRow(c.rows(t)[open], before) {
-			moved = time.Now()
-		} else if time.Now().After(deadline) {
-			t.Fatalf("the event of %s committed %s after the boot pass ended had not moved its row 15 s later", open, committed.Sub(booted))
+	moved := testwait.Until(t, "the pass the event of "+open+" woke to move its row", func() (time.Time, bool) {
+		if sameRow(c.rows(t)[open], before) {
+			return time.Time{}, false
 		}
-	}
+		return time.Now(), true
+	})
 	latency := moved.Sub(committed)
 	if latency > loopLatencyBound {
 		t.Errorf("the event of %s, committed %s after the boot pass ended, moved its row %s after its commit, want within %s",
@@ -860,16 +1009,17 @@ func TestAnEventAfterTheBootPassMovesItsRowAtOnce(t *testing.T) {
 // and its own pass therefore share Freshness less one retry, 49 s, and the longest such pair is a
 // whole read and the pass after an event.
 //
-// Each size takes two lengths and two reads: one whole read of the project (ComputeProject and
-// WriteProject), which a new build makes once per project; one pass that reads one event of one
-// open issue, which is what a wake runs; and the read of the rows another build wrote
-// (otherBuildsRows), which every first page of the build a project's record names makes, timed
-// with none to find, as a settled deployment holds, and with every row of the project written by
-// another build, as a roll's first pass can find them.
+// Each size takes two lengths and two reads: the first pass of a new build, which reads the
+// project whole (ComputeProject and WriteProject, in the loop's own pass) once per project; one
+// pass that reads one event of one open issue, which is what a wake runs; and the read of the
+// rows another build wrote (otherBuildsRows), which every first page of the build a project's
+// record names makes, timed with none to find, as a settled deployment holds, and with every row
+// of the project written by another build, as a roll's first pass can find them.
 //
-// INFRA holds about 252 issues today, which is the rig's own size, so the second size covers
-// INFRA at twice its size and leaves room above that: a reader sees how the costs grow with the
-// population rather than one number at one size.
+// The rig's own population is 252 issues (legiontest.DefaultTrees trees), and the second size is
+// four times it, so a reader sees how the costs grow with the population rather than one number
+// at one size. INFRA holds 13,103 issues, and the cost of a whole read at that size is the R8
+// Job's (legion/legionbench), which scope.go's legionProjects records.
 func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
 	budget := Freshness - (PassRetry + PassRetry/10)
 	for _, size := range []struct {
@@ -883,20 +1033,12 @@ func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
 			run := newConsumer(t, size.trees)
 			project := run.fixture.Project
 
+			// The first pass: it finds no record of a whole read, reads the project whole,
+			// records it and leaves the three feeds at their heads, so the pass after the event
+			// reads that event alone.
 			started := time.Now()
-			rows, _, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
-			if err != nil {
-				t.Fatalf("compute the project's facts: %v", err)
-			}
-			written, err := WriteProject(t.Context(), run.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true, Build: testBuild})
-			if err != nil {
-				t.Fatalf("write the facts: %v", err)
-			}
+			written := run.pass(t)
 			whole := time.Since(started)
-
-			// The pass that reads the three feeds through to their heads and records the whole
-			// read, so the pass after the event reads that event alone.
-			run.pass(t)
 			open := run.fixture.Open[0]
 			run.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, run.at.Add(-time.Minute))
 			started = time.Now()

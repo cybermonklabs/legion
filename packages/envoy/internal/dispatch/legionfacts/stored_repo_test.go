@@ -4,6 +4,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -49,14 +50,14 @@ func TestEachStoredRowNamesTheRepositoryItOwns(t *testing.T) {
 			shown = *resolved
 		}
 		got := stored[key].Repo
-		// A row that owns no repository stores ':default', which the issue page resolves to the
-		// project's default repository; every other row stores what the page resolves.
-		want := got
-		if got == DefaultRepo {
-			want = "acme/widgets"
+		// The issue that names a repository of its own stores it, and the issue page resolves
+		// it; every other row owns none, stores ':default' and resolves the project's default.
+		wantStored, wantShown := DefaultRepo, "acme/widgets"
+		if key == own {
+			wantStored, wantShown = "acme/gadgets", "acme/gadgets"
 		}
-		if shown != want {
-			t.Errorf("%s stores the repository %q while the issue page resolves %q", key, got, shown)
+		if got != wantStored || shown != wantShown {
+			t.Errorf("%s stores the repository %q and the issue page resolves %q, want %q and %q", key, got, shown, wantStored, wantShown)
 		}
 		byRepo[got]++
 	}
@@ -70,9 +71,10 @@ func TestEachStoredRowNamesTheRepositoryItOwns(t *testing.T) {
 // TestADefaultRepositoryChangeRewritesNoStoredRepository (dispatch://INFRA-2916, R15 and plan
 // D1 (vi)): a stored row's repo is the repository the issue owns, else DefaultRepo, so a write of
 // the project's default repository (the project.updated event
-// PUT /api/v1/projects/{key}/default-repository appends) resolves no row again and rewrites none.
-// Only the cut of the Legion day rows that reach a repository through the default moves, at read
-// time, under the published default the evals' reads take (evals.DayWindowIn).
+// PUT /api/v1/projects/{key}/default-repository appends) resolves no row again and rewrites none,
+// and a reader takes DefaultRepo for the project's default at read time. The pass after the write
+// reads the project whole, so it computes every row again and a computation that stored the
+// default it resolved would rewrite each of them.
 func TestADefaultRepositoryChangeRewritesNoStoredRepository(t *testing.T) {
 	c := newConsumer(t, 3)
 	c.pass(t)
@@ -92,6 +94,8 @@ func TestADefaultRepositoryChangeRewritesNoStoredRepository(t *testing.T) {
 		t.Fatal("the history holds no closed issue's row, so this test checks no row only a re-resolve would reach")
 	}
 	// The route's write: the project's row, then its project.updated event, in one transaction.
+	// The project's record of its whole read goes too, so the pass after the write computes
+	// every row again.
 	c.exec(t, "give the project a default repository", `
 		with written as (update projects set default_repo = 'acme/widgets' where key = $1 returning key)
 		insert into events (project_key, seq, type, actor, payload, notify)
@@ -99,7 +103,13 @@ func TestADefaultRepositoryChangeRewritesNoStoredRepository(t *testing.T) {
 		       '{"kind":"user","id":"alice"}'::jsonb, jsonb_build_object('key', key, 'default_repo', 'acme/widgets'), true
 		from written
 	`, project)
+	c.exec(t, "delete the project's record of its whole read", `delete from issue_facts_computed where project_key = $1`, project)
+	c.at = c.at.Add(time.Minute)
 	changed := c.pass(t)
+	if at := computedWholeAt(t, c)[project]; !at.Equal(c.at) {
+		t.Fatalf("the pass after the default repository's write did not read %s whole (its record stands at %s, the pass ran at %s), so it computed no row again",
+			project, at.UTC(), c.at.UTC())
+	}
 	for key, row := range c.rows(t) {
 		resolved, err := refs.IssueRepository(t.Context(), c.database.Pool, key)
 		if err != nil {
@@ -115,8 +125,8 @@ func TestADefaultRepositoryChangeRewritesNoStoredRepository(t *testing.T) {
 		}
 	}
 	if len(changed) != 0 {
-		t.Errorf("the pass after the default repository's write changed %d rows, want none", len(changed))
+		t.Errorf("the pass after the default repository's write computed every row again and changed %d of them, want none: %v", len(changed), changed)
 	}
-	t.Logf("the pass after the default repository's write changed no row; its %d rows, %d of them closed, still store %s",
-		len(before), closed, DefaultRepo)
+	t.Logf("the pass after the default repository's write read %s whole and changed no row; its %d rows, %d of them closed, still store %s",
+		project, len(before), closed, DefaultRepo)
 }

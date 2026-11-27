@@ -86,12 +86,14 @@ type eventLogBound struct {
 }
 
 // eventLogBounds is every such bound: the issues the computation reads (metrics.ReadIssues'
-// reads, and legion.PhaseWorkOf), and the two reads of the page itself (feeds.go), its event ids
-// and the sessions its events name.
+// reads, and legion.PhaseWorkOf), and the three reads of the page itself (feeds.go), its event
+// ids, the sessions its events name, and each of those sessions' title before the page
+// (retitledSessions, one probe a session).
 var eventLogBounds = []eventLogBound{
 	{"the issues", regexp.MustCompile(`issue_key\s*=\s*any\(`)},
 	{"the page's event ids", regexp.MustCompile(`event\.id\s*>\s*\$1\s+and\s+event\.id\s*<=\s*\$2`)},
 	{"the page's sessions", regexp.MustCompile(`event\.actor\s*->>\s*'id'\s*=\s*any\(`)},
+	{"each session's title before the page", regexp.MustCompile(`event\.actor\s*->>\s*'id'\s*=\s*session\.id`)},
 }
 
 // TestANarrowPassReadsTheEventLogOnlyByIssueOrByItsPage: a pass after an event reads the event
