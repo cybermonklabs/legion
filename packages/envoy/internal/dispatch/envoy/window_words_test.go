@@ -50,6 +50,9 @@ var windowCalls = []struct {
 //     client read that body. net/http's error of the read quotes the line (twin); the call's error
 //     names the read's failure by its class beside the window's words, since roundTrip reads the
 //     body through redact.StreamAnswer under the window.
+//   - call-*: the stand-in held the call until its window ended. net/http's error names the
+//     request's URL with its user name and its token (twin); the call's error names the context's
+//     end beside the window's words (transportCause).
 //
 // Each error names ErrCallWindow, so each row read the window's path, and none holds a run of a
 // credential the call carried.
@@ -70,6 +73,19 @@ func TestAListenerCallTheWindowEndedPrintsNoCredentialOfItsURL(t *testing.T) {
 			requireWindowEnded(t, "envoy.window-ended/read-"+c.name, err, "the request failed")
 		})
 	}
+	for _, c := range windowCalls {
+		t.Run("call-"+c.name, func(t *testing.T) {
+			reached := make(chan struct{}, 1)
+			fake := clocktest.New(windowStart)
+			client := New(windowURL(heldListener(t, reached)), WithClock(fake))
+			ended := make(chan error, 1)
+			go func() { ended <- c.call(client) }()
+			testwait.Receive(t, "the call to reach the listener", reached)
+			fake.Set(windowStart.Add(CallWindow))
+			err := testwait.Receive(t, "the call to end once its window ended", ended)
+			requireWindowEnded(t, "envoy.window-ended/call-"+c.name, err, context.DeadlineExceeded.Error())
+		})
+	}
 	t.Run("twin", func(t *testing.T) {
 		response, err := http.Get(windowURL(answering))
 		if err != nil {
@@ -79,6 +95,25 @@ func TestAListenerCallTheWindowEndedPrintsNoCredentialOfItsURL(t *testing.T) {
 		_ = response.Body.Close()
 		if err == nil || len(redacttest.Held(err.Error())) != len(windowCredentials) {
 			t.Fatalf("net/http's read of the stand-in's answer = %v, want an error that quotes %q", err, windowCredentials)
+		}
+
+		reached := make(chan struct{}, 1)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, windowURL(heldListener(t, reached)), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := http.DefaultClient.Do(request)
+			done <- err
+		}()
+		testwait.Receive(t, "net/http's call to reach the stand-in", reached)
+		cancel()
+		err = testwait.Receive(t, "net/http's call to end once its context ended", done)
+		if err == nil || !strings.Contains(err.Error(), redacttest.User) || !strings.Contains(err.Error(), redacttest.Token) {
+			t.Fatalf("net/http's call the stand-in held = %v, want an error that names %q and %q", err, redacttest.User, redacttest.Token)
 		}
 	})
 }
@@ -125,6 +160,26 @@ func trailerEchoListener(t *testing.T) string {
 		_ = written.Flush()
 	}))
 	t.Cleanup(listener.Close)
+	return strings.TrimPrefix(listener.URL, "http://")
+}
+
+// heldListener is a stand-in in the listener's place that holds every call it reads until the
+// caller's connection ends, telling reached as each arrives. It answers its host.
+func heldListener(t *testing.T, reached chan<- struct{}) string {
+	t.Helper()
+	released := make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		reached <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	t.Cleanup(func() {
+		close(released)
+		listener.Close()
+	})
 	return strings.TrimPrefix(listener.URL, "http://")
 }
 
