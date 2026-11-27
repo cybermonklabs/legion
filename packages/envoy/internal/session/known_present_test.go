@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -100,5 +101,66 @@ func TestAnOpenStoreFollowsItsBucketCreatedAgainWithNoWord(t *testing.T) {
 	}
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: "ses_own_write"}); err != nil {
 		t.Fatalf("the store's own write to the bucket created again: %v", err)
+	}
+}
+
+// A store whose bucket is deleted under its watcher answers as a store whose bucket is not open:
+// a registration's admission and its write are ErrKnownSessionsUnavailable, which the registration
+// route admits with a warning, a write that keeps the stored principal answers nil, and the
+// handover gate's read is ErrKnownSessionsUnavailable too. A deleted bucket stays missing until the
+// operator creates it (envoy-infra buckets), so answering any of these as a failure of the
+// principal (ErrPrincipalUnrecorded) would refuse every registration with a 503 for all that time,
+// where the listener serves without the bucket.
+func TestAStoreWhoseBucketWasDeletedUnderItAnswersAsNotOpen(t *testing.T) {
+	t.Parallel()
+	_, uri := testnats.Start(t)
+	bustest.ProvisionURL(t, uri, 1)
+	conn := testnats.Connect(t, uri)
+	known, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("open the known-session store: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	if !testwait.Holds(10*time.Second, 50*time.Millisecond, known.Opened) {
+		t.Fatal("the store never opened its provisioned bucket")
+	}
+	ctx := context.Background()
+	admission, err := known.AdmitRegistration(ctx, "ses_before_delete", "principal-a")
+	if err != nil {
+		t.Fatalf("control: a registration's admission with the bucket there = %v, want nil", err)
+	}
+	if err := known.RecordRegistrationWithin(ctx, admission, KnownSession{SessionID: "ses_before_delete", Principal: "principal-a"}); err != nil {
+		t.Fatalf("control: a registration's write with the bucket there = %v, want nil", err)
+	}
+	if _, found, err := known.Read(ctx, "ses_before_delete"); err != nil || !found {
+		t.Fatalf("control: the leader read with the bucket there = found %t, %v; want the record", found, err)
+	}
+
+	operator := testnats.Connect(t, uri)
+	js, err := operator.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := js.DeleteKeyValue(bus.KnownSessionBucket); err != nil {
+		t.Fatalf("delete the known-session bucket: %v", err)
+	}
+	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool { w := known.watch(); return w != nil && w.Err() != nil }) {
+		t.Fatal("the store's watcher never ended after its bucket was deleted")
+	}
+	admission, err = known.AdmitRegistration(ctx, "ses_after_delete", "principal-a")
+	if !errors.Is(err, ErrKnownSessionsUnavailable) || !admission.notOpen {
+		t.Fatalf("a registration's admission over the deleted bucket = %+v, %v; want a not-open admission and %v", admission, err, ErrKnownSessionsUnavailable)
+	}
+	if err := known.RecordRegistrationWithin(ctx, Admission{}, KnownSession{SessionID: "ses_after_delete", Principal: "principal-a"}); !errors.Is(err, ErrKnownSessionsUnavailable) {
+		t.Fatalf("a registration's write admitted before the delete, over the deleted bucket = %v, want %v", err, ErrKnownSessionsUnavailable)
+	}
+	if err := known.RecordWithin(ctx, KnownSession{SessionID: "ses_after_delete"}); err != nil {
+		t.Fatalf("a write that keeps the stored principal, over the deleted bucket = %v, want nil: the store writes nothing and its caller is answered", err)
+	}
+	if err := known.TouchWithin(ctx, "ses_before_delete"); err != nil {
+		t.Fatalf("a clean stop's write over the deleted bucket = %v, want nil", err)
+	}
+	if _, _, err := known.Read(ctx, "ses_before_delete"); !errors.Is(err, ErrKnownSessionsUnavailable) {
+		t.Fatalf("the leader read over the deleted bucket = %v, want %v", err, ErrKnownSessionsUnavailable)
 	}
 }

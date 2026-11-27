@@ -114,24 +114,40 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 }
 
 // A registration whose 30-day record cannot be written is answered, with the WARN it logged before
-// the bucket could be missing. Here the known-session store's own connection is closed, so its
-// write fails while the bucket is still there, as a write that runs out of the request's budget on
-// a slow hub does after the entry, the interests and the consumer have landed. A missing bucket
-// answers it too, and writes nothing (TestAListenerStartsAndServesWithTheKnownSessionBucketMissing).
-// At 999fd607c2 every failed write refused it with the bus-unavailable 503.
+// the bucket could be missing. Here the known-session bucket's stream is sealed, so it answers
+// reads and refuses every write while it is still there: the registration's admission reads the
+// record at the bucket's leader (session.KnownSessions.AdmitRegistration), and only its write fails,
+// as a write that runs out of the request's budget on a slow hub does after the entry, the
+// interests and the consumer have landed. A missing bucket answers it too, and writes nothing
+// (TestAListenerStartsAndServesWithTheKnownSessionBucketMissing). At 999fd607c2 every failed write
+// refused it with the bus-unavailable 503. A store whose own connection is closed is no such write:
+// its admission cannot read the record, which the registration route answers 503 with Retry-After: 1
+// (session.ErrPrincipalUnrecorded), so the fault here leaves the read standing.
 func TestARegistrationIsAnsweredWhenItsRecordWriteFailsWithTheBucketThere(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	storeConn := testnats.Connect(t, rig.url)
 	known := openKnownSessionsOn(t, storeConn, rig.clock.Now)
 	rig.deps.known = known
-	storeConn.Close()
+	js := rig.harness.client.JS()
+	stream, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
+	if err != nil {
+		t.Fatalf("read the known-session bucket's stream: %v", err)
+	}
+	sealed := stream.Config
+	sealed.Sealed = true
+	if _, err := js.UpdateStream(&sealed); err != nil {
+		t.Fatalf("seal the known-session bucket's stream: %v", err)
+	}
+	if _, err := known.AdmitRegistration(t.Context(), "ses_record_failed", ""); err != nil {
+		t.Fatalf("control: a registration's admission over the sealed bucket = %v; the case needs the read to stand and the write alone to fail", err)
+	}
 
 	answer := rig.subscribe(t, `{"session_id":"ses_record_failed","self_subscribed":true,"title":"a session","topics":[],"delivery":{"consumer":true,"epoch":"epoch-1"}}`)
 	if answer.raw == "" {
 		t.Fatal("the registration answered no body")
 	}
-	if _, ok := known.Get("ses_record_failed"); ok {
-		t.Fatal("control: the store wrote the record over a closed connection, so this test says nothing about a failed write")
+	if _, found, err := known.Read(t.Context(), "ses_record_failed"); err != nil || found {
+		t.Fatalf("control: the store's record of the registration after its write = found %t, %v; the case needs a write that stored nothing, with the bucket answering reads", found, err)
 	}
 	if _, err := rig.harness.client.JS().StreamInfo("KV_" + bus.KnownSessionBucket); err != nil {
 		t.Fatalf("control: the known-session bucket is not there, so this test says nothing about a write that failed with it there: %v", err)

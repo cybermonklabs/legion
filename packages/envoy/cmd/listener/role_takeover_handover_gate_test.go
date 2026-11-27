@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -1005,6 +1006,99 @@ func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmitted
 		}
 		if n := rig.handoverRecords(t, role, shut, gateClaimant); n != 0 {
 			t.Errorf("role %s holds %d handover records from %s to %s; want none", role, n, shut, gateClaimant)
+		}
+	})
+}
+
+// A listener whose known-session bucket is deleted under its running store serves on, as one whose
+// bucket never opened does: a registration is admitted with the warning that its principal is not
+// recorded, a claim that names the session it replaces stands, is answered 200 with the warning
+// that the bucket is not open and writes no handover record, so no message of that session moves.
+// Who holds the role is the role bucket's claim, which the known-session bucket does not touch: a
+// second session's soft claim of the role is refused 409 naming the claimant, and an outright one
+// moves the role, so one session holds it at a time. Both sessions first register as one person
+// with the bucket there, so the bucket held a record of each that a handover would be judged by.
+// The store here connects as a deployed listener does, not as a fixture's, so nothing creates the
+// bucket again; the rig's own fixture store is stopped before the delete for the same reason. The
+// registration and claim cases fail where either is answered 503 - a deleted bucket read as a
+// principal nobody can confirm (session.ErrPrincipalUnrecorded, errHandoverUnjudged) - or the claim
+// writes a handover record; the role cases fail where two sessions hold the role at once.
+func TestAListenerWhoseKnownSessionBucketWasDeletedUnderItServesAndHandsNothingOver(t *testing.T) {
+	rig := newGateRig(t)
+	replacedToken := rig.personToken(gateReplaced, gatePerson)
+	token := rig.personToken(gateClaimant, gatePerson)
+	rig.registerOn(t, replacedToken, gateReplaced)
+	rig.registerOn(t, token, gateClaimant)
+	conn := testnats.Connect(t, rig.url)
+	known, err := session.OpenKnownSessions(t.Context(), conn, session.WithKnownSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the known-session store as a deployed listener does: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	ready, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := known.WaitForCacheReady(ready); err != nil {
+		t.Fatalf("the known-session cache did not become ready: %v", err)
+	}
+	if record, found, err := known.Read(t.Context(), gateClaimant); err != nil || !found || record.Principal != "person:"+gatePerson {
+		t.Fatalf("control: %s's record before the delete = %+v, found %t, %v; the case needs it naming person:%s", gateClaimant, record, found, err, gatePerson)
+	}
+	rig.deps.known.StopWatch()
+	rig.deps.known = known
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := js.DeleteKeyValue(bus.KnownSessionBucket); err != nil {
+		t.Fatalf("delete the known-session bucket: %v", err)
+	}
+	if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); err == nil {
+		t.Fatal("control: the known-session bucket's stream is still there after its delete, so this test says nothing about a deleted bucket")
+	}
+
+	t.Run("case: a registration is admitted with the warning", func(t *testing.T) {
+		recorder := rig.registerTitled(t, token, gateClaimant, "registered over the deleted bucket")
+		var answer listenerwire.SubscribeResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil || !slices.Contains(answer.Warnings, knownBucketNotOpenWarning) {
+			t.Fatalf("the registration over the deleted bucket answered %d %s; want 200 with the warning %q", recorder.Code, recorder.Body.String(), knownBucketNotOpenWarning)
+		}
+	})
+	t.Run("case: a claim naming the session it replaces stands, warns why, and hands nothing over", func(t *testing.T) {
+		claim, err := json.Marshal(map[string]any{"session_id": gateClaimant, "role": gateRole, "previous_session_id": gateReplaced})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := rig.postOn(t, token, "/v1/roles/set", string(claim))
+		var answer roleSetResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &answer) != nil {
+			t.Fatalf("%s claims %s naming %s over the deleted bucket: status %d %s; want 200", gateClaimant, gateRole, gateReplaced, recorder.Code, recorder.Body.String())
+		}
+		if warning, warned := gateWarning(answer.Warnings); !warned || !strings.Contains(warning, knownBucketNotOpenRefusal) {
+			t.Errorf("the claim's warnings are %q; want one naming %s and saying %q", answer.Warnings, gateReplaced, knownBucketNotOpenRefusal)
+		}
+		if n := rig.handoverRecords(t, gateRole, gateReplaced, gateClaimant); n != 0 {
+			t.Errorf("role %s holds %d handover records from %s to %s; want none", gateRole, n, gateReplaced, gateClaimant)
+		}
+		if holder, err := rig.deps.registry.RoleHolder(gateRole); err != nil || holder != gateClaimant {
+			t.Errorf("role %s is held by %q (%v) after the claim; want %s", gateRole, holder, err, gateClaimant)
+		}
+	})
+	t.Run("case: a second session's soft claim of the role is refused, naming the holder", func(t *testing.T) {
+		recorder := rig.postOn(t, replacedToken, "/v1/roles/set", `{"session_id":"`+gateReplaced+`","role":"`+gateRole+`","soft":true}`)
+		if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"holder":"`+gateClaimant+`"`) {
+			t.Errorf("%s's soft claim of %s over the deleted bucket: status %d %s; want 409 naming %s", gateReplaced, gateRole, recorder.Code, recorder.Body.String(), gateClaimant)
+		}
+		if holder, err := rig.deps.registry.RoleHolder(gateRole); err != nil || holder != gateClaimant {
+			t.Errorf("role %s is held by %q (%v) after the refused claim; want %s still", gateRole, holder, err, gateClaimant)
+		}
+	})
+	t.Run("case: a second session's outright claim moves the role, so one session holds it", func(t *testing.T) {
+		recorder := rig.postOn(t, replacedToken, "/v1/roles/set", `{"session_id":"`+gateReplaced+`","role":"`+gateRole+`"}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s's outright claim of %s over the deleted bucket: status %d %s; want 200", gateReplaced, gateRole, recorder.Code, recorder.Body.String())
+		}
+		if holder, err := rig.deps.registry.RoleHolder(gateRole); err != nil || holder != gateReplaced {
+			t.Errorf("role %s is held by %q (%v) after the outright claim; want %s alone", gateRole, holder, err, gateReplaced)
 		}
 	})
 }
