@@ -5,9 +5,12 @@ body: |-
   `facts_cursor_age_seconds`. An entry with a value that grows carries `as_of`, the moment its
   values are of, and `growth` (`LegionBoardGrowth`), how fast `work_hours`, `slot_hours`, each
   `hours_by_phase` column and `work_last_at` grow after it, so a holder gives each value at its
-  own clock; an entry none of whose values grows carries null for both. The `legion` live view
-  sends an entry only when its stored row moves. `LegionBoardCard` gains `slot_use`, `waiting`
-  and `waiting_place`.
+  own clock; an entry none of whose values grows carries null for both. `DeliveryLiveMap` lists
+  `issues`, the map the `legion` live view sends entry by entry in its snapshots and deltas, and
+  a delta's `issues` entry is a `LegionBoardFacts`, or null for an issue that left the map. The
+  view sends an entry only when its stored row moves, and leaves the header's
+  `facts_cursor_age_seconds` out of the header's revision, so the cursor's age alone sends
+  nothing. `LegionBoardCard` gains `slot_use`, `waiting` and `waiting_place`.
 time: 2026-11-24T08:52:28Z
 custom:
     Issue: INFRA-5577

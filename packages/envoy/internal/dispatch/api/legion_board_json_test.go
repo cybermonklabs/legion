@@ -7,8 +7,12 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
 // plainLegionBoardFacts and plainLegionBoardGrowth are the two entry types' shapes with no method
@@ -19,6 +23,15 @@ type (
 	plainLegionBoardFacts  legionBoardFacts
 	plainLegionBoardGrowth legionBoardGrowth
 )
+
+// marshalPlainLegionEntry shadows the embedded copy's Growth field with the plain growth type.
+// This keeps encoding/json from calling either custom encoder to produce the expected bytes.
+func marshalPlainLegionEntry(entry legionBoardFacts) ([]byte, error) {
+	return json.Marshal(struct {
+		plainLegionBoardFacts
+		Growth *plainLegionBoardGrowth `json:"growth"`
+	}{plainLegionBoardFacts(entry), (*plainLegionBoardGrowth)(entry.Growth)})
+}
 
 // TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields: the issues entry's own encoder
 // (legionBoardFacts' and legionBoardGrowth's MarshalJSON) writes, byte for byte, what
@@ -31,8 +44,8 @@ type (
 // strings that need escaping or hold invalid UTF-8, and times with and without nanoseconds, at
 // the zero time and the ends of the four-digit years, and in a location other than UTC.
 //
-// An entry's own encoding of the growth inside it is held by the growth's own comparison, since
-// the entry's copy type still carries the growth type, method and all.
+// The reference entry also uses a plain growth field so neither custom encoder contributes to
+// its expected bytes. A seeded history exercises every entry alongside the hand-written cases.
 //
 // No stored value is NaN or infinite: the facts consumer computes every value from lengths of
 // time and counts, the JSON columns cannot hold either, and a read grows a value by a finite rate
@@ -41,6 +54,20 @@ type (
 // reader could parse.
 func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 	t.Parallel()
+	for _, pair := range [][2]reflect.Type{
+		{reflect.TypeFor[legionBoardFacts](), reflect.TypeFor[plainLegionBoardFacts]()},
+		{reflect.TypeFor[legionBoardGrowth](), reflect.TypeFor[plainLegionBoardGrowth]()},
+	} {
+		original, plain := pair[0], pair[1]
+		if original.NumField() != plain.NumField() {
+			t.Fatalf("%s has %d fields, %s has %d", original, original.NumField(), plain, plain.NumField())
+		}
+		for i := range original.NumField() {
+			if !reflect.DeepEqual(original.Field(i), plain.Field(i)) {
+				t.Errorf("%s field %d = %v, copy has %v", original, i, original.Field(i), plain.Field(i))
+			}
+		}
+	}
 	whole := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 	nanos := time.Date(2026, 11, 27, 12, 0, 0, 123456789, time.UTC)
 	tenths := time.Date(2026, 11, 27, 12, 0, 0, 100000000, time.UTC)
@@ -130,7 +157,7 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 		})},
 	}
 	for _, row := range encoded {
-		want, err := json.Marshal(plainLegionBoardFacts(row.entry))
+		want, err := marshalPlainLegionEntry(row.entry)
 		if err != nil {
 			t.Fatalf("%s: encoding/json refuses the copy type: %v", row.name, err)
 		}
@@ -183,7 +210,7 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 		})},
 	}
 	for _, row := range refused {
-		if _, err := json.Marshal(plainLegionBoardFacts(row.entry)); err == nil {
+		if _, err := marshalPlainLegionEntry(row.entry); err == nil {
 			t.Fatalf("%s: encoding/json writes the copy type, so the row refuses nothing", row.name)
 		}
 		if got, err := json.Marshal(row.entry); err == nil {
@@ -194,6 +221,48 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 		}
 	}
 	t.Logf("%d entries written as encoding/json writes their fields, %d refused as it refuses them", len(encoded), len(refused))
+
+	t.Run("seeded history", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "ACME", Trees: 2, Now: now})
+		nameLegionDaemon(t, handler, fixture.Project, "http://legion-acme.internal.example:13370")
+		rows, _, err := legionfacts.ComputeProject(t.Context(), database.Pool, fixture.Project, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
+			legionfacts.ProjectWrite{Project: fixture.Project, Rows: rows, Whole: true}); err != nil {
+			t.Fatal(err)
+		}
+		board := legionBoardOf(t, handler, fixture.Project)
+		if len(fixture.PhaseWork) == 0 || len(board.Issues) != len(fixture.PhaseWork) {
+			t.Fatalf("board carries %d entries, want all %d issues with phase work", len(board.Issues), len(fixture.PhaseWork))
+		}
+		for _, key := range fixture.PhaseWork {
+			if _, ok := board.Issues[key]; !ok {
+				t.Errorf("seeded issue %s has no board entry", key)
+			}
+		}
+		growing := 0
+		for key, entry := range board.Issues {
+			if entry.Growth != nil {
+				growing++
+			}
+			want, err := marshalPlainLegionEntry(entry)
+			if err != nil {
+				t.Fatalf("%s: marshal the plain entry: %v", key, err)
+			}
+			got, err := entry.MarshalJSON()
+			if err != nil || !bytes.Equal(got, want) {
+				t.Errorf("%s: MarshalJSON = %s (%v), want %s", key, got, err, want)
+			}
+		}
+		if growing == 0 || growing == len(board.Issues) {
+			t.Errorf("%d of %d seeded entries grow, want growing and standing entries", growing, len(board.Issues))
+		}
+		t.Logf("compared %d seeded entries byte for byte to encoding/json (%d growing)", len(board.Issues), growing)
+	})
 }
 
 // TestTheHubWritesTheLegionBoardsBodyAsTheGETWritesIt: the body the live hub sends of a `legion`

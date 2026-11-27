@@ -1206,10 +1206,17 @@ func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	// The hub last read the log, and the change at its cursor, a day and an hour ago.
+	// The hub last read the log, and the change at its cursor, a day and an hour ago. The change's
+	// time is the database's, the clock a change's at is written by and CursorLost's young branch
+	// reads, so the change is past the retention by that clock whatever the wall clock's hour; the
+	// read's is the hub's, the clock ReadAt is stamped by and the stalled branch reads.
+	var recordedAt time.Time
+	if err := rig.database.Pool.QueryRow(t.Context(), `select now() - interval '25 hours'`).Scan(&recordedAt); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
 	rig.hub.mu.Lock()
 	lastRead := now.Add(-25 * time.Hour)
-	rig.hub.generation.change.At, rig.hub.generation.change.ReadAt = &lastRead, lastRead
+	rig.hub.generation.change.At, rig.hub.generation.change.ReadAt = &recordedAt, lastRead
 	epoch := rig.hub.generation.epoch
 	rig.hub.mu.Unlock()
 	rig.hub.catchUpNow()

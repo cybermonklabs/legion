@@ -13,6 +13,8 @@ import after from "../../../contracts/fixtures/live/after.json";
 import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
+import legionDelta from "../../../contracts/fixtures/live/legion_delta.json";
+import legionSnapshot from "../../../contracts/fixtures/live/legion_snapshot.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
 import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
 import { RECONNECT_SPREAD_MS, reconnectDelayMs } from "../../web/src/api/live-socket";
@@ -473,128 +475,56 @@ test(
   rowLimit("short", "short")
 );
 
-/** A Legion board of INFRA as Dispatch answers it at `computedAt`, with `issues` and the
- *  facts consumer's cursor `ageSeconds` old: the fields `--compare` holds equal, and the two it
- *  leaves out, which move between a push and a read. */
-function legionBoard(
-  computedAt: string,
-  issues: Readonly<Record<string, object>>,
-  ageSeconds: number
-): object {
-  return {
-    columns: [],
-    computed_at: computedAt,
-    header: {
-      facts_cursor_age_seconds: ageSeconds,
-      facts_updated_at: "2026-11-20T07:00:00Z",
-      queue_length: 0,
-      read_at: "2026-11-20T07:59:00Z",
-      read_error: null,
-      read_ok: true,
-      slot_cap: 3,
-      slots_in_use: 1,
-      trees: 1,
-    },
-    issues,
-    project: "INFRA",
-    settings: {},
-  };
-}
+const legionView: DeliveryLiveView = { kind: "legion", project: "ACME" };
+const legionTarget = "/api/v1/projects/ACME/legion/board";
 
-/** An open issue's stored facts read at `asOf`, `elapsedHours` after 08:00, growing one hour an
- *  hour in its work time, its slot hours and its implementing column, and its last moment of work
- *  moving with the clock. */
-function openIssue(asOf: string, elapsedHours: number): object {
-  return {
-    as_of: asOf,
-    closed_at: null,
-    growth: { hours_by_phase: { implementing: 1 }, slot_hours: 1, work_hours: 1, work_last_at: 1 },
-    hours_by_phase: { implementing: 2 + elapsedHours, planning: 0.5 },
-    opened_at: "2026-11-20T05:00:00Z",
-    review_rounds: 0,
-    root_key: "INFRA-1",
-    slot_hours: 2 + elapsedHours,
-    tree_depth: 0,
-    updated_at: "2026-11-20T07:00:00Z",
-    waiting_reason: "",
-    work_first_at: "2026-11-20T05:30:00Z",
-    work_hours: 2.5 + elapsedHours,
-    work_last_at: asOf,
-  };
-}
-
-/** A closed issue's stored facts, whose values stand: no `as_of`, no `growth`. */
-const closedIssue = (reviewRounds: number, updatedAt: string) => ({
-  as_of: null,
-  closed_at: "2026-11-19T12:00:00Z",
-  growth: null,
-  hours_by_phase: { implementing: 4, reviewing: 1 },
-  opened_at: "2026-11-18T09:00:00Z",
-  review_rounds: reviewRounds,
-  root_key: "INFRA-1",
-  slot_hours: 0,
-  tree_depth: 1,
-  updated_at: updatedAt,
-  waiting_reason: "",
-  work_first_at: "2026-11-18T10:00:00Z",
-  work_hours: 5,
-  work_last_at: "2026-11-19T11:00:00Z",
-});
-
-const legionView: DeliveryLiveView = { kind: "legion", project: "INFRA" };
-
-/** `args` with the legion view of INFRA in place of the timeline view. */
+/** `args` with the Legion board in place of the timeline. */
 const legionArgs = (dispatch: { readonly url: string }) =>
   args(dispatch).map((arg) => (arg === JSON.stringify(view) ? JSON.stringify(legionView) : arg));
 
-/** The board pushed at 08:00: its snapshot, and a delta that sends the closed issue's entry again
- *  once its stored row moved. */
-const pushedAt = "2026-11-20T08:00:00Z";
-const legionPush = (sub: string) => [
-  JSON.stringify({
-    body: legionBoard(
-      pushedAt,
-      { "INFRA-1": openIssue(pushedAt, 0), "INFRA-2": closedIssue(0, "2026-11-19T12:00:00Z") },
-      4
-    ),
-    changed_at: pushedAt,
-    revs: {
-      counts: {},
-      fields: {},
-      items: {},
-      maps: { issues: { "INFRA-1": "a1", "INFRA-2": "b1" } },
-    },
-    seq: "7",
-    sub,
-    type: "snapshot",
-  }),
-  JSON.stringify({
-    changed_at: "2026-11-20T08:00:05Z",
-    counts: {},
-    items: {},
-    maps: { issues: { "INFRA-2": closedIssue(1, "2026-11-20T08:00:05Z") } },
-    revs: { maps: { issues: { "INFRA-2": "b2" } } },
-    seq: "8",
-    set: {},
-    sub,
-    type: "delta",
-  }),
-];
+/** Replay the Go diff's own frames, including the removed issue's null entry. */
+function sendLegionFrames(socket: ServerWebSocket<undefined>, sub: string) {
+  socket.send(forSub(legionSnapshot, sub));
+  socket.send(forSub(legionDelta, sub));
+}
 
-/** The board the GET answers an hour after the push: the open issue's values grown by the hour,
- *  as the server's read grows them, and the cursor an hour older. */
-const readAt = "2026-11-20T09:00:00Z";
-const legionRead = (open: object) =>
-  legionBoard(readAt, { "INFRA-1": open, "INFRA-2": closedIssue(1, "2026-11-20T08:00:05Z") }, 3604);
+/** The GET reads an hour after the last recompute. ACME-2 grows for 2.5 hours from the
+ *  snapshot, ACME-3 for one hour from the delta, and ACME-4 is gone. */
+function legionRead(childWorkHours = 7) {
+  const readAt = "2026-10-03T02:30:00Z";
+  return {
+    ...legionSnapshot.body,
+    ...legionDelta.set,
+    computed_at: readAt,
+    header: { ...legionDelta.set.header, facts_cursor_age_seconds: 3607 },
+    issues: {
+      "ACME-1": legionSnapshot.body.issues["ACME-1"],
+      "ACME-2": {
+        ...legionSnapshot.body.issues["ACME-2"],
+        as_of: readAt,
+        hours_by_phase: { design: 1.5, implementing: 5.5 },
+        slot_hours: 5.5,
+        work_hours: childWorkHours,
+        work_last_at: readAt,
+      },
+      "ACME-3": {
+        ...legionDelta.maps.issues["ACME-3"],
+        as_of: readAt,
+        hours_by_phase: { design: 1.25 },
+        slot_hours: 1.25,
+        work_hours: 1.25,
+        work_last_at: readAt,
+      },
+    },
+  };
+}
 
 test(
   "a legion view's --compare grows each issues entry of the push and of the GET to one moment and finds them equal",
   async () => {
     const dispatch = probeDispatch({
-      onSubscribe(socket, sub) {
-        for (const text of legionPush(sub)) socket.send(text);
-      },
-      routes: { "/api/v1/projects/INFRA/legion/board": legionRead(openIssue(readAt, 1)) },
+      onSubscribe: sendLegionFrames,
+      routes: { [legionTarget]: legionRead() },
     });
     const run = runProbe([...legionArgs(dispatch), "--compare"]);
     await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
@@ -606,12 +536,10 @@ test(
       (line): line is ProbeFrameLine => line.type === "snapshot" || line.type === "delta"
     );
     expect(frames.map((line) => [line.type, line.maps])).toEqual([
-      ["snapshot", { issues: 2 }],
-      ["delta", { issues: ["INFRA-2"] }],
+      ["snapshot", { issues: 4 }],
+      ["delta", { issues: ["ACME-3", "ACME-4"] }],
     ]);
-    expect(dispatch.reads.map((url) => url.pathname)).toEqual([
-      "/api/v1/projects/INFRA/legion/board",
-    ]);
+    expect(dispatch.reads.map((url) => url.pathname)).toEqual([legionTarget]);
     expect(
       comparisons(run.lines).map(({ equal, measures, prs, runs }) => ({
         equal,
@@ -629,22 +557,15 @@ test(
   "a legion view's --compare names an issues value that differs past 0.001 hour at one moment, and exits 1",
   async () => {
     const dispatch = probeDispatch({
-      onSubscribe(socket, sub) {
-        for (const text of legionPush(sub)) socket.send(text);
-      },
-      routes: {
-        "/api/v1/projects/INFRA/legion/board": legionRead({
-          ...openIssue(readAt, 1),
-          work_hours: 3.52,
-        }),
-      },
+      onSubscribe: sendLegionFrames,
+      routes: { [legionTarget]: legionRead(7.02) },
     });
     const run = runProbe([...legionArgs(dispatch), "--compare"]);
     await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
     expect(await exitAfter(run, "SIGINT")).toBe(1);
 
     expect(comparisons(run.lines).map(({ equal, measures }) => ({ equal, measures }))).toEqual([
-      { equal: false, measures: { differ: ["issues.INFRA-1.work_hours"], equal: false } },
+      { equal: false, measures: { differ: ["issues.ACME-2.work_hours"], equal: false } },
     ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.

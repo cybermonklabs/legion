@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"maps"
-	"net/http"
+	"math"
+	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // writeLegionFacts writes the stored facts of three issues of the project, as the facts consumer
@@ -72,6 +75,71 @@ func writeLegionFactsCursor(t *testing.T, database *store.Store, at time.Time) {
 	`, []string{"events", "legion_observations", "delivery_changes"}, at)
 }
 
+// TestEveryStoredColumnIsReadOrNamedAsNotRead inventories the migrated table against the stored
+// row and the board's wire shape. A new column must have a reader or a reason to stay off the board.
+func TestEveryStoredColumnIsReadOrNamedAsNotRead(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	rows, err := database.Pool.Query(t.Context(), `
+		select column_name from information_schema.columns
+		where table_schema = current_schema() and table_name = 'issue_facts'
+		order by ordinal_position
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	// These columns are not fields of the board entry. Most still have a reader in the stored row.
+	offBoard := map[string]string{
+		"project_key": "Project", "issue_key": "Issue",
+		"backlog_or_icebox_hours": "ParkedHours", "queued_hours": "QueuedHours",
+		"started_at": "StartedAt", "merged_at": "MergedAt", "bars": "Bars",
+		"idle_by_role": "IdleByRole", "slot_wait_hours": "SlotWaitHours",
+		"sent_back": "SentBack", "implementing_after_first_review": "ImplementingHoursAfterFirstReview",
+		"testing_after_first_review": "TestingHoursAfterFirstReview", "children": "Children", "repo": "Repo",
+	}
+	// The rollout uses this column in SQL, so neither read needs it as a Go field.
+	const rolloutColumn = "written_build"
+	boardFields := map[string]bool{}
+	for _, field := range liveJSONFields(reflect.TypeFor[legionBoardFacts]()) {
+		boardFields[field.name] = true
+	}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			t.Fatal(err)
+		}
+		seen[column] = true
+		switch {
+		case boardFields[column] || column == rolloutColumn:
+		case offBoard[column] != "":
+			if _, ok := reflect.TypeFor[legionfacts.Row]().FieldByName(offBoard[column]); !ok {
+				t.Errorf("issue_facts.%s names missing legionfacts.Row field %s", column, offBoard[column])
+			}
+		default:
+			t.Errorf("issue_facts.%s is neither read nor named as not read", column)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for column := range offBoard {
+		if !seen[column] {
+			t.Errorf("issue_facts has no column %s, which the inventory lists", column)
+		}
+	}
+	for column := range boardFields {
+		if !seen[column] {
+			t.Errorf("the board exposes %s, but issue_facts has no such column", column)
+		}
+	}
+	if !seen[rolloutColumn] {
+		t.Errorf("issue_facts has no column %s, which the rollout reads", rolloutColumn)
+	}
+}
+
 // TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked: over the facts' own rig, whose every
 // tree holds an open child on a card, the board shows every tree, so the issues map is the
 // project's stored rows: one entry for every issue with Legion phase work and none for an issue no
@@ -85,27 +153,23 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	// Five trees, because this issue's check k4 counts at least twenty entries and fails below
 	// them: a seed that answers fifteen proves the rule and not the check.
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Trees: 5, Now: now})
+	if len(fixture.PhaseWork) == 0 || len(fixture.NoPhaseWork) == 0 || len(fixture.NoMeasuredWork) == 0 {
+		t.Fatal("the seeded history must exercise issues with phase work, without phase work, and with no measured hours")
+	}
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-legion.internal:13370")
 	rows, _, err := legionfacts.ComputeProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
+	}
+	// Give every row a known write time so the expected entry does not have to read it back.
+	for i := range rows {
+		rows[i].UpdatedAt = now
 	}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
 		legionfacts.ProjectWrite{Project: fixture.Project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the project's facts: %v", err)
 	}
 	board := legionBoardOf(t, handler, fixture.Project)
-	// The rows of the issues the board carries as the board's two reads closed them, at the moment
-	// its body is computed as of: the one computation the read makes (legionfacts.Row.At).
-	openRows, _, err := legionfacts.ReadOpen(t.Context(), database.Pool, fixture.Project, board.ComputedAt)
-	if err != nil {
-		t.Fatalf("read the open facts back: %v", err)
-	}
-	closedRows, _, err := legionfacts.ReadShownClosed(t.Context(), database.Pool, fixture.Project, slices.Collect(maps.Keys(board.Issues)), nil, board.ComputedAt)
-	if err != nil {
-		t.Fatalf("read the closed facts back: %v", err)
-	}
-	stored := legionfacts.Join(openRows, closedRows)
 	for _, key := range fixture.PhaseWork {
 		if _, has := board.Issues[key]; !has {
 			t.Errorf("%s carries Legion phase work and the board holds no entry of it", key)
@@ -120,23 +184,43 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 		t.Errorf("the board holds %d entries, want the %d issues with Legion phase work",
 			len(board.Issues), len(fixture.PhaseWork))
 	}
-	// Every entry is the stored row, value for value.
-	for _, key := range slices.Sorted(maps.Keys(board.Issues)) {
-		entry, row := board.Issues[key], stored[key]
-		if !maps.Equal(entry.HoursByPhase, row.PhaseHours) {
-			t.Errorf("%s: the board's hours = %v, the stored row's = %v", key, entry.HoursByPhase, row.PhaseHours)
+	// The expected values come from the rows given to the writer, not the board's read functions.
+	for _, row := range rows {
+		entry, found := board.Issues[row.Issue]
+		if !found {
+			t.Errorf("the board has no entry for stored row %s", row.Issue)
+			continue
 		}
-		if entry.WorkHours != row.WorkHours || entry.ReviewRounds != row.ReviewRounds {
-			t.Errorf("%s: the board says %g work hours over %d review rounds, the stored row %g over %d",
-				key, entry.WorkHours, entry.ReviewRounds, row.WorkHours, row.ReviewRounds)
+		elapsed := max(0, board.ComputedAt.Sub(row.AsOf)).Hours()
+		hours := map[string]float64{}
+		for phase, value := range row.PhaseHours {
+			hours[phase] = value
+		}
+		for name, rate := range row.Growth {
+			if phase, ok := strings.CutPrefix(name, "phase_hours."); ok {
+				hours[phase] += elapsed * rate
+				if math.Round(hours[phase]*1e4) <= 0 {
+					delete(hours, phase)
+				}
+			}
+		}
+		if len(entry.HoursByPhase) != len(hours) {
+			t.Errorf("%s: phase hours = %v, want %v", row.Issue, entry.HoursByPhase, hours)
+		}
+		for phase, want := range hours {
+			if got, held := entry.HoursByPhase[phase]; !held || math.Abs(got-want) > storedPrecision {
+				t.Errorf("%s: %s hours = %g (present: %t), want %g", row.Issue, phase, got, held, want)
+			}
+		}
+		wantWork := row.WorkHours + elapsed*row.Growth["work_hours"]
+		if math.Abs(entry.WorkHours-wantWork) > storedPrecision || entry.ReviewRounds != row.ReviewRounds {
+			t.Errorf("%s: work hours and review rounds = %g/%d, want %g/%d", row.Issue, entry.WorkHours, entry.ReviewRounds, wantWork, row.ReviewRounds)
 		}
 		if entry.RootKey != row.Tree || entry.TreeDepth != row.TreeDepth {
-			t.Errorf("%s: the board puts it at depth %d of %s, the stored row at depth %d of %s",
-				key, entry.TreeDepth, entry.RootKey, row.TreeDepth, row.Tree)
+			t.Errorf("%s: tree and depth = %s/%d, want %s/%d", row.Issue, entry.RootKey, entry.TreeDepth, row.Tree, row.TreeDepth)
 		}
 		if !entry.OpenedAt.Equal(row.OpenedAt) || !entry.UpdatedAt.Equal(row.UpdatedAt) {
-			t.Errorf("%s: the board's moments = %s/%s, the stored row's = %s/%s",
-				key, entry.OpenedAt, entry.UpdatedAt, row.OpenedAt, row.UpdatedAt)
+			t.Errorf("%s: opened and updated = %s/%s, want %s/%s", row.Issue, entry.OpenedAt, entry.UpdatedAt, row.OpenedAt, row.UpdatedAt)
 		}
 	}
 	// Open and closed issues both carry an entry, and so does an issue whose work took no
@@ -180,15 +264,15 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 // map is sent entry by entry (live_frames.go's maps class), so this is what holds that encoding to
 // the one answer the route gives.
 //
-// computed_at is left out of the comparison: it is the moment of the compute, and the two answers
-// are computed at two moments.
+// The push and GET use different clocks. Compare fields other than computed_at and issues as
+// written, then grow the push's issues entries to the GET's moment before comparing the map.
 func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
-	rig := newHubRig(t, nil)
+	rig := newClockedHubRig(t, &fakeHubClock{offset: -time.Hour})
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
-	now := rig.clock.Now()
+	now := rig.clock.Now().Truncate(time.Microsecond)
 	seedLegionBoard(t, rig.database, "INFRA", now)
-	writeLegionFacts(t, rig.database, "INFRA", now)
+	writeGrowingLegionFacts(t, rig.database, now)
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
@@ -207,7 +291,7 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 	}
 	compared, differed := 0, 0
 	for _, name := range slices.Sorted(maps.Keys(live)) {
-		if name == "computed_at" {
+		if name == "computed_at" || name == "issues" {
 			continue
 		}
 		compared++
@@ -216,14 +300,33 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 			t.Errorf("%s: the pushed body holds %s and the GET route's %s", name, live[name], served[name])
 		}
 	}
-	entries := map[string]json.RawMessage{}
-	if err := json.Unmarshal(live["issues"], &entries); err != nil {
-		t.Fatalf("read the pushed body's issues: %v", err)
+	var snapshot, get legionBoardResponse
+	if err := json.Unmarshal(pushed, &snapshot); err != nil {
+		t.Fatal(err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("the pushed board carries no issues entry, so the comparison proves nothing of the map")
+	if err := json.Unmarshal(answered, &get); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("a board of %d issues entries: %d fields compared, %d differed", len(entries), compared, differed)
+	if !slices.Equal(slices.Sorted(maps.Keys(snapshot.Issues)), slices.Sorted(maps.Keys(get.Issues))) {
+		t.Fatalf("push carries %v, GET carries %v", slices.Sorted(maps.Keys(snapshot.Issues)), slices.Sorted(maps.Keys(get.Issues)))
+	}
+	grew := 0
+	for key, held := range snapshot.Issues {
+		if (held.Growth == nil) != (held.AsOf == nil) {
+			t.Errorf("%s: snapshot must give a growth rate and as_of together", key)
+			continue
+		}
+		want := get.Issues[key]
+		atRead := closeLegionEntry(held, get.ComputedAt)
+		if held.Growth != nil && (atRead.WorkHours != held.WorkHours || !maps.Equal(atRead.HoursByPhase, held.HoursByPhase)) {
+			grew++
+		}
+		checkLegionEntry(t, key, want, atRead)
+	}
+	if grew == 0 {
+		t.Fatal("no growing entry was compared at the GET's clock")
+	}
+	t.Logf("compared %d fields (%d differences) and %d issues entries (%d grew)", compared, differed, len(snapshot.Issues), grew)
 }
 
 // TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther: the issues map holds the stored facts
@@ -262,6 +365,9 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 		row("INFRA-3", "INFRA-3", 0, 5*time.Minute, nil),
 		row("INFRA-4", "INFRA-3", 1, 4*time.Minute, nil),
 		row("INFRA-6", "INFRA-6", 0, 3*time.Minute, nil),
+		// The daemon shows this issue, but not the root of its stored row. The closed read must
+		// include it by card key, not by root.
+		row("INFRA-5", "INFRA-50", 1, 3*time.Minute, &closed),
 		// A child of a shown tree the daemon names on no card.
 		row("INFRA-8", "INFRA-3", 1, 2*time.Minute, nil),
 		// A child of a shown tree the daemon names nowhere: it closed before the daemon's reads.
@@ -280,7 +386,7 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 	}
 
 	board := legionBoardOf(t, handler, "INFRA")
-	want := []string{"INFRA-12", "INFRA-3", "INFRA-30", "INFRA-4", "INFRA-6", "INFRA-8"}
+	want := []string{"INFRA-12", "INFRA-3", "INFRA-30", "INFRA-4", "INFRA-5", "INFRA-6", "INFRA-8"}
 	got := slices.Sorted(maps.Keys(board.Issues))
 	if !slices.Equal(got, want) {
 		t.Errorf("the board carries the entries of %v, want those of the open issues and the issues it shows, %v", got, want)
@@ -290,6 +396,19 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 	}
 	if _, carded := legionCardHeld(board, "INFRA-8"); carded {
 		t.Error("INFRA-8 has a card of its own, so its entry proves nothing of a child on no card")
+	}
+	if _, carded := legionCardHeld(board, "INFRA-5"); !carded {
+		t.Error("INFRA-5 must have a card to exercise the closed read by card key")
+	}
+	for _, column := range board.Columns {
+		for _, card := range column.Cards {
+			if card.Tree == "INFRA-50" {
+				t.Error("the board shows INFRA-50's tree, so INFRA-5 can be read by root")
+			}
+		}
+	}
+	if entry := board.Issues["INFRA-5"]; entry.ClosedAt == nil || !entry.ClosedAt.Equal(closed) || entry.RootKey != "INFRA-50" {
+		t.Errorf("INFRA-5 = %+v, want the closed row rooted at INFRA-50", entry)
 	}
 	oldestShown := now.Add(-6 * time.Minute)
 	if board.Header.FactsUpdatedAt == nil || !board.Header.FactsUpdatedAt.Equal(oldestShown) {
@@ -334,13 +453,11 @@ func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
 
 	// A pass has run and moved the cursors 90 seconds ago. LINUX now reads as a project with no
 	// Legion work rather than as one nothing has computed yet.
-	writeLegionFactsCursor(t, database, now.Add(-90*time.Second))
+	cursorAt := now.Add(-90 * time.Second)
+	writeLegionFactsCursor(t, database, cursorAt)
 	worked, idle = legionBoardOf(t, handler, "INFRA"), legionBoardOf(t, handler, "LINUX")
 	for _, board := range []legionBoardResponse{worked, idle} {
-		age := board.Header.FactsCursorAgeSeconds
-		if age == nil || *age < 89 || *age > 150 {
-			t.Errorf("%s's facts_cursor_age_seconds = %v, want about the 90 seconds since the pass", board.Project, age)
-		}
+		requireLegionCursorAge(t, board, cursorAt)
 	}
 	if worked.Header.FactsUpdatedAt == nil || !worked.Header.FactsUpdatedAt.Equal(oldest) {
 		t.Errorf("INFRA's facts_updated_at = %v, want the oldest stored row's %s", worked.Header.FactsUpdatedAt, oldest)
@@ -351,6 +468,29 @@ func TestTheBoardHeaderTellsNoLegionWorkFromNoBackfill(t *testing.T) {
 	t.Logf("before any pass: INFRA %d rows and no age, LINUX no row and no age — nothing has been computed. After one pass 90 s ago: INFRA %d rows and an age of %s s, LINUX no row and an age of %s s — LINUX has no Legion work, and its facts are as fresh as INFRA's",
 		beforePass, len(worked.Issues), ageSeconds(worked.Header.FactsCursorAgeSeconds),
 		ageSeconds(idle.Header.FactsCursorAgeSeconds))
+}
+
+func TestTheHeaderAnswersTheOldestCursorsAge(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	oldest := now.Add(-4 * time.Minute)
+	legionExec(t, database, `
+		insert into issue_facts_cursor (name, position, updated_at) values
+		('events', 1, $1), ('legion_observations', 1, $2), ('delivery_changes', 1, $3)
+	`, now.Add(-time.Minute), oldest, now.Add(-2*time.Minute))
+	requireLegionCursorAge(t, legionBoardOf(t, handler, "INFRA"), oldest)
+}
+
+// The board gives the clock it used to read the cursor, so the test needs no wall-clock window.
+func requireLegionCursorAge(t *testing.T, board legionBoardResponse, cursorAt time.Time) {
+	t.Helper()
+	want := int(board.ComputedAt.Sub(cursorAt).Seconds())
+	if got := board.Header.FactsCursorAgeSeconds; got == nil || *got != want {
+		t.Errorf("%s's facts_cursor_age_seconds = %s, want %d at the board's clock", board.Project, ageSeconds(got), want)
+	}
 }
 
 // ageSeconds is a header's facts_cursor_age_seconds for a log line: the seconds it holds, or
@@ -526,30 +666,4 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 				test.what, parent, child, above, above, counting.Children)
 		})
 	}
-}
-
-// TestTheLegionBoardsOldAddressIsGone: the board answers under the project path and nowhere else,
-// which is the one address the repository's API shape rule leaves.
-func TestTheLegionBoardsOldAddressIsGone(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	seedLegionProjects(t, handler, "INFRA")
-	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
-	seedLegionBoard(t, database, "INFRA", time.Now().UTC())
-
-	for _, gone := range []string{"/api/v1/legion/board", "/api/v1/legion/board?project=INFRA"} {
-		response := dispatchRequest(t, handler, http.MethodGet, gone, nil, "alice")
-		if response.Code != http.StatusNotFound {
-			t.Errorf("GET %s: status = %d, want 404: the address is gone", gone, response.Code)
-		}
-	}
-	board := legionBoardOf(t, handler, "INFRA")
-	if board.Project != "INFRA" {
-		t.Fatalf("the project-path board names %q, want INFRA", board.Project)
-	}
-	if len(board.Columns) != len(legion.Columns) {
-		t.Fatalf("the project-path board has %d columns, want the %d the view draws",
-			len(board.Columns), len(legion.Columns))
-	}
-	t.Logf("GET /api/v1/legion/board answers 404 at both of its old spellings; GET /api/v1/projects/INFRA/legion/board answers %d columns holding %d cards",
-		len(board.Columns), countBoardCards(board))
 }

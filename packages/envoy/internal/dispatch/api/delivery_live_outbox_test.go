@@ -1,8 +1,13 @@
 package api
 
 import (
+	"context"
+	"maps"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )
@@ -56,4 +61,63 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 	}
 	t.Logf("the pending change woke nothing until the boot's drain moved it; the board's recompute began %s after the drain (the hub waits %s of quiet before a recompute)",
 		woke.Round(time.Millisecond), viewQuiet)
+}
+
+// TestTheHubDrainsBeforeItReadsTheLog: a Legion facts write leaves its change row in
+// delivery_changes_pending until a drain moves it into delivery_changes, and the hub drains the
+// outbox itself before each read of the change log (deliveryHub.catchUpChanges calls
+// delivery.DrainPending). So a pending issue_facts row whose writer did not drain it still moves
+// into the change log when the hub wakes to read, and its delta reaches the subscribed `legion`
+// view of that project with no drain by hand.
+//
+// The listener is blind here (dial refuses every connection), so nothing wakes the hub while the
+// row sits in the outbox and the test sees the row still pending before catchUpNow wakes it.
+// Negative control: remove delivery.DrainPending from deliveryHub.catchUpChanges; catchUpNow
+// leaves the row in delivery_changes_pending and sends no delta.
+func TestTheHubDrainsBeforeItReadsTheLog(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
+	})
+	seedLegionProjects(t, rig.handler, "HUB")
+	nameLegionDaemon(t, rig.handler, "HUB", "http://legion-hub.internal:13370")
+	now := rig.clock.Now()
+	seedLegionBoard(t, rig.database, "HUB", now)
+
+	frame := legionView("HUB")
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", frame))
+	conn.snapshot(t, "b")
+	rig.settle(t)
+
+	// Write one stored facts row with no drain by hand: the trigger inserts an issue_facts row
+	// into delivery_changes_pending and nothing into delivery_changes.
+	workedAt := now.Add(-5 * time.Hour)
+	writeIssueFacts(t, rig.database, "HUB", "HUB-4", "HUB-3", workedAt, workedAt.Add(time.Hour), nil)
+	var pending, logged int
+	if err := rig.database.Pool.QueryRow(t.Context(), `
+		select (select count(*) from delivery_changes_pending where kind = 'issue_facts' and repo = 'HUB' and ref = 'HUB-4'),
+		       (select count(*) from delivery_changes where kind = 'issue_facts' and repo = 'HUB' and ref = 'HUB-4')
+	`).Scan(&pending, &logged); err != nil {
+		t.Fatalf("count pending and logged changes before the hub wakes: %v", err)
+	}
+	if pending != 1 || logged != 0 {
+		t.Fatalf("before the hub wakes: %d pending and %d logged for HUB-4, want 1 pending and 0 logged", pending, logged)
+	}
+
+	mark := rig.mark()
+	rig.hub.catchUpNow()
+
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from delivery_changes_pending`).Scan(&pending); err != nil {
+		t.Fatalf("count pending changes after the hub woke: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("%d changes are still pending after the hub woke to read the log: the hub did not drain the outbox first", pending)
+	}
+	rig.waitFor(t, mark, "recompute of the Legion board after the hub drained the outbox", recomputeOfView(t, frame))
+	delta := conn.delta(t, "b")
+	if _, sent := delta.Maps["issues"]["HUB-4"]; !sent {
+		t.Fatalf("the delta after the hub's drain carries the issues entries %v, want HUB-4's", slices.Sorted(maps.Keys(delta.Maps["issues"])))
+	}
+	t.Log("the hub drained the pending issue_facts change before reading the log and sent HUB-4's entry to the subscribed legion view")
 }

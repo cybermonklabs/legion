@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -14,11 +16,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // infraSizeTrees is the population these measurements run over: the trees of the facts' own rig
 // (legiontest.DefaultTrees, 42 of them), which is 252 issues and 210 of them with Legion phase
-// work. That is INFRA's size today.
+// work. It is a test rig's population, far smaller than production's INFRA: k14 measures the
+// body's compressed size and the board's recompute cost at root R14's size.
 const infraSizeTrees = legiontest.DefaultTrees
 
 // firstPayloadBound is the size a first payload may reach, compressed: 300 KB, the bound the
@@ -30,10 +34,10 @@ const firstPayloadBound = 300 * 1024
 // check k4 of dispatch://INFRA-2915 counts against.
 const boardEntriesFloor = 20
 
-// boardAtInfraSize seeds one project of INFRA's size, names its daemon and runs the facts
-// consumer over it until it has written a row for every issue with Legion phase work. The
-// consumer is stopped before this answers, so every measurement below reads stored rows that
-// nothing is rewriting.
+// boardAtInfraSize seeds one project of the test rig's 252 issues (infraSizeTrees), names its
+// daemon and runs the facts consumer over it until it has written a row for every issue with
+// Legion phase work. The consumer is stopped before this answers, so every measurement below
+// reads stored rows that nothing is rewriting.
 //
 // The history ends now rather than at a fixed moment, so an open issue's hours are the hours the
 // consumer's own clock measures.
@@ -71,23 +75,17 @@ func runLegionFactsConsumer(t *testing.T, database *store.Store, project string,
 	}()
 	defer func() {
 		stop()
-		<-stopped
+		testwait.Receive(t, "the facts consumer to stop", stopped)
 	}()
 	started := time.Now()
-	for {
-		var rows int
-		if err := database.Pool.QueryRow(t.Context(), `select count(*) from issue_facts where project_key = $1`, project).Scan(&rows); err != nil {
+	rows := testwait.Until(t, fmt.Sprintf("the facts consumer to write %d rows of %s (rows written)", want, project), func() (int, bool) {
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from issue_facts where project_key = $1`, project).Scan(&count); err != nil {
 			t.Fatalf("count the stored facts of %s: %v", project, err)
 		}
-		if rows >= want {
-			t.Logf("the facts consumer wrote %d rows of %s in %s", rows, project, time.Since(started).Round(time.Millisecond))
-			return
-		}
-		if time.Since(started) > time.Minute {
-			t.Fatalf("the facts consumer wrote %d rows of %s in %s, want %d", rows, project, time.Since(started).Round(time.Millisecond), want)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return count, count >= want
+	})
+	t.Logf("the facts consumer wrote %d rows of %s in %s", rows, project, time.Since(started).Round(time.Millisecond))
 }
 
 // gzipped is how many bytes body takes under gzip at its default level, which is the level a
@@ -105,11 +103,12 @@ func gzipped(t *testing.T, body []byte) int {
 	return packed.Len()
 }
 
-// TestTheBoardsBodyAtInfrasSizeFitsTheFirstPayloadBound: the board of a project of INFRA's size
-// is one first payload, and a first payload is at most 300 KB compressed
-// (dispatch://INFRA-979/spec#b-r14). This reads the body the GET route answers over a project the
-// facts consumer has run over, and measures it twice: the bytes the handler wrote, and those
-// bytes under gzip, which is what a browser behind a compressing proxy receives.
+// TestTheBoardsBodyAtInfrasSizeFitsTheFirstPayloadBound: the board of the test rig's 252 issues
+// (210 with Legion phase work, infraSizeTrees) fits the 300 KB compressed first-payload bound
+// (dispatch://INFRA-979/spec#b-r14), and k14 measures the body at root R14's size. This reads the
+// body the GET route answers over a project the facts consumer has run over, and measures it
+// twice: the bytes the handler wrote, and those bytes under gzip, which is what a browser behind
+// a compressing proxy receives.
 //
 // The raw size is recorded beside the compressed one because nothing in this process compresses
 // the body: the Go server writes the bytes of the first number, and the second is what a proxy
@@ -160,9 +159,9 @@ func countBoardCards(board legionBoardResponse) int {
 // pays for plans and a cold page cache, and one run after it says nothing about the spread.
 const boardComputeRuns = 20
 
-// TestWhatOneBoardComputeCostsAtInfrasSize measures one whole board read and compute at a
-// population of INFRA's size, which is what a page's first answer and every live recompute of a
-// subscribed board costs.
+// TestWhatOneBoardComputeCostsAtInfrasSize records one whole board read and compute over the test
+// rig's 252 issues (210 with Legion phase work, infraSizeTrees), which is what a page's first
+// answer and every live recompute of a subscribed board runs.
 //
 // The measured work is the GET route's own: the read of the daemon's observations, the read of
 // the project's stored facts and the cursor's age, the tree walk, the compute of the twelve columns
@@ -172,6 +171,10 @@ const boardComputeRuns = 20
 //
 // The consumer is stopped before the first run (boardAtInfraSize), so every run reads stored
 // rows that nothing is rewriting, and the runs measure the read and not a race with a writer.
+// Every run asserts that the board it decoded carries every issue with Legion phase work and at
+// least one card, and no time is held to a wall-clock bound (docs/testing.md: a wall-clock bound
+// in api trips on a loaded runner, and k14 measures the board's recompute cost at root R14's
+// size).
 func TestWhatOneBoardComputeCostsAtInfrasSize(t *testing.T) {
 	handler, _, fixture := boardAtInfraSize(t, testServerOptions{})
 	target := "/api/v1/projects/" + fixture.Project + "/legion/board"
@@ -182,14 +185,22 @@ func TestWhatOneBoardComputeCostsAtInfrasSize(t *testing.T) {
 	startedFirst := time.Now()
 	first := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
 	cold := time.Since(startedFirst)
-	if first.Code != http.StatusOK {
-		t.Fatalf("GET the board of %s: status=%d", fixture.Project, first.Code)
+	check := func(response *httptest.ResponseRecorder) legionBoardResponse {
+		t.Helper()
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the board of %s: status=%d", fixture.Project, response.Code)
+		}
+		board := decodeBody[legionBoardResponse](t, response)
+		if len(board.Issues) != len(fixture.PhaseWork) {
+			t.Fatalf("the board carries %d issues entries, want the %d issues with Legion phase work: "+
+				"a board of another size is another measurement", len(board.Issues), len(fixture.PhaseWork))
+		}
+		if countBoardCards(board) == 0 {
+			t.Fatal("the board carries no cards, so the read answered an empty board")
+		}
+		return board
 	}
-	board := decodeBody[legionBoardResponse](t, first)
-	if len(board.Issues) != len(fixture.PhaseWork) {
-		t.Fatalf("the board carries %d issues entries, want the %d issues with Legion phase work: "+
-			"a board of another size is another measurement", len(board.Issues), len(fixture.PhaseWork))
-	}
+	board := check(first)
 
 	taken := make([]time.Duration, 0, boardComputeRuns)
 	var total time.Duration
@@ -197,9 +208,7 @@ func TestWhatOneBoardComputeCostsAtInfrasSize(t *testing.T) {
 		started := time.Now()
 		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
 		elapsed := time.Since(started)
-		if response.Code != http.StatusOK {
-			t.Fatalf("GET the board of %s: status=%d", fixture.Project, response.Code)
-		}
+		check(response)
 		taken = append(taken, elapsed)
 		total += elapsed
 	}

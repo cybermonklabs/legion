@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -290,6 +291,104 @@ func livePipelineOf(computedAt time.Time, n int) deliveryPipelineResponse {
 		OpenedToMerge:     measures.LeadTimeTiming{Days: []measures.LeadTimeDay{}},
 		Targets:           measures.DefaultTargets,
 		Freshness:         delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
+	}
+}
+
+// liveLegionAt is the moment the fixture's Legion board is first answered, which every stored
+// moment of it is written from.
+var liveLegionAt = liveFrom.Add(48 * time.Hour)
+
+// liveLegionBoard is the Legion board of ACME answered at at, every column legion.Columns draws:
+// a root in awaiting_children (ACME-1) blocked on its child at work (ACME-2), whose open values
+// grow from the moment of the read at the rates its entry carries, a root in the queue (ACME-3)
+// and a closed child of the first tree (ACME-4), the oldest row the board serves. Once started,
+// ACME-3 has taken a slot: its card moved from the queue to design and its stored row was
+// written again, its values now growing, and ACME-4's row went, so the oldest row the board
+// serves, and the header with it, moved.
+func liveLegionBoard(at time.Time, started bool) legionBoardResponse {
+	moment := func(when time.Time) *time.Time { return &when }
+	number := func(n int) *int { return &n }
+	text := func(s string) *string { return &s }
+	grown := at.Sub(liveLegionAt).Hours()
+	growing := func(column string) *legionBoardGrowth {
+		return &legionBoardGrowth{HoursByPhase: map[string]float64{column: 1}, WorkHours: 1, SlotHours: 1, WorkLastAt: 1}
+	}
+	issues := map[string]legionBoardFacts{
+		"ACME-1": {
+			OpenedAt: liveLegionAt.Add(-8 * time.Hour), HoursByPhase: map[string]float64{"design": 2}, WorkHours: 2,
+			RootKey: "ACME-1", WaitingReason: legion.WaitingBlocked, WorkFirstAt: moment(liveLegionAt.Add(-8 * time.Hour)),
+			WorkLastAt: moment(liveLegionAt.Add(-4 * time.Hour)), UpdatedAt: liveLegionAt.Add(-20 * time.Minute),
+		},
+		"ACME-2": {
+			OpenedAt: liveLegionAt.Add(-6 * time.Hour), HoursByPhase: map[string]float64{"design": 1.5, "implementing": 3 + grown},
+			WorkHours: 4.5 + grown, RootKey: "ACME-1", TreeDepth: 1, SlotHours: 3 + grown,
+			WorkFirstAt: moment(liveLegionAt.Add(-5 * time.Hour)), WorkLastAt: moment(at),
+			UpdatedAt: liveLegionAt.Add(-10 * time.Minute), AsOf: moment(at), Growth: growing(legion.ColumnImplementing),
+		},
+		"ACME-3": {
+			OpenedAt: liveLegionAt.Add(-3 * time.Hour), HoursByPhase: map[string]float64{}, RootKey: "ACME-3",
+			WaitingReason: legion.WaitingReady, UpdatedAt: liveLegionAt.Add(-15 * time.Minute),
+		},
+		"ACME-4": {
+			OpenedAt: liveLegionAt.Add(-30 * time.Hour), ClosedAt: moment(liveLegionAt.Add(-6 * time.Hour)),
+			HoursByPhase: map[string]float64{"implementing": 5, "reviewing": 1.25}, WorkHours: 6.25, ReviewRounds: 1,
+			RootKey: "ACME-1", TreeDepth: 1, SlotHours: 5, WorkFirstAt: moment(liveLegionAt.Add(-29 * time.Hour)),
+			WorkLastAt: moment(liveLegionAt.Add(-6 * time.Hour)), UpdatedAt: liveLegionAt.Add(-6 * time.Hour),
+		},
+	}
+	cards := map[string][]legionBoardCard{
+		legion.ColumnImplementing: {{
+			Key: "ACME-2", Title: "The implementer's child", Priority: number(1), Phase: legion.PhaseImplementing,
+			PhaseSince: moment(liveLegionAt.Add(-3 * time.Hour)), Slot: number(0), Roles: []string{"implementer"},
+			BlockedBy: []string{}, SlotUse: text(legion.SlotUseWorking), Tree: "ACME-1",
+		}},
+		legion.ColumnAwaitingChildren: {{
+			Key: "ACME-1", Title: "The parent waiting on its child", Priority: number(1), Phase: legion.PhaseAwaitingChildren,
+			PhaseSince: moment(liveLegionAt.Add(-4 * time.Hour)), Roles: []string{}, BlockedBy: []string{"ACME-2"},
+			Waiting: &legionBoardWaiting{Reason: legion.WaitingBlocked, Since: moment(liveLegionAt.Add(-4 * time.Hour)), BlockedBy: []string{"ACME-2"}},
+			Tree:    "ACME-1",
+		}},
+	}
+	queued := legionBoardCard{
+		Key: "ACME-3", Title: "The queued root", Priority: number(2), Phase: legion.PhaseAdmitted,
+		PhaseSince: moment(liveLegionAt.Add(-3 * time.Hour)), Roles: []string{}, BlockedBy: []string{}, Tree: "ACME-3",
+	}
+	slots, cursorAge := 1, 12
+	if started {
+		issues["ACME-3"] = legionBoardFacts{
+			OpenedAt: liveLegionAt.Add(-3 * time.Hour), HoursByPhase: map[string]float64{"design": 0.25}, WorkHours: 0.25,
+			RootKey: "ACME-3", SlotHours: 0.25, WorkFirstAt: moment(at.Add(-15 * time.Minute)), WorkLastAt: moment(at),
+			UpdatedAt: at.Add(-time.Minute), AsOf: moment(at), Growth: growing(legion.ColumnDesign),
+		}
+		delete(issues, "ACME-4")
+		queued.Slot, queued.Roles, queued.SlotUse = number(1), []string{"architect"}, text(legion.SlotUseWorking)
+		cards[legion.ColumnDesign] = []legionBoardCard{queued}
+		slots, cursorAge = 2, 7
+	} else {
+		queued.WaitingPlace = number(1)
+		queued.Waiting = &legionBoardWaiting{Reason: legion.WaitingReady, Since: moment(liveLegionAt.Add(-3 * time.Hour)), BlockedBy: []string{}}
+		cards[legion.ColumnQueue] = []legionBoardCard{queued}
+	}
+	columns := make([]legionBoardColumn, 0, len(legion.Columns))
+	for _, column := range legion.Columns {
+		held := cards[column.ID]
+		if held == nil {
+			held = []legionBoardCard{}
+		}
+		columns = append(columns, legionBoardColumn{ID: column.ID, Label: legionBoardColumnLabels[column.ID], Cards: held})
+	}
+	header := legionBoardHeader{
+		SlotsInUse: slots, SlotCap: number(3), Trees: 2, QueueLength: len(cards[legion.ColumnQueue]),
+		ReadAt: moment(at.Add(-30 * time.Second)), ReadOK: true, FactsCursorAgeSeconds: number(cursorAge),
+	}
+	for _, entry := range issues {
+		if header.FactsUpdatedAt == nil || entry.UpdatedAt.Before(*header.FactsUpdatedAt) {
+			header.FactsUpdatedAt = moment(entry.UpdatedAt)
+		}
+	}
+	return legionBoardResponse{
+		Project: "ACME", Header: header, Columns: columns, Issues: issues,
+		Settings: map[string]json.RawMessage{"max_slots": json.RawMessage(`3`)}, ComputedAt: at,
 	}
 }
 
@@ -979,7 +1078,10 @@ func TestAListWithARepeatedIDIsRefused(t *testing.T) {
 // a page subscribing afterwards gets (applying the delta to the first gives its body, but for the
 // freshness a delta never carries), a freshness verdict, an error, the event feed's start, one of
 // its events and its end, and an agent view's responder verdict, the one agent frame whose data
-// Dispatch writes itself. `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
+// Dispatch writes itself. It writes a `legion` view's snapshot and delta as well
+// (liveLegionBoard), which carry the board's issues map: the delta sends the entry whose stored
+// row moved, whole, null for the entry that left, and the header and the columns that moved, and
+// no entry whose values only grew with the clock. `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	// Not parallel: it sets pmdoc's block ID generator for the whole process
@@ -1011,12 +1113,31 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	}
 	snapshotAt := heldTo.Add(-time.Minute)
 	delta.Sub, delta.Seq, delta.ChangedAt = "timeline-1", "42", &deployedAt
+
+	// Ninety minutes on, ACME-3 took a slot and ACME-4's row went (liveLegionBoard).
+	legionHeld := mustEncodeLive(t, legionBoardView, liveLegionBoard(liveLegionAt, false))
+	legionNextAt := liveLegionAt.Add(90 * time.Minute)
+	// ACME-2's grown values differ between bodies, but the subscriber grows its held entry.
+	// Compare the sent sections directly rather than using liveDiff's exact body comparison.
+	legionDelta, ok := diffDeliveryBody(mustEncodeLive(t, legionBoardView, liveLegionBoard(legionNextAt, true)), legionHeld.revs)
+	if !ok {
+		t.Fatal("the Legion board's change sent no delta")
+	}
+	if sent, set := slices.Sorted(maps.Keys(legionDelta.Maps["issues"])), slices.Sorted(maps.Keys(legionDelta.Set)); !slices.Equal(sent, []string{"ACME-3", "ACME-4"}) ||
+		string(legionDelta.Maps["issues"]["ACME-4"]) != "null" || !slices.Equal(set, []string{"columns", "header"}) {
+		t.Fatalf("the Legion board's delta sends the issues entries %v and the fields %v, want ACME-3's, ACME-4's null, and the columns and the header: ACME-2's values only grew", sent, set)
+	}
+	legionSnapshotAt, legionChangedAt := liveLegionAt.Add(-time.Minute), legionNextAt.Add(-time.Minute)
+	legionDelta.Sub, legionDelta.Seq, legionDelta.ChangedAt = "legion-1", "42", &legionChangedAt
+
 	event := liveFixtureEventFrame(t)
 	frames := map[string]any{
-		"snapshot.json":  held.snapshot("timeline-1", 41, &snapshotAt),
-		"delta.json":     delta,
-		"after.json":     next.snapshot("timeline-1", 42, &deployedAt),
-		"heartbeat.json": liveHeartbeat,
+		"snapshot.json":        held.snapshot("timeline-1", 41, &snapshotAt),
+		"delta.json":           delta,
+		"after.json":           next.snapshot("timeline-1", 42, &deployedAt),
+		"legion_snapshot.json": legionHeld.snapshot("legion-1", 41, &legionSnapshotAt),
+		"legion_delta.json":    legionDelta,
+		"heartbeat.json":       liveHeartbeat,
 		// The reconcile last ran two hours before the snapshot, past deliveryStaleAfter, so the
 		// sources it reconciles are stale.
 		"freshness.json": DeliveryLiveFreshness{

@@ -1,13 +1,20 @@
 package api
 
+//ci:reads packages/envoy/internal/dispatch/legion/*.go !**/*_test.go TestNoCodeOnTheBoardsReadPathComputesAFact lists the Legion package.
+//ci:reads packages/envoy/internal/dispatch/legionfacts/*.go !**/*_test.go TestNoCodeOnTheBoardsReadPathComputesAFact scans the stored facts reads and the computation used as a control.
+//ci:reads packages/envoy/internal/dispatch/legion/metrics/grow.go TestNoCodeOnTheBoardsReadPathComputesAFact scans the stored row's growth rule.
+//ci:reads packages/envoy/internal/dispatch/legion/legiontest/legiontest.go TestNoCodeOnTheBoardsReadPathComputesAFact scans the fixture's elapsed-time calculation as a control.
+
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/build"
 	"maps"
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,13 +35,17 @@ import (
 // no plan reads the event log or legion_observations, nothing on the request path computes a fact
 // or holds a cached population, and the one computation it makes is the close of each open part
 // of a row at the read's own clock (legionfacts.Row.At), the one place a length of time meets a
-// stored value; two reads 30 s apart with the consumer stopped answer each open issue's work time
-// grown by the clock time between them and each closed issue's unchanged, and a fresh process's
-// first read is as fast as a warm one to the same order.
+// stored value; two reads at clocks 30 s apart with the consumer stopped answer each open issue's
+// work time grown by the clock time between them and each closed issue's unchanged, and a fresh
+// process's first read runs the statements of the stored facts a warm one runs.
 //
-// Each of the four tests below is one of those readings. They share the rig
-// legion_board_payload_test.go builds (boardAtInfraSize): one project of INFRA's size, the facts
-// consumer run over it once and then stopped.
+// No test here holds a time to a bound: the rig's size is too small for the shapes they guard to
+// cost anything a loaded machine's noise would not hide, so a bound trips on load alone. Each
+// records the times it took, and k14 measures the read's time at root R14's size.
+//
+// Each of the tests below is one of those readings. They share the rig
+// legion_board_payload_test.go builds (boardAtInfraSize): one project of the rig's 252 issues, the
+// facts consumer run over it once and then stopped.
 
 // ranStatement is one statement a traced pool ran, with the arguments it was given, which is
 // what lets a plan be taken of the statement the request itself made rather than of a copy of it.
@@ -269,12 +280,6 @@ func openRowsTestNoList(t *testing.T, plan json.RawMessage, text string) int {
 	return open
 }
 
-// boardReadGenericBudget is the most the board's reads of the stored facts may take together at
-// INFRA's size under a generic plan, in milliseconds: the three parts keyed on closed_at test no
-// list on the open rows, so a statement pgx caches stays inside it whichever plan Postgres settles
-// on (dispatch://INFRA-2916, round 15's cost design, 1b).
-const boardReadGenericBudget = 20.0
-
 // boardReadRuns is how many times TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget
 // runs the read under each plan mode, of which it takes the median.
 const boardReadRuns = 11
@@ -342,17 +347,19 @@ func boardReadLiterals(t *testing.T, database *store.Store, args []any) (types, 
 
 // TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget: the board's two reads of the
 // stored facts, the statements its request runs with their own arguments, the read of the open
-// rows and the read of the closed rows of what it shows, take at most boardReadGenericBudget
-// together at INFRA's size under the generic plan, the plan the reads run
-// (legionfacts.BoardReadSettings forces it), and are recorded under the plan with their values
-// beside it. An earlier shape left the rows of the cards and the trees out of the open rows, which
-// tested both lists on every open row, and a generic plan scans a list for each row it tests
-// rather than hashing it. The two are held together, as the one read they were split from was,
-// though the board runs the open rows' read beside its card reads.
+// rows and the read of the closed rows of what it shows, keep their shape under the generic plan,
+// the plan the reads run (legionfacts.BoardReadSettings forces it): the read of the open rows
+// tests no list of cards or roots on them (openRowsTestNoList). An earlier shape left the rows of
+// the cards and the trees out of the open rows, which tested both lists on every open row, and a
+// generic plan scans a list for each row it tests rather than hashing it: over 4,300 open rows that
+// read took 119 to 168 ms (legionfacts' openWhere). That shape is the budget this test holds.
 //
 // Each read runs boardReadRuns times under each mode, under the reads' own settings
-// (legionfacts.BoardReadSettings), and its median execution is what is held and recorded with the
-// plan, so the record of each run says whether the plan mode moves a read's cost.
+// (legionfacts.BoardReadSettings), and its median execution is recorded with the plan, so the
+// record of each run says whether the plan mode moves a read's cost. No time is held to a bound:
+// at the rig's 42 open rows the shape above costs a few milliseconds at most, which a loaded
+// machine's noise hides, so a bound would trip on load and never on the shape. k14 measures the
+// two reads' time at root R14's size.
 func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 	log := &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
@@ -380,7 +387,7 @@ func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 	defer connection.Release()
 
 	medians := map[string]float64{}
-	keys, roots := 0, 0
+	keys, roots, openArms := 0, 0, 0
 	for index, read := range reads {
 		types, literals := boardReadLiterals(t, database, read.args)
 		if len(read.args) == 3 {
@@ -413,14 +420,16 @@ func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 						node, node.IndexCond, node.Filter, node.Rows, node.Loops, node.RowsRemovedByFilter)
 				}
 			}
+			if mode.name == "generic" {
+				openArms += openRowsTestNoList(t, last, explaintest.Outline(t, last))
+			}
 		}
 	}
-	if medians["generic"] > boardReadGenericBudget {
-		t.Errorf("under a generic plan the board's reads of the stored facts take a median %.3f ms together, above their %.0f ms budget",
-			medians["generic"], boardReadGenericBudget)
+	if openArms == 0 {
+		t.Errorf("under the generic plan no read of the board's request reads the open rows under a condition naming closed_at IS NULL, so the shape this test holds is not where it reads it")
 	}
-	t.Logf("project %s: %d stored rows, %d open; the read of the closed rows names %d card keys and %d roots; medians %.3f ms together under the custom plan and %.3f ms under the generic plan, against the %.0f ms budget",
-		fixture.Project, rows, open, keys, roots, medians["custom"], medians["generic"], boardReadGenericBudget)
+	t.Logf("project %s: %d stored rows, %d open; the read of the closed rows names %d card keys and %d roots; medians %.3f ms together under the custom plan and %.3f ms under the generic plan; %d nodes of the generic plans read the open rows, testing no list",
+		fixture.Project, rows, open, keys, roots, medians["custom"], medians["generic"], openArms)
 }
 
 // eventLogRead and observationsRead match a statement that reads the event log and one that
@@ -503,16 +512,19 @@ func seedOtherProjectsFacts(t *testing.T, database *store.Store, except string) 
 }
 
 // TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock: with the facts consumer
-// stopped, two board reads thirty seconds apart answer each open issue's work time grown by the
-// clock time between them at the rate its row stores, and each closed issue's unchanged, and no
-// row is written between them (k23).
+// stopped, two board reads at clocks thirty seconds apart answer each open issue's work time grown
+// by the clock time between them at the rate its row stores, and each closed issue's unchanged,
+// and no row is written between them (k23).
 //
 // That is the one computation the read makes: an open issue's row holds its facts closed at the
 // newest input they read and how fast each grows after it, and the read closes each at its own
 // clock (legionfacts.Row.At). The consumer is the one writer of the rows, and the rig stopped it,
 // so nothing moved the rows between the two reads, and the clock is all that moved the answers.
+// The two reads are the GET's own read and compute (readLegionBoard, legionBoardCompute), given
+// the two clocks, so the test waits for no clock to pass; at least one open issue must grow, or
+// the two reads compare nothing the clock moves.
 func TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock(t *testing.T) {
-	handler, database, fixture := boardAtInfraSize(t, testServerOptions{})
+	_, database, fixture := boardAtInfraSize(t, testServerOptions{})
 	rates := map[string]float64{}
 	rows, err := database.Pool.Query(t.Context(),
 		`select issue_key, coalesce((growth->>'work_hours')::double precision, 0) from issue_facts where project_key = $1`, fixture.Project)
@@ -538,12 +550,20 @@ func TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock(t *tes
 	}
 	countBefore, newestBefore := written()
 
-	first := legionBoardOf(t, handler, fixture.Project)
-	time.Sleep(30 * time.Second)
-	second := legionBoardOf(t, handler, fixture.Project)
+	served := directServer(Deps{Store: database})
+	read := func(at time.Time) legionBoardResponse {
+		t.Helper()
+		population, err := served.readLegionBoard(t.Context(), fixture.Project, at)
+		if err != nil {
+			t.Fatalf("read the board at %s: %v", at, err)
+		}
+		return legionBoardCompute(population, at)
+	}
+	firstAt := time.Now().UTC()
+	first, second := read(firstAt), read(firstAt.Add(30*time.Second))
 	apart := second.ComputedAt.Sub(first.ComputedAt)
 
-	open, closed, wrong := 0, 0, 0
+	open, grew, closed, wrong := 0, 0, 0, 0
 	for _, key := range slices.Sorted(maps.Keys(first.Issues)) {
 		was := first.Issues[key]
 		now, has := second.Issues[key]
@@ -563,59 +583,87 @@ func TestTwoLegionBoardReadsThirtySecondsApartGrowEachOpenIssueByTheClock(t *tes
 			t.Errorf("%s (closed %t): the first read says %g work hours and the second, %s later, says %g, want %g",
 				key, was.ClosedAt != nil, was.WorkHours, apart, now.WorkHours, want)
 		}
+		if was.ClosedAt == nil && rates[key] > 0 && now.WorkHours > was.WorkHours {
+			grew++
+		}
 	}
 	if open == 0 || closed == 0 {
 		t.Fatalf("the board holds %d open and %d closed issues, so the two reads compare too little", open, closed)
+	}
+	if grew == 0 {
+		t.Errorf("no open issue's work time grew between the two reads, %s apart, so they show nothing of the clock: %d open issues, none with a stored rate it grew by", apart, open)
 	}
 	if countAfter, newestAfter := written(); countAfter != countBefore || !newestAfter.Equal(newestBefore) {
 		t.Errorf("a row was written between the two reads: %d rows newest %s before, %d newest %s after",
 			countBefore, newestBefore, countAfter, newestAfter)
 	}
-	t.Logf("two reads %s apart, the consumer stopped: %d open issues each grown by its rate times the time between, %d closed issues unchanged, %d wrong; no row written between them; the project holds %d issues",
-		apart, open, closed, wrong, len(fixture.Keys))
+	t.Logf("two reads %s apart, the consumer stopped: %d open issues, %d of them grown by their rate times the time between, %d closed issues unchanged, %d wrong; no row written between them; the project holds %d issues",
+		apart, open, grew, closed, wrong, len(fixture.Keys))
 }
 
+// storedFactsRead matches a statement that reads the stored facts or the facts consumer's
+// cursors, which is what a process that held the facts between calls would read on its first
+// read and not on the reads after it.
+var storedFactsRead = regexp.MustCompile(`\bissue_facts(_cursor)?\b`)
+
+// boardWarmReads is how many reads the warm process serves before the read of record: more than
+// the five runs after which pgx's cached statements may settle on a generic plan.
+const boardWarmReads = 10
+
 // TestAFreshProcessFirstBoardReadIsAsFastAsAWarmOne: the first board read of a process that has
-// served none is as fast as the read of a process that has served reads for a while, to the same
-// order.
+// served none runs the statements of the stored facts that the read of a process that has served
+// reads for a while runs, one for one.
 //
-// A process that held the facts between calls would answer its first read slowly and every read
-// after it quickly, because the first would fill what the rest read. The second process here is
-// the deployment's second envoy-dispatch task (storetest.SecondProcess): the same database, a
-// pool of its own and every cache of its own empty.
+// A process that held the facts between calls would read them on its first read and not on the
+// reads after it, because the first would fill what the rest read, so a warm read would run fewer
+// statements of them than a fresh one. The second process here is the deployment's second
+// envoy-dispatch task: the same database, a pool of its own (storetest.TracedStore) and every
+// cache of its own empty. Each read's time is recorded beside its statements and held to no
+// bound: one sample of each after a loaded machine's other work says nothing of the order of
+// either, and k14 measures the read's time at root R14's size.
 func TestAFreshProcessFirstBoardReadIsAsFastAsAWarmOne(t *testing.T) {
-	handler, database, fixture := boardAtInfraSize(t, testServerOptions{})
+	warmLog, freshLog := &statementLog{}, &statementLog{}
+	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), warmLog)})
 	target := "/api/v1/projects/" + fixture.Project + "/legion/board"
-	read := func(served http.Handler) time.Duration {
+	read := func(served http.Handler, log *statementLog) ([]string, time.Duration) {
+		t.Helper()
+		log.reset()
 		started := time.Now()
 		if response := dispatchRequest(t, served, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK {
 			t.Fatalf("GET the board: status=%d body=%s", response.Code, response.Body.String())
 		}
-		return time.Since(started)
+		took := time.Since(started)
+		facts := []string{}
+		for _, statement := range log.statements() {
+			if storedFactsRead.MatchString(statement.sql) {
+				facts = append(facts, strings.TrimSpace(statement.sql))
+			}
+		}
+		slices.Sort(facts)
+		return facts, took
 	}
 
-	// The warm process: it has served reads for a while, and the time of record is the read
-	// after them.
-	warmUntil := time.Now().Add(3 * time.Second)
-	served := 0
-	for time.Now().Before(warmUntil) {
-		read(handler)
-		served++
+	// The warm process: it has served reads for a while, and the read of record is the one after
+	// them.
+	for range boardWarmReads {
+		read(handler, warmLog)
 	}
-	warm := read(handler)
+	warm, warmTook := read(handler, warmLog)
 
 	// The fresh process: a second server on the same database, its own pool and its own caches,
-	// timed on the first read it ever serves.
-	other, _, _ := newTestServer(t, testServerOptions{store: storetest.SecondProcess(t, database)})
-	fresh := read(other)
+	// on the first read it ever serves.
+	other, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, freshLog)})
+	fresh, freshTook := read(other, freshLog)
 
-	ratio := float64(fresh) / float64(warm)
-	if ratio >= 10 {
-		t.Errorf("the fresh process's first read took %s and a warm read takes %s, %.1f times as long: not the same order",
-			fresh.Round(time.Millisecond), warm.Round(time.Millisecond), ratio)
+	if len(warm) == 0 {
+		t.Fatal("the warm read ran no statement of the stored facts, so the two reads compare nothing")
 	}
-	t.Logf("after %d reads served, a warm read of %s's board took %s; a fresh process's first read of the same board took %s, %.2f times the warm one",
-		served, fixture.Project, warm.Round(100*time.Microsecond), fresh.Round(100*time.Microsecond), ratio)
+	if !slices.Equal(fresh, warm) {
+		t.Errorf("the fresh process's first read runs the statements of the stored facts\n%s\nand a warm read\n%s\nwant the same statements: a process holds no facts between calls",
+			strings.Join(fresh, "\n---\n"), strings.Join(warm, "\n---\n"))
+	}
+	t.Logf("after %d reads served, a warm read of %s's board ran %d statements of the stored facts in %s; a fresh process's first read of the same board ran %d in %s",
+		boardWarmReads, fixture.Project, len(warm), warmTook.Round(100*time.Microsecond), len(fresh), freshTook.Round(100*time.Microsecond))
 }
 
 // sourceHit is one line one search matched.
@@ -659,26 +707,42 @@ func searchSource(t *testing.T, files []string, want, with *regexp.Regexp) ([]so
 
 // boardReadPathFiles is every file that holds a function the board's GET runs below the router:
 //
-//   - legion_board.go is the handler, the reads it makes and the body it writes, the read of the
-//     phase work of the issues its tree walk climbs onto among them (readPhaseWork);
-//   - legionfacts/store.go holds Read, the one read of the stored rows;
-//   - legionfacts/close.go and legion/metrics/grow.go are the close of each open part of a row at
-//     the read's own clock (boardCloseFiles), the one computation the read makes;
-//   - the legion package's own files hold every rule the board calls: the settings read, the
-//     column an issue stands in, why a card waits, and the tree walk.
+//   - the api package's own files, the handler, the reads it makes and the body it writes among
+//     them (legion_board.go, and legion_board_json.go's encoding of each issues entry), the read
+//     of the phase work of the issues its tree walk climbs onto as well (readPhaseWork);
+//   - the legion package's own files, every rule the board calls: the settings read, the column an
+//     issue stands in, why a card waits and its place in the waiting line (waiting_line.go), and
+//     the tree walk;
+//   - legionfacts/store.go, which holds ReadOpen and ReadShownClosed, the board's two reads of the
+//     stored rows, and legionfacts/stored_numbers.go, the decode of a read row's hours and growth;
+//   - legionfacts/close.go and legion/metrics/grow.go, the close of each open part of a row at the
+//     read's own clock (boardCloseFiles), the one computation the read makes.
 //
-// The legion package is taken whole rather than by the files the board reaches, so the search is
-// wider than the path rather than narrower.
-var boardReadPathFiles = append([]string{
-	"legion_board.go",
-	"../legionfacts/store.go",
-	"../legion/board_rules.go",
-	"../legion/phase_work.go",
-	"../legion/session_title.go",
-	"../legion/state.go",
-	"../legion/store.go",
-	"../legion/tree.go",
-}, boardCloseFiles...)
+// The api and legion packages are listed from the packages themselves (packageGoFiles) and taken
+// whole rather than by the files the board reaches, so the search is wider than the path rather
+// than narrower, and a file either package gains is searched once it exists.
+func boardReadPathFiles(t *testing.T) []string {
+	t.Helper()
+	files := append(packageGoFiles(t, "."), packageGoFiles(t, "../legion")...)
+	files = append(files, "../legionfacts/store.go", "../legionfacts/stored_numbers.go")
+	return append(files, boardCloseFiles...)
+}
+
+// packageGoFiles is every Go file of the package in dir that go build compiles, its test files
+// left out, each as a path from this package's directory. go/build reads the directory and the
+// files' build constraints itself, and starts no go command.
+func packageGoFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	listed, err := build.ImportDir(dir, 0)
+	if err != nil {
+		t.Fatalf("list the Go files of the package in %s: %v", dir, err)
+	}
+	files := make([]string, 0, len(listed.GoFiles))
+	for _, name := range listed.GoFiles {
+		files = append(files, filepath.Join(dir, name))
+	}
+	return files
+}
 
 // boardCloseFiles is the close of a stored row at the read's own clock (legionfacts.Row.At and
 // metrics.IssueFacts.Grown), the one place on the read path a length of time may meet a stored
@@ -711,13 +775,15 @@ var (
 // search over code that does hold what the search looks for, so finding nothing on the read path
 // is a reading and not an empty answer.
 func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
+	files := boardReadPathFiles(t)
+	t.Logf("the board's read path: %d files, %s", len(files), strings.Join(files, ", "))
 	// 1. A call that computes a fact.
-	hits, lines := searchSource(t, boardReadPathFiles, computesAFact, nil)
+	hits, lines := searchSource(t, files, computesAFact, nil)
 	for _, hit := range hits {
 		t.Errorf("the board's read path computes a fact: %s", hit)
 	}
 	t.Logf("search 1, a call into the fact computation (%s): %d lines of %d files read, %d matched",
-		computesAFact, lines, len(boardReadPathFiles), len(hits))
+		computesAFact, lines, len(files), len(hits))
 	control, controlLines := searchSource(t, []string{"../legionfacts/facts.go"}, computesAFact, nil)
 	if len(control) == 0 {
 		t.Errorf("the control found no call in legionfacts/facts.go, which computes the facts, so search 1 proves nothing")
@@ -728,13 +794,13 @@ func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
 	t.Logf("search 1's control read %d lines and matched %d", controlLines, len(control))
 
 	// 2. Elapsed time added to a stored value, anywhere but the close.
-	hits, lines = searchSource(t, boardReadPathFiles, elapsedTime, storedValue)
+	hits, lines = searchSource(t, files, elapsedTime, storedValue)
 	for _, hit := range hits {
 		if !slices.Contains(boardCloseFiles, hit.file) {
 			t.Errorf("the board's read path adds elapsed time to a stored value outside the close: %s", hit)
 		}
 	}
-	elapsed, _ := searchSource(t, boardReadPathFiles, elapsedTime, nil)
+	elapsed, _ := searchSource(t, files, elapsedTime, nil)
 	t.Logf("search 2, elapsed time on a line that names a stored fact (%s, with %s): %d lines read, %d lines make a length at all, %d of them name a stored fact",
 		elapsedTime, storedValue, lines, len(elapsed), len(hits))
 	closing := 0

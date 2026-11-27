@@ -1,0 +1,251 @@
+{
+  "type": "snapshot",
+  "sub": "legion-1",
+  "seq": "41",
+  "changed_at": "2026-10-02T23:59:00Z",
+  "body": {
+    "project": "ACME",
+    "header": {
+      "slots_in_use": 1,
+      "slot_cap": 3,
+      "p0_holders": null,
+      "trees": 2,
+      "queue_length": 1,
+      "read_at": "2026-10-02T23:59:30Z",
+      "read_ok": true,
+      "read_error": null,
+      "facts_updated_at": "2026-10-02T18:00:00Z",
+      "facts_cursor_age_seconds": 12
+    },
+    "columns": [
+      {
+        "id": "queue",
+        "label": "Queue",
+        "cards": [
+          {
+            "key": "ACME-3",
+            "title": "The queued root",
+            "priority": 2,
+            "phase": "admitted",
+            "phase_since": "2026-10-02T21:00:00Z",
+            "slot": null,
+            "waiting_place": 1,
+            "roles": [],
+            "blocked_by": [],
+            "waiting_on": null,
+            "slot_use": null,
+            "waiting": {
+              "reason": "ready",
+              "since": "2026-10-02T21:00:00Z",
+              "blocked_by": []
+            },
+            "tree": "ACME-3",
+            "children": 0
+          }
+        ]
+      },
+      {
+        "id": "design",
+        "label": "Design",
+        "cards": []
+      },
+      {
+        "id": "planning",
+        "label": "Planning",
+        "cards": []
+      },
+      {
+        "id": "implementing",
+        "label": "Implementing",
+        "cards": [
+          {
+            "key": "ACME-2",
+            "title": "The implementer's child",
+            "priority": 1,
+            "phase": "implementing",
+            "phase_since": "2026-10-02T21:00:00Z",
+            "slot": 0,
+            "waiting_place": null,
+            "roles": [
+              "implementer"
+            ],
+            "blocked_by": [],
+            "waiting_on": null,
+            "slot_use": "working",
+            "waiting": null,
+            "tree": "ACME-1",
+            "children": 0
+          }
+        ]
+      },
+      {
+        "id": "testing",
+        "label": "Testing",
+        "cards": []
+      },
+      {
+        "id": "reviewing",
+        "label": "Reviewing",
+        "cards": []
+      },
+      {
+        "id": "accepting",
+        "label": "Accepting",
+        "cards": []
+      },
+      {
+        "id": "retro",
+        "label": "Retro",
+        "cards": []
+      },
+      {
+        "id": "merging",
+        "label": "Merging",
+        "cards": []
+      },
+      {
+        "id": "awaiting_children",
+        "label": "Waiting on children",
+        "cards": [
+          {
+            "key": "ACME-1",
+            "title": "The parent waiting on its child",
+            "priority": 1,
+            "phase": "awaiting_children",
+            "phase_since": "2026-10-02T20:00:00Z",
+            "slot": null,
+            "waiting_place": null,
+            "roles": [],
+            "blocked_by": [
+              "ACME-2"
+            ],
+            "waiting_on": null,
+            "slot_use": null,
+            "waiting": {
+              "reason": "blocked",
+              "since": "2026-10-02T20:00:00Z",
+              "blocked_by": [
+                "ACME-2"
+              ]
+            },
+            "tree": "ACME-1",
+            "children": 0
+          }
+        ]
+      },
+      {
+        "id": "awaiting_person",
+        "label": "Waiting on a person",
+        "cards": []
+      },
+      {
+        "id": "held",
+        "label": "Held",
+        "cards": []
+      }
+    ],
+    "issues": {
+      "ACME-1": {
+        "opened_at": "2026-10-02T16:00:00Z",
+        "closed_at": null,
+        "hours_by_phase": {
+          "design": 2
+        },
+        "work_hours": 2,
+        "review_rounds": 0,
+        "root_key": "ACME-1",
+        "tree_depth": 0,
+        "slot_hours": 0,
+        "waiting_reason": "blocked",
+        "work_first_at": "2026-10-02T16:00:00Z",
+        "work_last_at": "2026-10-02T20:00:00Z",
+        "updated_at": "2026-10-02T23:40:00Z",
+        "as_of": null,
+        "growth": null
+      },
+      "ACME-2": {
+        "opened_at": "2026-10-02T18:00:00Z",
+        "closed_at": null,
+        "hours_by_phase": {
+          "design": 1.5,
+          "implementing": 3
+        },
+        "work_hours": 4.5,
+        "review_rounds": 0,
+        "root_key": "ACME-1",
+        "tree_depth": 1,
+        "slot_hours": 3,
+        "waiting_reason": "",
+        "work_first_at": "2026-10-02T19:00:00Z",
+        "work_last_at": "2026-10-03T00:00:00Z",
+        "updated_at": "2026-10-02T23:50:00Z",
+        "as_of": "2026-10-03T00:00:00Z",
+        "growth": {
+          "hours_by_phase": {
+            "implementing": 1
+          },
+          "work_hours": 1,
+          "slot_hours": 1,
+          "work_last_at": 1
+        }
+      },
+      "ACME-3": {
+        "opened_at": "2026-10-02T21:00:00Z",
+        "closed_at": null,
+        "hours_by_phase": {},
+        "work_hours": 0,
+        "review_rounds": 0,
+        "root_key": "ACME-3",
+        "tree_depth": 0,
+        "slot_hours": 0,
+        "waiting_reason": "ready",
+        "work_first_at": null,
+        "work_last_at": null,
+        "updated_at": "2026-10-02T23:45:00Z",
+        "as_of": null,
+        "growth": null
+      },
+      "ACME-4": {
+        "opened_at": "2026-10-01T18:00:00Z",
+        "closed_at": "2026-10-02T18:00:00Z",
+        "hours_by_phase": {
+          "implementing": 5,
+          "reviewing": 1.25
+        },
+        "work_hours": 6.25,
+        "review_rounds": 1,
+        "root_key": "ACME-1",
+        "tree_depth": 1,
+        "slot_hours": 5,
+        "waiting_reason": "",
+        "work_first_at": "2026-10-01T19:00:00Z",
+        "work_last_at": "2026-10-02T18:00:00Z",
+        "updated_at": "2026-10-02T18:00:00Z",
+        "as_of": null,
+        "growth": null
+      }
+    },
+    "settings": {
+      "max_slots": 3
+    },
+    "computed_at": "2026-10-03T00:00:00Z"
+  },
+  "revs": {
+    "items": {},
+    "maps": {
+      "issues": {
+        "ACME-1": "cef7eb85b6a72ad9",
+        "ACME-2": "23ce2bf19a9d8e48",
+        "ACME-3": "976ecb9974907ebb",
+        "ACME-4": "e38136cd197accf5"
+      }
+    },
+    "counts": {},
+    "fields": {
+      "columns": "882758ed5156a1a2",
+      "header": "ea0562893a0b2073",
+      "project": "5d73b467ffbc21f7",
+      "settings": "3e3a6a1dba64899c"
+    }
+  }
+}

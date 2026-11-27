@@ -614,7 +614,8 @@ const BoardReadSettings = `set local enable_seqscan = off; set local plan_cache_
 // of them open, a read that tested the cards and the trees on every open row took 119 to 168 ms
 // with 200 cards in 60 trees and 417 to 482 ms with 1,000 cards in 300 trees, where the three arms
 // in one statement took 7 to 9 ms and 11 to 16 ms under either plan.
-// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds the two reads to 20 ms.
+// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds the two reads to that shape
+// under the generic plan, and k14 measures their time at root R14's size.
 //
 // The planner keeps the open arm on the index only because ReadOpen runs it with sequential scans
 // off (readByIndex): priced by itself, a scan of the whole table ties with the range once the open

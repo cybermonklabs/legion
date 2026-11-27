@@ -376,6 +376,13 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// order would have to be taught), and the header and the settings the daemon reports each
 	// move as a block.
 	//
+	// The header's revision leaves out its facts_cursor_age_seconds, as the body's computed_at is
+	// left out of every delta: the age is the time since the facts consumer's oldest cursor moved,
+	// measured at the read (legionfacts.CursorAge), so it moves with the clock on every recompute
+	// in a new second, and a revision that kept it would send the header on each of them though
+	// nothing the board shows moved. The GET answers the age, and a header that is sent for
+	// anything else carries the age of the recompute that sent it.
+	//
 	// The issues map is sent entry by entry, by issue key, because the facts consumer writes one
 	// issue's row per change: a whole field would resend every issue's stored facts whenever one
 	// issue's moved, and a project holds a row for every issue Legion ever worked.
@@ -403,7 +410,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		body: reflect.TypeFor[legionBoardResponse](),
 		maps: map[string][]string{"issues": nil},
 		whole: map[string][]string{
-			"project": nil, "header": nil, "columns": nil, "settings": nil,
+			"project": nil, "header": {"facts_cursor_age_seconds"}, "columns": nil, "settings": nil,
 		},
 		out:   []string{"computed_at"},
 		reads: viewReadsLegion,
