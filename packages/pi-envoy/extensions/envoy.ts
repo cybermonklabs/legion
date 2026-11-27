@@ -2517,9 +2517,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
                 origin: "outside",
               })
             ).catch((error: unknown) =>
-              logger.warn(`envoy: Oh My Pi dropped the message ${turn.messageId} before its turn began`, {
-                error: messageFor(error),
-              })
+              logger.warn(
+                `envoy: Oh My Pi dropped the message ${turn.messageId} before its turn began`,
+                {
+                  error: messageFor(error),
+                }
+              )
             );
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's

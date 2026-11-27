@@ -137,7 +137,10 @@ function pane(
   process.env.LEGION_BOOT_TOKEN = fixtureSecret("boot");
   process.env.LEGION_STATE_DIR = STATE_DIR;
   const fixture = (name: string) =>
-    readFileSync(path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name), "utf8");
+    readFileSync(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name),
+      "utf8"
+    );
   const json = { headers: { "content-type": "application/json" } };
   const daemon = createLegionDaemonClient("http://daemon.test", {
     pluginContract: 60,

@@ -842,7 +842,9 @@ test("a regain whose claims/task fails after the host's signal aborted writes no
   expect(control.reads).toHaveLength(2);
   expect(control.steps).not.toContain("stop");
   expect(control.lines).toHaveLength(1);
-  expect(control.lines[0]).toStartWith(`claims/task after role ${claimToken} was reclaimed failed;`);
+  expect(control.lines[0]).toStartWith(
+    `claims/task after role ${claimToken} was reclaimed failed;`
+  );
 });
 
 // The heartbeat regains the role, and the host stops while the regain's `claims/task` is on the

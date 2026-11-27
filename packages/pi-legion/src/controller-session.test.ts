@@ -110,7 +110,8 @@ function daemonLaunchedController(answers: {
       }
       if (route === "/legion/v1/claims/ready" && answers.ready !== undefined)
         return answers.ready();
-      if (route === "/legion/v1/claims/task") return Response.json({ task: START_TASK, finished: 3 });
+      if (route === "/legion/v1/claims/task")
+        return Response.json({ task: START_TASK, finished: 3 });
       if (route === "/legion/v1/claims/take") {
         return new Response(daemonFixture("take-accepted.json"), {
           headers: { "content-type": "application/json" },
