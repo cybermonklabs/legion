@@ -3,7 +3,8 @@ package oidc
 // keys_no_spacing_test.go holds a Keys with no FailureSpacing, as an IssuerSet made with no spacing
 // has, to a read of the key set at every Key: of a key set that cannot be read, of a set held past
 // Lifetime + MinRefresh whose key set then fails, and for a key id the set does not hold while its
-// key set fails.
+// key set fails. It also holds spacedCalls, the count of Key calls the first two of these tests
+// make and of tokens issuers_test.go's spacing rows verify.
 
 import (
 	"context"

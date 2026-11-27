@@ -794,12 +794,10 @@ func (p *idleRigRoleProcess) holdStop(delay time.Duration) {
 	os.Exit(0)
 }
 
-// idleRigRedialWait bounds how long a role process redials a daemon that went, and only between
-// dials that fail (redial): the first dial that fails once it has run out ends the redial. A dial
-// that connects and is never acked waits with no bound, as dial waits for the ack with no
-// deadline. It is longer than any restart of the rig takes, and short of the test binary's own
-// deadline. Only the launcher's stop ends a process sooner, which is how every process of a pod
-// ends.
+// idleRigRedialWait bounds how long a role process redials a daemon that went (redial, which
+// checks it only between dials that fail): longer than any restart of the rig takes, and short of
+// the test binary's own deadline. Only the launcher's stop ends a process sooner, which is how
+// every process of a pod ends.
 const idleRigRedialWait = 5 * time.Minute
 
 // redial dials the worker stream again with the same hello once the daemon dropped it, as the
