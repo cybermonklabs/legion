@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   type CIResultsStack,
+  DISPATCH_HOST,
   type JobRun,
   startCIResultsStack,
   useCIResultsStackDirectory,
@@ -47,6 +48,22 @@ const FIXTURES = join(import.meta.dir, "..", "..", "test", "fixtures", "ci-repor
 const SPEC = join(FIXTURES, "spec");
 /** The files of a commit that does not hold the second check of the approved list. */
 const SPEC_WITHOUT_SECOND = join(FIXTURES, "spec-without-the-second-check");
+/** The files of the rows of a grant that ends between two writes: the four checks of go-checks
+ *  in FOUR, of the tests TestProbe, TestSecondProbe, TestThirdProbe and TestFourthProbe, which
+ *  go-test-four-pass.jsonl, what `go test -json -count=1 -trimpath ./...` wrote for them, holds
+ *  passing. */
+const SPEC_FOUR = join(FIXTURES, "spec-four-checks");
+/** The four checks of SPEC_FOUR, in the order the step calls them: the order of their ids. */
+const FOUR = ["probe-a-passes", "probe-b-passes", "probe-c-passes", "probe-d-passes"] as const;
+/** The gate in front of each call of the step's CLI (test/gated-cli.ts): the first call runs at
+ *  once, and each later one waits for the row's `release`. */
+const GATED_CLI = join(import.meta.dir, "..", "..", "test", "gated-cli.ts");
+/** The line every refusal of either port of a broker is logged as (answer.RefusalMessage). */
+const REFUSAL_LINE = "broker: answer refused";
+/** What the CLI prints when the airlock's proxy refuses its CONNECT with 407: Bun gives it the
+ *  tunnel's status line alone, and not the airlock's code. */
+const TUNNEL_REFUSED_407 =
+  "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to Dispatch";
 
 /** The branch every run below is a push of: two segments, which the result entry's pattern
  *  `refs/heads/*` `/*` takes. */
@@ -856,5 +873,193 @@ describe.skipIf(!dispatchStackEnabled)(
       }
       expect(await rowsAt(checkout.sha)).toEqual([]);
     }, 120_000);
+
+    /** What one gated step did and left, as rows (b) and its control compare it. */
+    interface Gated {
+      /** The commit the step reported at. */
+      readonly sha: string;
+      /** The first call's exit status, read before any later call ran, and the rows stored then. */
+      readonly firstExit: string;
+      readonly storedFirst: string[];
+      /** How many result grants the row ended between the first call and the second. */
+      readonly grantsEnded: number;
+      readonly code: number;
+      readonly lines: string[];
+      /** For each line, whether its why starts with the code of a grant that is not live. */
+      readonly grantEnd: boolean[];
+      /** For each line, whether its why holds the CLI's own words for the airlock's 407 at the
+       *  CONNECT (dispatch-job-result.test.ts). */
+      readonly airlockWords: boolean[];
+      readonly counted: string | undefined;
+      /** Each call's exit status as its gate wrote it, in call order, "none" for a call that
+       *  wrote none. */
+      readonly exits: string[];
+      /** Each refusal the brokers logged after the first call. */
+      readonly refusals: Record<string, unknown>[];
+      /** The result writes Dispatch served after the first call. */
+      readonly posts: number;
+      readonly stored: string[];
+    }
+
+    /**
+     * The job's last step over the four passing checks of SPEC_FOUR, with test/gated-cli.ts in
+     * front of each call of the real CLI, all under the run's one result grant: the first write
+     * runs at once. Once it has ended and the second call waits, the row reads what is stored,
+     * takes a mark of the stack's logs, ends the run's result grant in the brokers' database when
+     * `endGrant` holds, and writes `release`, which lets the second call and every later one run.
+     */
+    async function gatedStep(name: string, checkRunId: number, endGrant: boolean): Promise<Gated> {
+      const checkout = checkoutOf(name, SPEC_FOUR);
+      const gates = join(work, "gates", name);
+      mkdirSync(gates, { recursive: true });
+      const step = lastStep(checkout, jobOf(checkout, checkRunId), "go-test-four-pass.jsonl", {
+        dispatchCli: `${process.execPath} ${GATED_CLI} ${DISPATCH_CLI}`,
+        env: { GATED_CLI_DIR: gates },
+      });
+      // The step's end, in words, which ends a wait for a file its gate will never write.
+      const stepEnded = step.then(
+        (reported) => `the step ended: ${JSON.stringify(reported)}`,
+        (error: unknown) => `the step failed: ${String(error)}`
+      );
+      // The gate's file `file` once the gate has written it, whole: the directory is watched
+      // before the one check, so a file written between the two is not missed, and the wait ends
+      // with the step.
+      const gateFile = async (file: string): Promise<string> => {
+        const path = join(gates, file);
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        const watcher = watch(gates, () => {
+          if (existsSync(path)) resolve();
+        });
+        watcher.on("error", reject);
+        if (existsSync(path)) resolve();
+        void stepEnded.then((why) =>
+          existsSync(path) ? resolve() : reject(new Error(`the gate wrote no ${file}: ${why}`))
+        );
+        try {
+          await promise;
+        } finally {
+          watcher.close();
+        }
+        return readFileSync(path, "utf8").trim();
+      };
+      const firstExit = await gateFile("1.exit");
+      await gateFile("2.waiting");
+      const storedFirst = described(await rowsAt(checkout.sha));
+      const mark = running().logMark();
+      const grantsEnded = endGrant ? await running().endResultGrants(checkRunId) : 0;
+      writeFileSync(join(gates, "release"), "");
+      const reported = await step;
+
+      // Each later call was refused at the CONNECT, which a broker logs, or written, which
+      // Dispatch logs; a log line is written as its call ends, which can be after the command that
+      // made the call exits, so the logs are read every 100 ms until they hold a line for each of
+      // the three calls, or for 2 s.
+      const resultsPath = `/api/v1/projects/${running().project}/results`;
+      const since = () => {
+        const lines = running().linesSince(mark);
+        return {
+          refusals: lines.brokers.flat().filter((record) => record.message === REFUSAL_LINE),
+          posts: lines.access.filter(
+            (line) => line.includes(" method=POST ") && line.includes(` path=${resultsPath} `)
+          ).length,
+        };
+      };
+      let seen = since();
+      for (
+        const until = Date.now() + 2_000;
+        seen.refusals.length + seen.posts < FOUR.length - 1 && Date.now() < until;
+        seen = since()
+      ) {
+        await Bun.sleep(100);
+      }
+      return {
+        sha: checkout.sha,
+        firstExit,
+        storedFirst,
+        grantsEnded,
+        code: reported.code,
+        lines: outcomes(reported),
+        grantEnd: reported.lines.map((line) => line.why.startsWith("GRANT_NOT_LIVE: ")),
+        airlockWords: reported.lines.map((line) => line.why.includes(TUNNEL_REFUSED_407)),
+        counted: stepAnswer(reported).counted,
+        exits: FOUR.map((_, i) => {
+          const exit = join(gates, `${i + 1}.exit`);
+          return existsSync(exit) ? readFileSync(exit, "utf8").trim() : "none";
+        }),
+        refusals: seen.refusals,
+        posts: seen.posts,
+        stored: described(await rowsAt(checkout.sha)),
+      };
+    }
+
+    // Task 2.3, row (b): a write after the run's result grant ended. The step's first write is
+    // stored; the row then ends the grant in the brokers' database, as its 15 minutes ending
+    // would, and lets the step go on. The broker that takes each later CONNECT refuses it 407
+    // GRANT_NOT_LIVE, nothing goes on to Dispatch, and ci-report prints the refusal on each of
+    // those checks' lines, naming the grant's end, and exits 1.
+    test("a write after the run's result grant ended is refused at the proxy, and the step prints that refusal on its check's line", async () => {
+      const gated = await gatedStep("grant-ends", 961, true);
+      const at = (check: string): string =>
+        `${check} pass job ${JOB} leg - attempt 1 at ${gated.sha}`;
+      expect({
+        ...gated,
+        refusals: gated.refusals.map(({ status, code, method, caller_class, host }) => ({
+          status,
+          code,
+          method,
+          caller_class,
+          host,
+        })),
+      }).toEqual({
+        sha: gated.sha,
+        firstExit: "0",
+        storedFirst: [at(FOUR[0])],
+        grantsEnded: 1,
+        code: 1,
+        lines: [
+          `${FOUR[0]} pass exit 0`,
+          `${FOUR[1]} pass exit 1`,
+          `${FOUR[2]} pass exit 1`,
+          `${FOUR[3]} pass exit 1`,
+        ],
+        grantEnd: [false, true, true, true],
+        airlockWords: [false, true, true, true],
+        counted: "1 results written, 3 calls failed",
+        exits: ["0", "1", "1", "1"],
+        refusals: [1, 2, 3].map(() => ({
+          status: 407,
+          code: "GRANT_NOT_LIVE",
+          method: "CONNECT",
+          caller_class: "airlock",
+          host: DISPATCH_HOST,
+        })),
+        posts: 0,
+        stored: [at(FOUR[0])],
+      });
+    }, 180_000);
+
+    // Row (b)'s control: the same gated step, and no grant ended. Each write is stored, no broker
+    // refuses a CONNECT, and the step exits 0: what row (b) reads of the refusals and of the
+    // stored rows comes from the grant's end, and not from the gate or the release.
+    test("the same gated step with its grant live writes each of its four results", async () => {
+      const gated = await gatedStep("grant-live", 962, false);
+      const at = (check: string): string =>
+        `${check} pass job ${JOB} leg - attempt 1 at ${gated.sha}`;
+      expect(gated).toEqual({
+        sha: gated.sha,
+        firstExit: "0",
+        storedFirst: [at(FOUR[0])],
+        grantsEnded: 0,
+        code: 0,
+        lines: FOUR.map((check) => `${check} pass exit 0`),
+        grantEnd: [false, false, false, false],
+        airlockWords: [false, false, false, false],
+        counted: "4 results written, 0 calls failed",
+        exits: ["0", "0", "0", "0"],
+        refusals: [],
+        posts: 3,
+        stored: FOUR.map(at),
+      });
+    }, 180_000);
   }
 );
