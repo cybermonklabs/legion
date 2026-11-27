@@ -661,22 +661,47 @@ func newerVersionAct(newer int, document string, asked int) string {
 }
 
 // ownDocumentEnded is what ended gate's wait on its ancestor's request when fact, an event of the
-// root's own document at the version registered or a later one, ended it (applyArtifact): a
-// person's approval, which opened the step on that approval; a person's changes request; or a
-// newer version.
-func ownDocumentEnded(root string, gate record.DesignGate, fact intake.DispatchArtifact) string {
+// root's own document at the version registered or a later one, ended it and left the row as
+// updated (applyArtifact): a person's approval, which opened the step on that approval; a person's
+// changes request; Dispatch's verdict that the approval of the root's own document stands, which
+// opened the step on it (dispatch://INFRA-6065); or a newer version, once it settled.
+func ownDocumentEnded(root string, gate, updated record.DesignGate, fact intake.DispatchArtifact) string {
 	step := gate.Step.OrSpec()
 	own := documentOf(root, step)
 	ended := waitEnded(root, step, *gate.Basis)
-	switch fact.Kind {
-	case intake.DispatchArtifactApproved:
+	switch {
+	case fact.Kind == intake.DispatchArtifactApproved:
 		return fmt.Sprintf("%s approved version %d of %s, the root's own document. That approval opened the %s step of %s and ended its wait on the ancestor's request. %s",
 			cmp.Or(fact.Actor.Name(), "A person"), fact.Version, own, step, root, ended)
-	case intake.DispatchArtifactChangesRequested:
+	case fact.Kind == intake.DispatchArtifactChangesRequested:
 		return changesAct(fact.Actor, fact.Version, own+", the root's own document", fact.Reason) + " " + ended + " " + stepClosed(root, step)
+	case record.GateOpen(updated):
+		approved := "the approval of " + own
+		if approval := updated.ApprovedByPerson(); approval != nil {
+			approved = fmt.Sprintf("the approval of version %d of %s", approval.Version, own)
+		}
+		return fmt.Sprintf("Dispatch reports %s, the root's own document, current for version %d. That approval opened the %s step of %s and ended its wait on the ancestor's request. %s",
+			approved, updated.LatestVersion, step, root, ended)
 	}
 	return fmt.Sprintf("Version %d of %s, the root's own document, is newer than version %d, which the step was registered at. %s %s",
-		fact.Version, own, gate.LatestVersion, ended, stepClosed(root, step))
+		updated.LatestVersion, own, rootVersionOf(gate), ended, stepClosed(root, step))
+}
+
+// rootVersionOf is the version of the root's own document gate's basis was registered at
+// (record.GateBasis.RootVersion), read on a basis written before the migration that added it as
+// classify.ApplyGateFact reads it: the latest version on a row in version mode, which no version of
+// its own document moved without ending the basis; on a row in hash mode the approved version of a
+// step open on the basis, and else the verdict's version, where the row entered hash mode.
+func rootVersionOf(gate record.DesignGate) int {
+	switch {
+	case gate.Basis != nil && gate.Basis.RootVersion > 0:
+		return gate.Basis.RootVersion
+	case gate.Verdict == nil:
+		return gate.LatestVersion
+	case gate.OnBasis() && gate.ApprovedVersion != nil:
+		return *gate.ApprovedVersion
+	}
+	return gate.Verdict.Version
 }
 
 // basisArtifact applies an event of an ancestor's document to the steps of other roots that name
