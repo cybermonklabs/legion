@@ -290,6 +290,7 @@ packages/envoy:
       - internal/dispatch/files                 # 40 s
       - internal/dispatch/graphstore            # 37 s
       - internal/dispatch/routes                # 25 s
+      - internal/dispatch/routefile
       - internal/dispatch/graphcensus           # 24 s
       - internal/dispatch/redeliver             # 22 s
       - internal/dispatch/identity              # 14 s
@@ -492,5 +493,6 @@ packages/envoy:
     cmd/spec-check: envoy-go-build
     listenerwire: envoy-go-build
     internal/wirecheck: envoy-go-build
+    cmd/dispatch-route-adopt: envoy-go-skips
   # The leg that runs a package no place names: envoy-go's last, the rest of the module.
   unlisted: envoy-go

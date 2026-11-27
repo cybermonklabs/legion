@@ -312,7 +312,7 @@ Each item below names a script, then what it proves.
   for `number_project`, `status`, `author`, `updated_since` and `keywords_only` in turn, `GET /api/v1/search` carrying the member answers the base build's own unnarrowed answer, which is the hazard this proof records;
   `GET /api/v1/search/results` carrying it answers 404 `NOT_FOUND` there;
   this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
-  Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
+  Deleting `GET /api/v1/search/results`'s route file (`route_api_v1_search_results+get.go`) leaves neither build serving the path, which is the negative control
 
 - `hook-prompt-two-builds.sh`
 

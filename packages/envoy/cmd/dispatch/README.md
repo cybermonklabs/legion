@@ -246,7 +246,7 @@ The broker also narrows any trade that asks for `read`: that token keeps the ses
 A `read-person` token that names its person holds the `person` scope alone, never `approve` or `p0`, and every other read-only broker token holds no OAuth scope.
 A personal token minted with `read` is read-only too (`/api/v1/me/agent-tokens`, below).
 Dispatch serves a read-only token on the reads of its read class and on no other route.
-`readClasses` (`internal/dispatch/api/read_classes.go`) gives every GET row of the route table one class: a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
+Every GET route's declaration states one read class (`routeDecl.Read`, `internal/dispatch/api/read_classes.go` for what a class is): a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
 `register` refuses to mount a table with a GET row that has no class.
 Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 Every read but `GET /api/v1/whoami` answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`), naming the cut: this build answers no read at a past time, and it does not answer one with the present.
@@ -294,7 +294,7 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
 It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with the scopes `person` and `approve`, never `p0`, and marks its credential approve-only (`model.Credential.ApproveOnly`).
-Dispatch serves it on the routes its approve list names (`approveScopeRoutes` in `internal/dispatch/api/routes_table.go`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Dispatch serves it on the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
 Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseApproveOnlyToken`), before the route's scopes and everything else it does.
 The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
 A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
@@ -330,8 +330,8 @@ One function holds that test: `access.CredentialCovers` (`internal/dispatch/acce
 Each caller passes it the visibility of the target's project (`projects.visibility`), which it reads in the statement or the transaction that reads that project, before the route writes anything.
 A write to a private project that the credential does not name writes nothing.
 The caller gets exactly the answer, in status, code and message, that it gets at the same check for a target that does not exist, so it cannot tell the two apart.
-Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
-a `GET` row declares nothing), in four classes:
+Every mutating route declares what its write belongs to (the `WriteClass` of its declaration, in its file under `internal/dispatch/api`;
+a `GET` route declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
 *a project the body names* — the issue create and the question of an answer run (`POST /api/v1/going/requests`), whose project the address does not name, so `createIssue` and `createGoingRequest` each make the same check once that project is settled;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by, and, for a delivery sent to a `session:` route, one sent to a session the listener names it a successor of, which a session that replaced that session answers it by), and the caller-private `me` rows;
@@ -4711,6 +4711,16 @@ the docs site's HTTP API reference is generated from it.
 `envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
+Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it), holding one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`).
+A branch made before routes moved into files adopts that layout in its merge of main with the adopter, run from `packages/envoy` of a checkout that holds it, with the branch's worktree on a clean tree:
+
+```sh
+go run ./cmd/dispatch-route-adopt -C <the branch's worktree>             # merges main: origin/main, or main@origin under jj
+go run ./cmd/dispatch-route-adopt -C <the branch's worktree> <revision>  # or merges that revision
+```
+
+It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge or holds a change, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent) and what they cost.
+It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go` and `routes_shapes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
 The list below is a summary.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
 /v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
@@ -5483,7 +5493,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
-  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); its route file's description (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
   A `parent` may be an issue of any project, under the refusals a create meets, and one that would make the issue its own ancestor is `409 PARENT_INPUT`;
   a parent of another project passes on no repository, components or `legion` label, as on creation.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
@@ -5751,7 +5761,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/comments/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit a comment body, its author alone (`403 NOT_AUTHOR`).
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
   An edit that would leave the comment's margin record or its document's margin past its bound (above) and bigger is `413 CAP_EXCEEDED`.
   `blocks` (`[{id, from}]`, each block id the editor carried and where its span starts in `body`, in UTF-16 code units, in body order) with `base_revision` (the revision `.../blocks` answered) keeps each id on the new block its span starts in;
   with a `base_revision` that is no longer the comment's, or without `blocks`, the new blocks take ids by their text.
@@ -5760,12 +5770,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/comments/{id}` (DELETE; cookie, trusted header, or bearer)
 
   Delete a comment, its author alone (`403 NOT_AUTHOR`): the comment keeps its place, and no read of it gives its body again.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
 
   The bodies an edit or a delete of this comment replaced, newest first: a delete writes an entry of its own, and a deleted comment's entries carry no body.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
@@ -5811,17 +5821,17 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/messages/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit an issue message's body, its author alone (`403 NOT_AUTHOR`).
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/messages/{id}` (DELETE; cookie, trusted header, or bearer)
 
   Delete an issue message, its author alone (`403 NOT_AUTHOR`): the message keeps its place, and no read of it gives its body again.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/messages/{id}/history?before=&session=` (GET; cookie, trusted header, or bearer)
 
   The bodies an edit or a delete of this message replaced, newest first: a delete writes an entry of its own, and a deleted message's entries carry no body.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/deploys` (POST; cookie, trusted header, or bearer)
 
