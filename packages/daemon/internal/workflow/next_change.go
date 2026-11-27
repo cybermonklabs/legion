@@ -60,7 +60,7 @@ func ChangeInPlace(issue record.Issue) ChangePlace {
 // The one hard guard, which is no count: a next change never starts while another one of the same
 // issue is open (Issue.NextChange).
 func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect, place ChangePlace) error {
-	if issue.NextChange != 0 {
+	if record.OnNextChange(issue) {
 		e.logOnCommit(ctx, "workflow: no next change starts while one of the issue is open", "issue", issue.Key,
 			"generation", issue.Generation, "open", issue.NextChange)
 		return nil

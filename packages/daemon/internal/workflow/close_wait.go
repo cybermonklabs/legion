@@ -70,7 +70,7 @@ func (e *Engine) closeWaitFrom(ctx context.Context, tx pgx.Tx, issue record.Issu
 	facts := record.CloseFacts{
 		Repo: issue.Repo, Merge: issue.Merge, Entered: entered, Beneath: record.OpenBeneath(issue, members), Read: read,
 		Generation: issue.Generation, Production: check, ProductionOn: e.checkRole() != "", Defects: defects,
-		OpenChange: issue.NextChange != 0,
+		OpenChange: record.OnNextChange(issue),
 	}
 	view := closeView{facts: facts, members: members}
 	if read != nil && read.Failure == "" && len(read.Answer) > 0 {
@@ -452,7 +452,7 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 		return intake.Result{}, err
 	}
 	if issue.Phase != phase.Verifying {
-		if issue.NextChange != 0 {
+		if record.OnNextChange(*issue) {
 			return intake.Result{}, e.judgeOpenChange(ctx, tx, *issue, nil)
 		}
 		return intake.Result{}, nil
@@ -522,7 +522,7 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	}
 	// An open next change ends when each of its reasons is resolved, a check's by its pass, so a
 	// result's event reads the checks for it as for an issue in verifying (judgeOpenChange).
-	if issue.NextChange != 0 {
+	if record.OnNextChange(*issue) {
 		return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
 	}
 	return intake.Result{}, nil
@@ -1118,7 +1118,7 @@ func (e *Engine) closesByChecks(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return false, nil
 	}
-	if issue.Phase == phase.Verifying || issue.NextChange != 0 {
+	if issue.Phase == phase.Verifying || record.OnNextChange(issue) {
 		return true, nil
 	}
 	rows, err := e.store.PullRequestsOf(ctx, tx, []string{issue.Key})

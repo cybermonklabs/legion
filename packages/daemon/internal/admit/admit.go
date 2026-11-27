@@ -1808,9 +1808,14 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	// Every re-admission opens a new run of the tree the issue roots from here on: a root's own
 	// comes back through ClearTreeGeneration below, and a member that leaves its tree starts its
-	// own tree's run at its new generation (record.Postgres.PutIssue). The copy says so too.
+	// own tree's run at its new generation (record.Postgres.PutIssue). The copy says so too. A next
+	// change the issue was on is of the generation this leaves, and so is the merger's completion
+	// that change waited for, so both go with it: NextChange names a generation no merge of the new
+	// one can end, and MergerCompletionOwed, which carries no generation, would let the merger
+	// report in verifying for a merge that is not this generation's.
 	stored.Generation++
 	stored.TreeGeneration = stored.Generation
+	stored.NextChange, stored.MergerCompletionOwed = 0, false
 	stored.Status, stored.DispatchStatus = "todo", "todo"
 	stored.Rank = o.Rank
 	stored.Priority = o.Priority
