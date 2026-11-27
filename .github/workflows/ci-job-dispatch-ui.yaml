@@ -48,17 +48,19 @@ jobs:
       # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`,
       # `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` and
       # `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four), and
-      # ./legion-api, which the dashboard imports as types only
+      # ./legion-api. The SPA's sources import ./legion-api as types only
       # (`packages/dispatch/web/src/features/dashboard/phase-track.ts#LegionPhase` and
-      # `packages/dispatch/web/src/features/dashboard/role-words.ts#LegionClaimState`), so its tsc
-      # program compiles it, the SPA build removes the import and vite needs no alias for it. The
-      # script builds that fifth entry because
-      # packages/dispatch/e2e/__tests__/contracts-build-entries.test.ts asks for the dist/ file of
-      # every contracts subpath the dashboard and the proof editor import. So the build compiles
-      # no module outside the set the dashboard's tsc programs compile, which is what this job's
-      # filter lists. package.json allows no comment, so this is where the list is explained: a
-      # new import of a contracts subpath by packages/dispatch adds its entry to that script, or
-      # Playwright's Node resolution fails on the missing dist/ file. The package's own
+      # `packages/dispatch/web/src/features/dashboard/role-words.ts#LegionClaimState`), so the
+      # SPA build removes the import and vite needs no alias for it. The e2e seed imports
+      # `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` as a value, which
+      # Playwright's Node run reads from dist/legion-api.js, and that is why the script builds
+      # this fifth entry; packages/dispatch/e2e/__tests__/contracts-build-entries.test.ts holds
+      # the script to every contracts subpath the dashboard and the proof editor import. The
+      # dashboard's tsc program compiles ./legion-api through those imports, so the build
+      # compiles no module outside the set the dashboard's tsc programs compile, which is what
+      # this job's filter lists. package.json allows no comment, so this is where the list is
+      # explained: a new import of a contracts subpath by packages/dispatch adds its entry to that
+      # script, or Playwright's Node resolution fails on the missing dist/ file. The package's own
       # `bun run test` below runs the same script again (build:contracts).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build:dispatch

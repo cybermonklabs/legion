@@ -108,7 +108,8 @@ LISTED = [
      'these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, '
      '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` '
      'and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias four of the entries the dashboard imports to the same sources, '
-     "and the dashboard imports a fifth, ./legion-api, as types only, which its tsc program compiles"),
+     "and the dashboard imports a fifth, ./legion-api, which its tsc program compiles: the SPA's sources take its types alone, "
+     "and the e2e seed takes `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` as a value, which Playwright's Node run reads from dist/legion-api.js"),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
@@ -121,9 +122,10 @@ LISTED = [
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
     # which bundles the five entries the dashboard imports: the four vite aliases (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
     # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"`
-    # and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) and ./legion-api, which the dashboard
-    # imports as types only and its tsc program compiles, and so compiles nothing outside
-    # dispatch_ui's set. A change that breaks the package's full `build` fails the contracts
+    # and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) and ./legion-api, whose types the
+    # SPA's sources import and whose `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` the e2e seed imports as a
+    # value, read from dist/legion-api.js by Playwright's Node run; the dashboard's tsc program compiles it, and so the build
+    # compiles nothing outside dispatch_ui's set. A change that breaks the package's full `build` fails the contracts
     # job's own `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
