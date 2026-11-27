@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -203,9 +204,9 @@ func TestABootRelaunchesRecordedDeathsAheadOfTheUnfinishedLaunches(t *testing.T)
 // call the boot makes (relaunchUnfinished), whether its orphan reconciliation succeeded or not:
 // reconciled, the deaths join the pass over the unfinished launches, and unreconciled, their pass
 // runs at once all the same, alone. Each relaunch of the pass waits at a place of its own, one
-// turn each. The order tests before this one called launchUnfinished and handed it the deaths
-// themselves, so none failed when relaunchUnfinished left its deaths out of the pass, and the
-// relaunch the previous daemon raised for each, which its restart lost, was lost again
+// turn each. The other tests of the boot's relaunch call launchUnfinished and hand it the deaths
+// themselves, so none fails if relaunchUnfinished leaves its deaths out of the pass, and the
+// relaunch the previous daemon raised for each, which its restart lost, is lost again
 // (dispatch://INFRA-5472). This test holds that each relaunch takes one turn, not which goes
 // first: the death's place ahead of the unfinished launches is
 // TestABootRelaunchesRecordedDeathsAheadOfTheUnfinishedLaunches's to hold (dispatch://INFRA-5682).
@@ -230,16 +231,13 @@ func TestABootRelaunchGivesEachRecordedDeathATurnInItsPass(t *testing.T) {
 			r := newBootRig(t, tc.unfinished, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
 			dead := r.claims[tc.unfinished].Token
 			deaths := recordedDeaths(r.claims)
-			if len(deaths) != 1 || deaths[0] != dead {
+			if !slices.Equal(deaths, []claim.Token{dead}) {
 				t.Fatalf("the boot reads the recorded deaths %v, want %s alone", deaths, dead)
 			}
 			if _, out := r.pacer.Join(wakepace.Second).Let(); !out {
 				t.Fatal("the fresh pacer's first place waits, want it let out at its join")
 			}
-			var tokens []claim.Token
-			if tc.unfinished > 0 {
-				tokens = unfinishedOf(r.claims[:tc.unfinished])
-			}
+			tokens := unfinishedOf(r.claims[:tc.unfinished])
 			// The goroutine relaunchUnfinished starts sweeps again only while a launch is left to
 			// retry, and none is, so it returns after its first pass; the ticker it builds for
 			// those sweeps needs a cadence all the same.
