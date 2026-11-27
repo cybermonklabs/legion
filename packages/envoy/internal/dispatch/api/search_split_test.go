@@ -483,6 +483,7 @@ func searchSplitScript(out string, runs int, subjects searchSplitSubjects, list 
 // with benchtime.Open as well, and subjects.json must name the same ones: that is what holds
 // subjects.sql to benchtime's rules before it reads production.
 func TestSearchReadSplitScript(t *testing.T) {
+	t.Parallel()
 	out := os.Getenv(searchSplitOutEnv)
 	if out == "" {
 		t.Skip(searchSplitOutEnv + " must name the directory the split's scripts are written to; CI leaves it unset")
@@ -1092,6 +1093,7 @@ type searchSplitKey struct {
 //
 // Everything is printed before anything fails, so a failing report is still a whole report.
 func TestSearchReadSplitReport(t *testing.T) {
+	t.Parallel()
 	in := os.Getenv(searchSplitInEnv)
 	if in == "" {
 		t.Skip(searchSplitInEnv + " must name a directory TestSearchReadSplitScript and psql filled; CI leaves it unset")

@@ -40,3 +40,13 @@ func ShortenCoverageFillTimeoutForTest(timeout time.Duration) {
 func FailCoverageFillsForTest(failures int) {
 	coverageFillFailures.Store(int64(failures))
 }
+
+// PaceIntervalForTest is the interval of d's pace (Deps.pace, which Paced sets), and 0 for a d with
+// no pace. Tests in package api read it to see the background drain back off from a throttled call
+// past the floor it starts at; they cannot reach the unexported field.
+func (d Deps) PaceIntervalForTest() time.Duration {
+	if d.pace == nil {
+		return 0
+	}
+	return d.pace.Interval()
+}

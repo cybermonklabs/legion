@@ -230,6 +230,7 @@ func requireAnswers(t *testing.T, database *store.Store, identity string, want e
 // - add up to the same at both sizes; no state reads more than coverageDeltaBound + 1 delta rows,
 // and each reads every delta row it holds up to that.
 func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
+	t.Parallel()
 	const n = 20
 	for _, state := range coverageRouteStates {
 		t.Run(state.name, func(t *testing.T) {
@@ -313,6 +314,7 @@ func unkeyedScansOfGrowingTables(t *testing.T, plan []byte, tables map[string]st
 // the two tables of one row through an index condition (explaintest.ScansWithoutIndexCond), for
 // the configured identity and for none.
 func TestTheCoverageReadScansNoTableWithoutAnIndexCondition(t *testing.T) {
+	t.Parallel()
 	for _, state := range coverageRouteStates {
 		t.Run(state.name, func(t *testing.T) {
 			database := seedRouteState(t, state, 10)
@@ -367,6 +369,7 @@ func (r *sentRecorder) take() []sentStatement {
 // such read, explained with the arguments it was sent with, reads no table that grows with the
 // corpus by a scan with no index condition. Coverage answers each state's answer.
 func TestTheCoverageRouteSendsNoStatementOfMains(t *testing.T) {
+	t.Parallel()
 	for _, state := range coverageRouteStates {
 		t.Run(state.name, func(t *testing.T) {
 			database := seedRouteState(t, state, 10)
@@ -406,6 +409,7 @@ func TestTheCoverageRouteSendsNoStatementOfMains(t *testing.T) {
 // statements answer, row for row in one snapshot (requireMainsAnswer); with one more it answers
 // ErrCoverageFoldBehind, the bound the route names being 100,000.
 func TestCoverageReadsAtMostTheDeltaBound(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	fillCounts(t, database)

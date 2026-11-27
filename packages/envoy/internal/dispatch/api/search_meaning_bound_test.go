@@ -294,6 +294,7 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // statement would wait for that lock until the test binary's deadline guard fails the case by
 // name.
 func TestSearchReportsAKeywordStatementTheServerEnded(t *testing.T) {
+	// Not parallel: it writes the package variable searchStatementBound (endSearchStatementsAt).
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "KBOUND", "Quillmotor gearbox maintenance", "Routine upkeep notes.")
 	for _, path := range []struct {
@@ -336,6 +337,7 @@ func TestSearchReportsAKeywordStatementTheServerEnded(t *testing.T) {
 // comes back (leaveAsTheStatementEnds), before the search reads it. A route that read every
 // 57014 as its bound answers this search 503 SEARCH_TIMEOUT.
 func TestASearchWhoseClientLeftIsNotATimeout(t *testing.T) {
+	// Not parallel: it writes the package variable searchStatementBound (endSearchStatementsAt).
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),

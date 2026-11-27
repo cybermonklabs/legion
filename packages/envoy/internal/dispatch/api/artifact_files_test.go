@@ -74,6 +74,7 @@ func requireClosedByClient(t *testing.T, logged *logBuffer, response *httptest.R
 // store's: the request line reads 499, it writes the debug line and no level=ERROR line, it is
 // still answered 502 FILE_STORE_UNAVAILABLE, and no version is left behind.
 func TestAnUploadItsClientClosedIsLoggedAs499(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureDebugLog, logtest.SetDefault).
 	store := &clientClosingFileStore{Memory: filestest.NewMemory()}
 	handler, database, _ := newTestServer(t, testServerOptions{files: store})
 	issue := fileIssue(t, handler)
@@ -107,6 +108,7 @@ func TestAnUploadItsClientClosedIsLoggedAs499(t *testing.T) {
 // it is still answered 502 FILE_STORE_UNAVAILABLE. The version's row holds no bytes, since the
 // server stores them in the bucket, so the read goes to the store.
 func TestAFileReadItsClientClosedIsLoggedAs499(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureDebugLog, logtest.SetDefault).
 	store := &clientClosingFileStore{Memory: filestest.NewMemory()}
 	handler, _, _ := newTestServer(t, testServerOptions{files: store})
 	issue := fileIssue(t, handler)

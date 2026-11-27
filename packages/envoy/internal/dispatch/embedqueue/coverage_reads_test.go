@@ -59,6 +59,7 @@ type coverageReadSide struct {
 // `coverage-reads: FAIL`. It fails when the head's read reads as many buffers as main's statement
 // or more in any run, each run of one side held to the same run of the other.
 func TestTheCoverageReadsOfMainAndTheHead(t *testing.T) {
+	t.Parallel()
 	databaseURL := os.Getenv(benchtime.DatabaseURLEnv)
 	runner := benchtime.Open(t, databaseURL)
 	identity := runner.Subjects().EmbeddingModel

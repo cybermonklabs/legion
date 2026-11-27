@@ -193,6 +193,7 @@ func countingTriggersDiffer(installed map[string]installedCountingTrigger) []str
 // census admits no ENABLE ALWAYS TRIGGER (internal/pgmigrate/exempt.go): a write under
 // session_replication_role = replica fires none of them, and the recount is what follows it.
 func TestEveryCountedTableCarriesItsCountingTrigger(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	if differences := countingTriggersDiffer(installedCountingTriggers(t, database)); len(differences) > 0 {
 		t.Fatalf("on a fresh database the counting triggers differ from the %d listed:\n%s",
@@ -223,6 +224,7 @@ func TestEveryCountedTableCarriesItsCountingTrigger(t *testing.T) {
 // title; a refresh that computed before it waited would read the title A had not committed yet
 // and write, after A's commit, a class with no vector of the issue's text.
 func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const key, title, spec = "TWO-1", "The title A writes", "## Summary\n\nThe spec B writes."
@@ -289,6 +291,7 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 // and the issue moves from lacking to current, one delta row minus and one plus. After each write
 // the counts equal main's statement's.
 func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const key = "CLM-1"
@@ -331,9 +334,8 @@ func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
 		t.Fatalf("scanPending = %v, %d settled, %v, want %s claimed", claimed, settled, err, key)
 	}
 	requireUnrefreshed("scanPending's claim")
-	renewal := newClaimRenewal(deps, claimed)
-	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
-	renewal.renew(ctx)
+	renewal := newClaimRenewal(deps, claimed, time.Now().Add(-renewClaimInterval-time.Second))
+	renewal.renew(ctx, 0)
 	requireUnrefreshed("claimRenewal's renewal")
 
 	updateRow(t, database.Pool, "issue", key, `embedded_hash = content_hash`)
@@ -507,6 +509,7 @@ func documentOf(blocks ...[3]string) (string, []model.ArtifactBlock) {
 // re-import of architecture/importer.go, the vector writes of cmd/dispatch-seed, the project_key
 // fill of store and the whole-text delete of docs/block_index.go.
 func TestEveryWriteKeepsTheCounts(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	q := database.Pool
@@ -678,10 +681,9 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 	requireClaimRefreshedNothing(t, database, "scanPending's claim", claimed, before)
 
 	before = issueStateXmins(t, database)
-	renewal := newClaimRenewal(deps, claimed)
-	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
+	renewal := newClaimRenewal(deps, claimed, time.Now().Add(-renewClaimInterval-time.Second))
 	if deltas := requirePoolWriteKept(t, database, "claimRenewal's renewal of the claim", func() int64 {
-		renewal.renew(ctx)
+		renewal.renew(ctx, 0)
 		return int64(len(claimed))
 	}); deltas != 0 {
 		t.Errorf("claimRenewal's renewal inserted %d delta rows, want none: a claim moves no count", deltas)
@@ -841,6 +843,7 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 // no identity. Before the recount the counts miss the writes: the report counts one component fewer
 // than the table holds.
 func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
+	t.Parallel()
 	for _, configured := range []struct{ name, identity string }{
 		{"an embedder configured", configuredIdentity},
 		{"no embedder", ""},
@@ -927,6 +930,7 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 // records their sources and fills the counts, and then the find answers no key. As its control,
 // a title written with its table's triggers off makes the find answer that issue's key alone.
 func TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	q := database.Pool
@@ -1204,6 +1208,8 @@ func insertComponent(t *testing.T, q querier, project, id string, snapshot int) 
 // counts follow a component and an issue's title written between the two with their tables'
 // triggers off.
 func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
+	// Not parallel: it writes the package variables coverageRecountInterval, coverageRecountJitter and
+	// coverageRecountRandom (setForTest) and swaps the default logger (logtest.SetDefault).
 	if interval, jitter := recountSchedule(coverageRecountTimeout); coverageRecountInterval != interval || coverageRecountJitter != jitter {
 		t.Errorf("the loop recounts every %v plus up to %v, want its T's (%v) schedule, %v plus up to %v",
 			coverageRecountInterval, coverageRecountJitter, coverageRecountTimeout, interval, jitter)
@@ -1439,18 +1445,21 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 // TestARecountBesideLiveWritesLosesAndDoublesNothing holds R7f for the recount
 // (requireCountsBesideLiveWrites).
 func TestARecountBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
+	t.Parallel()
 	requireCountsBesideLiveWrites(t, false, recountCoverage)
 }
 
 // TestAFillBesideLiveWritesLosesAndDoublesNothing holds R7f for the fill, on counts that hold
 // nothing yet (requireCountsBesideLiveWrites).
 func TestAFillBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
+	t.Parallel()
 	requireCountsBesideLiveWrites(t, true, FillCoverage)
 }
 
 // TestAFoldBesideLiveWritesLosesAndDoublesNothing holds R7f for the fold
 // (requireCountsBesideLiveWrites).
 func TestAFoldBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
+	t.Parallel()
 	requireCountsBesideLiveWrites(t, false, foldCoverage)
 }
 
@@ -1475,6 +1484,7 @@ const countsLockWaits = `
 // session, the two pooled connections that ran them still open: the lock ended with each
 // transaction.
 func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
+	t.Parallel()
 	ops := map[string]func(context.Context, *store.Store) error{"fold": foldCoverage, "recount": recountCoverage}
 	for _, order := range [][2]string{{"recount", "fold"}, {"fold", "recount"}} {
 		t.Run("the "+order[1]+" waits for the "+order[0], func(t *testing.T) {
@@ -1543,6 +1553,7 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 // own time at the fold statement each sends (foldDeltas), the first that long after the loop's
 // first run ended. No recount falls due in the time it runs.
 func TestTheFoldRunsEveryTenSecondsPlusItsJitter(t *testing.T) {
+	// Not parallel: it writes the package variable coverageFoldRandom (setForTest).
 	database := storetest.Open(t)
 	seedIssue(t, database, "FOLD", "FOLD-1", "An issue the folds count")
 	fillCounts(t, database)
@@ -1576,6 +1587,7 @@ func TestTheFoldRunsEveryTenSecondsPlusItsJitter(t *testing.T) {
 // row refuses the sum the fold adds to it - logs an ERROR line; the fold of the next period runs
 // and succeeds, folding every delta row, and the counts then equal main's statement's.
 func TestAFailedFoldLogsAndTheNextOneCatchesUp(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	seedComponentsArchitecture(t, database.Pool, "FAIL", 905)
@@ -1635,6 +1647,8 @@ func requireBackoffWaits(t *testing.T, waits []time.Duration, drawn []float64) {
 // bound 10 s and each later one twice the one before up to 10 minutes, never past them; no fold
 // runs while no fill has ended.
 func TestTheFillBacksOffExponentiallyWithFullJitter(t *testing.T) {
+	// Not parallel: it makes every fill fail (FailCoverageFillsForTest), writes the package variable
+	// coverageBackoffRandom (setForTest) and swaps the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	FailCoverageFillsForTest(1000)
 	t.Cleanup(func() { FailCoverageFillsForTest(0) })
@@ -1673,6 +1687,8 @@ func TestTheFillBacksOffExponentiallyWithFullJitter(t *testing.T) {
 // and 40 s; the folds go on meanwhile. The recount that then ends puts the next one back on
 // coverageRecountInterval.
 func TestAFailedRecountBacksOffAsTheFillDoes(t *testing.T) {
+	// Not parallel: it writes the package variables coverageBackoffRandom and coverageRecount*
+	// (setForTest) and swaps the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	seedIssue(t, database, "BACK", "BACK-1", "An issue the recounts count")
 	fillCounts(t, database)

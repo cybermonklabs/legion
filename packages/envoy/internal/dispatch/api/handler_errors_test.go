@@ -70,6 +70,7 @@ func routeLines(t *testing.T, logged *logBuffer, method, route string) []string 
 // (holdMeaningStatements), so the close lands while the statement runs, which is when the bar's
 // did.
 func TestASearchItsClientClosedIsLoggedAs499(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureDebugLog, logtest.SetDefault).
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -132,6 +133,7 @@ func TestASearchItsClientClosedIsLoggedAs499(t *testing.T) {
 // through the line's recorder and the compression layer, as a route's error is, so the walk to
 // the recorder crosses a layer, with and without a body being compressed.
 func TestAServerCancelStillAnswers500WithItsErrorLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureDebugLog, logtest.SetDefault).
 	for _, test := range []struct {
 		name string
 		// closed is whether the request's own context, the one net/http cancels when its client
@@ -195,6 +197,7 @@ func TestAServerCancelStillAnswers500WithItsErrorLine(t *testing.T) {
 // the close. The insert waits on a lock this test holds on projects, so the close lands while the
 // write runs.
 func TestAKeyedWriteItsClientClosedFinishesWithNoErrorLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureDebugLog, logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	logged := captureDebugLog(t)
 	lock, err := database.Pool.Begin(t.Context())
@@ -269,6 +272,7 @@ func TestAKeyedWriteItsClientClosedFinishesWithNoErrorLine(t *testing.T) {
 // request line alone. Each case first finds its request line, so a run that logged nothing
 // cannot pass.
 func TestARequestLogsNoValueOfAHeaderThatNamesItsCaller(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureDebugLog, logtest.SetDefault).
 	const canary = "c4815-credential-canary"
 	handler, _ := newTestHandlerWithStore(t)
 	for _, test := range []struct {

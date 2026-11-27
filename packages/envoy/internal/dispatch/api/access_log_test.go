@@ -261,6 +261,7 @@ func unkeyedHashes(query url.Values) []string {
 // the empty key. The fixture is TestEverySearchStatementRunsInsideItsBoundedTransaction's, which
 // reaches each shape.
 func TestASearchsRequestLineNamesItsKeyAndShape(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	const degradedQuery, broadenedQuery = "lighthouse keeper", "lighthouse zzzabsent"
 	embedder := refusingQueryEmbedder{
 		fakeEmbedder: &fakeEmbedder{vectors: map[string][]float32{broadenedQuery: queryVector()}},
@@ -325,6 +326,7 @@ func TestASearchsRequestLineNamesItsKeyAndShape(t *testing.T) {
 // updated_since in another zone at the same instant, or equivalent kind sets - are named by one
 // key.
 func TestEachSearchParameterMovesTheKey(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "MOVE", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
 	logged := captureLog(t)
@@ -390,6 +392,7 @@ func TestEachSearchParameterMovesTheKey(t *testing.T) {
 // test answer the same search under two keys, each server holds a key of 32 bytes, and no line
 // either server wrote, from its registration to its answer, holds either key in hex.
 func TestTwoServersKeyTheSameSearchDifferently(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	logged := captureLog(t)
 	first, _, _, firstServer := newRegisteredTestServer(t, testServerOptions{})
 	second, _, _, secondServer := newRegisteredTestServer(t, testServerOptions{})
@@ -421,6 +424,7 @@ func TestTwoServersKeyTheSameSearchDifferently(t *testing.T) {
 // shape either, and the going line carries neither field. The search finds the issue, so a
 // statement ran and would have been noted.
 func TestTheAnswerersSearchNamesNoSearchOnItsRequestLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	const goingRoute = "/api/v1/going/requests"
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "GOING", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")

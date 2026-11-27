@@ -102,6 +102,7 @@ func serveClosedClient(t *testing.T, name string, handler http.Handler, request 
 // is held to the rows the registered server mounts (its route index), so a walk that skipped a
 // row, or walked none, fails.
 func TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	logged := captureLog(t)
 
