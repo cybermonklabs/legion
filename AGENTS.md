@@ -83,6 +83,8 @@ Each directory below that is marked "guide" has an `AGENTS.md` of its own.
 - A skill, a role prompt and an `AGENTS.md` name no person: write "a person", "the operator" or "the human".
   A login or a path that holds a name is fine.
 
+- Do not add a comment unless it is absolutely necessary.
+
 - Point to another guide by plain path (`packages/x/AGENTS.md`), never as `@packages/x/AGENTS.md`:
   Oh My Pi and Claude Code paste an `@path` into every session started here.
 
