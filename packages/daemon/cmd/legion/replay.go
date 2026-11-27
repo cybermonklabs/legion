@@ -1019,7 +1019,9 @@ window's start to its end into --out's cap-<n>, and it prints the slots each giv
 of one cap the daemon served against the record's: under the recorded caps each span within 10%,
 and under --cap each span whose cap is not --cap more than 10% off, a span at --cap not read. A
 backtest that fails either says that the tool cannot tell a change of the cap. A span of fewer than
-10 slots fails on a miss of one slot, and the backtest names each such span.
+10 slots fails on a miss of one slot, and the backtest names each such span. It also names each
+span not at --cap in which neither the record nor the run at --cap gave out a slot: that run did
+not miss the record there by more than 10%, so the span fails.
 
 --token-limit gives every run the project's token limit in uncached input tokens a minute, which
 each takes in each minute whose provider record holds no limit of the project's own (legion replay

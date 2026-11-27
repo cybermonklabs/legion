@@ -1119,6 +1119,7 @@ The backtest passes when both of these hold:
 A backtest that fails either, or that reads no span, says that the tool cannot tell a change of the cap.
 A span of a cap that the daemon served for a few hours can give out as few as about five slots, and there a miss of one slot fails the span.
 So the backtest names each span in which one slot is more than 10% of the record's count.
+It also names each span whose cap is not `--cap` in which the record gave out no slot and the replay at `--cap` gave out none either: that replay did not miss the record there by more than 10%, so the span fails.
 Collect the window of a cap backtest with no run-out, so that its replays end at `--to`.
 `--json` gives the backtest as `capBacktest`, with each span's `from`, `to`, `cap`, `recorded`, `atRecordedCaps`, `atFlatCap`, `recordedPass`, `flatRead` and `flatPass`.
 

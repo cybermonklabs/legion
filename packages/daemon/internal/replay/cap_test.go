@@ -132,6 +132,41 @@ func unboundCapWindow(t *testing.T) Window {
 	return b.build()
 }
 
+// emptySpansWindow is a window from 09:00 to 13:00 under main whose daemon serves four caps, one
+// span of each: 3 from its boot at 09:00, 2 from its restart at 10:00, 5 from its restart at 11:00
+// and 6 from its restart at 12:00. ACME-1 and ACME-2, filed at 09:10 and 09:20, each take a slot at
+// their filing and hold it to the window's end. ACME-3, filed at 10:10, finds both slots of the cap
+// of 2 taken, waits for the restart at 11:00 and takes a slot at 11:03. Nothing is filed after it.
+// The record gives out 2 slots under the cap of 3, none under 2, 1 under 5 and none under 6.
+func emptySpansWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.capped(3)
+	b.boot(clock(9, 0))
+	filed := func(at time.Time, key, rank string) {
+		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
+	}
+	takes := func(at time.Time, key string) {
+		b.rootPromoted(at, key)
+		b.turnEnds(at.Add(20*time.Minute), key, claim.RoleArchitect)
+	}
+	filed(clock(9, 10), "ACME-1", "a1")
+	takes(clock(9, 10), "ACME-1")
+	filed(clock(9, 20), "ACME-2", "a2")
+	takes(clock(9, 20), "ACME-2")
+	b.stopped(clock(9, 58))
+	b.boot(clock(10, 0))
+	b.window.Caps = append(b.window.Caps, CapAt{At: clock(10, 0), Cap: 2})
+	filed(clock(10, 10), "ACME-3", "a3")
+	b.stopped(clock(10, 58))
+	b.boot(clock(11, 0))
+	b.window.Caps = append(b.window.Caps, CapAt{At: clock(11, 3), Cap: 5})
+	takes(clock(11, 3), "ACME-3")
+	b.stopped(clock(11, 58))
+	b.boot(clock(12, 0))
+	b.window.Caps = append(b.window.Caps, CapAt{At: clock(12, 0), Cap: 6})
+	return b.build()
+}
+
 // capBacktestJSON is a validation's cap backtest as its JSON gives it, and capSpanJSON one span of
 // one cap of it.
 type capBacktestJSON struct {
@@ -166,7 +201,14 @@ type capSpanJSON struct {
 // its span gives out 5 and the span of 73 none, and ACME-6, ACME-7 and ACME-8 all start at 12:40, 3
 // in the span of 2: the backtest passes. unboundCapWindow's caps never hold an issue back, so the
 // flat cap gives out each span's one slot as the record did: the backtest fails, and the result says
-// that the tool cannot tell a change of the cap.
+// that the tool cannot tell a change of the cap. A span the flat cap reads in which the record gave
+// out no slot fails where the flat cap gives out none there either, and the result names it as such
+// a span. emptySpansWindow's four spans, of the caps 3, 2, 5 and 6, give out 2, 0, 1 and 0 slots in
+// the record and the same at the recorded caps; at the flat cap ACME-3 starts at its filing, so the
+// span of 3 gives out 2, the span of 2 one and the spans of 5 and 6 none. The spans of 2 and 5 pass,
+// the span of 2 though the record gave out no slot in it; the spans of 3 and 6 fail the backtest,
+// and the result names the span of 6 alone as one in which the record gave out no slot and the flat
+// cap none. Neither other window's result names such a span.
 func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
 	t.Parallel()
 	const flat = 73
@@ -203,19 +245,8 @@ func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
 		}
 		return read, printedOut.String()
 	}
-
-	t.Run("spans the flat cap tells apart", func(t *testing.T) {
-		t.Parallel()
-		read, printed := backtest(t, "cap-spans", capSpansWindow(t))
-		if read.CapBacktest == nil {
-			t.Fatalf("the validation gives no cap backtest:\n%s", printed)
-		}
-		want := []capSpanJSON{
-			{From: clock(9, 0), To: clock(11, 0), Cap: 1, Recorded: 2, AtRecordedCaps: 2, AtFlatCap: 5, RecordedPass: true, FlatRead: true, FlatPass: true},
-			{From: clock(11, 0), To: clock(12, 30), Cap: 73, Recorded: 3, AtRecordedCaps: 3, AtFlatCap: 0, RecordedPass: true},
-			{From: clock(12, 30), To: clock(14, 0), Cap: 2, Recorded: 1, AtRecordedCaps: 1, AtFlatCap: 3, RecordedPass: true, FlatRead: true, FlatPass: true},
-		}
-		got := read.CapBacktest.Spans
+	spansRead := func(t *testing.T, got, want []capSpanJSON) {
+		t.Helper()
 		if len(got) != len(want) {
 			t.Fatalf("the backtest reads %d spans of one cap, want %d: %+v", len(got), len(want), got)
 		}
@@ -226,11 +257,37 @@ func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
 				t.Errorf("span %d reads %+v, want %+v", i+1, g, w)
 			}
 		}
+	}
+	// lineOf is the first line of printed that holds part, without its line end, or "" for none.
+	lineOf := func(printed, part string) string {
+		for line := range strings.Lines(printed) {
+			if strings.Contains(line, part) {
+				return strings.TrimSuffix(line, "\n")
+			}
+		}
+		return ""
+	}
+	const noSlot = "the record gave out no slot"
+
+	t.Run("spans the flat cap tells apart", func(t *testing.T) {
+		t.Parallel()
+		read, printed := backtest(t, "cap-spans", capSpansWindow(t))
+		if read.CapBacktest == nil {
+			t.Fatalf("the validation gives no cap backtest:\n%s", printed)
+		}
+		spansRead(t, read.CapBacktest.Spans, []capSpanJSON{
+			{From: clock(9, 0), To: clock(11, 0), Cap: 1, Recorded: 2, AtRecordedCaps: 2, AtFlatCap: 5, RecordedPass: true, FlatRead: true, FlatPass: true},
+			{From: clock(11, 0), To: clock(12, 30), Cap: 73, Recorded: 3, AtRecordedCaps: 3, AtFlatCap: 0, RecordedPass: true},
+			{From: clock(12, 30), To: clock(14, 0), Cap: 2, Recorded: 1, AtRecordedCaps: 1, AtFlatCap: 3, RecordedPass: true, FlatRead: true, FlatPass: true},
+		})
 		if read.CapBacktest.Cap != flat || !read.CapBacktest.Pass {
 			t.Errorf("the backtest at the flat cap %d passes %t, want a pass at %d", read.CapBacktest.Cap, read.CapBacktest.Pass, flat)
 		}
 		if !strings.Contains(printed, "a miss of one slot fails it") {
 			t.Errorf("the backtest does not say that one slot is more than 10%% of a span's count:\n%s", printed)
+		}
+		if line := lineOf(printed, noSlot); line != "" {
+			t.Errorf("a backtest whose record gives out a slot in each span names a span with none: %s", line)
 		}
 		if strings.Contains(printed, "the tool cannot tell a change of the cap") {
 			t.Errorf("a backtest that passes says that the tool cannot tell a change of the cap:\n%s", printed)
@@ -251,6 +308,34 @@ func TestCapBacktestReadsEachSpanOfOneCap(t *testing.T) {
 		}
 		if !strings.Contains(printed, "the tool cannot tell a change of the cap") {
 			t.Errorf("a backtest that fails does not say that the tool cannot tell a change of the cap:\n%s", printed)
+		}
+		if line := lineOf(printed, noSlot); line != "" {
+			t.Errorf("a backtest whose record gives out a slot in each span names a span with none: %s", line)
+		}
+	})
+
+	t.Run("spans in which the record gave out no slot", func(t *testing.T) {
+		t.Parallel()
+		read, printed := backtest(t, "empty-spans", emptySpansWindow(t))
+		if read.CapBacktest == nil {
+			t.Fatalf("the validation gives no cap backtest:\n%s", printed)
+		}
+		spansRead(t, read.CapBacktest.Spans, []capSpanJSON{
+			{From: clock(9, 0), To: clock(10, 0), Cap: 3, Recorded: 2, AtRecordedCaps: 2, AtFlatCap: 2, RecordedPass: true, FlatRead: true},
+			{From: clock(10, 0), To: clock(11, 0), Cap: 2, Recorded: 0, AtRecordedCaps: 0, AtFlatCap: 1, RecordedPass: true, FlatRead: true, FlatPass: true},
+			{From: clock(11, 0), To: clock(12, 0), Cap: 5, Recorded: 1, AtRecordedCaps: 1, AtFlatCap: 0, RecordedPass: true, FlatRead: true, FlatPass: true},
+			{From: clock(12, 0), To: clock(13, 0), Cap: 6, Recorded: 0, AtRecordedCaps: 0, AtFlatCap: 0, RecordedPass: true, FlatRead: true},
+		})
+		if read.CapBacktest.Pass {
+			t.Errorf("a backtest whose flat cap fails the spans of 3 and 6 passes")
+		}
+		span := func(from, to time.Time) string { return spanStamp(from) + " to " + spanStamp(to) }
+		ofThree, ofTwo, ofSix := span(clock(9, 0), clock(10, 0)), span(clock(10, 0), clock(11, 0)), span(clock(12, 0), clock(13, 0))
+		if want := fmt.Sprintf("The backtest fails on the spans %s, %s: the tool cannot tell a change of the cap.", ofThree, ofSix); lineOf(printed, "The backtest fails") != want {
+			t.Errorf("the backtest does not say %q:\n%s", want, printed)
+		}
+		if want := fmt.Sprintf("In 1 of the 4 spans the record gave out no slot, and the cap of %d gave out none there either, so it did not miss the record by more than 10%%: %s.", flat, ofSix); lineOf(printed, noSlot) != want {
+			t.Errorf("the backtest does not say %q, naming the span of 6 and not the span of 2, %s, in which the flat cap gave out a slot:\n%s", want, ofTwo, printed)
 		}
 	})
 }
