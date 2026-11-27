@@ -1127,15 +1127,31 @@ export function useNextTreePage(issue: IssueDetails): NextTreePage | undefined {
   return useNextPage(issue.key, choice.outline, answer);
 }
 
+/** What the control after a view's last row reads of its view (`useNextViewPage`), from the one
+ *  observer of the view it mounts (`useViewAnswer`). */
+export interface ViewNextPage {
+  /** The view's own query's answer as this load holds it (`LoadView.data`). Not the answer the
+   *  page holds of the view, which `next` is read from: on the Decisions view, from a Keep's drop
+   *  of the decisions view until its read lands, that one is the answer the drop took
+   *  (`LoadHold.kept`) while this one is undefined. */
+  readonly answer: TreeAnswer | undefined;
+  /** The next page of the answer the page holds of the view (`NextTreePage`); undefined while the
+   *  view holds no answer, or one that names none. */
+  readonly next: NextTreePage | undefined;
+}
+
 /** The next page of `view`'s view read of issue `key`, for the control after the view's last
- *  row; undefined while the view holds no answer, or one that names none. The answer is the one
- *  the page holds of the view (`useViewAnswer`): the decisions view's by its readers' one rule
- *  (`useDecisionsView`), so while a Keep's read of it is out the control names the next page of
- *  the answer the drop took, and every view's as this load holds it (`useLoadView`), so a return
- *  to the issue draws no control of an earlier visit's answer. It observes its own view alone and
- *  sends nothing: the view is read where `ViewReadProvider` reads it. */
-export function useNextViewPage(key: string, view: TreeView): NextTreePage | undefined {
-  return useNextPage(key, view, useViewAnswer(key, view).answer);
+ *  row, and beside it the view's own query's answer as this load holds it (`ViewNextPage`). The
+ *  next page is undefined while the view holds no answer, or one that names none. It is read off
+ *  the answer the page holds of the view (`useViewAnswer`): the decisions view's by its readers'
+ *  one rule (`useDecisionsView`), so while a Keep's read of it is out the control names the next
+ *  page of the answer the drop took, and every view's as this load holds it (`useLoadView`), so
+ *  a return to the issue draws no control of an earlier visit's answer. It observes its own view
+ *  alone, once, and sends nothing: the view is read where `ViewReadProvider` reads it. */
+export function useNextViewPage(key: string, view: TreeView): ViewNextPage {
+  const { answer, read } = useViewAnswer(key, view);
+  const next = useNextPage(key, view, answer);
+  return { answer: read.data, next };
 }
 
 /** The next page of `read`'s `answer` (`NextTreePage`), the same value while the answer names the

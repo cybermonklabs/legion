@@ -31,7 +31,6 @@ import {
   subscribeTreeFreshness,
   TREE_VIEWS,
   type TreeView,
-  useLoadView,
   useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
@@ -252,8 +251,9 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  * draws. So the landing ends where the press merges no page or the page is refused, and once the
  * view has drawn the answer the page merged into with no row of the page there, as where the
  * Decisions view draws the page's entries past the pages of entries a part draws. Whether the
- * view has drawn that answer is looked at after each render of this control, which draws from the
- * view's answer as the view does, and in no frame. A press
+ * view has drawn that answer is looked at after each render of this control, which reads the
+ * view's own query's answer, which the view draws its rows from, and in no frame; on the Decisions
+ * view during a Keep's drop the view draws the kept answer, so the look waits on that read. A press
  * takes no focus from where it was (`preventDefault` on `mousedown`), since the control goes once
  * no page is left. Nothing while the view's answer names no next page.
  */
@@ -264,11 +264,13 @@ export function NextViewPage({
   filter: TreeView;
   issueKey: string;
 }): ReactNode {
-  const next = useNextViewPage(issueKey, filter);
+  // The view's own query's answer, as `useNextViewPage` hands it beside the next page, and
+  // `drawnAnswer` it as the last render drew it. The view draws its rows from it in the same
+  // render, but on the Decisions view during a Keep's drop the view draws the kept answer
+  // (`useViewAnswer`) while this one is undefined until the Keep's read lands, so `ends` waits
+  // for that read.
+  const { answer, next } = useNextViewPage(issueKey, filter);
   const queryClient = useQueryClient();
-  // The view's answer as this render draws it, which the view draws its rows from in the same
-  // render (`useLoadView`), and as the last render drew it.
-  const answer = useLoadView(issueKey, filter).data;
   const drawnAnswer = useRef(answer);
   const box = useRef<HTMLDivElement | null>(null);
   // The landing on the first row of the page a press merges, which the reader's next act,
@@ -292,7 +294,10 @@ export function NextViewPage({
     // before.
     let page: ReadonlySet<string> = new Set();
     // The view draws the page's rows in a render after the answer lands, so each change of what it
-    // draws is looked at until a row of the page is there.
+    // draws is looked at until a row of the page is there. Where the view draws the merged answer
+    // in the same render as this control, the control's layout effect runs `ends` first, whose
+    // abort disconnects the observer, so the observer lands only where the view draws the merged
+    // page's rows in a commit before the one in which this control draws the merged answer.
     const drawn = new MutationObserver(() => {
       const row = rowOfPage(view, page);
       if (row === undefined) return;
