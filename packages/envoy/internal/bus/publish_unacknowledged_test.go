@@ -329,32 +329,29 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		t.Cleanup(reconnecting.Close)
 		proxy.FreezeServerReplies()
 		answered := make(chan error, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			answered <- reconnecting.WriteHandoverRecord(ctx, subject, record)
 		}()
-		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the handover record to be stored before reconnecting",
-			func() bool { return storedOn(t, subject) == 1 })
+		testwait.UntilPolling(t, storedOnPoll, "the handover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
+			func() (uint64, bool) {
+				stored := storedOn(t, subject)
+				return stored, stored == 1
+			})
 		if err := reconnecting.Connection().ForceReconnect(); err != nil {
 			t.Fatalf("force reconnect: %v", err)
 		}
 		proxy.Restore()
-		var got error
-		select {
-		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the handover record write interrupted by reconnect did not return")
-		}
+		got := testwait.Receive(t, "the handover record write interrupted by reconnect to return", answered)
 		if got != nil {
 			t.Fatalf("a handover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
 		}
 		if n := storedOn(t, subject); n != 1 {
 			t.Fatalf("the stream holds %d handover records on %s, want the one this call stored", n, subject)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		records, err := client.TakeoverRecords(ctx, role)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		records, err := client.TakeoverRecords(testwait.Context(t), role)
 		if err != nil {
 			t.Fatalf("read %s's takeover records: %v", role, err)
 		}
