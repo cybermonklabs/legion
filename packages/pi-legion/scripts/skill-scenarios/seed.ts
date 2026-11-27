@@ -131,7 +131,7 @@ import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { headsEvents, headsIssue, headsWorld } from "./heads-world";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
-import { agentPost, APPROVE, handoffsOf, IMPLEMENTER, PERSON } from "./seed-dispatch";
+import { APPROVE, agentPost, handoffsOf, IMPLEMENTER, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
