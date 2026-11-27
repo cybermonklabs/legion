@@ -4,13 +4,17 @@ package gcp_test
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/gcp"
+	"github.com/sjawhar/envoy/infra/nats"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -82,46 +86,90 @@ func collectingConn(t *testing.T, uri, seed string) (*natsgo.Conn, <-chan error)
 	return conn, errs
 }
 
-// requireFirstViolation flushes conn and requires the server's first asynchronous error on it to
-// be the permissions violation of the operation want names. The server answers a connection's
-// operations in order, so every operation sent before that one was allowed: a refusal of any of
-// them would have come first.
-func requireFirstViolation(t *testing.T, conn *natsgo.Conn, errs <-chan error, want string) {
-	t.Helper()
-	require.NoError(t, conn.Flush())
-	select {
-	case err := <-errs:
-		require.ErrorContains(t, err, want, "the first operation the server refused is not the control")
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the server refused nothing within 5 s, not even the control %s", want)
-	}
+// refusingAuthService is a stub auth service on the hub at uri, connected as the service user whose
+// seed is serviceSeed: it refuses each authorization request, with a refusal signed by issuer and
+// sealed to the server's xkey, and counts each one once its refusal is sent. A request it cannot
+// open, decode, sign or answer counts in failed. Neither handler calls the test, which may have
+// ended by the time a request arrives.
+type refusingAuthService struct {
+	answered, failed atomic.Int64
 }
 
-// The clustered hub's session listener beside the callout, on a real nats-server and with no auth
-// service running, so any connection the server sent to the callout would be refused once the
-// server's 2 s authorization timeout passed. The listener's seeded user, whose key core lists in
-// auth_users, is admitted by its nkey with its listener grant: the callout changes nothing for it.
-// And a client presenting no credential still becomes the session user, with no callout either:
-// it subscribes to another session's relay subject and publishes to another session's _INBOX
-// subject, as it does on a hub with no callout. A hub keeps that until its sessionUser goes
-// (dispatch://INFRA-840, R11). The control removes the listener's key from auth_users in the same
-// text: the server then sends the listener to the callout, and with no service to answer it is not
-// admitted.
+func startRefusingAuthService(t *testing.T, uri, serviceSeed string, issuer, curve nkeys.KeyPair) *refusingAuthService {
+	t.Helper()
+	s := &refusingAuthService{}
+	conn, err := testnats.ConnectSeed(t, uri, serviceSeed)
+	require.NoError(t, err, "the auth service's user, in auth_users, connects without a callout")
+	t.Cleanup(conn.Close)
+	_, err = conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
+		opened, err := curve.Open(m.Data, m.Header.Get("Nats-Server-Xkey"))
+		if err != nil {
+			s.failed.Add(1)
+			return
+		}
+		claims, err := jwt.DecodeAuthorizationRequestClaims(string(opened))
+		if err != nil {
+			s.failed.Add(1)
+			return
+		}
+		response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
+		response.Audience = claims.Server.ID
+		response.Error = "example: this stub admits no client"
+		token, err := response.Encode(issuer)
+		if err != nil {
+			s.failed.Add(1)
+			return
+		}
+		sealed, err := curve.Seal([]byte(token), claims.Server.XKey)
+		if err != nil || m.Respond(sealed) != nil {
+			s.failed.Add(1)
+			return
+		}
+		s.answered.Add(1)
+	})
+	require.NoError(t, err)
+	require.NoError(t, conn.Flush())
+	return s
+}
+
+// The clustered hub's session listener beside the callout, on a real nats-server with a stub auth
+// service that counts and refuses every authorization request. The listener's seeded user, whose key
+// core lists in auth_users, is admitted by its nkey with its listener grant, and the server asks the
+// auth service nothing: the callout changes nothing for it. And a client presenting no credential
+// still becomes the session user with no request either: it subscribes to another session's relay
+// subject and publishes to another session's _INBOX subject, as it does on a hub with no callout. A
+// hub keeps that until its sessionUser goes (dispatch://INFRA-840, R11). The control takes the
+// listener's key out of auth_users in the same text: the server then sends the listener to the
+// callout, the stub counts exactly that one request, and the listener is refused. Counting the
+// requests rather than timing an unanswered one keeps the control from racing the server's first
+// PING (core/nats_callout.go says why that PING can beat a 2 s authorization timeout).
 func TestAClusteredHubsSeededListenerSkipsTheCallout(t *testing.T) {
 	listenerSeed, listenerKey := testnats.User(t)
+	serviceSeed, serviceKey := testnats.User(t)
+	issuer, err := nkeys.CreateAccount()
+	require.NoError(t, err)
+	issuerKey, err := issuer.PublicKey()
+	require.NoError(t, err)
+	curve, err := nkeys.CreateCurveKeys()
+	require.NoError(t, err)
+	curveKey, err := curve.PublicKey()
+	require.NoError(t, err)
 	args := clusteredArgs()
 	args.Tailnet.Listener.NKey = listenerKey
-	args.Users = append(args.Users, authServiceUser())
-	args.AuthCallout = authCallout()
+	service := authServiceUser()
+	service.NKey = serviceKey
+	args.Users = append(args.Users, service)
+	args.AuthCallout = &nats.AuthCalloutArgs{Issuer: issuerKey, XKey: curveKey, ServiceUser: service.Name}
 	conf := authConfOf(t, args)
 	require.Contains(t, conf, "auth_callout {")
 	_, uri := testnats.StartConfig(t, conf, nil, true)
+	stub := startRefusingAuthService(t, uri, serviceSeed, issuer, curve)
 
 	t.Run("the listener connects by its seed, and its listener grant holds", func(t *testing.T) {
 		conn, errs := collectingConn(t, uri, listenerSeed)
 		require.NoError(t, conn.Publish("notifications.example", nil))
 		require.NoError(t, conn.Publish("outside.example", nil))
-		requireFirstViolation(t, conn, errs, `Publish to "outside.example"`)
+		awaitViolation(t, conn, errs, `Publish to "outside.example"`)
 	})
 	t.Run("a client with no credential still becomes the session user, past the auth service", func(t *testing.T) {
 		conn, errs := collectingConn(t, uri, "")
@@ -129,18 +177,22 @@ func TestAClusteredHubsSeededListenerSkipsTheCallout(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, conn.Publish("_INBOX.another-session.reply", nil))
 		require.NoError(t, conn.Publish("outside.example", nil))
-		requireFirstViolation(t, conn, errs, `Publish to "outside.example"`)
+		awaitViolation(t, conn, errs, `Publish to "outside.example"`)
 	})
-	t.Run("control: the listener's key out of auth_users is sent to the callout and not admitted", func(t *testing.T) {
+	require.Zero(t, stub.answered.Load()+stub.failed.Load(), "the server asked the auth service about a keyed user or a client with no credential")
+
+	t.Run("control: the listener's key out of auth_users is sent to the callout and refused", func(t *testing.T) {
 		start := strings.Index(conf, "auth_users: [")
 		require.NotEqual(t, -1, start, "the text has no auth_users")
 		end := start + strings.Index(conf[start:], "\n")
 		edited := conf[:start] + strings.Replace(conf[start:end], `"`+listenerKey+`", `, "", 1) + conf[end:]
 		require.NotEqual(t, conf, edited, "the edit must take the listener's key out of auth_users")
 		_, uri := testnats.StartConfig(t, edited, nil, true)
-		began := time.Now()
+		stub := startRefusingAuthService(t, uri, serviceSeed, issuer, curve)
 		_, err := testnats.ConnectSeed(t, uri, listenerSeed, natsgo.Timeout(5*time.Second))
-		require.ErrorIs(t, err, natsgo.ErrAuthorization, "the listener was admitted, or refused for another reason, although auth_users does not list it and no auth service answers")
-		require.GreaterOrEqual(t, time.Since(began), 2*time.Second, "the refusal came before nats-server's 2 s authorization timeout, so it is not the callout's unanswered request")
+		require.ErrorIs(t, err, natsgo.ErrAuthorization, "the listener was admitted although auth_users does not list it and the auth service refuses every client")
+		require.Eventually(t, func() bool { return stub.answered.Load() == 1 }, 5*time.Second, 10*time.Millisecond,
+			"the stub answered %d requests, want the listener's one", stub.answered.Load())
+		require.Zero(t, stub.failed.Load(), "the stub could not answer a request")
 	})
 }
