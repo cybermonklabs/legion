@@ -82,7 +82,8 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, who mo
 func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
-		select key, name, gated_steps, default_repo, proven_sessions, created_at
+		select key, name, gated_steps, default_repo, proven_sessions, created_at,
+		       case when visibility = '`+model.ProjectPrivate+`' then visibility else '' end
 		from projects where key = $1 and `+access.ProjectClause("key", "$2"),
 		key, refs.VisibilityArg(who)).Scan(
 		&project.Key,

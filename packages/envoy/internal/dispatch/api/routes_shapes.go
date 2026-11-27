@@ -644,6 +644,9 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
+	"GET /api/v1/projects/{key}/access":                {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PATCH /api/v1/projects/{key}/access":              {Status: http.StatusOK, Response: model.ProjectAccess{}, Request: projectAccessInput{}},
+	"PUT /api/v1/projects/{key}/access/people/{email}": {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},

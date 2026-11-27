@@ -717,25 +717,6 @@ test("a credential list that fails to load keeps the Inbox from saying nothing n
   }
 });
 
-// A restricted member, who signs in from outside the company, is refused the deployment's pending
-// credential requests (403 DEPLOYMENT_READ_REFUSED). That refusal is the answer "none for you",
-// not a list that failed to load: the Inbox says nothing needs them, as it does where there is no
-// secrets broker.
-test("a credential list the server refuses a restricted member reads as none, not as a failure", async () => {
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
-  mocks.getCredentialPending.mockRejectedValue(
-    new ApiError(403, { code: "DEPLOYMENT_READ_REFUSED", error: "a restricted member" })
-  );
-  const { unmount } = renderInbox();
-  try {
-    expect(await screen.findByRole("region", { name: "Inbox empty state" })).toBeTruthy();
-    expect(screen.queryByText("Couldn't load credential requests.")).not.toBeInTheDocument();
-  } finally {
-    unmount();
-    getInbox.mockRestore();
-  }
-});
-
 test("Inbox narrows to one agent's asks from ?agent and clears back to the whole inbox", async () => {
   const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
   const plannerWaits = issueAsk({

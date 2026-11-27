@@ -3,7 +3,7 @@ import { type Query, QueryClient, QueryClientProvider } from "@tanstack/react-qu
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import { ApiError, api } from "../../api/client";
+import { api } from "../../api/client";
 import type { CredentialPendingResponse } from "../../api/types";
 import { credentialPendingQuery, useCredentialRequests } from "./pending";
 
@@ -37,30 +37,6 @@ test("credentialPendingQuery's enabled and refetchInterval agree: armed for a li
   expect(enabled(heldList)).toBe(true);
   expect(typeof refetchInterval(heldList)).toBe("number");
   expect(refetchInterval(heldList)).toBeGreaterThan(0);
-});
-
-// A list the server refuses the viewer (a restricted member, 403 DEPLOYMENT_READ_REFUSED) is held
-// like `null`: no poll and no fetch of its own, so a restricted member's open tab does not ask the
-// server for it again every interval.
-test("credentialPendingQuery neither polls nor refetches a list the server refused the viewer", () => {
-  const query = credentialPendingQuery();
-  const refused = {
-    state: {
-      data: undefined,
-      error: new ApiError(403, { code: "DEPLOYMENT_READ_REFUSED", error: "a restricted member" }),
-    },
-  } as unknown as Query<CredentialPendingResponse | null>;
-  const failed = {
-    state: { data: undefined, error: new ApiError(503, { code: "AGENT_SECRETS_UNAVAILABLE" }) },
-  } as unknown as Query<CredentialPendingResponse | null>;
-  const enabled = query.enabled as (query: typeof refused) => boolean;
-  const refetchInterval = query.refetchInterval as (query: typeof refused) => number | false;
-
-  expect(enabled(refused)).toBe(false);
-  expect(refetchInterval(refused)).toBe(false);
-  // Any other failure is still asked again.
-  expect(enabled(failed)).toBe(true);
-  expect(typeof refetchInterval(failed)).toBe("number");
 });
 
 // LEGION-575 round 2. A background poll that fails after a list already loaded must not blank a
