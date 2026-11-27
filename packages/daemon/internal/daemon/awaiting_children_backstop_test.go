@@ -63,7 +63,9 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 			runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,
 				log: quietLogger(), backstop: time.Hour, now: time.Now}
 
-			if err := runner.armBackstops(ctx, issue); err != nil {
+			// The release arms over the issue as the record reads it (outbox.releaseIssue), with
+			// its running steps (record.Issue.Running), which PutIssue writes nothing of.
+			if err := runner.armBackstops(ctx, recordOf(t, pool, records, issue.Key)); err != nil {
 				t.Fatalf("arm the release's backstops: %v", err)
 			}
 
