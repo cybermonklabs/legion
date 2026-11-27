@@ -2170,8 +2170,8 @@ test("opening Threads sends six reads and none for each row", async ({ browser }
 // =============================================================================================
 
 // SLOW(>=2s): the whole seed and one more issue opened on today's page, then two loads of
-// /threads addresses, each read until it settles and the search bar opened over it, and one of
-// today's Dashboard, every item drawn.
+// /threads addresses, each on a page of its own read until it settles and the search bar opened
+// over it, and one of today's Dashboard, every item drawn.
 test("with the setting off, today's page draws for /threads what main draws", async ({
   browser,
 }) => {
@@ -2180,20 +2180,30 @@ test("with the setting off, today's page draws for /threads what main draws", as
   // The one item the reader opens before the /threads loads: another issue, on today's page. The
   // context is new, so Recents holds that issue alone, and the seeded issue is opened at no
   // address of today's page before the Dashboard below: a recent item naming it is one a
-  // /threads load added.
+  // /threads load added. Recents is the context's `localStorage`, so it carries from page to
+  // page. Each load is a page of its own, watched from before its navigation, so a read that
+  // another document left out when it was replaced is no read of this load's.
   const earlier = await createIssue({ project: seed.project, title: "An issue opened before" });
   const context = await asUser(browser, READER);
   try {
-    const page = await context.newPage();
-    await page.setViewportSize(viewportAt(DESKTOP_WIDTH));
-    await page.goto(`/issues/${earlier.key}`);
-    const margin = page.getByTestId("margin-sheet");
-    await expect(margin, "the earlier issue's page draws no review column").toBeVisible();
-    const bar = page.getByRole("dialog", { name: "Search" });
-    // A recent item's row reads its issue's key, and then the title once the issue is read.
-    const recent = bar.getByRole("group", { name: "Recent" });
-    const traffic = watchApiRequests(page);
+    const first = await context.newPage();
+    await first.setViewportSize(viewportAt(DESKTOP_WIDTH));
+    const firstTraffic = watchApiRequests(first);
+    await first.goto(`/issues/${earlier.key}`);
+    await expect(
+      first.getByTestId("margin-sheet"),
+      "the earlier issue's page draws no review column"
+    ).toBeVisible();
+    await expectLoadSettled(firstTraffic);
+    await first.close();
     for (const path of [threadsPath(seed.key), threadsPath(seed.key, seed.messages.first)]) {
+      const page = await context.newPage();
+      await page.setViewportSize(viewportAt(DESKTOP_WIDTH));
+      const traffic = watchApiRequests(page);
+      const margin = page.getByTestId("margin-sheet");
+      const bar = page.getByRole("dialog", { name: "Search" });
+      // A recent item's row reads its issue's key, and then the title once the issue is read.
+      const recent = bar.getByRole("group", { name: "Recent" });
       await page.goto(path);
       await expect(
         page.getByRole("heading", { level: 1 }),
@@ -2224,9 +2234,12 @@ test("with the setting off, today's page draws for /threads what main draws", as
       ).toHaveCount(0);
       await page.keyboard.press("Escape");
       await expect(bar, "Escape leaves the search bar open").toHaveCount(0);
+      await page.close();
     }
 
     // Today's Dashboard links each thread item to the thread's own address.
+    const page = await context.newPage();
+    await page.setViewportSize(viewportAt(DESKTOP_WIDTH));
     await page.goto(`/issues/${seed.key}/dashboard`);
     const panel = page.locator("#issue-dashboard-panel");
     await expect(panel, "today's page draws no Dashboard panel").toBeVisible();
