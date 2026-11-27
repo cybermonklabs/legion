@@ -222,7 +222,8 @@ func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
 		// reach it as arguments, quoted once (shellprefix.Literal).
 		launch := fmt.Sprintf(`exec sh -c 'trap "" INT; : >"$1"; while [ ! -e "$2" ] && kill -0 %d 2>/dev/null; do sleep 0.01; done; exit 0' sh %s %s`,
 			os.Getpid(), shellprefix.Literal(ready), shellprefix.Literal(release))
-		cmd := exec.Command("sh", "-c", job.script(launch))
+		// CONTROL: the attempt's shell stalls 0.5 s before its trap, standing in for a loaded machine.
+		cmd := exec.Command("sh", "-c", "sleep 0.5; "+job.script(launch))
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
