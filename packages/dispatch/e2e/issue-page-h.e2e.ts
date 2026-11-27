@@ -1776,9 +1776,9 @@ test.describe("the shared controls of Details keep the focus while their write l
       const { three, two } = seeded.keys;
       await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
-      // The hold goes on before the edit starts: reads pass through it until a write has gone
-      // out, and a route installed the moment before the Enter that sends the write can let that
-      // write reach Dispatch unheld.
+      // The hold goes on before the edit starts: reads pass through it until the write it holds
+      // goes on to Dispatch, and a route installed the moment before the Enter that sends the
+      // write can let that write reach Dispatch unheld.
       const issue = await holdIssue(page, two, true);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
       const open = row.getByRole("button", { name: blockedByControlName(two, 0) });

@@ -3395,20 +3395,20 @@ test("a focus the editor drops as its collaborators' cursors go in comes back at
   await select(words, offset);
   const { $head, head: caret } = view.state.selection;
   expect($head.parentOffset, "the editor did not read the reader's move").toBe(offset);
-  // alice's page, whose caret stands six characters into the statement, and the reader's own.
-  const alice = new Awareness(room.server);
+  // bob's page, whose caret stands six characters into the statement, and the reader's own.
+  const bob = new Awareness(room.server);
   const reader = new Awareness(room.browser);
-  const { binding } = ySyncPluginKey.getState(view.state);
-  const at = Y.relativePositionToJSON(
-    absolutePositionToRelativePosition($head.start() + 6, binding.type, binding.mapping)
-  );
-  alice.setLocalState({
-    cursor: { anchor: at, head: at },
-    user: { color: "#f59e0b", name: "alice" },
-  });
-  applyAwarenessUpdate(reader, encodeAwarenessUpdate(alice, [room.server.clientID]), "room");
   const frames = framesByHand();
   try {
+    const { binding } = ySyncPluginKey.getState(view.state);
+    const at = Y.relativePositionToJSON(
+      absolutePositionToRelativePosition($head.start() + 6, binding.type, binding.mapping)
+    );
+    bob.setLocalState({
+      cursor: { anchor: at, head: at },
+      user: { color: "#f59e0b", name: "bob" },
+    });
+    applyAwarenessUpdate(reader, encodeAwarenessUpdate(bob, [room.server.clientID]), "room");
     await act(async () => {
       // Chromium sends the editable a focusout that names nothing as Milkdown's view takes it out
       // of the page; happy-dom drops the focus alone (`wrapAgain`).
@@ -3424,7 +3424,7 @@ test("a focus the editor drops as its collaborators' cursors go in comes back at
     await frames.run();
   } finally {
     frames.restore();
-    alice.destroy();
+    bob.destroy();
     reader.destroy();
   }
   expect(

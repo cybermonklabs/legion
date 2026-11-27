@@ -86,10 +86,8 @@ export function ownCaretInBlock(
 ): boolean {
   if (view === undefined || view.isDestroyed || view.dom !== editable) return false;
   const { doc, selection } = view.state;
-  const from = blockStart(doc, blockId, undefined);
-  const block = from === undefined ? null : doc.nodeAt(from);
-  if (from === undefined || block === null) return false;
-  if (selection.from <= from || selection.to >= from + block.nodeSize) return false;
+  const span = blockSpan(doc, blockId, undefined);
+  if (span === undefined || selection.from <= span.from || selection.to >= span.to) return false;
   view.focus();
   return true;
 }
@@ -579,6 +577,18 @@ function blockStart(
   return found;
 }
 
+/** `blockId`'s block of `doc`, found from `guess` (`blockStart`), with its start and its end. */
+function blockSpan(
+  doc: ProseMirrorNode,
+  blockId: string | undefined,
+  guess: number | undefined
+): { readonly block: ProseMirrorNode; readonly from: number; readonly to: number } | undefined {
+  const from = blockStart(doc, blockId, guess);
+  const block = from === undefined ? null : doc.nodeAt(from);
+  if (from === undefined || block === null) return undefined;
+  return { block, from, to: from + block.nodeSize };
+}
+
 /** Whether `transaction`, one of the editor's own in `state`, keeps to `blockId`'s block, found
  *  from `guess`: the block stands after it where the mapping puts it, one node of the type and
  *  attributes it had, with no more line breaks in its headings; what stands before it and after
@@ -589,10 +599,9 @@ function keepsToBlock(
   blockId: string | undefined,
   guess: number | undefined
 ): boolean {
-  const from = blockStart(state.doc, blockId, guess);
-  const block = from === undefined ? null : state.doc.nodeAt(from);
-  if (from === undefined || block === null) return false;
-  const to = from + block.nodeSize;
+  const span = blockSpan(state.doc, blockId, guess);
+  if (span === undefined) return false;
+  const { block, from, to } = span;
   // Content put right before the block, or right after it, is outside it.
   const start = transaction.mapping.map(from, 1);
   const end = transaction.mapping.map(to, -1);
