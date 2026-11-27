@@ -101,3 +101,12 @@ Each directory below that is marked "guide" has an `AGENTS.md` of its own.
 
 - `docs/plans/` and `docs/solutions/` are history:
   no Legion role writes there, and a page marked `[HISTORICAL]` describes the code before the TypeScript rewrite.
+
+- A page of `docs/solutions/` that reads a session store with the URL in `OMP_SESSION_SQL_DSN_FILE` reads it only inside one read-only transaction whose query changes no session state, because a session-level `SET` on a pooled connection reaches the next clients of the same database and login.
+  Read it as `psql "$(cat "$OMP_SESSION_SQL_DSN_FILE")" --single-transaction -q -X -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -c '<query>'`.
+  The pages keep their text, because no role writes under `docs/solutions/`.
+  These pages read a session store with that URL:
+
+  - `docs/solutions/legion/a-proof-harness-a-later-round-reruns-lives-on-the-pull-request-not-the-issue-disk-pr2362.md`
+
+  - `docs/solutions/legion/a-recreated-workspace-is-rebuilt-from-the-session-stores-subagent-transcripts-and-every-verified-commit-is-pushed-at-once-pr2403.md`
