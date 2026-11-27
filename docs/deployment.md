@@ -317,6 +317,8 @@ its exit 0 alone reads public, and any other outcome refuses the write as a setu
 The guard makes no unauthenticated REST read of it, because GitHub allows 60 of those an hour to one address.
 The shared check's own visibility read of such a repository, which `legion gh` answers with the guard's read, reads it the same way, so the check counts a public one's advertised commits as published.
 The refusal of a repository a configured rename moved to an owner the bundle holds no directory for names the pair around that line, and stays a setup error.
+Where GitHub refuses the guard's REST visibility read for a spent rate limit, the guard waits for the reset GitHub names, at most 2 minutes, and reads again, but only where that wait and the reads after it end before the deadline the guard runs under; otherwise it reads the visibility another way at once, through GraphQL for a spent core limit.
+A caller with a bound of its own gives `legion gh` that deadline in `LEGION_GH_DEADLINE`, in Unix milliseconds (one that is unset, does not parse or has passed is no deadline, and gh is never handed it), and the capability report's `github` row gives it the end of its own 8 s.
 The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,

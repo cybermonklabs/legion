@@ -128,8 +128,27 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
 // 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
 // runGhChild's forwarding.
+//
+// A caller with a bound of its own, the capability report's `github` row, hands this command two
+// things of its own, and gh neither (ghChildKeeps names them not). LEGION_GH_STEP_FILE
+// (ghStepFileVar) names a file this command writes the step the call is in to, as each starts
+// (ghSteps): config from the start, help, the guard's check, visibility and rules
+// (leakguard.Options.OnStep), then gh. It is diagnostics alone: no value of it changes what the
+// call does or the status it exits with. LEGION_GH_DEADLINE (ghDeadlineVar) is the caller's
+// deadline, which the guard runs under, so it waits for no rate-limit reset the caller would not
+// see the end of.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
+	started := time.Now()
 	env := processEnvironment()
+	steps := openGhSteps(env[ghStepFileVar], started)
+	defer steps.close()
+	// The step file is this call's alone. Every `legion gh` this call starts, the guard's
+	// visibility read and the one the shared check's own read reaches among them, inherits this
+	// process's environment (leakguard's Guard.base), and would write its own steps over this
+	// call's, so the name leaves the environment before anything starts. No caller of runGh
+	// reads the environment after it: runGh runs once, as this process's command.
+	_ = os.Unsetenv(ghStepFileVar)
+	steps.write(ghStepConfig)
 	repo, commandPath, visibilitySource := "", "", ""
 	logCall := true
 	defer func() {
@@ -240,6 +259,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// reads anything of it. gh's help of each command on the way is read once per gh binary
 		// and kept for the calls after, in the role's own state volume (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
+		steps.write(ghStepHelp)
 		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, ghRoleStateBase, env, helpEnv).read, func() ([]ghRemote, error) { return readGitRemotes(beforeGh) },
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
@@ -321,14 +341,35 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// This read is the guard's own, which the switch above routed: checking it would call
 		// the guard again.
 	case ghReadCall, ghGuardedCall:
+		// The guard tells its three steps as it starts each, where the caller asked for them.
+		var onStep func(leakguard.Step)
+		if steps != nil {
+			onStep = steps.write
+		}
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
+			OnStep:    onStep,
 			Curl:      leakguardCurl,
 			RoleState: ghRoleStateBase,
 		})
-		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
+		// The guard bounds its wait for a near rate-limit reset by its context's deadline
+		// (leakguard's Guard.waitFits), and beforeGh has none: a caller's own bound ends this
+		// process from outside. A caller that names its deadline (ghDeadlineVar) gives the guard
+		// that bound, so a wait that would end after it is not made and the visibility is read
+		// another way at once. The deadline is read as the guard starts, and one that has passed
+		// by then is no deadline (ghCallerDeadline), as an unset one is: a call is never refused
+		// for a deadline spent before its guard ran. One that passes while the guard runs stops
+		// the guard's children, as the caller's own kill at that moment does. A signal is still
+		// read off beforeGh alone.
+		guardCtx := beforeGh
+		if deadline, ok := ghCallerDeadline(env, time.Now()); ok {
+			var cancel context.CancelFunc
+			guardCtx, cancel = context.WithDeadline(beforeGh, deadline)
+			defer cancel()
+		}
+		answer, err := guard.GhCall(guardCtx, leakguard.GhRequest{
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
@@ -391,6 +432,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if status, ok := signalled(beforeGh); ok {
 		return status
 	}
+	steps.write(ghStepGh)
 	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
 }
 

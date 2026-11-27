@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    `legion gh` runs the leak guard under the deadline a caller names in `LEGION_GH_DEADLINE`
+    (Unix milliseconds), so where GitHub refuses the guard's visibility read for a spent core rate
+    limit, the guard reads the visibility through GraphQL at once rather than wait for a reset the
+    caller would not see. A value that is unset, does not parse or has passed is no deadline, and
+    gh is never handed it. Where a caller names a file in `LEGION_GH_STEP_FILE`, in a directory of
+    mode 0700 that its user owns, `legion gh` writes into it the step the call is in as each step
+    starts (`config`, `help`, `check`, `visibility`, `rules`, `gh`).
+time: 2026-11-27T21:15:02Z
+custom:
+    Issue: INFRA-3562

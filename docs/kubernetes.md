@@ -6489,6 +6489,8 @@ Each row's check, and the fact a passing one reports:
   Envoy tools registered; dispatch read <issue> answered from <path>`.
 
 - `github`: `gh api graphql -f query='{ viewer { login } }'` answers the role's App login under the role's token file (REST `GET /user` is not a call an App installation token may make, so the row never reads it) — `gh viewer login: <login>`.
+  The row hands `legion gh` a step file in a directory of mode 0700 of its own (`LEGION_GH_STEP_FILE`), where `legion gh` writes the step it is in as each starts (`config`, `help`, `check`, `visibility`, `rules`, then `gh`), and its own deadline (`LEGION_GH_DEADLINE`, in Unix milliseconds), so the leak guard waits for no rate-limit reset the row would not see.
+  A call still running at the row's 8 s reads `did not finish within 8 s; at <step>, <ms> ms after legion gh started`, the step from that file, or `did not finish within 8 s; legion gh wrote no step` where the file holds no step.
 
 The daemon renders a live row from its live sessions' reports.
 A live session is a claim that is ready, working or idle whose report came from its current process (the report's `incarnation` is the claim's locator's), so a claim relaunched, suspended or retired since its session reported keeps no row open until the new process reports.

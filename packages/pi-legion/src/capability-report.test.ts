@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +27,7 @@ interface RecordedRun {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly signal: AbortSignal;
+  readonly env: Readonly<Record<string, string>> | undefined;
 }
 
 interface RecordedSearch {
@@ -63,7 +64,7 @@ function fakeHost(overrides: Partial<CapabilityHost> = {}): CapabilityHost & {
     discoverExtensionPaths: async () => [],
     loadSkills: async () => ({ skills: [] }),
     run: async (command, args, options) => {
-      runs.push({ command, args, cwd: options.cwd, signal: options.signal });
+      runs.push({ command, args, cwd: options.cwd, signal: options.signal, env: options.env });
       return command === "gh"
         ? { code: 0, stdout: "legion-implementer[bot]\n", stderr: "" }
         : { code: 0, stdout: "LEGION-663 · Capability report\n", stderr: "" };
@@ -121,6 +122,38 @@ function passingNamesExceptTheDiskCheck(report: LegionCapabilityReportBody): str
   return report.rows
     .filter((row) => row.ok && row.name !== "repository-extensions")
     .map((row) => row.name);
+}
+
+type RunOptions = Parameters<CapabilityHost["run"]>[2];
+
+/** `fakeHost` with its gh call answered by `gh`, which is handed the call's options and runs as
+ * the call starts, so a step file it writes is there before the check's budget starts counting. */
+function ghHost(
+  gh: (options: RunOptions) => CommandResult | Promise<CommandResult>
+): CapabilityHost {
+  return fakeHost({
+    run: async (command, _args, options) =>
+      command === "gh"
+        ? gh(options)
+        : { code: 0, stdout: "LEGION-663 · Capability report\n", stderr: "" },
+  });
+}
+
+/** The step file the github row's call names for `legion gh` (LEGION_GH_STEP_FILE). */
+function stepFile(options: RunOptions): string {
+  const file = options.env?.LEGION_GH_STEP_FILE;
+  if (file === undefined) throw new Error("the gh call names no LEGION_GH_STEP_FILE");
+  return file;
+}
+
+/** A command that runs until its signal aborts and then ends as a killed child does, with no exit
+ * code: what `Bun.spawn` answers once a check's budget aborts the call. */
+function untilAborted(signal: AbortSignal): Promise<CommandResult> {
+  const ended = Promise.withResolvers<CommandResult>();
+  signal.addEventListener("abort", () => ended.resolve({ code: null, stdout: "", stderr: "" }), {
+    once: true,
+  });
+  return ended.promise;
 }
 
 describe("the report", () => {
@@ -227,8 +260,17 @@ describe("the report", () => {
   test("a whole-second budget reads in seconds", async () => {
     const host = fakeHost({ run: () => Promise.withResolvers<never>().promise });
     const report = await measureCapabilities(host, input(), { checkMs: 1_000, reportMs: 1_500 });
-    const github = report.rows.find((row) => row.name === "github");
-    expect(github).toEqual({ name: "github", ok: false, detail: "did not finish within 1 s" });
+    expect(report.rows.find((row) => row.name === "dispatch-envoy-tools")).toEqual({
+      name: "dispatch-envoy-tools",
+      ok: false,
+      detail: "did not finish within 1 s",
+    });
+    // This gh wrote no step file, as no `legion gh` stood behind it.
+    expect(report.rows.find((row) => row.name === "github")).toEqual({
+      name: "github",
+      ok: false,
+      detail: "did not finish within 1 s; legion gh wrote no step",
+    });
   });
 
   // INFRA-927: the session measures again while a row is missing (src/capability-schedule.ts), so
@@ -816,6 +858,186 @@ describe("github", () => {
     const rows = await measure(fakeHost({ run: installationToken }));
     expect(rows.github.ok).toBe(true);
     expect(rows.github.detail).toContain("legion-reviewer[bot]");
+  });
+
+  // The row's call is `legion gh` in a pod, and it tells that command where to write the step it
+  // is in (LEGION_GH_STEP_FILE) and when the row gives up on it (LEGION_GH_DEADLINE, Unix
+  // milliseconds), so that a miss names the step and the leak guard waits for no rate-limit reset
+  // the row would not see. The command and its argv stay as above.
+  test("the call's environment names a step file in a directory of mode 0700 and the row's own deadline; dispatch's names neither", async () => {
+    const runs: RecordedRun[] = [];
+    let stepDirectory:
+      | { readonly mode: number; readonly uid: number; readonly link: boolean }
+      | undefined;
+    let ranAt = 0;
+    const host = fakeHost({
+      run: async (command, args, options) => {
+        runs.push({ command, args, cwd: options.cwd, signal: options.signal, env: options.env });
+        if (command !== "gh")
+          return { code: 0, stdout: "LEGION-663 · Capability report\n", stderr: "" };
+        ranAt = Date.now();
+        const info = lstatSync(path.dirname(stepFile(options)));
+        stepDirectory = { mode: info.mode & 0o7777, uid: info.uid, link: info.isSymbolicLink() };
+        return { code: 0, stdout: "legion-implementer[bot]\n", stderr: "" };
+      },
+    });
+    const before = Date.now();
+    const report = await measureCapabilities(host, input());
+
+    expect(report.rows.find((row) => row.name === "github")?.ok).toBe(true);
+    const gh = runs.find((run) => run.command === "gh");
+    expect(gh?.args).toEqual([
+      "api",
+      "graphql",
+      "-f",
+      "query={viewer{login}}",
+      "--jq",
+      ".data.viewer.login",
+    ]);
+    expect(Object.keys(gh?.env ?? {}).sort()).toEqual([
+      "LEGION_GH_DEADLINE",
+      "LEGION_GH_STEP_FILE",
+    ]);
+    expect(path.isAbsolute(gh?.env?.LEGION_GH_STEP_FILE ?? "")).toBe(true);
+    expect(stepDirectory).toEqual({ mode: 0o700, uid: process.getuid?.() ?? -1, link: false });
+    // The check started between `before` and its call, and its deadline is that start plus its
+    // budget, 8 s.
+    expect(gh?.env?.LEGION_GH_DEADLINE).toMatch(/^[1-9][0-9]*$/);
+    const deadline = Number(gh?.env?.LEGION_GH_DEADLINE);
+    expect(deadline).toBeGreaterThanOrEqual(before + CAPABILITY_CHECK_TIMEOUT_MS);
+    expect(deadline).toBeLessThanOrEqual(ranAt + CAPABILITY_CHECK_TIMEOUT_MS);
+    expect(runs.find((run) => run.command === "dispatch")?.env).toBeUndefined();
+  });
+
+  test("a call that answers before its deadline reads its login, and its step file's directory is gone", async () => {
+    const host = fakeHost();
+    const rows = await measure(host);
+    expect(rows.github).toEqual({ ok: true, detail: "gh viewer login: legion-implementer[bot]" });
+    const file = host.runs.find((run) => run.command === "gh")?.env?.LEGION_GH_STEP_FILE ?? "";
+    expect(file).not.toBe("");
+    expect(existsSync(path.dirname(file))).toBe(false);
+  });
+
+  test("a call that fails before its deadline reads gh's first stderr line, and its step file's directory is gone", async () => {
+    let file = "";
+    const rows = await measure(
+      ghHost((options) => {
+        file = stepFile(options);
+        writeFileSync(file, "gh 2210\n");
+        return { code: 1, stdout: "", stderr: "gh: HTTP 502: Bad Gateway\nsecond line\n" };
+      })
+    );
+    expect(rows.github).toEqual({
+      ok: false,
+      detail: "gh viewer login failed: gh: HTTP 502: Bad Gateway",
+    });
+    expect(existsSync(path.dirname(file))).toBe(false);
+  });
+
+  test("a call still running at its deadline names the step its step file holds, and the deadline removes its step file's directory", async () => {
+    let file = "";
+    const report = await measureCapabilities(
+      ghHost((options) => {
+        file = stepFile(options);
+        writeFileSync(file, "visibility 6120\n");
+        // A call that outlives its abort as well, so the directory is gone at the deadline and
+        // not only once the call ends.
+        return Promise.withResolvers<never>().promise;
+      }),
+      input(),
+      { checkMs: 20, reportMs: 500 }
+    );
+    expect(report.rows.find((row) => row.name === "github")).toEqual({
+      name: "github",
+      ok: false,
+      detail: "did not finish within 20 ms; at visibility, 6120 ms after legion gh started",
+    });
+    expect(existsSync(path.dirname(file))).toBe(false);
+  });
+
+  test("a call still running at its deadline with no step file says legion gh wrote no step, read before the abort", async () => {
+    let file = "";
+    const report = await measureCapabilities(
+      ghHost((options) => {
+        file = stepFile(options);
+        // A step written once the signal aborts is past the deadline's reading, which has
+        // removed the directory by then, so the write finds no directory.
+        const lateStep = () => {
+          try {
+            writeFileSync(file, "gh 9999\n");
+          } catch {
+            // The directory is gone.
+          }
+        };
+        options.signal.addEventListener("abort", lateStep, { once: true });
+        return untilAborted(options.signal);
+      }),
+      input(),
+      { checkMs: 20, reportMs: 500 }
+    );
+    expect(report.rows.find((row) => row.name === "github")).toEqual({
+      name: "github",
+      ok: false,
+      detail: "did not finish within 20 ms; legion gh wrote no step",
+    });
+    expect(existsSync(path.dirname(file))).toBe(false);
+  });
+
+  // The file holds at most 64 bytes, one line `<step> <ms>`: one of the six steps `legion gh`
+  // starts, one space, and a count of milliseconds as Go's %d writes it. Anything else is no step.
+  const longest = `visibility ${"1".repeat(52)}`;
+  for (const [name, text, detail] of [
+    ["64 bytes", `${longest}\n`, `at visibility, ${"1".repeat(52)} ms after legion gh started`],
+    ["65 bytes", `${longest}1\n`, "legion gh wrote no step"],
+    ["empty", "", "legion gh wrote no step"],
+    ["two lines", "check 10\nvisibility 20\n", "legion gh wrote no step"],
+    ["no line end", "visibility 6120", "legion gh wrote no step"],
+    ["a carriage return before the line end", "visibility 6120\r\n", "legion gh wrote no step"],
+    ["a step legion gh does not start", "waiting 6120\n", "legion gh wrote no step"],
+    ["a negative count", "visibility -1\n", "legion gh wrote no step"],
+    ["a count with a leading zero", "visibility 06120\n", "legion gh wrote no step"],
+    ["two spaces", "visibility  6120\n", "legion gh wrote no step"],
+    ["no count", "visibility\n", "legion gh wrote no step"],
+  ] as const) {
+    test(`a call still running at its deadline whose step file holds ${name} reads ${detail}`, async () => {
+      const report = await measureCapabilities(
+        ghHost((options) => {
+          writeFileSync(stepFile(options), text);
+          return untilAborted(options.signal);
+        }),
+        input(),
+        { checkMs: 20, reportMs: 500 }
+      );
+      expect(report.rows.find((row) => row.name === "github")?.detail).toBe(
+        `did not finish within 20 ms; ${detail}`
+      );
+    });
+  }
+
+  test("every other row that misses its deadline reads the budget alone", async () => {
+    const never = () => Promise.withResolvers<never>().promise;
+    const report = await measureCapabilities(
+      fakeHost({
+        discoverAgents: never,
+        runSearchQuery: never,
+        loadMCPConfigs: never,
+        run: async (command, _args, options) => {
+          if (command === "gh") writeFileSync(stepFile(options), "gh 15\n");
+          return untilAborted(options.signal);
+        },
+      }),
+      input(),
+      { checkMs: 20, reportMs: 500 }
+    );
+    const details = Object.fromEntries(report.rows.map((row) => [row.name, row.detail]));
+    for (const name of ["subagents", "web-search", "mcp", "dispatch-envoy-tools"])
+      expect({ name, detail: details[name] }).toEqual({
+        name,
+        detail: "did not finish within 20 ms",
+      });
+    expect(details.github).toBe(
+      "did not finish within 20 ms; at gh, 15 ms after legion gh started"
+    );
   });
 });
 

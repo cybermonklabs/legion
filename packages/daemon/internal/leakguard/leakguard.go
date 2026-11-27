@@ -90,6 +90,13 @@ type Options struct {
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
+	// OnStep is told each step of GhCall as the step starts: the shared check (StepCheck), the
+	// destination's visibility read (StepVisibility) and the private-name pass (StepRules), each
+	// on every path that runs it, so a call the read rule clears with the check alone tells
+	// StepCheck and nothing more. Nil is the ordinary case. cmd/legion's `legion gh` fills it to
+	// write the step a call is in for a caller that asked (its LEGION_GH_STEP_FILE); Push and Text
+	// tell it nothing.
+	OnStep func(Step)
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),

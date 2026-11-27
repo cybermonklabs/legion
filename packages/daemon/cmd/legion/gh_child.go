@@ -102,9 +102,10 @@ var ghChildTestEnviron []string
 // GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_CONFIG_PARAMETERS, GIT_CEILING_DIRECTORIES,
 // GIT_DISCOVERY_ACROSS_FILESYSTEM, GH_EDITOR, EDITOR, VISUAL, GIT_EDITOR, GH_BROWSER, BROWSER,
 // PAGER, GH_HOST, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN, GH_TELEMETRY_ENDPOINT_URL,
-// GH_TELEMETRY, DO_NOT_TRACK, GH_DEBUG, GH_FORCE_TTY, and CLAUDE_CONFIG_DIR and DOCKER_CONFIG, which
+// GH_TELEMETRY, DO_NOT_TRACK, GH_DEBUG, GH_FORCE_TTY, CLAUDE_CONFIG_DIR and DOCKER_CONFIG, which
 // only `gh skills` and `gh attestation verify oci://` read and no Legion caller runs through
-// `legion gh`, among them.
+// `legion gh`, and LEGION_GH_STEP_FILE and LEGION_GH_DEADLINE, which a caller hands this command
+// for itself (runGh), among them.
 func ghChildKeeps(name string) bool {
 	return leakguard.TokenChildKeeps(name) || ghChildNames[name]
 }

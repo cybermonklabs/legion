@@ -1280,6 +1280,12 @@
       "name": "a detail quoting no credential",
       "detail": "gh viewer login: legion-implementer[bot]; connected: alpha (.omp/mcp.json)",
       "want": "gh viewer login: legion-implementer[bot]; connected: alpha (.omp/mcp.json)"
+    },
+    {
+      "pattern": "none",
+      "name": "a missed github row naming the step legion gh was in",
+      "detail": "did not finish within 8 s; at visibility, 6120 ms after legion gh started",
+      "want": "did not finish within 8 s; at visibility, 6120 ms after legion gh started"
     }
   ],
   "branches": [

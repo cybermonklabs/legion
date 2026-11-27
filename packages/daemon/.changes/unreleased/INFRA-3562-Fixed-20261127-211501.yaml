@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    In an issue pod, `legion gh` keeps its copies of gh's help in the role's own state volume,
+    `/var/run/legion/state/legion-gh/help`, which no other role of the pod sees, so another role
+    can no longer change what this role's wrapper parses. A copy in `$XDG_STATE_HOME/legion-gh/help`
+    is not read there. A tmux pane, which has no such volume, keeps them in `$XDG_STATE_HOME` as
+    before.
+time: 2026-11-27T21:15:01Z
+custom:
+    Issue: INFRA-3562

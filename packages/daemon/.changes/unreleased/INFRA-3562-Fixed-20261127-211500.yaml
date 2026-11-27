@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    The leak guard keeps a `private` or `internal` visibility answer for 2 minutes, so a repeated
+    `legion gh` call on such a repository makes one GitHub request and not two. It keeps the answer
+    in the role's own state volume, `/var/run/legion/state/legion-gh/visibility`, which no other
+    role of an issue pod sees, and reads it again once the 2 minutes from GitHub's answer pass; a
+    `public` answer stays kept for the pod's life as before, a failed read is never kept, and
+    where no such volume is there (a tmux pane) nothing `private` or `internal` is kept. The shared
+    leak check's own visibility read is still answered fresh.
+time: 2026-11-27T21:15:00Z
+custom:
+    Issue: INFRA-3562
