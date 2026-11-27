@@ -45,6 +45,10 @@
       "types": "./src/mise-environment.ts",
       "bun": "./src/mise-environment.ts"
     },
+    "./package-build": {
+      "types": "./src/package-build.ts",
+      "bun": "./src/package-build.ts"
+    },
     "./process-bounds": {
       "types": "./src/process-bounds.ts",
       "bun": "./src/process-bounds.ts"
