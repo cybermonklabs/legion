@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -2815,9 +2816,11 @@ type commitPullsFake struct {
 	// queries asks about: one read of an issue's results asks about every commit it must learn in
 	// one query of its repository.
 	commitQueried int
-	// refused maps a commit to the status that GitHub refuses the list of its pull requests with.
-	// GitHub answers the list of each other commit.
-	refused map[string]int
+	// refused maps a commit to the status that GitHub refuses the list of its pull requests with,
+	// over REST and in the batched query. restRefused refuses the REST list alone, and the batched
+	// query answers that commit. GitHub answers the list of each other commit.
+	refused     map[string]int
+	restRefused map[string]int
 	// refuseQuery, where set, is the status GitHub refuses a batched query of commits' pull
 	// requests with, given the commits the query names; 0 answers it. namedByQuery is every such
 	// query's commits, in the order GitHub was asked them, a refused query's included.
@@ -2888,6 +2891,17 @@ func (f *commitPullsFake) refusesCommitPulls(sha string, status int) {
 	f.refused[sha] = status
 }
 
+// refusesCommitPullsOverREST makes GitHub refuse the REST list of the pull requests of sha with
+// status from now on, while the batched query still answers it. The ask is counted.
+func (f *commitPullsFake) refusesCommitPullsOverREST(sha string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.restRefused == nil {
+		f.restRefused = map[string]int{}
+	}
+	f.restRefused[sha] = status
+}
+
 // commitsAnswer sets what GET /repos/{owner}/{repo}/pulls/{number}/commits answers from now on:
 // the status of GitHub's answer and, for a 200, its page of commits.
 func (f *commitPullsFake) commitsAnswer(answer func(repo, number string) (int, string)) {
@@ -2928,6 +2942,9 @@ func (f *commitPullsFake) serveCommitPulls(w http.ResponseWriter, r *http.Reques
 	f.asked[repo]++
 	answer := f.answer
 	status, refused := f.refused[r.PathValue("sha")]
+	if restStatus, restRefused := f.restRefused[r.PathValue("sha")]; restRefused && !refused {
+		status, refused = restStatus, true
+	}
 	f.mu.Unlock()
 	if refused {
 		w.WriteHeader(status)
@@ -2978,8 +2995,12 @@ func (f *commitPullsFake) commitsNamedByQueries(from int) [][]string {
 var factsAlias = regexp.MustCompile(`(r\d+): repository\(owner: \$(\w+), name: \$(\w+)\)|(p\d+): pullRequest\(number: (\d+)\)`)
 
 // commitPullsAlias reads the aliases of the batched query of a commit's pull requests (delivery's
-// commitPullsQuery), in their order: each is `c<i>: object(oid: "<sha>")`.
-var commitPullsAlias = regexp.MustCompile(`c\d+: object\(oid: "([0-9a-fA-F]+)"\)`)
+// commitPullsQuery), in their order: each is `c<i>: object(oid: "<sha>")`, and each reads the
+// first commitPullsFirst of the commit's pull requests.
+var (
+	commitPullsAlias = regexp.MustCompile(`c\d+: object\(oid: "([0-9a-fA-F]+)"\)`)
+	commitPullsFirst = regexp.MustCompile(`associatedPullRequests\(first: (\d+)\)`)
+)
 
 // commitPullsThroughMux answers POST /graphql for the batched query of the pull requests of many
 // commits (delivery's commitPullsQuery) from the mux's own REST route, as a test's own fake
@@ -3089,9 +3110,16 @@ func (f *commitPullsFake) serveCommitPullsQuery(t *testing.T, w http.ResponseWri
 		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(refusal))
 		return
 	}
+	// Each commit answers its first `first` pull requests, oldest first as GitHub lists them, with
+	// the count of them all, so a commit of more than the query reads is GitHub's answer too.
+	first := math.MaxInt
+	if read := commitPullsFirst.FindStringSubmatch(query); read != nil {
+		first, _ = strconv.Atoi(read[1])
+	}
 	commits := map[string]any{}
 	for index, alias := range aliases {
 		nodes := []any{}
+		total := 0
 		if answer != nil {
 			var pulls []json.RawMessage
 			if err := json.Unmarshal([]byte(answer(repo, alias[1])), &pulls); err != nil {
@@ -3099,7 +3127,8 @@ func (f *commitPullsFake) serveCommitPullsQuery(t *testing.T, w http.ResponseWri
 				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
 				return
 			}
-			for _, raw := range pulls {
+			total = len(pulls)
+			for _, raw := range pulls[:min(first, len(pulls))] {
 				var named struct {
 					Number int `json:"number"`
 				}
@@ -3118,7 +3147,7 @@ func (f *commitPullsFake) serveCommitPullsQuery(t *testing.T, w http.ResponseWri
 			}
 		}
 		commits["c"+strconv.Itoa(index)] = map[string]any{
-			"associatedPullRequests": map[string]any{"nodes": nodes},
+			"associatedPullRequests": map[string]any{"totalCount": total, "nodes": nodes},
 		}
 	}
 	if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": commits}}); err != nil {
