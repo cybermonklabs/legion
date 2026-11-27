@@ -60,19 +60,25 @@ function GroupCard({
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
-  write: (change: GroupChange) => void;
+  write: (change: GroupChange, press?: { onError?: () => void; onSuccess?: () => void }) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
   // The reader's rename draft, kept as they typed it while the group changes under it (a member
   // added, a rename from another tab): null while the reader has typed nothing, so the field
   // shows the group's name as it now stands, and back to null once the group's name is the draft.
-  // `sent` is the draft this card's Rename sent, until the reader types again: once the group's
-  // name is that draft as Rename sends it, trimmed, the draft goes too. A draft that is the name
-  // only once trimmed - a space typed before the next word - otherwise stays as typed.
+  // `sent` is the draft this card's Rename sent, until the reader types again or Dispatch refuses
+  // that Rename: once Dispatch has taken it (`landed`) and the group's name is that draft as Rename
+  // sends it, trimmed, the draft goes too. A draft that is the name only once trimmed - a space
+  // typed before the next word, or a Rename still out - otherwise stays as typed.
   const [draft, setDraft] = useState<string | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
-  if (draft !== null && (draft === group.name || (draft === sent && draft.trim() === group.name))) {
+  const [sent, setSent] = useState<{ readonly draft: string; readonly landed: boolean } | null>(
+    null
+  );
+  if (
+    draft !== null &&
+    (draft === group.name || (sent?.landed && draft === sent.draft && draft.trim() === group.name))
+  ) {
     setDraft(null);
     setSent(null);
   }
@@ -97,14 +103,22 @@ function GroupCard({
           className={secondaryButtonCompact}
           disabled={pending || name.trim() === "" || name.trim() === group.name}
           onClick={() => {
-            setSent(draft);
-            write({
-              group,
-              method: "PATCH",
-              run: (bounds) =>
-                api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
-              what: `the rename of the group ${group.name}`,
-            });
+            setSent({ draft: name, landed: false });
+            write(
+              {
+                group,
+                method: "PATCH",
+                run: (bounds) =>
+                  api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
+                what: `the rename of the group ${group.name}`,
+              },
+              // This press's own answer, and no rename that arrives meanwhile, decides `sent`.
+              {
+                onError: () => setSent(null),
+                onSuccess: () =>
+                  setSent((current) => (current === null ? null : { ...current, landed: true })),
+              }
+            );
           }}
           type="button"
         >
@@ -387,7 +401,7 @@ export function SessionGroupsEditor({
               pending={save.isPending}
               selected={selected}
               storedTitle={storedTitle}
-              write={(change) => save.mutate(change)}
+              write={(change, press) => save.mutate(change, press)}
             />
           ))}
         </section>

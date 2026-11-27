@@ -396,6 +396,75 @@ test("a rename sent with a trailing space follows the group's name once it lands
   }
 });
 
+// A rename Dispatch refused is no rename of this card's: the space the reader typed after its last
+// word stays as typed when another tab then renames the group to the name it trims to.
+test("a refused rename keeps its trailing space when another tab renames the group to the name it trims to", async () => {
+  const user = userEvent.setup();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockRejectedValue(
+    new ApiError(409, {
+      code: "SESSION_GROUP_NAME_TAKEN",
+      error: 'the group "Ship crew" already has that name',
+    })
+  );
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    expect(
+      await screen.findByText(
+        `Couldn't save the rename of the group Release crew — the group "Ship crew" already has that name`
+      )
+    ).toBeDefined();
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew ");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// Another tab's rename that lands while this card's Rename is still out is no answer to it: the
+// space the reader typed after its last word stays as typed, and the field follows the group's
+// name once this card's Rename lands.
+test("a rename still out keeps its trailing space under another tab's rename to that name, until it lands", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew ");
+    answer.resolve({ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:01Z" });
+    await waitFor(() => expect(nameOf("Ship crew").value).toBe("Ship crew"));
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
 test("a refusal shows as the server wrote it", async () => {
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(

@@ -450,6 +450,80 @@ test("text a reader types after their save went stays as typed when that save's 
   }
 });
 
+// A save Dispatch refused landed nothing of this tab's: a list the reader typed with a line break
+// after its last entry stays as typed when another writer's save then lands a record that holds
+// the same entries - and contradicts the refused save's deploy workflow - so the name they type
+// next is an entry of its own and the next Save sends three entries.
+test("a refused save keeps a list's trailing line break over another writer's record of that list", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const form = (initial: DeliverySettings) => (
+    <QueryClientProvider client={queryClient}>
+      <DeliverySettingsForm initial={initial} />
+    </QueryClientProvider>
+  );
+  const stored = { ...record, population_authors: ["alice", "bob"] };
+  const message =
+    "the GitHub App is not installed on acme/widgets: its token cannot read acme/widgets";
+  const putDeliverySettings = spyOn(api, "putDeliverySettings")
+    .mockRejectedValueOnce(new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: message }))
+    .mockResolvedValue(stored);
+  const view = render(form(stored));
+  try {
+    await user.type(field("Population authors"), "{Enter}");
+    await replace(user, "Deploy workflow", ".github/workflows/ship.yml");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    // Another writer changes only the excluded repositories.
+    view.rerender(
+      form({ ...stored, excluded_repos: ["acme/dojo"], updated_at: "2026-10-08T12:00:00Z" })
+    );
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    expect(field("Deploy workflow").value).toBe(".github/workflows/ship.yml");
+    await user.type(field("Population authors"), "carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(2));
+    expect(putDeliverySettings.mock.calls[1]?.[0]).toMatchObject({
+      population_authors: ["alice", "bob", "carol"],
+    });
+  } finally {
+    cleanup();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// A record that arrives while this tab's save is still out is no answer to it: a list typed with
+// a line break after its last entry stays as typed under another writer's record of the same
+// entries, and follows the record once the save lands.
+test("a record that arrives while the save is out keeps a list's trailing line break until the save lands", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const form = (initial: DeliverySettings) => (
+    <QueryClientProvider client={queryClient}>
+      <DeliverySettingsForm initial={initial} />
+    </QueryClientProvider>
+  );
+  const stored = { ...record, population_authors: ["alice", "bob"] };
+  const answer = Promise.withResolvers<DeliverySettings>();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockReturnValue(answer.promise);
+  const view = render(form(stored));
+  try {
+    await user.type(field("Population authors"), "{Enter}");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    // Another writer changes only the excluded repositories while the save is out.
+    const other = { ...stored, excluded_repos: ["acme/dojo"], updated_at: "2026-10-08T12:00:00Z" };
+    view.rerender(form(other));
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    answer.resolve({ ...other, updated_at: "2026-10-08T12:00:01Z" });
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
+  } finally {
+    cleanup();
+    putDeliverySettings.mockRestore();
+  }
+});
+
 // A save the reader stopped may have been made: the form says so, and that its button sends what
 // the fields hold then, rather than a failure it cannot know of.
 test("a save the reader stopped says it may have been made, not that it failed", async () => {

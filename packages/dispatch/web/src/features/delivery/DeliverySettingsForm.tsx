@@ -107,8 +107,8 @@ function savedForm(field: keyof Draft, text: string): string {
 }
 
 /** The fields of `next` that differ from `stored`: what the reader has changed. `form` reads each
- *  side before they are compared: as typed, or in its saved form for a field this tab's Save sent
- *  once the record changes (`DeliverySettingsFields`). */
+ *  side before they are compared: as typed, or in its saved form for a field of this tab's Save
+ *  once Dispatch has taken it (`DeliverySettingsFields`). */
 function changedFields(
   next: Draft,
   stored: Draft,
@@ -130,6 +130,15 @@ function stillSent(sent: Partial<Draft>, edited: Partial<Draft>): Partial<Draft>
   }
   return kept;
 }
+
+/** What this tab's newest Save sent: the fields it changed, as the reader typed them and has not
+ *  typed in since (`stillSent`), and whether Dispatch has taken that Save. */
+interface Sent {
+  readonly fields: Partial<Draft>;
+  readonly landed: boolean;
+}
+
+const NOTHING_SENT: Sent = { fields: {}, landed: false };
 
 /** The three optional job names the Pipeline page follows, in the order the form lists them. */
 const PIPELINE_JOB_FIELDS = [
@@ -176,8 +185,8 @@ interface DeliverySettingsFormProps {
  * and Save; a refusal shows under them. A one-line value longer than its field ends in an ellipsis
  * with the whole value as its title; a list wraps inside its own box. The fields the reader has
  * changed stay as they typed them when the record changes under them - anyone's save - and the
- * rest follow the record, as does a changed field once the record holds it as this tab's Save
- * sent it.
+ * rest follow the record, as does a changed field once this tab's Save of it has landed and the
+ * record holds it as that Save sent it.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
   const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
@@ -217,32 +226,28 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   // What the reader has changed, over the record as the server now holds it: a save from anywhere
   // refreshes the fields the reader has not touched and keeps the ones they have as they typed
   // them, so a line break typed to start the next entry stays, and the caret after it. `sent`
-  // holds the changed fields this tab's Save sent, as typed, until the reader types in one again.
-  // When the record changes, such a field whose saved form the record now holds follows the record
-  // again, so a list typed with a trailing line break or with commas, which Save rewrites, is not
-  // kept over the next writer's change.
+  // holds the changed fields this tab's newest Save sent, as typed, until the reader types in one
+  // again; a refusal of that Save drops them all. Once Dispatch has taken the Save, such a field
+  // whose saved form the record holds follows the record again, so a list typed with a trailing
+  // line break or with commas, which Save rewrites, is not kept over the next writer's change.
+  // While the Save is out, a record - another writer's - is no answer to it and keeps every field
+  // as typed.
   const stored = recordDraft(record);
-  const version = record?.updated_at ?? "unset";
   const [edited, setEdited] = useState<Partial<Draft>>({});
-  const [sent, setSent] = useState<Partial<Draft>>({});
-  const [seenVersion, setSeenVersion] = useState(version);
-  if (seenVersion !== version) {
-    setSeenVersion(version);
-    const ownSave = stillSent(sent, edited);
-    const kept = changedFields({ ...stored, ...edited }, stored, (field, text) =>
-      ownSave[field] === undefined ? text : savedForm(field, text)
-    );
+  const [sent, setSent] = useState<Sent>(NOTHING_SENT);
+  const ownSave = sent.landed ? stillSent(sent.fields, edited) : {};
+  const kept = changedFields({ ...stored, ...edited }, stored, (field, text) =>
+    ownSave[field] === undefined ? text : savedForm(field, text)
+  );
+  if (Object.keys(kept).length !== Object.keys(edited).length) {
     setEdited(kept);
-    setSent(stillSent(sent, kept));
-  } else {
-    const pending = changedFields({ ...stored, ...edited }, stored);
-    if (Object.keys(pending).length !== Object.keys(edited).length) setEdited(pending);
+    setSent({ ...sent, fields: stillSent(sent.fields, kept) });
   }
   const draft: Draft = { ...stored, ...edited };
   const setDraft = (next: Draft) => {
     const changed = changedFields(next, stored);
     setEdited(changed);
-    setSent(stillSent(sent, changed));
+    setSent({ ...sent, fields: stillSent(sent.fields, changed) });
   };
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
@@ -264,19 +269,26 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     submitGuard.guard(() => {
-      setSent(edited);
-      save.mutate({
-        deploy_repo: draft.deploy_repo,
-        deploy_workflow_path: draft.deploy_workflow_path.trim(),
-        excluded_repos: listEntries(draft.excluded_repos),
-        population_authors: listEntries(draft.population_authors),
-        pr_checks_workflow_path: draft.pr_checks_workflow_path.trim(),
-        production_job_names: lineEntries(draft.production_job_names),
-        production_apply_step_name: textOrNull(draft.production_apply_step_name),
-        pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
-        staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
-        staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
-      });
+      setSent({ fields: edited, landed: false });
+      save.mutate(
+        {
+          deploy_repo: draft.deploy_repo,
+          deploy_workflow_path: draft.deploy_workflow_path.trim(),
+          excluded_repos: listEntries(draft.excluded_repos),
+          population_authors: listEntries(draft.population_authors),
+          pr_checks_workflow_path: draft.pr_checks_workflow_path.trim(),
+          production_job_names: lineEntries(draft.production_job_names),
+          production_apply_step_name: textOrNull(draft.production_apply_step_name),
+          pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
+          staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
+          staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
+        },
+        // This press's own answer, and no record that arrives meanwhile, decides `sent`.
+        {
+          onError: () => setSent(NOTHING_SENT),
+          onSuccess: () => setSent((current) => ({ ...current, landed: true })),
+        }
+      );
     });
   };
 
