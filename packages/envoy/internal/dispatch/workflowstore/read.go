@@ -64,6 +64,46 @@ func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error
 	return steps, nil
 }
 
+// NewestPlan answers the plan of one issue's newest run: the plan node of the issue of the highest
+// generation, as ProjectPlans picks it (MadePlan.newerThan), nil where the issue has none. It reads
+// the `part_of` tuples into the issue as IssueSteps does, so it costs the issue's own plans alone.
+func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
+	rows, err := q.Query(ctx, `
+		select n.id, n.attributes, n.made_at
+		from workflow_tuples t
+		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindPlan+`' and t.asserted
+	`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	var newest *MadePlan
+	for rows.Next() {
+		var id string
+		var attributes []byte
+		var made time.Time
+		if err := rows.Scan(&id, &attributes, &made); err != nil {
+			return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
+		}
+		plan, err := planFrom(id, attributes)
+		if err != nil {
+			return nil, err
+		}
+		if candidate := (MadePlan{Plan: plan, Made: made}); candidate.newerThan(newest) {
+			newest = &candidate
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the plan of %s: %w", issue, err)
+	}
+	if newest == nil {
+		return nil, nil
+	}
+	return &newest.Plan, nil
+}
+
 // compareRuns is the order the runs of an issue happened in: by generation, then by start, a run
 // whose start never arrived first, then by id.
 func compareRuns(left, right Step) int {
