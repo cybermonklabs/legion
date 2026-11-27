@@ -1106,12 +1106,15 @@ type stepRecordsGitHub struct {
 }
 
 // stepRecordsPull is one pull request of the walk: its number, the branch it is open on, whether
-// GitHub has merged it, and its repository, liveRepo where empty.
+// GitHub has merged it, whether GitHub closed it without a merge, its repository, liveRepo where
+// empty, and the base it merges into, main where empty.
 type stepRecordsPull struct {
 	number int
 	branch string
 	merged bool
+	closed bool
 	repo   string
+	base   string
 }
 
 func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
@@ -1183,6 +1186,27 @@ func (g *stepRecordsGitHub) openIn(repo, branch string, number int) {
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch, repo: repo})
 }
 
+// openOnto is open of a pull request of liveRepo onto base, a branch other than main.
+func (g *stepRecordsGitHub) openOnto(branch string, number int, base string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch, base: base})
+}
+
+// closedUnmerged is GitHub's close of pull request number with no merge: every read from now on
+// answers it closed, and the list of open pull requests leaves it out (pullRequests). A number the
+// walk never opened fails the walk's test, as merged does.
+func (g *stepRecordsGitHub) closedUnmerged(number int) {
+	g.t.Helper()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	pull := g.find(number)
+	if pull == nil {
+		g.t.Fatalf("GitHub closed pull request #%d, which the walk never opened", number)
+	}
+	pull.closed = true
+}
+
 // inRepository says whether pull request number is of repo.
 func (g *stepRecordsGitHub) inRepository(number int, repo string) bool {
 	g.mu.Lock()
@@ -1226,13 +1250,16 @@ func (g *stepRecordsGitHub) find(number int) *stepRecordsPull {
 	return nil
 }
 
-// pullRequests is each pull request as GitHub answers it now, in the order they were opened.
+// pullRequests is each pull request of liveRepo as GitHub answers it now, in the order they were
+// opened: the list GitHub answers for its open pull requests (state=open), which leaves out one it
+// closed without a merge (closedUnmerged). A merged one stays in it, as the walks have always read
+// the list.
 func (g *stepRecordsGitHub) pullRequests() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	answers := []string{}
 	for _, pull := range g.pulls {
-		if pull.repo == "" {
+		if pull.repo == "" && !pull.closed {
 			answers = append(answers, pull.answer())
 		}
 	}
@@ -1251,16 +1278,23 @@ func (g *stepRecordsGitHub) pullRequest(number int) (string, bool) {
 }
 
 // answer is the pull request as GitHub's REST API answers it: open at stepRecordsHead and clean
-// until it merges, closed and merged from then on.
+// until it merges, closed and merged from then on, and closed and not merged once GitHub closed it
+// without a merge.
 func (p stepRecordsPull) answer() string {
 	state, merged, mergeable := "open", false, "clean"
-	if p.merged {
+	switch {
+	case p.merged:
 		state, merged, mergeable = "closed", true, "unknown"
+	case p.closed:
+		state, mergeable = "closed", "unknown"
 	}
-	repo := liveRepo
+	repo, base := liveRepo, "main"
 	if p.repo != "" {
 		repo = p.repo
 	}
-	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
-		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, repo)
+	if p.base != "" {
+		base = p.base
+	}
+	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q},"updated_at":"2026-11-17T00:00:00Z"}`,
+		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, repo, base)
 }

@@ -163,12 +163,12 @@ func heldForPullRequests(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, 
 //     of the plan that leaves only finished tasks, each while the linked pull request is open: the
 //     issue is held for pull-requests from merging over tasks that are all done, and closes at the
 //     linked merge, which the record finds by its issue column, or at the linked one's close with
-//     no merge;
+//     no merge, once the read of the branches of its tasks that close queues finds none open (D5);
 //   - row 8, a member of a lingering tree: its merge closes nothing while the linked pull request is
 //     open, and the expiry of the linger hands the member over;
 //   - row 9: a's own pull request, which the issue links, is open at the merge of b, the last: the
 //     stack's close leaves it open, the issue stays in merging, and closes when #42 merges, or
-//     when it closes with no merge;
+//     when it closes with no merge and the read of the branches finds none open;
 //   - row 10: a merges, and the issue links a's own pull request: a's merge is that pull request's
 //     merge, and the issue closes at it.
 //
@@ -331,9 +331,11 @@ func TestAnIssueWithTwoPullRequestsClosesAtTheLastMerge(t *testing.T) {
 	})
 
 	t.Run("row 7: the last step of a task that merges nothing, then the linked close with no merge", func(t *testing.T) {
-		pool, _, apply, root := noMergeInHand(t)
+		pool, engine, apply, root := noMergeInHand(t)
 		mustSpend(t, "the close of "+linkedPR, apply("closed-6990", deployClosed))
-		closedDone(t, pool, root.Key, "the close of "+linkedPR)
+		heldForPullRequests(t, pool, engine, root.Key, "the close of "+linkedPR+", before the read of the branches of its tasks")
+		readBranches(t, pool, apply, root.Key)
+		closedDone(t, pool, root.Key, "the read of the branches after the close of "+linkedPR)
 		if told := noticesOf(t, pool, root.Key, "pr-closed-unmerged"); len(told) != 0 {
 			t.Fatalf("the close of %s sent pr-closed-unmerged %+v, want none: a merge closed the issue's task", linkedPR, told)
 		}
@@ -416,7 +418,9 @@ func TestAnIssueWithTwoPullRequestsClosesAtTheLastMerge(t *testing.T) {
 		pool, apply, root := ownLinked(t)
 		mustSpend(t, "the close of a's #42", apply("closed-42", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head-a",
 			UpdatedAt: linkedAt.Add(time.Minute)}))
-		closedDone(t, pool, root.Key, "the close of a's #42")
+		stillOpen(t, pool, root.Key, phase.Merging, "the close of a's #42, before the read of the branches of its tasks")
+		readBranches(t, pool, apply, root.Key)
+		closedDone(t, pool, root.Key, "the read of the branches after the close of a's #42")
 	})
 
 	t.Run("row 10: a merge of the task's own pull request the issue links", func(t *testing.T) {

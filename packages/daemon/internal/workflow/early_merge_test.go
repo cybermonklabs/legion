@@ -20,7 +20,9 @@ import (
 // A pull request that finishes before the issue reaches merging — merged early, or closed without
 // merging — is the architect's to act on, as the shipped daemon routes it: the architect is told
 // once, naming the pull request and the phase the issue was in, and the issue's phase is left for
-// the architect to decide. A redelivered observation tells it nothing new.
+// the architect to decide. A redelivered observation tells it nothing new. The close of the last
+// open pull request is told once the daemon's read of the issue's branch finds none open
+// (dispatch://INFRA-5910 D5), which the redelivered close queues no second time.
 func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -28,19 +30,28 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 		fact   intake.Fact
 		kind   record.NoticeKind
 		reason string
+		// read is the end of the read of the branch that the first observation queues, nil for
+		// none.
+		read intake.Fact
 	}{
 		{name: "merged early", fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, kind: "pr-merged",
 			reason: "pull request sjawhar/legion#42 merged while LEGION-208 was in reviewing"},
 		{name: "closed without merging", fact: intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42}, kind: "pr-closed-unmerged",
-			reason: "pull request sjawhar/legion#42 closed without merging while LEGION-208 was in reviewing"},
+			reason: "pull request sjawhar/legion#42 closed without merging while LEGION-208 was in reviewing", read: noneOpenAfter("LEGION-208", "sjawhar/legion", 42)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head",
 				Failing: []string{}, CheckRuns: []record.AttemptRun{}})
-			for _, id := range []string{"finished", "redelivered"} {
-				if _, err := intake.ApplyFact(context.Background(), pool, "github", id, tc.fact, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			for _, id := range []string{"finished", "read", "redelivered"} {
+				fact := tc.fact
+				if id == "read" {
+					if fact = tc.read; fact == nil {
+						continue
+					}
+				}
+				if _, err := intake.ApplyFact(context.Background(), pool, "github", id, fact, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact %s: %v", id, err)
 				}
 			}
@@ -48,6 +59,13 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 			got := architectNotices(t, pool)
 			if len(got) != 1 || got[0].Kind != tc.kind || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, tc.reason) {
 				t.Fatalf("notices = %+v, want one %s to the architect beginning %q", got, tc.kind, tc.reason)
+			}
+			wantReads := 0
+			if tc.read != nil {
+				wantReads = 1
+			}
+			if reads := branchReadsOf(t, pool, "LEGION-208"); len(reads) != wantReads {
+				t.Fatalf("the outbox holds the reads of the branch of LEGION-208 %+v, want %d: the redelivered close queues none", reads, wantReads)
 			}
 		})
 	}
@@ -160,7 +178,7 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			reviewer: reviewer, facts: []intake.Fact{approval, pushFromHead, mergeNamingNoHead},
 			want: phase.Reviewing, notices: []record.NoticeKind{"pr-merged"}, held: heldPush, head: headOne},
 		{name: "a close without merging after the approval", state: record.PullRequestOpen, mergeState: record.MergeStateClean,
-			reviewer: approved, facts: []intake.Fact{closeUnmerged, completion},
+			reviewer: approved, facts: []intake.Fact{closeUnmerged, noneOpenAfter("LEGION-208", "sjawhar/legion", 42), completion},
 			want: phase.Reviewing, notices: []record.NoticeKind{"pr-closed-unmerged"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,8 +279,9 @@ func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
 
 // A close older than the pull request's newest lifecycle event is a late redelivery
 // (classify.LateLifecycle): it neither closes the pull request nor tells the architect. The newer
-// close closes it at the head it carries and tells the architect once, and that close redelivered at
-// its own clock, which is not late, tells it nothing more, since the pull request is already closed.
+// close closes it at the head it carries and tells the architect once, once the daemon's read of
+// the issue's branch finds none open (dispatch://INFRA-5910 D5), and that close redelivered at its
+// own clock, which is not late, tells it nothing more, since the pull request is already closed.
 func TestALateCloseTellsTheArchitectNothingAndARedeliveredCloseNothingMore(t *testing.T) {
 	t.Parallel()
 	earlier, later := lateApplied.Add(-time.Hour), lateApplied.Add(time.Minute)
@@ -276,7 +295,8 @@ func TestALateCloseTellsTheArchitectNothingAndARedeliveredCloseNothingMore(t *te
 		notices int
 	}{
 		{"late-close", lateClosed("head-b", earlier), "head-c", record.PullRequestOpen, 0},
-		{"close", lateClosed("head-d", later), "head-d", record.PullRequestClosed, 1},
+		{"close", lateClosed("head-d", later), "head-d", record.PullRequestClosed, 0},
+		{"read", noneOpenAfter("LEGION-208", "sjawhar/legion", 42), "head-d", record.PullRequestClosed, 1},
 		{"redelivered-close", lateClosed("head-d", later), "head-d", record.PullRequestClosed, 1},
 	} {
 		apply(step.id, step.fact)
@@ -284,21 +304,26 @@ func TestALateCloseTellsTheArchitectNothingAndARedeliveredCloseNothingMore(t *te
 			t.Fatalf("after %s the pull request is %+v, with architect notices %+v; want %s, %s, and %d", step.id, got, notices, step.head, step.state, step.notices)
 		}
 	}
+	if reads := branchReadsOf(t, pool, "LEGION-208"); len(reads) != 1 {
+		t.Fatalf("the outbox holds the reads of the branch %+v, want the one the close queued: the late and the redelivered closes queue none", reads)
+	}
 	assertPhase(t, pool, phase.Reviewing)
 }
 
 // A close newer than the closed record is a second close, with GitHub's reopen between the two
 // still undelivered, not a redelivery: it tells the architect once, whichever of the reopen and
-// the close arrives first, and the pull request ends closed at the close's head.
+// the close arrives first, once the daemon's read of the issue's branch finds none open
+// (dispatch://INFRA-5910 D5), and the pull request ends closed at the close's head.
 func TestASecondCloseTellsTheArchitectOnceWhicheverOrderItsReopenArrives(t *testing.T) {
 	t.Parallel()
 	reopened, closed := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
+	read := noneOpenAfter("LEGION-208", "sjawhar/legion", 42)
 	for _, tc := range []struct {
 		name  string
 		facts []intake.Fact
 	}{
-		{"the reopen delivered first", []intake.Fact{lateReopened("head-c", reopened), lateClosed("head-d", closed)}},
-		{"the close delivered first", []intake.Fact{lateClosed("head-d", closed), lateReopened("head-c", reopened)}},
+		{"the reopen delivered first", []intake.Fact{lateReopened("head-c", reopened), lateClosed("head-d", closed), read}},
+		{"the close delivered first", []intake.Fact{lateClosed("head-d", closed), lateReopened("head-c", reopened), read}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := appliedEvents(t, record.PullRequestClosed, tc.facts...)

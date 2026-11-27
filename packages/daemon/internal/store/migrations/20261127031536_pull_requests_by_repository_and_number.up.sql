@@ -1,8 +1,12 @@
 -- 20261127031536_pull_requests_by_repository_and_number.up.sql — each pull request of an issue
 -- keyed by its repository and its number (dispatch://INFRA-5910): pull_requests and what each pull
 -- request remembers of its settled heads keyed by (repo, number), the review decision of each pull
--- request, the issue's links to pull requests (pull_request_links), and the outbox kind that reads
--- a linked pull request (pull_request_link_read).
+-- request, the issue's links to pull requests (pull_request_links), and the two outbox kinds that
+-- read GitHub for an issue's set: the read of a linked pull request (pull_request_link_read), and
+-- the read of the branches of the issue's tasks that comes before the close of its last open pull
+-- request is told (pull_request_branch_read). No release holds this migration yet, so the second
+-- kind is written into it, in its kind check and in its way back, rather than into a migration of
+-- its own.
 --
 -- 20261122122826 keyed pull_requests by the issue and the branch, so two pull requests on one
 -- branch of an issue shared one row, and the second replaced the first: the deployment
@@ -54,22 +58,24 @@
 -- each read and stores it on no pull_requests row (record.PullRequest.Linked).
 --
 -- The outbox check is one list, so this migration names every kind of 20261126144204, its
--- thirty-six, in its order, and pull_request_link_read, thirty-seven in all. Its version stands
--- above 20261126144204 and main's 20261126110259, so on any database this list is the last word:
--- Migrate applies every unrecorded migration in version order, and a list of a lower version would
--- be applied after this one on a database that had not recorded it and refuse the new kind.
+-- thirty-six, in its order, and pull_request_link_read and pull_request_branch_read, thirty-eight
+-- in all. Its version stands above 20261126144204 and main's 20261126110259, so on any database
+-- this list is the last word: Migrate applies every unrecorded migration in version order, and a
+-- list of a lower version would be applied after this one on a database that had not recorded it
+-- and refuse the new kinds.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
 -- earlier image is pinned, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1, before the way back
 -- of any earlier migration. The release before decodes an outbox row strictly and knows neither the
--- kind pull_request_link_read, nor the notice kinds pr-closed-others-open, pr-holds-close and
--- pr-link-refused, nor the key repo on the payloads that name a pull request by its number; it
--- reads no hold reason pull-requests; and it writes pull_requests with `on conflict (issue,
--- branch)`, which needs the key (issue, branch). So the block deletes each row of the new kind,
--- each unsent notice of the three kinds and each row whose payload names a repo, and writes the
--- kind check of 20261126144204 again; ends the reason of each hold for pull-requests, which leaves
--- the issue held from merging with no reason; drops pull_request_links; keeps, of each issue, the
+-- kinds pull_request_link_read and pull_request_branch_read, nor the notice kinds
+-- pr-closed-others-open, pr-holds-close and pr-link-refused, nor the key repo on the payloads that
+-- name a pull request by its number; it reads no hold reason pull-requests; and it writes
+-- pull_requests with `on conflict (issue, branch)`, which needs the key (issue, branch). So the
+-- block deletes each row of the new kinds, each unsent notice of the three kinds and each row whose
+-- payload names a repo, and writes the kind check of 20261126144204 again; ends the reason of each
+-- hold for pull-requests, which leaves the issue held from merging with no reason; drops
+-- pull_request_links; keeps, of each issue, the
 -- rows on the branch of a task of its plan at its generation, in the issue's own repository (on
 -- legion/<KEY> where the issue has no plan rows there, as 20261122122826's way back reads it), and
 -- of two rows on one branch the newer (the higher head_updated_at, then the higher number), and
@@ -85,7 +91,7 @@
 -- daemon reads each linked pull request again from the issue's links.
 --
 -- begin;
--- delete from outbox where kind = 'pull_request_link_read';
+-- delete from outbox where kind in ('pull_request_link_read', 'pull_request_branch_read');
 -- delete from outbox where kind = 'notice' and payload->>'kind' in ('pr-closed-others-open', 'pr-holds-close', 'pr-link-refused');
 -- delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal', 'conflict_confirm', 'merge_forward',
 --   'task_pull_requests_close') and payload ? 'repo';
@@ -176,4 +182,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
   'merge_holds_changed', 'task_branch', 'task_pull_requests_close', 'task_copy_remove',
-  'pull_request_link_read'));
+  'pull_request_link_read', 'pull_request_branch_read'));

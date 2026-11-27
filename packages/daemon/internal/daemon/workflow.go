@@ -2001,7 +2001,10 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). The outbox's writes through GitHub's REST API (internal/ghbranch) run
+// (queueMergeStateFollow). The outbox's read of the branches of an issue's tasks lists them
+// through this runtime's own list of a branch's open pull requests and names the repository as
+// GitHub intake hears it, as the per-issue read does (openPullRequestsOn, heardSpelling). The
+// outbox's writes through GitHub's REST API (internal/ghbranch) run
 // the private-name rules boot compiled (privateNameRules). All are set before the records' wake
 // can reach the outbox (outboxWake). Whether an issue still holds its workspace, which a
 // repository kept for an unrecorded issue is answered while (keptRepository), is read from the
@@ -2018,6 +2021,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.readLinkedPullRequest, w.outbox.linkHead = w.readLinkedPullRequest, w.setLinkHead
+	w.outbox.openPullRequestsOn, w.outbox.heardSpelling = w.openPullRequestsOn, w.heardSpelling
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep

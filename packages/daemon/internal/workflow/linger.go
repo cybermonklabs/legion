@@ -538,8 +538,10 @@ type judgedClose struct {
 // and merge the merge it follows, nil for none: the departure of an issue beneath it (leave), the
 // boot's sweep (sweepMerged), the merge of a pull request of its set that is no task's own, a
 // linked one among them (mergedNotOwn), or of a task's own that it links whose task stands at no
-// merge (merged), the close of the last open pull request of its set with no merge (closed), and a
-// change of its links (takeLinks, pullRequestLinkRead, refuseLinkOfAnotherIssue). It reads the
+// merge (merged), the close of the last open pull request of its set with no merge, once the read
+// of the branches of its tasks that close queues has found none open (lastClosed, from
+// pullRequestBranchRead), and a change of its links (takeLinks, pullRequestLinkRead,
+// refuseLinkOfAnotherIssue). It reads the
 // issue again, and does nothing where the issue awaits no merge (awaitsMerge). An issue held for
 // its pull requests where no merge was in hand (record.HoldForPullRequests) is released where no
 // link of its set holds the close any longer (releaseHeldClose). Any other closes each merge in

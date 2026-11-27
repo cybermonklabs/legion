@@ -354,6 +354,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.pullRequestLinkRead(ctx, tx, fact)
 	case intake.PullRequestClosed:
 		return e.closed(ctx, tx, fact)
+	case intake.PullRequestBranchReadDone:
+		return e.pullRequestBranchRead(ctx, tx, fact)
 	case intake.PullRequestDequeued:
 		return e.dequeued(ctx, tx, fact)
 	case intake.PullRequestReviewRequests:

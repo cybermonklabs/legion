@@ -108,6 +108,10 @@ const (
 	// OutboxKindPullRequestLinkRead reads from GitHub a pull request that the issue links in
 	// Dispatch, in its own repository (PullRequestLinkRead).
 	OutboxKindPullRequestLinkRead OutboxKind = "pull_request_link_read"
+	// OutboxKindPullRequestBranchRead reads from GitHub the open pull requests on each branch a
+	// task of the issue holds, before the close of the last open pull request of the issue's set is
+	// decided (PullRequestBranchRead).
+	OutboxKindPullRequestBranchRead OutboxKind = "pull_request_branch_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -129,16 +133,18 @@ const (
 // that the project's merge holds changed (merge_holds_changed), the messages of a merge forward,
 // which go to the role asked to merge (MergeForwardAsker) and to the worker of the phase the issue
 // stays in (merge_forward), and an update round's ask, which goes to any claim whose process runs
-// in the issue's pod, its architect's included (update_ask). It also runs the three reads of
+// in the issue's pod, its architect's included (update_ask). It also runs the four reads of
 // GitHub that run from the outbox: the read before a merge-queue removal's message
 // (merge_queue_read), the second read of a head a first read found conflicting, whose confirmation
-// is what writes a merge forward's messages (conflict_confirm), and the read of a pull request the
-// issue links in Dispatch (pull_request_link_read). It is a lane of its
-// for as long as its architect holds no role (the daemon's errNoticeWaits): a worker told that its
-// open children ended its phase, a role given the words a hook fired on a move back, told that its
-// pull request left the merge queue or that the merge holds changed, asked to merge the base
-// forward or to hold while that merge runs, or asked to get ready for the replacement of its pod
-// must hear it while that is news, not after whatever the architect that owns its issue is owed.
+// is what writes a merge forward's messages (conflict_confirm), the read of a pull request the
+// issue links in Dispatch (pull_request_link_read), and the read of the branches of the issue's
+// tasks before the close of its last open pull request is told (pull_request_branch_read). It is a
+// lane of its for as long as its architect holds no role (the daemon's errNoticeWaits): a worker
+// told that its open children ended its phase, a role given the words a hook fired on a move back,
+// told that its pull request left the merge queue or that the merge holds changed, asked to merge
+// the base forward or to hold while that merge runs, or asked to get ready for the replacement of
+// its pod must hear it while that is news, not after whatever the architect that owns its issue is
+// owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -171,7 +177,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPullRequestLinkRead},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPullRequestLinkRead, OutboxKindPullRequestBranchRead},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -2832,16 +2838,42 @@ func (p MergeForwardMessage) readMerge() string {
 // repository, which need not be the issue's. A link whose pull request the record holds no row of
 // is a link whose read is still owed, and the read is what records it, or what refuses the link
 // (LinkRefusal). It is a durable row rather than a read held in memory for the reason
-// MergeQueueRead is: a restart between the link and its read loses nothing. No lane runs a row of
-// this kind yet, and no writer queues one: the read's executor and its lane come with the daemon's
-// reads of each linked pull request (step 8 of the plan of dispatch://INFRA-5910), so this release
-// decodes such a row, and its migration's kind check takes one.
+// MergeQueueRead is: a restart between the link and its read loses nothing. The daemon's outbox
+// runs it on the role-message lane (LaneRoleMessage).
 type PullRequestLinkRead struct {
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
 }
 
 func (PullRequestLinkRead) OutboxKind() OutboxKind { return OutboxKindPullRequestLinkRead }
+
+// PullRequestBranchRead is the daemon's read from GitHub, in the row's issue's repository and with
+// the implement App, of the open pull requests on each branch a task of the issue holds there
+// (Branches), as the per-issue read lists a task's branch (dispatch://INFRA-5910 D5). The workflow
+// queues it where Number of Repo, the last open pull request of the issue's set, closed without a
+// merge at the issue's generation Generation (the workflow's closed), and decides nothing of that
+// close in that transaction: a record an earlier daemon wrote can hold a second pull request of a
+// branch in the place of the first, which is still open, and an opened the daemon never got leaves
+// an open one unknown, so the close of the last recorded one could tell the architect that the
+// issue's pull request closed, or close the issue, while another is open. The read's fact
+// (intake.PullRequestBranchReadDone) records each pull request it finds open as its opened would
+// and then decides the close (the workflow's pullRequestBranchRead). It is a durable row for the
+// reason MergeQueueRead is: a restart between the close and the read loses nothing.
+type PullRequestBranchRead struct {
+	// Generation is the issue's generation at the close: the fact of a read queued at another
+	// generation decides nothing.
+	Generation uint64 `json:"generation"`
+	// Repo and Number name the pull request that closed, in its own repository, which need not be
+	// the issue's: a linked pull request is of the set too.
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	// Branches is each branch a task of the issue holds in the issue's repository
+	// (StoredPlan.HoldsBranch), in name order: the issue's own branch for an issue with no plan
+	// rows.
+	Branches []string `json:"branches"`
+}
+
+func (PullRequestBranchRead) OutboxKind() OutboxKind { return OutboxKindPullRequestBranchRead }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at
 // RetryBackoffMost.
@@ -3111,6 +3143,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindPullRequestLinkRead:
 		value := PullRequestLinkRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindPullRequestBranchRead:
+		value := PullRequestBranchRead{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -3617,6 +3655,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a linked pull request's read names the repository and the number of the pull request it reads; it names %q#%d",
 				value.Repo, value.Number)
 		}
+	case PullRequestBranchRead:
+		if value.Generation == 0 || value.Repo == "" || value.Number < 1 || len(value.Branches) == 0 || slices.Contains(value.Branches, "") {
+			return fmt.Errorf("a branch read names the generation, the pull request that closed and each branch it reads; it names generation %d, %q#%d and %q",
+				value.Generation, value.Repo, value.Number, value.Branches)
+		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
@@ -3756,9 +3799,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // `pr-closed-others-open` is a pull request of the issue closed without a merge while another of
 // its set is still open (D5): the close moves nothing, and the reason names the closed one and each
 // pull request of the set still open, a link whose read is owed or that Legion cannot read among
-// them. The workflow's close of a pull request (closed) writes it, in place of
-// `pr-closed-unmerged`, which it writes where none is open and the close of the issue, judged again
-// at that close, neither happens nor waits for the issues beneath it.
+// them. The workflow writes it in one place (tellOthersOpen), from two: the close of a pull request
+// (closed), where another of the set is open; and the end of the read of the branches of the
+// issue's tasks that the close of the last open one queues (PullRequestBranchRead, the workflow's
+// pullRequestBranchRead), where that read found a pull request open on one of them, which it then
+// names. It is written in place of `pr-closed-unmerged`, which the end of that read writes where
+// none is open and the close of the issue, judged again there, neither happens nor waits for the
+// issues beneath it.
 //
 // `pr-holds-close` is a pull request of the issue's set that holds the issue's close: a linked one
 // still open, one whose read is still owed, or one whose repository the daemon does not serve or

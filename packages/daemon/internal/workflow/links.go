@@ -268,7 +268,8 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // changes which links hold the issue's close (setHolds): a link whose read is owed holds it, and
 // once read it holds it only while its pull request is open. So the close is judged again
 // (judgeClose, decision 9), as each fact judges it that changes the set; the facts linkReadOf
-// applies judge it themselves where they change it (merged, closed).
+// applies judge it themselves where they change it (merged, and closed through the read of the
+// branches that it queues, pullRequestBranchRead).
 func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake.PullRequestLinkReadDone) (intake.Result, error) {
 	link, err := ghrepo.Under(e.cfg.RepositoryRenames, fact.Repo, func(name string) (*record.PullRequestLink, error) {
 		return e.store.PullRequestLinkOf(ctx, tx, name, fact.Number)

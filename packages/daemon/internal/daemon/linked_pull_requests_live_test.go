@@ -137,14 +137,15 @@ func (w *stackWalk) wrote(part string) []string {
 	return named
 }
 
-// closedA waits for GitHub to close a's pull request, and answers the comments on it.
+// closedA waits for GitHub to close a's pull request and carry its close comment, which
+// ghbranch.ClosePullRequest writes after the close PATCH, and answers the comments on it.
 func (w *stackWalk) closedA() []closingComment {
 	w.t.Helper()
 	var comments []closingComment
-	testwait.WithinPolling(w.t, stepRecordsWait, 100*time.Millisecond, "the stack to close a's pull request", func() bool {
+	testwait.WithinPolling(w.t, stepRecordsWait, 100*time.Millisecond, "the stack to close and comment on a's pull request", func() bool {
 		var state string
 		state, comments = w.closing.pull(w.pulls["a"])
-		return state == "closed"
+		return state == "closed" && len(comments) > 0
 	})
 	return comments
 }

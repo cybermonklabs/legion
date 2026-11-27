@@ -1266,6 +1266,30 @@ func LinkRead(project, issue, repo string, pull githubrest.PullRequest) (PullReq
 	return fact, fmt.Sprintf("link-read:%s:%s:%s#%d:%s:%s:%s", project, issue, repo, pull.Number, state, pull.Head.SHA, pull.UpdatedAt.UTC().Format(time.RFC3339Nano))
 }
 
+// PullRequestBranchReadDone is the daemon's read of the branches of Issue's tasks
+// (record.PullRequestBranchRead) ending: never decoded from an event. The read was queued where
+// pull request Number of Repo, the last open one of Issue's set, closed without a merge at the
+// issue's generation Generation (dispatch://INFRA-5910 D5), and it read from GitHub, in the issue's
+// repository, the open pull requests on each branch a task of the issue holds there, as the
+// per-issue read lists a task's branch. Open is each pull request it found, in number order, as
+// the opened its webhook would have carried (PullRequestOpened): its repository, number, branch,
+// base, head, head repository, page and GitHub's updated_at; whether it is a reopen is the
+// record's to say, which the workflow reads. Unread is why the read of a branch failed at its last
+// attempt, "" where each branch was read; the pull requests the other branches showed open are in
+// Open all the same. The workflow's handler records each of Open as its opened would record it and
+// then decides the close (workflow's pullRequestBranchRead). Like every fact, it applies under the
+// one fact lock (ApplyFact, SerializeFacts).
+type PullRequestBranchReadDone struct {
+	Issue      string
+	Generation uint64
+	Repo       string
+	Number     int
+	Open       []PullRequestOpened
+	Unread     string
+}
+
+func (f PullRequestBranchReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.

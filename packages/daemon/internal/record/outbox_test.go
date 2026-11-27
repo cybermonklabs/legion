@@ -322,7 +322,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
 		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
-		OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindPullRequestLinkRead}
+		OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindPullRequestLinkRead, OutboxKindPullRequestBranchRead}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -445,6 +445,10 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// applies what it read as a fact, as the conflict's second read does, and starts no turn
 		// (dispatch://INFRA-5910 decision 8).
 		OutboxKindPullRequestLinkRead: "",
+		// The read of the branches of an issue's tasks reads GitHub and applies what it read as a
+		// fact, as the read of a linked pull request does, and starts no turn; the notice its fact
+		// writes is held (dispatch://INFRA-5910 D5).
+		OutboxKindPullRequestBranchRead: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
 		// starts no turn, so the pause lets it run: a claim that ends or changes its session while
 		// the project is paused changes those holders, which Dispatch should show. The pause's own
@@ -643,6 +647,14 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue read of no pull request", payload: MergeQueueRead{Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a linked pull request's read of no repository", payload: PullRequestLinkRead{Number: 7}, reason: "a linked pull request's read names the repository and the number"},
 		{name: "a linked pull request's read of no number", payload: PullRequestLinkRead{Repo: "acme/gadgets"}, reason: "a linked pull request's read names the repository and the number"},
+		{name: "a branch read of no generation", payload: PullRequestBranchRead{Repo: "acme/deploy", Number: 3955, Branches: []string{"legion/LEGION-1276"}},
+			reason: "a branch read names the generation, the pull request that closed and each branch it reads"},
+		{name: "a branch read of no pull request", payload: PullRequestBranchRead{Generation: 1, Branches: []string{"legion/LEGION-1276"}},
+			reason: "a branch read names the generation, the pull request that closed and each branch it reads"},
+		{name: "a branch read of no branch", payload: PullRequestBranchRead{Generation: 1, Repo: "acme/deploy", Number: 3955},
+			reason: "a branch read names the generation, the pull request that closed and each branch it reads"},
+		{name: "a branch read of an empty branch", payload: PullRequestBranchRead{Generation: 1, Repo: "acme/deploy", Number: 3955, Branches: []string{""}},
+			reason: "a branch read names the generation, the pull request that closed and each branch it reads"},
 		{name: "a merge-queue read of a negative pull request", payload: MergeQueueRead{Number: -42, Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
@@ -987,6 +999,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue read with no head", row: OutboxRow{ID: 58, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":42}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a linked pull request's read of no repository", row: OutboxRow{ID: 60, Kind: OutboxKindPullRequestLinkRead, Payload: json.RawMessage(`{"number":7}`)}, reason: "a linked pull request's read names the repository and the number"},
+		{name: "a branch read of no branch", row: OutboxRow{ID: 61, Kind: OutboxKindPullRequestBranchRead, Payload: json.RawMessage(`{"generation":1,"repo":"acme/deploy","number":3955}`)},
+			reason: "a branch read names the generation, the pull request that closed and each branch it reads"},
+		{name: "a branch read with an unknown field", row: OutboxRow{ID: 62, Kind: OutboxKindPullRequestBranchRead,
+			Payload: json.RawMessage(`{"generation":1,"repo":"acme/deploy","number":3955,"branches":["legion/LEGION-1276"],"phase":"reviewing"}`)}, reason: "unknown field"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
 		{name: "a merge-holds change of no project", row: OutboxRow{ID: 62, Kind: OutboxKindMergeHoldsChanged, Payload: json.RawMessage(`{}`)}, reason: "a merge-holds change names the project"},

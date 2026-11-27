@@ -1752,9 +1752,11 @@ func toldFinding(r round) record.StuckTold {
 // than a sentence in a comment and nine calls spread through the handlers: the pull request's own
 // events, a push to it, a review, a CI settlement, and a push to the base it sits on. The switch
 // also names which of them move the head (classify.MergeStateFactHeadMove): the pull request
-// opened or reopened, and a synchronize, which is the fact that moves the head a push to the
-// branch carries (its case says why the push is not one). Apply calls it once, after the handler,
-// so a handler's own early return cannot drop the read and no handler recomputes the round
+// opened or reopened, each pull request the read of the branches of an issue's tasks found open,
+// which that read's end records as its opened would (pullRequestBranchRead), and a synchronize,
+// which is the fact that moves the head a push to the branch carries (its case says why the push is
+// not one). Apply calls it once, after the handler, so a handler's own early return cannot drop the
+// read and no handler recomputes the round
 // settleRound has just computed (dispatch://INFRA-714 R3). GitHub's own answer does not ask - the
 // fact a read applies is mergeability, and a read that asked for another would read the same head
 // for as long as GitHub kept answering the same way. What a read answers is the ladder's to decide
@@ -1781,6 +1783,17 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
 		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
+		kind = classify.MergeStateFactHeadMove
+	case intake.PullRequestBranchReadDone:
+		for _, opened := range fact.Open {
+			found, readErr := e.pullRequestRow(ctx, tx, opened.Repo, opened.Number)
+			if readErr != nil {
+				return readErr
+			}
+			if found != nil {
+				prs = append(prs, *found)
+			}
+		}
 		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestSynchronized:
 		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)

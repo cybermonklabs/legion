@@ -26,13 +26,15 @@ import (
 // (record.MergeQueueRemoval) and that the project's merge holds changed
 // (record.MergeHoldsChanged), and each message of a merge forward, the ask to the implementer or,
 // in merging, the merger, and the word to the worker of the phase the issue stays in
-// (record.MergeForwardMessage). Three reads of GitHub reach no session themselves, but their
+// (record.MergeForwardMessage). Four reads of GitHub reach no session themselves, but their
 // answers are what write a message, so each holds the pod as its message does: the read that comes
 // before a merge-queue removal's message (record.MergeQueueRead), the second read of a head a
 // first read found conflicting, whose confirmation writes a merge forward's messages
-// (record.ConflictConfirm), and the read of a pull request the issue links, whose refusal writes
-// the architect's notice (record.PullRequestLinkRead). The issue's board writes — its Dispatch
-// status, its messages on the Dispatch issue — reach no session and hold no pod. The same set is
+// (record.ConflictConfirm), the read of a pull request the issue links, whose refusal writes the
+// architect's notice (record.PullRequestLinkRead), and the read of the branches of the issue's
+// tasks, whose end writes the architect's notice of the close of its last open pull request
+// (record.PullRequestBranchRead). The issue's board writes — its Dispatch status, its messages on
+// the Dispatch issue — reach no session and hold no pod. The same set is
 // what the release's boundary is read over (IssueRelease), so the rule that holds a pod and the
 // rule that cancels its release never disagree about which row speaks to a role. Every kind of the
 // role-message lane belongs here: one left out lets the daemon release the issue's pod out from
@@ -43,7 +45,7 @@ import (
 // keptRoleMessageHoldBound), and holds the pod for that wait only while its role has a claim this
 // pod answers (idleWaitingRow).
 var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read",
-	"merge_queue_removal", "merge_holds_changed", "conflict_confirm", "merge_forward", "pull_request_link_read"}
+	"merge_queue_removal", "merge_holds_changed", "conflict_confirm", "merge_forward", "pull_request_link_read", "pull_request_branch_read"}
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary

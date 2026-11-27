@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -111,6 +113,8 @@ func mergeOf(t *testing.T, pool *pgxpool.Pool, key string) (*record.PullRequest,
 // rows, has #3654 opened from legion/LEGION-1276 onto main and then the draft #3955 from the same
 // branch onto legion/LEGION-1276-ci-base. Each row is one replay, on a record of its own:
 //   - both rows stand, and #3654, the first opened, stays the issue's pull request (decision 5);
+//   - at the open of #3955 the daemon logs one line that names #3654 and #3955, a pull request
+//     opened on a branch where another pull request of its issue is open (D1);
 //   - the close of #3955 tells the architect that #3654 is still open (pr-closed-others-open) and
 //     sends no pr-closed-unmerged, whose words say the issue's pull request closed (D5);
 //   - a link of #3955 takes it into the set as linked, still another pull request of the issue;
@@ -121,20 +125,25 @@ func mergeOf(t *testing.T, pool *pgxpool.Pool, key string) (*record.PullRequest,
 //     pull request of the issue, the issue closes, and the stack's close closes #3955 with the
 //     comment that the issue is done (decisions 9, 11 and 18).
 //
-// The fault it catches is the record keyed by the issue and the branch, or by the issue, the
+// The faults it catches are the record keyed by the issue and the branch, or by the issue, the
 // repository and the branch, the two keys dispatch://INFRA-5910/comment/37e6f13e-cb9d-4c00-9ee1-bf090dd747e3
-// offers: the open of #3955 takes the place of #3654, as read_record showed at 21:54:48Z.
+// offers: the open of #3955 takes the place of #3654, as read_record showed at 21:54:48Z; and the
+// log line left out, under which the second row finds no line that names both pull requests.
 func TestASecondPullRequestFromTheBranchReplacesNone(t *testing.T) {
 	t.Parallel()
 	draft := fmt.Sprintf("%s#%d", replayRepo, 3955)
-	opened := func(t *testing.T, at phase.Phase) (*pgxpool.Pool, func(string, intake.Fact) intake.Result) {
+	openedLogging := func(t *testing.T, at phase.Phase, log *slog.Logger) (*pgxpool.Pool, func(string, intake.Fact) intake.Result) {
 		t.Helper()
 		pool := migratedPool(t)
 		replayRoot(t, pool, at)
-		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, log))
 		mustSpend(t, "the open of #3654", apply("opened-3654", replayOpened(3654, "main", 0)))
 		mustSpend(t, "the open of #3955", apply("opened-3955", replayOpened(3955, replayCIBase, 5)))
 		return pool, apply
+	}
+	opened := func(t *testing.T, at phase.Phase) (*pgxpool.Pool, func(string, intake.Fact) intake.Result) {
+		t.Helper()
+		return openedLogging(t, at, nil)
 	}
 
 	t.Run("both stand, and #3654 stays the issue's pull request", func(t *testing.T) {
@@ -153,6 +162,21 @@ func TestASecondPullRequestFromTheBranchReplacesNone(t *testing.T) {
 		}
 		if got, want := pullRequestSetOf(t, pool, replayIssue), []string{replayRepo + "#3654", draft}; !slices.Equal(got, want) {
 			t.Errorf("the set of %s is %v, want %v", replayIssue, got, want)
+		}
+	})
+
+	t.Run("the open of #3955 logs one line that names #3654 and #3955", func(t *testing.T) {
+		var logged bytes.Buffer
+		openedLogging(t, phase.Reviewing, slog.New(slog.NewTextHandler(&logged, nil)))
+		var both []string
+		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+			if strings.Contains(line, replayRepo+"#3654") && strings.Contains(line, draft) {
+				both = append(both, line)
+			}
+		}
+		if len(both) != 1 {
+			t.Errorf("the opens of #3654 and #3955 logged %d lines that name both: %q; want one, at the open of #3955 on the branch where #3654 is open",
+				len(both), both)
 		}
 	})
 

@@ -144,6 +144,14 @@ type outbox struct {
 	// names the missing read.
 	readLinkedPullRequest func(ctx context.Context, issue, repo string, number int) (linkRead, error)
 	linkHead              func(repo string, number int, branch string)
+	// openPullRequestsOn is the list of the open pull requests of a repository on a branch, with
+	// the implement App (workflowRuntime.openPullRequestsOn), and heardSpelling the spelling GitHub
+	// intake hears a recorded repository under (workflowRuntime.heardSpelling): what the
+	// pull_request_branch_read row reads and names its facts by (pullRequestBranchRead), as the
+	// per-issue read does. Set by attach after newOutbox; a test that builds the outbox by hand
+	// leaves them nil, and the row then fails with an error that names the missing read.
+	openPullRequestsOn func(ctx context.Context, repo, branch string) ([]githubrest.PullRequest, error)
+	heardSpelling      func(repo string) string
 	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
 	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
 	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
@@ -1126,6 +1134,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeForwardMessage(ctx, row, value)
 	case record.PullRequestLinkRead:
 		return r.pullRequestLinkRead(ctx, row, value)
+	case record.PullRequestBranchRead:
+		return r.pullRequestBranchRead(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}

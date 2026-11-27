@@ -57,7 +57,7 @@ var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, Ren
 // name: a row of a kind of the release before names none, and means its issue's repository.
 var renamedPayloadKinds = "'" + strings.Join([]string{string(OutboxKindMergeQueueRead), string(OutboxKindMergeQueueRemoval),
 	string(OutboxKindConflictConfirm), string(OutboxKindMergeForward), string(OutboxKindTaskPullRequestsClose),
-	string(OutboxKindPullRequestLinkRead)}, "', '") + "'"
+	string(OutboxKindPullRequestLinkRead), string(OutboxKindPullRequestBranchRead)}, "', '") + "'"
 
 // RenameCandidate is one issue whose stored rows name a rename's old name: Rows is how many rows
 // of each table (RenameTables) do, which is what its write changes, and Spellings each spelling

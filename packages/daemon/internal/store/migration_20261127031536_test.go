@@ -35,16 +35,16 @@ const pullRequestKeys = `select k.conrelid::regclass::text || ' ' || k.conname |
 // branch, legion/LEGION-208, in its repository (#41, the older, and #44), a pull request of
 // another repository that the issue links (acme/gadgets#7), what each remembers of a settled head,
 // a review decision, LEGION-209 held for pull-requests, and the outbox's rows this release writes
-// and the release before cannot read: a read of a linked pull request, a notice of each of the
-// three new kinds, and a merge-queue read that names its repository. After it the keys and the
-// indexes of pull_requests and pull_request_settled_heads are the ones a database migrated to the
-// version before reads; of the two on one branch the older is gone, and so is the linked one, each
-// with its settled head, and the newer keeps its own, by the issue and the branch again; the links,
-// the review decisions and the hold's reason are gone, LEGION-209 stays held from merging; the
-// rows of the new kinds and the row with a repository are gone, while a merge-queue read of the
-// release before and an older notice stay; the outbox refuses the new kind again; and the version
-// row is gone, so the roll-forward's Migrate runs the migration again and the record reads #44 by
-// its repository and number.
+// and the release before cannot read: a read of a linked pull request, a read of the branches of
+// the issue's tasks, a notice of each of the three new kinds, and a merge-queue read that names its
+// repository. After it the keys and the indexes of pull_requests and pull_request_settled_heads are
+// the ones a database migrated to the version before reads; of the two on one branch the older is
+// gone, and so is the linked one, each with its settled head, and the newer keeps its own, by the
+// issue and the branch again; the links, the review decisions and the hold's reason are gone,
+// LEGION-209 stays held from merging; the rows of the new kinds and the row with a repository are
+// gone, while a merge-queue read of the release before and an older notice stay; the outbox refuses
+// each new kind again; and the version row is gone, so the roll-forward's Migrate runs the
+// migration again and the record reads #44 by its repository and number.
 func TestTheWayBackOfThePullRequestsMigrationRestoresTheKeyOfTheBase(t *testing.T) {
 	ctx := context.Background()
 	base := emptyStore(t)
@@ -97,6 +97,7 @@ func TestTheWayBackOfThePullRequestsMigrationRestoresTheKeyOfTheBase(t *testing.
 	}
 	for _, row := range []struct{ kind, payload string }{
 		{"pull_request_link_read", `{"repo": "acme/gadgets", "number": 7}`},
+		{"pull_request_branch_read", `{"generation": 1, "repo": "acme/gadgets", "number": 7, "branches": ["legion/LEGION-208"]}`},
 		{"notice", `{"kind": "pr-closed-others-open", "role": "architect"}`},
 		{"notice", `{"kind": "pr-holds-close", "role": "architect"}`},
 		{"notice", `{"kind": "pr-link-refused", "role": "architect"}`},
@@ -140,9 +141,13 @@ func TestTheWayBackOfThePullRequestsMigrationRestoresTheKeyOfTheBase(t *testing.
 		t.Fatalf("the outbox after the way back = %q, want %q: the rows the release before reads alone", got, want)
 	}
 	var pgErr *pgconn.PgError
-	if err := queue("pull_request_link_read", `{"repo": "acme/gadgets", "number": 7}`); !errors.As(err, &pgErr) || pgErr.Code != "23514" ||
-		pgErr.ConstraintName != "outbox_kind_check" {
-		t.Fatalf("queueing a pull_request_link_read row after the way back = %v, want the kind constraint to refuse it (23514)", err)
+	for _, row := range []struct{ kind, payload string }{
+		{"pull_request_link_read", `{"repo": "acme/gadgets", "number": 7}`},
+		{"pull_request_branch_read", `{"generation": 1, "repo": "acme/gadgets", "number": 7, "branches": ["legion/LEGION-208"]}`},
+	} {
+		if err := queue(row.kind, row.payload); !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "outbox_kind_check" {
+			t.Fatalf("queueing a %s row after the way back = %v, want the kind constraint to refuse it (23514)", row.kind, err)
+		}
 	}
 	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261127031536`); got[0] != "0" {
 		t.Fatalf("schema_version rows of %d after the way back = %s, want none", pullRequestsByRepositoryVersion, got[0])
