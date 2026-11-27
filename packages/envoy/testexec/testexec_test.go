@@ -66,7 +66,8 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 // and a Write of a package of that name elsewhere. The code a deployment runs is
 // planted in daemonish: the shapes the daemon's own program files had before programfile.Write,
 // the git helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a Chmod of the file to
-// 0o700, and a copy that keeps a file's mode.
+// 0o700, and a copy that keeps a file's mode. Its test file is left out: daemonish's tests run one
+// at a time, so the guard reads that package's code and not its tests.
 func TestUnguardedNamesEveryExecutableWriteThatMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -193,6 +194,15 @@ func masked(path string, mode os.FileMode) {
 	_ = os.WriteFile(path, nil, mode&0o755)
 	_ = os.WriteFile(path, nil, mode&^0o100)
 }
+`)
+	write("daemonish/install_test.go", `package daemonish
+
+import (
+	"os"
+	"testing"
+)
+
+func TestAlone(t *testing.T) { _ = os.WriteFile("v", nil, 0o755) }
 `)
 	write("other/go.mod", "module other\n")
 	write("other/other_test.go", `package other
