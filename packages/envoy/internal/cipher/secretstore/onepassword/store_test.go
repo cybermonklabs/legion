@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -298,5 +299,86 @@ func TestATitleOutsideTheSlugRuleIsNeverServed(t *testing.T) {
 	lookup, err := loader.LoadOne(ctx, "DEEL_API_KEY")
 	if err != nil || lookup.Served || lookup.Reason != policy.ReasonAbsent {
 		t.Errorf("LoadOne(DEEL_API_KEY) = %+v, %v; want absent", lookup, err)
+	}
+}
+
+// oneSource is one secret's two sources: the one the store lists it by, and the one the policy
+// serves it by, which a grant stores.
+type oneSource struct{ listed, served string }
+
+// TestTheSourcesAreTheFormAGrantStores pins the sources the 1Password store lists its secrets by,
+// and the policy serves them by, to literal values written out here. A grant stores its source in
+// Postgres (request_secrets.source), so a source that moves ends every live grant of a 1Password
+// deployment that upgrades. Nothing here builds a source from the package's constants, which would
+// compare the code with itself. It holds a stored secret and a typed one (google-login, which the
+// policy loads with no profile and serves by a mint: source), on a load (List, Load) and on a
+// reread of the one secret (Describe, LoadOne). Every source must also be of the form a real
+// vault answers: an item id is 26 lowercase letters and digits, as a vault id is.
+func TestTheSourcesAreTheFormAGrantStores(t *testing.T) {
+	fake := &onepasswordtest.Fake{}
+	deel := fake.Hold(onepassword.Item{Title: testPrefix + "deel-api-key", Credential: "deel-value", Cipher: owned()})
+	login := fake.Hold(onepassword.Item{
+		Title:      testPrefix + "google-login",
+		Credential: `{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`,
+		Cipher:     map[string]string{"owner": "ada@example.com", "tier": "human", "type": "google-login"},
+	})
+	if deel.ID != "fakeitem000000000000000001" || login.ID != "fakeitem000000000000000002" {
+		t.Fatalf("UNKNOWN: the fake gave the items %s and %s, not the ids the literal sources below name", deel.ID, login.ID)
+	}
+	want := map[string]oneSource{
+		"DEEL_API_KEY": {
+			listed: "onepassword:vault0000000000000000000aa/fakeitem000000000000000001",
+			served: "onepassword:vault0000000000000000000aa/fakeitem000000000000000001",
+		},
+		"GOOGLE_LOGIN": {
+			listed: "onepassword:vault0000000000000000000aa/fakeitem000000000000000002",
+			served: "mint:google-login:onepassword:vault0000000000000000000aa/fakeitem000000000000000002",
+		},
+	}
+	form := regexp.MustCompile(`^(mint:[a-z-]+:)?onepassword:[a-z0-9]{26}/[a-z0-9]{26}$`)
+	ctx := context.Background()
+	store := onepassword.New(fake, testVault, onepassword.Unlimited, nil)
+	loader := policy.Loader{Store: store, Prefix: testPrefix}
+	listings, err := store.List(ctx, testPrefix, secretstore.ReadOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	set, err := loader.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(listings) != len(want) {
+		t.Fatalf("List answered %d secrets, want the %d this test holds: %+v", len(listings), len(want), listings)
+	}
+	for _, ls := range listings {
+		name := policy.SlugToName(strings.TrimPrefix(ls.ID, testPrefix))
+		secret, served := set.Secrets[name]
+		if !served {
+			t.Fatalf("%s is not served (refused: %+v); want each secret served", name, set.Refused)
+		}
+		described, err := store.Describe(ctx, ls.ID, secretstore.ReadOptions{})
+		if err != nil {
+			t.Fatalf("Describe %s: %v", ls.ID, err)
+		}
+		lookup, err := loader.LoadOne(ctx, name)
+		if err != nil || !lookup.Served {
+			t.Fatalf("LoadOne %s = %+v, %v; want it served", name, lookup, err)
+		}
+		for _, got := range []struct {
+			reads string
+			oneSource
+		}{
+			{"List and Load", oneSource{listed: ls.Source, served: secret.Source}},
+			{"Describe and LoadOne, a reread", oneSource{listed: described.Source, served: lookup.Secret.Source}},
+		} {
+			if got.oneSource != want[name] {
+				t.Errorf("%s by %s: listed %q and served %q; want listed %q and served %q", name, got.reads, got.listed, got.served, want[name].listed, want[name].served)
+			}
+			for _, source := range []string{got.listed, got.served} {
+				if !form.MatchString(source) {
+					t.Errorf("%s by %s: the source %q is not of the form a real vault answers (%s)", name, got.reads, source, form)
+				}
+			}
+		}
 	}
 }
