@@ -7,6 +7,10 @@
 // requireKernel writes (packages/envoy/cmd/cipher), so a run on any machine says which it was.
 // go test shows that line wherever it shows the test binary's output: with -v or -json, for a
 // package that fails, and for the binary run directly.
+//
+// It also holds what a row reads from a process's own run where /proc's signal masks cannot say
+// it, as on gVisor: Child, a child a command leaves in its process group, which tells whether a
+// stop of that group reached it by the run's return, and ProcessEnded, whether a process is gone.
 package testkernel
 
 import (
