@@ -36,8 +36,10 @@ import {
 import { ROW_SELECTOR } from "./row-marker";
 
 export interface SelectionBarProps {
-  /** The bar's own element, for a page whose keymap puts the reader on it: Escape from a control
-   *  inside the bar focuses the bar itself when the press has left no row to return to. */
+  /** The bar's own element, for a page that reads it: where the page's keymap puts the reader on
+   *  it, Escape from a control inside the bar focuses the bar itself when the press has left no
+   *  row to return to; the project List arms the bar's hand-off at it for the press that answers
+   *  a dialog the bar opened (`IssuesTable`). */
   readonly barRef?: RefObject<HTMLElement | null>;
   /** What one press does to every selected row. */
   readonly children: ReactNode;
@@ -186,9 +188,11 @@ export interface MarkedList {
  * before any landing, and what its read owes again is noted afresh.
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
- * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms,
- * as the parent-status confirmation dialog for Move to epic does, ends on the body, because the
- * dialog's confirm is then the armed press and the bar's own gate is not.
+ * row nor to the page's body. A bar action that a dialog confirms, as the parent-status question
+ * of the project List's Move to epic does, or that a dialog names, as its New epic from these
+ * does, is handed on as any bar action is: the press that answers a dialog a bar action opened
+ * arms the hand-off at the bar's root too (`IssuesTable`), as a pick in a list portalled out of
+ * the bar is, so the bar's going after it is the reader's doing.
  */
 export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
@@ -772,9 +776,10 @@ function markShown(mark: HTMLElement, clips: Map<Element, boolean>, head: Elemen
  * (`outOfSight`). Nor does a going the reader did not cause - a refetch
  * that drops every marked row and empties the bar - which leaves the focus on the body, in no row,
  * and scrolls nothing. The press these read is the one that armed the hand-off (`armHandOff`): a
- * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so does Escape from
- * a control inside the bar (`armOnBarKey`); a press on a row's mark arms it while the bar is
- * drawn. A going with nothing armed leaves the focus on the body and scrolls nothing.
+ * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so do Escape from a
+ * control inside the bar (`armOnBarKey`) and the project List's press that answers a dialog a bar
+ * action opened (`IssuesTable`); a press on a row's mark arms it while the bar is drawn. A going
+ * with nothing armed leaves the focus on the body and scrolls nothing.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's
