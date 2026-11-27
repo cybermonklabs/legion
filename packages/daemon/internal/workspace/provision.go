@@ -155,7 +155,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)
 		}
-		_, err = runCheckedInWithin(ctx, run, workspace, request.checkoutBound(), []string{"jj", "sparse", "reset"})
+		_, err = runCheckedInWithin(ctx, run, workspace, run.Timeout(), []string{"jj", "sparse", "reset"})
 		release()
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
