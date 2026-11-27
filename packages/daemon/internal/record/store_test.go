@@ -939,44 +939,80 @@ func TestClaimSessionAnswersTheSeededSessionOrEmpty(t *testing.T) {
 	})
 }
 
-// SessionClaimsTree and SessionClaimsAnywhere together separate the three answers a claim
-// release stands on (the outbox's releaseClaim): a session the daemon records in the tree being
-// asked about, a session it records only in another tree — which owns its own issue, not this
-// one — and a session it holds no claim row for at all, which it cannot attribute.
+// SessionOfTree and SessionClaim together separate the answers a claim release stands on (the
+// outbox's releaseClaim), which a root waiting on a person reads too (workflow.Unresumable): a
+// session a claim of the asked tree names now; one a claim of that tree recorded and left behind,
+// which claim_sessions still holds for it; the same two of another tree's claim and of the project
+// controller's, which own no issue of this tree; and a name the daemon cannot attribute to any
+// claim: one claim_sessions holds for no claim (a name two claims recorded, which the boot logs),
+// one only another project's claim holds, and one nobody holds. SessionClaim names the claim with
+// the session it names now, so a caller tells a left session from a current one. SessionClaimsTree
+// reads claims.session alone, so it finds the current session of the asked tree and no left one.
 func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
-	seed := func(tx pgx.Tx, token, tree, session string) {
+	controller := string(claim.ControllerToken("legion"))
+	// seed records a claim of project in tree (the controller's on none), naming session now, and
+	// holds each of held for it in claim_sessions, as supervise's holdRecorded does at each
+	// registration.
+	seed := func(tx pgx.Tx, project, token, tree string, role claim.Role, session string, held ...string) {
 		t.Helper()
 		_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-			values ($1, 'LEGION', $2, $2, $3, 0, $4, '', $5, 0, 0, 0, 0)`,
-			token, tree, string(claim.RoleArchitect), session, string(supervise.StateWorking))
+			values ($1, $2, $3, $3, $4, 0, $5, '', $6, 0, 0, 0, 0)`,
+			token, project, tree, string(role), session, string(supervise.StateWorking))
 		must(t, err)
+		for _, name := range held {
+			_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, 'session', $2, $3)`,
+				project, name, token)
+			must(t, err)
+		}
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		seed(tx, "here", "LEGION-208", "ses-here")
-		seed(tx, "elsewhere", "LEGION-209", "ses-elsewhere")
+		seed(tx, "LEGION", "here", "LEGION-208", claim.RoleArchitect, "ses-here", "ses-here", "ses-here-left")
+		seed(tx, "LEGION", "elsewhere", "LEGION-209", claim.RoleArchitect, "ses-elsewhere", "ses-elsewhere", "ses-elsewhere-left")
+		seed(tx, "LEGION", controller, "", claim.RoleController, "ses-controller", "ses-controller", "ses-controller-left")
+		seed(tx, "OTHER", "theirs", "OTHER-5", claim.RoleArchitect, "ses-theirs", "ses-theirs")
+		_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ('LEGION', 'session', 'ses-conflict', '')`)
+		must(t, err)
 	})
+	here := SessionClaim{Token: "here", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleArchitect, Session: "ses-here"}
+	elsewhere := SessionClaim{Token: "elsewhere", Tree: "LEGION-209", Issue: "LEGION-209", Role: claim.RoleArchitect, Session: "ses-elsewhere"}
+	controlling := SessionClaim{Token: controller, Role: claim.RoleController, Session: "ses-controller"}
 	for _, tc := range []struct {
-		name            string
-		session         string
-		inTree, claimed bool
+		name    string
+		session string
+		// inTree is SessionClaimsTree's answer, ofTree SessionOfTree's, both for LEGION-208.
+		inTree bool
+		ofTree TreeSession
+		// claimed is the claim SessionClaim finds in project LEGION, and found whether it finds one.
+		claimed SessionClaim
+		found   bool
 	}{
-		{name: "claims the asked tree", session: "ses-here", inTree: true, claimed: true},
-		{name: "claims only another tree", session: "ses-elsewhere", claimed: true},
-		{name: "claims nothing anywhere", session: "ses-unknown"},
+		{name: "the current session of the asked tree", session: "ses-here", inTree: true, ofTree: TreeSessionCurrent, claimed: here, found: true},
+		{name: "a session the asked tree left behind", session: "ses-here-left", ofTree: TreeSessionLeft, claimed: here, found: true},
+		{name: "the current session of another tree", session: "ses-elsewhere", claimed: elsewhere, found: true},
+		{name: "a session another tree left behind", session: "ses-elsewhere-left", claimed: elsewhere, found: true},
+		{name: "the project controller's session", session: "ses-controller", claimed: controlling, found: true},
+		{name: "a session the project controller left behind", session: "ses-controller-left", claimed: controlling, found: true},
+		{name: "a name held for no claim", session: "ses-conflict"},
+		{name: "a name only another project's claim holds", session: "ses-theirs"},
+		{name: "a name nobody holds", session: "ses-unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, st, func(tx pgx.Tx) {
 				inTree, err := records.SessionClaimsTree(ctx, tx, "LEGION-208", tc.session)
 				must(t, err)
-				claimed, err := records.SessionClaimsAnywhere(ctx, tx, tc.session)
+				ofTree, err := records.SessionOfTree(ctx, tx, "LEGION-208", tc.session)
 				must(t, err)
-				if inTree != tc.inTree || claimed != tc.claimed {
-					t.Fatalf("%s claims LEGION-208 = %t and anywhere = %t, want %t and %t",
-						tc.session, inTree, claimed, tc.inTree, tc.claimed)
+				claimed, found, err := records.SessionClaim(ctx, tx, "LEGION", tc.session)
+				must(t, err)
+				if inTree != tc.inTree || ofTree != tc.ofTree {
+					t.Fatalf("%s claims LEGION-208 = %t and is its session %q, want %t and %q", tc.session, inTree, ofTree, tc.inTree, tc.ofTree)
+				}
+				if found != tc.found || (found && claimed != tc.claimed) {
+					t.Fatalf("SessionClaim(LEGION, %s) = %+v, %t, want %+v, %t", tc.session, claimed, found, tc.claimed, tc.found)
 				}
 			})
 		})
@@ -2528,7 +2564,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
-			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from"},
+			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from", "claim_left"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_awaiting", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
