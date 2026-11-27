@@ -324,11 +324,14 @@ func TestWorkerShimDoesNotRepairAfterAShimKilledMidBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	codegraphLog, building := filepath.Join(dir, "codegraph.log"), filepath.Join(dir, "building")
+	// The stand-in's `init` is the build in progress, and it and the first shim's agent run until the
+	// test kills them, or until this test process is gone, never for a span of their own, so a loaded
+	// machine that delays the kill cannot end either first and leave the kill nothing to signal.
 	standIn := `#!/bin/sh
 printf '%s\n' "$1" >> '` + codegraphLog + `'
 case "$1" in
 status) if [ -e .codegraph/begun ]; then echo '{"initialized":true,"index":{"state":"indexing"}}'; else echo '{"initialized":false}'; fi ;;
-init) mkdir -p .codegraph; : > .codegraph/begun; echo $$ > '` + building + `'; exec sleep 60 ;;
+init) mkdir -p .codegraph; : > .codegraph/begun; echo $$ > '` + building + `'; while kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done ;;
 index) exit 0 ;;
 esac
 `
@@ -344,7 +347,7 @@ esac
 	agentPID := filepath.Join(dir, "agent.pid")
 	first := exec.Command(os.Args[0], "worker-shim",
 		"--connect", "unix://"+socket, "--boot-token-file", token, "--warm-codegraph",
-		"--", "sh", "-c", `echo $$ > "$0"; echo '{"type":"fake_ready"}'; ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`, agentPID)
+		"--", "sh", "-c", `echo $$ > "$0"; echo '{"type":"fake_ready"}'; while kill -0 `+strconv.Itoa(os.Getpid())+` 2>/dev/null; do sleep 0.05; done`, agentPID)
 	first.Env = append(os.Environ(), testMainEnv+"=1")
 	var printed bytes.Buffer
 	first.Stdout, first.Stderr = &printed, &printed
