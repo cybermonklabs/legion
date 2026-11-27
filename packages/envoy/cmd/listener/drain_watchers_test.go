@@ -49,8 +49,9 @@ var listenerKVWatchers = []string{"interest registry", "role claims", "session r
 //     the test's own timers, so a stall of a process past a whole check can still let nats.go
 //     replace a consumer; the hold's record of the server's creates (ConsumerHold.Replaced) says
 //     whether it did, and the row requires the WARN only where it did not.
-//   - Consumers replaced by nats.go: the same consumers are deleted and the row waits for nats.go's
-//     replacements before the SIGTERM, so End meets them and warns of nothing. It deletes each, or,
+//   - Consumers replaced: the same consumers are deleted and the row waits for each one's
+//     replacement before the SIGTERM (awaitReplacedConsumer says which replacements count), so End
+//     meets them and warns of nothing. End deletes each, or,
 //     if a replacement's create is still in flight in the listener (the server has made it, the
 //     listener has not yet read the answer), deletes nothing, since nats.go has not yet named it to
 //     the subscription. nats.go deletes that one once the answer comes and it finds the
@@ -74,7 +75,8 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 		// lost deletes the interest and session watchers' consumers and holds them lost.
 		lost bool
 		// replaced deletes the interest and session watchers' consumers, then waits, still before
-		// the SIGTERM, until nats.go has put a consumer of its own in each one's place.
+		// the SIGTERM, until a consumer stands in each one's place: nats.go's own, or the rewatch's
+		// after a reconnect (awaitReplacedConsumer).
 		replaced bool
 		// frozen stops the server answering, then waits, still before the SIGTERM, until the
 		// listener's connection has gone stale, so the drain finds it reconnecting.
@@ -82,7 +84,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 	}{
 		{name: "consumers present"},
 		{name: "consumers already gone", lost: true},
-		{name: "consumers replaced by nats.go", replaced: true},
+		{name: "consumers replaced", replaced: true},
 		{name: "connection reconnecting at the drain", frozen: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -102,6 +104,8 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 			cacheWatcher := map[string]string{bus.InterestBucket: "interest registry", bus.SessionBucket: "session registry"}
 			// holds is each held consumer's hold, by the watcher whose consumer it is.
 			holds := map[string]*testnats.ConsumerHold{}
+			// deleted is each bucket's watcher consumer the replaced row deleted, by bucket.
+			deleted := map[string]string{}
 			for _, bucket := range buckets {
 				stream := "KV_" + bucket
 				switch {
@@ -109,6 +113,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 					holds[cacheWatcher[bucket]] = testnats.HoldConsumerLost(t, admin, stream, cacheWatcherConsumer(t, js, stream))
 				case test.replaced:
 					watcher := cacheWatcherConsumer(t, js, stream)
+					deleted[bucket] = watcher
 					if err := js.DeleteConsumer(t.Context(), stream, watcher); err != nil {
 						t.Fatalf("delete %s's watcher consumer %s: %v", bucket, watcher, err)
 					}
@@ -117,7 +122,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 			// Each bucket's replacement is waited for once both are lost, so the waits overlap.
 			if test.replaced {
 				for _, bucket := range buckets {
-					awaitReplacedConsumer(t, js, "KV_"+bucket)
+					awaitReplacedConsumer(t, js, listener, instance, "KV_"+bucket, deleted[bucket])
 				}
 			}
 			if test.frozen {
@@ -176,10 +181,10 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				return countRecords(listener, watcher+" watcher's consumer was already gone at its end", everyRecord) > 0
 			}
 			if test.replaced {
-				// The row reads End against nats.go's replacements only if End met them, and so
-				// found no consumer gone.
+				// The row reads End against the replacements awaitReplacedConsumer waited for only if
+				// End met them, and so found no consumer gone.
 				if slices.ContainsFunc(listenerKVWatchers, gone) {
-					t.Fatalf("a watcher's consumer was still gone at its end, so nats.go had not replaced it:\n%s", output)
+					t.Fatalf("a watcher's consumer was still gone at its end, so no replacement stood in its place:\n%s", output)
 				}
 				return
 			}
@@ -369,21 +374,42 @@ func cacheWatcherConsumer(t *testing.T, js jetstream.JetStream, stream string) s
 	return watchers[0]
 }
 
-// awaitReplacedConsumer waits until nats.go has put a consumer of its own on stream in the place of
-// the watcher consumer the test deleted from it (replacedByNATS).
-func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, stream string) {
+// awaitReplacedConsumer waits until a consumer stands on stream in the place of the watcher
+// consumer deleted from it: one nats.go made itself (replacedByNATS), or, ONLY once the listener's
+// main connection was lost and made again (mainConnection), one the listener's watcher made again,
+// reading values from each key's last record as cacheWatcherConsumer's does, under any name but the
+// deleted one. The second is the reconnect hook's rewatch. When the server falls silent for a few
+// seconds, the connection goes stale at its second unanswered ping (internal/bus/connect.go) and
+// reconnects, and the reconnect hook rewatches every cache: each watch is made again with a consumer
+// of its own, and the previous watcher is stopped (internal/kvwatch/kvwatch.go, Watcher.watch, "if
+// previous != nil"). nats.go's heartbeat check then finds the previous watcher's subscription closed and
+// returns (nats.go v1.55.0 js.go:2508, activityCheck), so nats.go replaces nothing; and while the
+// connection is not CONNECTED its check resets nothing either, only reporting ErrConsumerNotActive
+// (js.go:2520). Such a run cannot judge nats.go's reset. Without a reconnect only nats.go's consumer
+// counts, so a broken ordered reset still fails the row. It logs, under -v, which consumer replaced
+// the deleted one.
+func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, listener *listenerProcess, instance, stream, deleted string) {
 	t.Helper()
+	var by string
+	remade := false
 	replaced := func() bool {
+		_, remade = mainConnection(listener.Output.String(), instance)
 		for _, consumer := range streamConsumerInfos(t, js, stream) {
-			if replacedByNATS(consumer) {
+			switch {
+			case replacedByNATS(consumer):
+				by = "nats.go's ordered consumer " + consumer.Name
+				return true
+			case remade && consumer.Name != deleted && !consumer.Config.HeadersOnly && consumer.Config.DeliverPolicy == jetstream.DeliverLastPerSubjectPolicy:
+				by = "the watcher's own consumer " + consumer.Name + ", made again by the rewatch after the main connection was lost and made again, so this run does not judge nats.go's reset"
 				return true
 			}
 		}
 		return false
 	}
 	if !testwait.Holds(listenerWaitBound(t), 100*time.Millisecond, replaced) {
-		t.Fatalf("nats.go did not replace the watcher consumer deleted from %s", stream)
+		t.Fatalf("no consumer replaced the watcher consumer %s deleted from %s: none of nats.go's, and none of the watcher's own under a new name; the listener's main connection was made again: %t", deleted, stream, remade)
 	}
+	t.Logf("%s: the deleted watcher consumer %s was replaced by %s", stream, deleted, by)
 }
 
 // consumersLeft names the consumers stream carries other than those nats.go made itself in the
