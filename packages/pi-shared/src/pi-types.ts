@@ -21,7 +21,7 @@ export interface HostModel {
    * `anthropic`, …, or `unknown` for an id it cannot place, such as a gateway's alias. The
    * host's OpenAI `cyber_policy` hold closes the `openai` and `unknown` classes
    * (`closedByCyberPolicy`, `session/cyber-policy-closure.ts:9-11` at
-   * v18.18.6-sami.20261125-164517). A model the host hands back carries it; one a caller names
+   * v18.18.6-sami.20261126-222037). A model the host hands back carries it; one a caller names
    * by provider and id does not. */
   readonly identity?: { readonly class?: string };
 }
@@ -33,11 +33,11 @@ export interface HostModel {
  * selector and by the key of the model it resolves to, so an extension stepping down the same
  * chain can skip the entries the host suppresses. The host also passes over a route the OpenAI
  * `cyber_policy` closure holds closed until a person's next prompt (`isRetryFallbackEntrySuppressed`,
- * `session/turn-recovery.ts:2535-2544` at the pinned tag), and this registry does not expose that
+ * `session/turn-recovery.ts:2602-2611` at the pinned tag), and this registry does not expose that
  * closure: such an extension can pick a closed route. Before the next model call the host moves
  * the session off it to an open fallback where its chain has one, and holds the call otherwise
- * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3998-4004` and
- * `:4660-4663`).
+ * (`#leaveClosedRoute` and `installCyberPolicyGuard`, `session/agent-session.ts:3999-4005` and
+ * `:4661-4664`).
  * Each is a method of the live registry, which reads private state of its own, so a caller calls
  * it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
@@ -160,9 +160,9 @@ export interface SessionContext {
    * flight and, once the summary is committed or there was nothing to compact, resumes that turn
    * with the host's continue nudge; a compaction that interrupts nothing never continues, and a
    * failed one resumes nothing (`CompactOptions`, `extensibility/extensions/types.ts:545-567`, and
-   * `session/session-maintenance.ts:1999-2006, 2428-2437` at v18.18.6-sami.20261125-164517).
+   * `session/session-maintenance.ts:1999-2006, 2428-2437` at v18.18.6-sami.20261126-222037).
    * `origin: "outside"` ends the session's cyber-policy hold first, as a person's `/compact` does
-   * (`session/agent-session.ts:9369-9373` there). Its synchronous part aborts the agent, so a
+   * (`session/agent-session.ts:9415-9419` there). Its synchronous part aborts the agent, so a
    * caller inside a hook the agent loop awaits stops that loop's request before it is sent.
    * `mode` replaces the configured `compaction.methodOrder` for this one compaction: `soft` is a
    * text summary by the session's model (`session/compact-modes.ts:16, 40-57` there). Absent on a
@@ -284,7 +284,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261126-110039, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261126-222037, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
@@ -365,7 +365,7 @@ export interface AgentEndMessage {
   readonly errorMessage?: string;
   /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
    * one (`AssistantMessage.errorStatus`, `packages/ai/src/types.ts:1524-1525` of
-   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261126-110039`). The host copies this
+   * cybermonklabs/oh-my-pi at the pinned tag `v18.18.6-sami.20261126-222037`). The host copies this
    * field into its `prompt_result`'s `httpStatus`
    * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:236` at that tag), and the
    * turn-outcome report carries it as its own `httpStatus` (`packages/pi-legion/src/turn-outcome.ts`). */
@@ -386,7 +386,7 @@ export interface AgentEndEvent {
    * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:6486-6489` at the pinned tag), which OMP reaches only after
+   * be delivered (`agent-session.ts:6489-6492` at the pinned tag), which OMP reaches only after
    * each of its retries and continuations has declined the turn: the pane is idle until the job's
    * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
@@ -438,13 +438,13 @@ export interface SessionStopEvent {
 
 /**
  * What the host is about to compact, handed to `session_before_compact` before it summarizes
- * (`CompactionPreparation`, `packages/agent/src/compaction/compaction.ts:1393-1419` at
- * v18.18.6-sami.20261125-164517). The host goes on with this same object after the handlers
+ * (`CompactionPreparation`, `packages/agent/src/compaction/compaction.ts:1396-1422` at
+ * v18.18.6-sami.20261126-222037). The host goes on with this same object after the handlers
  * return (`session/session-maintenance.ts:2483-2507` there), so a handler that moves messages
- * between its lists changes what is summarized and what is kept: measured on that build, moving
- * every kept message into `messagesToSummarize` and naming the branch's leaf as the first kept
- * entry left the next request with the summary alone. Only the members this package changes are
- * typed.
+ * between its lists changes what is summarized and what is kept: measured on
+ * v18.18.6-sami.20261125-164517, moving every kept message into `messagesToSummarize` and naming
+ * the branch's leaf as the first kept entry left the next request with the summary alone. Only
+ * the members this package changes are typed.
  */
 export interface CompactionPreparation {
   firstKeptEntryId: string;
@@ -785,8 +785,8 @@ export interface PiApi {
       readonly triggerTurn: boolean;
       /** `"outside"` marks the message as input from outside the session, which ends the
        *  session's cyber-policy hold before the message is queued, whatever it is delivered as
-       *  (`sendCustomMessage`, `session/agent-session.ts:12605-12616` at
-       *  v18.18.6-sami.20261125-164517). Unset, it counts as made inside the session and the hold
+       *  (`sendCustomMessage`, `session/agent-session.ts:12675-12686` at
+       *  v18.18.6-sami.20261126-222037). Unset, it counts as made inside the session and the hold
        *  stays; a host without the option ignores it. */
       readonly origin?: "outside" | "inside";
     }
@@ -803,8 +803,8 @@ export interface PiApi {
       readonly deliverAs?: "aside" | "followUp";
       /** `"outside"` when the text is a person's own turn the extension relays: the host's
        *  `sendUserMessage` then ends the session's cyber-policy hold, as a prompt typed at its
-       *  terminal does (`session/agent-session.ts:13035`, the option at
-       *  `session/agent-session-types.ts:698-699`, at v18.18.6-sami.20261126-110039). Unset, the
+       *  terminal does (`session/agent-session.ts:13049`, the option at
+       *  `session/agent-session-types.ts:698-699`, at v18.18.6-sami.20261126-222037). Unset, the
        *  text counts as made inside the session and the hold stays; a host without the option
        *  ignores it. */
       readonly origin?: "outside" | "inside";
@@ -828,7 +828,7 @@ export interface PiApi {
        *  or skill so marked ends the session's cyber-policy hold as a prompt typed at the terminal
        *  does (`extensibility/extensions/send-user-input-handler.ts:89-142` and
        *  `SendUserInputOptions` at `extensibility/extensions/types.ts:2503-2508`, at
-       *  v18.18.6-sami.20261126-110039). Unset, the input counts as made inside the session and the
+       *  v18.18.6-sami.20261126-222037). Unset, the input counts as made inside the session and the
        *  hold stays. */
       readonly origin?: "outside" | "inside";
     }

@@ -26,11 +26,22 @@ function withFutureBlock(creatable: boolean): BlockSchema {
   };
 }
 
+/** The manifest with its version raised by one and nothing else changed: the next release's
+ *  build, which creates each element this one reads and creates only from that version. */
+function raisedByOne(schema: BlockSchema): BlockSchema {
+  return { ...schema, version: schema.version + 1 };
+}
+
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
 // computes it. Today's manifest creates every element it reads, the newest of them included, so
-// its R is its version, whatever version that is: the numbers come from the manifest, never from
-// a literal here, so raising the manifest does not break this row.
+// its R is its version, whatever version that is. The check block's `subject` and `program` are
+// the one pair staged for the release after their own: each is read from its `since` and created
+// from the version after it. That left R below V while they were the newest elements; both
+// versions are at or below V now, so the page creates them and they count toward R like any other
+// element, and the newest element sets it. An element the page reads and cannot create yet is held
+// to leaving R below V by the row after this one, which stages one. The numbers come from the
+// manifest, never from a literal here, so raising the manifest does not break this row.
 test("the compiled manifest is the page's own, and it creates everything it reads", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
@@ -40,17 +51,34 @@ test("the compiled manifest is the page's own, and it creates everything it read
     "plan_task",
     "check",
   ]);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(compiledBlockSchema.version);
+  const version = compiledBlockSchema.version;
+  const check = compiledBlockSchema.types.find(({ name }) => name === "check");
+  const subject = check?.attributes.subject;
+  const program = check?.attributes.program;
+  if (check === undefined || subject === undefined || program === undefined) {
+    throw new Error("the compiled manifest declares the check block's subject and program");
+  }
+  for (const attribute of [subject, program]) {
+    const { creatable_since: creatable, since } = attribute;
+    if (since === undefined || creatable === undefined) {
+      throw new Error("the manifest names the versions of the check block's subject and program");
+    }
+    expect(creatable).toBe(since + 1);
+    expect(creatable).toBeLessThanOrEqual(version);
+  }
+  expect(schemaCreatable(compiledBlockSchema)).toBe(version);
 });
 
 test("an element the page creates counts toward its creatable version, one it only reads does not", () => {
   expect(schemaCreatable(withFutureBlock(true))).toBe(compiledBlockSchema.version + 1);
-  expect(schemaCreatable(withFutureBlock(false))).toBe(compiledBlockSchema.version);
+  expect(schemaCreatable(withFutureBlock(false))).toBe(
+    schemaCreatable(raisedByOne(compiledBlockSchema))
+  );
 });
 
 test("nodes, marks, attributes and enum choices each count toward the creatable version", () => {
   const version = compiledBlockSchema.version + 1;
-  const shipped = schemaCreatable(compiledBlockSchema);
+  const raised = schemaCreatable(raisedByOne(compiledBlockSchema));
   const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
   const urgency = ask?.attributes.urgency;
   if (ask === undefined || urgency === undefined) {
@@ -83,7 +111,7 @@ test("nodes, marks, attributes and enum choices each count toward the creatable 
       ],
       version,
     })
-  ).toBe(shipped);
+  ).toBe(raised);
   expect(
     schemaCreatable(
       withAsk({ due: { creatable_since: version, kind: "timestamp", since: version } })

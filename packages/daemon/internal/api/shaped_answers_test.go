@@ -1319,10 +1319,10 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the five rows whose shape has
-// moved shape a State, an Issue, the release records, a refusal and register_plan's answer and
-// panic on anything else: a row handed the wrong type would fail here as an answer with no row
-// does, and never serve that body unshaped.
+// Each row is handed a body its own route could write, because the seven rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal, register_plan's answer and the
+// two registrations and panic on anything else: a row handed the wrong type would fail here as an
+// answer with no row does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers() {
@@ -1397,6 +1397,23 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 						t.Errorf("register_plan's answer served at %d = %+v, want each task's `needs` kept", contract, body)
 					}
 				}
+			case AnswerRegister:
+				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"}, Replaces: "ses_before"}
+				older := claim.RegisterResponse{ClaimToken: registration.ClaimToken, PromptAgents: registration.PromptAgents}
+				if shaped, _ := shapeAnswer(AnswerRegister, registration, ServingFloor, ServingFloor); !reflect.DeepEqual(shaped, any(older)) {
+					t.Errorf("a registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerRegister, registration, entryNumber(replacesContract), entryNumber(replacesContract)); !reflect.DeepEqual(shaped, any(registration)) {
+					t.Errorf("a registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
+				}
+			case AnswerRegisterController:
+				registration := ControllerRegisterResponse{ClaimToken: "legion-legion-controller", Replaces: "ses_before"}
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, ServingFloor, ServingFloor); shaped != any(ControllerRegisterResponse{ClaimToken: registration.ClaimToken}) {
+					t.Errorf("a controller's registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
+					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1407,11 +1424,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The five rows that shape a body of their own panic on a body of another type, as a row that
+// The seven rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerPlanRegister} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerPlanRegister, AnswerRegister, AnswerRegisterController} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

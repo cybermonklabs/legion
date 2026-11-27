@@ -60,11 +60,13 @@ export type WriteEvent =
   /** A 2xx whose body, read whole, is not the JSON its `Content-Type` says (cut short on the way):
    *  asked again under the key as a broken body is. */
   | "body-malformed"
-  /** A 5xx: asked again under the key. It can come after Dispatch committed the write. */
-  | "server-error"
+  /** A 5xx or a 408 (`mayHaveReachedServer`): asked again under the key. A 5xx can come after
+   *  Dispatch committed the write, and a 408 from a hop in front of it after the hop forwarded
+   *  the write. */
+  | "may-have-run"
   /** Dispatch's `409 KEY_IN_FLIGHT`: an earlier attempt still runs under the key. */
   | "in-flight"
-  /** A 408 or 429: asked again under the key; nothing ran. */
+  /** A 429: asked again under the key; nothing ran. */
   | "try-later"
   /** The attempt was cut off for silence (`DispatchWriteRetry.silenceMs`). */
   | "silence"
@@ -104,13 +106,13 @@ export type WriteEvent =
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
   | "exhausted"
-  /** Cipher's proxy refused the write on its own (a 4xx with `Cipher-Proxy-Code` and
-   *  `Cipher-Proxy-Forwarded: false`): nothing of it reached Dispatch, and asking again with the
-   *  same placeholder gets the same answer. */
+  /** Cipher's proxy refused the write on its own (a status that is no outage, with
+   *  `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing of it reached Dispatch, and
+   *  asking again with the same placeholder gets the same answer. */
   | "proxy-refused"
-  /** Cipher's proxy failed the write on its own before any of it left (a 5xx with
-   *  `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing reached Dispatch, and it is
-   *  asked again under the key. */
+  /** Cipher's proxy failed the write on its own before any of it left (an outage, a 408, a 429 or
+   *  a 5xx, with `Cipher-Proxy-Code` and `Cipher-Proxy-Forwarded: false`): nothing reached
+   *  Dispatch, and it is asked again under the key. */
   | "proxy-failed"
   /** Cipher's proxy answered on its own after the write may have reached Dispatch
    *  (`Cipher-Proxy-Code` with `Cipher-Proxy-Forwarded: unknown`, or none): it may have landed, and
@@ -151,7 +153,7 @@ export const WRITE_TRANSITIONS: {
   "foreign-2xx": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   "body-broken": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "body-malformed": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
-  "server-error": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
+  "may-have-run": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "in-flight": { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },
   "try-later": { "nothing-sent": nothing("retry"), "may-have-landed": landed("retry") },
   silence: { "nothing-sent": landed("retry"), "may-have-landed": landed("retry") },

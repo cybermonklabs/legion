@@ -127,8 +127,9 @@ export function createClaimSession(deps: {
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
-      // so no claim subscribes to one.
-      claimRole: (role) => claimEnvoyRole(sessionID, role, context),
+      // so no claim subscribes to one. `replaces`, the session the registration says this one
+      // replaces, is the claim's `previous_session_id`, so its unread messages come here.
+      claimRole: (role, replaces) => claimEnvoyRole(sessionID, role, context, replaces),
       onFirstTurn: (started) => {
         reportFirstTurn = started;
         if (turnStarted) started();

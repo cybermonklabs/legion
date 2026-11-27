@@ -157,7 +157,6 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import go_legs
 import yaml
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
@@ -200,21 +199,6 @@ ENVOY_RACE_STEP = ("Race-test delivery, the store, the bus, the listener, the re
                    "kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow")
 
 
-def leg_step(workflow: str, step: str, job: str, package: str) -> tuple[str, str]:
-    """The key of the row of a legs step that runs `package` of packages/envoy: the step's name
-    with the leg .github/go-legs.yaml gives the package under `job`, as steps_of labels each row
-    of a matrix job, so a package moved to another leg moves the exception with it. The leg is
-    go_legs.places' reading of the file, the one its legs run by; a package split by test across
-    legs runs a test in the leg of that test's group, which no package-wide key can name."""
-    entry = go_legs.module_entry("packages/envoy", ROOT / go_legs.LEGS)
-    held = [place for place in go_legs.places(entry)[0] if place.job == job and place.package == package]
-    if len(held) != 1 or held[0].group is not None:
-        raise SystemExit(f"go-test-step-expansion.py: {go_legs.LEGS} runs packages/envoy/{package} in "
-                         f"{', '.join(place.shown() for place in held) or 'no leg'} of {job}, and an exception "
-                         f"below names the one leg that runs the whole package")
-    return (workflow, f"{step} (leg {held[0].leg})")
-
-
 EXCEPTIONS = (
     Exception_(
         steps=frozenset({
@@ -254,8 +238,8 @@ EXCEPTIONS = (
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml",
              "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"),
-            leg_step(ENVOY_GO_RACE, ENVOY_RACE_STEP, "envoy-go-race", "internal/cipher/natscallout"),
-            leg_step(ENVOY_GO, ENVOY_UNIT_STEP, "envoy-go", "internal/cipher/natscallout"),
+            (ENVOY_GO_RACE, ENVOY_RACE_STEP),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -271,8 +255,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            leg_step(ENVOY_GO_RACE, ENVOY_RACE_STEP, "envoy-go-race", "internal/cipher/natscallout"),
-            leg_step(ENVOY_GO, ENVOY_UNIT_STEP, "envoy-go", "internal/cipher/natscallout"),
+            (ENVOY_GO_RACE, ENVOY_RACE_STEP),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=None,
@@ -307,7 +291,7 @@ EXCEPTIONS = (
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
-            leg_step(ENVOY_GO, ENVOY_UNIT_STEP, "envoy-go", "internal/cipher/proxyrules"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
@@ -327,7 +311,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            leg_step(ENVOY_GO, ENVOY_UNIT_STEP, "envoy-go", "internal/cipher/proxyrules"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
@@ -345,7 +329,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            leg_step(ENVOY_GO, ENVOY_UNIT_STEP, "envoy-go", "internal/cipher/proxyrules"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelRefusesAHostlessEntry",),
@@ -360,7 +344,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            leg_step(ENVOY_GO, ENVOY_UNIT_STEP, "envoy-go", "internal/dispatch/pmdoc"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
             (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
@@ -384,7 +368,15 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+# `… | xargs <command>`: the command is resolved through AUDITED_SCRIPTS where it is a script the
+# table names (the API's legs: `xargs scripts/database-skips.sh …`), then read as any other line
+# is (go_command below), and refused unless what is left is a go test. So a step that pipes a
+# lister into a go test under `env`, variables and a wrapper (the document service's legs:
+# `xargs env GODEBUG=… RACE_MEM_LIMIT_KB=… race_memory.py go test …`) is read as that go test,
+# and `xargs timeout 60 go test`, `xargs env -C dir go test` or `xargs go vet` are refused.
+# `xargs -r` (`--no-run-if-empty`) runs nothing on empty input, which changes no test the command
+# runs when it runs, so it is read past.
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<test>\S.*)$")
 # A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
 MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 # How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
@@ -467,18 +459,20 @@ AUDITED_SCRIPTS = {
     # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
     # whether it runs at all. `--count-table` runs every package its arguments name, in go list's
     # order, and counts the table's among them; it changes what is counted, never what runs. With
-    # `--report FILE` it reads a report and runs no test. envoy-go-race-api's race step passes the
-    # argument list below, and envoy-go's unit legs the xargs one, each leg's packages after it.
+    # `--report FILE` it reads a report and runs no test. `-run=^(Name|...)$`, which a leg pipes in
+    # with its package, adds that -run. envoy-go-race-api's legs and envoy-go's unit legs pass an
+    # xargs argument list below, each leg's packages (and group) after it.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
-        commands={
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
-        },
+        commands={},
         xargs={
             f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
+            # envoy-go-race-api's legs: the API package, and the leg's group as `-run=^(Name|...)$`,
+            # come from go_legs.py through xargs, so the command carries neither.
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
+                "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="2036a3b9b54514efe0fe409055b778aa202ad189053623c3a1f6a39147ec7e52",
+        sha256="1fda7c677b2f277920e8a5f16f9da79ab9613e6ba5c356df7bf3c0606ec24670",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -543,14 +537,22 @@ class Step:
     name: str
     workdir: str  # repository-relative, as the file writes it
     script: str
+    # The matrix row this copy of the step is, `leg 2`, or "" for a step of no matrix. Each row
+    # is a job of its own with the row's values written into the run:, so each is read apart, but
+    # all of them are the one step the file writes.
+    row: str = ""
 
     @property
     def label(self) -> str:
-        return f"{self.workflow}'s {self.job} / {self.name}"
+        shown = f"{self.name} ({self.row})" if self.row else self.name
+        return f"{self.workflow}'s {self.job} / {shown}"
 
     # The file and the step's name, which is what an EXCEPTIONS entry declares: a step name is
     # unique within the file that holds it, while a job id is ci.yaml's and the name of the step
     # may be another file's too (release-envoy-infra.yaml has its own "Unit test envoy-infra").
+    # A matrix row is keyed on its step's own name, not the row: the rows of a legs step run
+    # disjoint shares of one step's tests, so a pair one row runs is a pair that step runs, and an
+    # entry declared on the step holds for whichever row its tests fall in.
     @property
     def key(self) -> tuple[str, str]:
         return (self.workflow, self.name)
@@ -646,22 +648,24 @@ def steps_of(found: dict) -> list[Step]:
                 if not audited and (workdir not in MODULE_DIRS
                                     or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
                     continue
-                for label, text in rows_of(path, job, name, body, script):
-                    read = audited_step(path, job, label, workdir, text)
+                for row, text in rows_of(path, job, name, body, script):
+                    read = audited_step(path, job, name, workdir, text, row)
                     if read is not None:
                         steps.append(read)
                     elif workdir in MODULE_DIRS:
-                        steps.append(Step(workflow=path, job=job, name=label, workdir=workdir, script=text))
+                        steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=text, row=row))
     return steps
 
 
 def rows_of(path: str, job: str, name: str, body: dict, script: str) -> list[tuple[str, str]]:
-    """The step's name and run: text once, or, when the run: writes a matrix value, once per row
-    of the job's matrix, the name labelled with the row and its values written in, since each row
-    is a job of its own: a legs job's step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total
-    }} | xargs …`) runs each leg's packages in that leg alone."""
+    """The step's run: text once, with no row (""), or, when the run: writes a matrix value, once
+    per row of the job's matrix, with the row's label (`leg 2`) and its values written in, since
+    each row is a job of its own: a legs job's step (`go_legs.py … ${{ matrix.leg }} ${{
+    strategy.job-total }} | xargs …`) runs each leg's packages in that leg alone. The step keeps its
+    own name in every row (Step.row holds the row), so an EXCEPTIONS entry declared on the step
+    holds whichever leg its tests fall in."""
     if not MATRIX_VALUE.search(script):
-        return [(name, script)]
+        return [("", script)]
     rows = matrix_rows(f"{path}'s {job} / {name}", body)
     found = []
     for row in rows:
@@ -671,7 +675,7 @@ def rows_of(path: str, job: str, name: str, body: dict, script: str) -> list[tup
                               f"which no row of the job's matrix has")
             return str(row[match.group(1)])
         label = ", ".join(f"{key} {row[key]}" for key in row)
-        found.append((f"{name} ({label})", JOB_TOTAL.sub(str(len(rows)), MATRIX_VALUE.sub(value, script))))
+        found.append((label, JOB_TOTAL.sub(str(len(rows)), MATRIX_VALUE.sub(value, script))))
     return found
 
 
@@ -703,21 +707,25 @@ def spellings(path: str, workdir: str) -> set[str]:
 
 
 # A legs step's run: that hands its leg's packages to an audited script: `set -o pipefail`, then
-# the lister piped to `xargs <the script's path> <an argument list>`.
-XARGS_AUDITED = re.compile(r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?P<spelled>\S+) (?P<arguments>[^\n]+)$")
+# the lister piped to `xargs [-r] <the script's path> <an argument list>`. `-r` runs nothing on
+# empty input (a refused leg), and changes nothing the command runs when it runs.
+XARGS_AUDITED = re.compile(
+    r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?P<empty>-r )?(?P<spelled>\S+) (?P<arguments>[^\n]+)$")
 
 
-def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
+def audited_step(workflow: str, job: str, name: str, workdir: str, script: str, row: str = "") -> Step | None:
     """The step a run: that is the path of an AUDITED_SCRIPTS script makes, alone or followed by
     an argument list its entry reads, read as that entry's command for those arguments in its
     module; or, for a legs step that pipes its lister into `xargs <path> <arguments>` from that
-    module, the lister piped into the go test the entry's `xargs` gives for those arguments; or
-    None where the run's text holds no such script's file name. A run whose text holds one
-    anywhere else - an operator, another command, a `$(…)`, a comment, another line, an argument
-    list the entry does not read - is refused rather than read or skipped: the test is on the raw
-    text, before any shell reading, so no quoting or substitution hides the script from it. So is
-    a script whose text no longer has its entry's SHA-256."""
-    label = f"{workflow}'s {job} / {name}"
+    module, the lister piped into the go test the entry's `xargs` gives for those arguments (which
+    read_block's xargs branch then reads, with the packages the lister prints); or None where the
+    run's text holds no such script's file name. A run whose text holds one anywhere else - an
+    operator, another command, a `$(…)`, a comment, another line, an argument list the entry does
+    not read - is refused rather than read or skipped: the test is on the raw text, before any
+    shell reading, so no quoting or substitution hides the script from it. So is a script whose
+    text no longer has its entry's SHA-256. `row` is the matrix row the run: is, kept on the
+    step."""
+    label = f"{workflow}'s {job} / {name}" + (f" ({row})" if row else "")
     named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
     if not named:
         return None
@@ -755,9 +763,11 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
                       f"read from {entry.sha256}; read the script again and update the entry's "
                       "commands and digest")
     if piped:
-        return Step(workflow=workflow, job=job, name=name, workdir=entry.module,
-                    script=f"set -o pipefail\n{piped.group('lister')} | xargs {entry.xargs[arguments]}")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.commands[arguments])
+        return Step(workflow=workflow, job=job, name=name, workdir=entry.module, row=row,
+                    script=f"set -o pipefail\n{piped.group('lister')} | xargs {piped.group('empty') or ''}"
+                           f"{entry.xargs[arguments]}")
+    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, row=row,
+                script=entry.commands[arguments])
 
 
 def commands_of(step: Step) -> list[GoTest]:
@@ -800,7 +810,14 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             printed = shell(lister, step.directory, f"{step.label}: {lister}").split()
             if not printed:
                 raise Refused(f"{step.label}: `{lister}` printed no package")
-            found.append(parse_go_test(step, expand(piped.group("test"), variables), printed))
+            # An AUDITED_SCRIPTS script piped into here was resolved to its go test by audited_step
+            # before this step was made; what is left must be a go test, under `env`, variables
+            # and a wrapper at most.
+            tail = expand(piped.group("test"), variables)
+            words, command = go_command(tail)
+            if not (len(words) > 1 and words[0] == "go" and words[1] == "test"):
+                raise Refused(f"{step.label}: `{tail}`, what this step pipes into xargs, is no go test")
+            found.append(parse_go_test(step, command, printed))
             continue
 
         words, command = go_command(line)
@@ -825,6 +842,11 @@ def go_command(line: str) -> tuple[list[str], str]:
     of what is left - a `-run` pattern above all - is the line's own.
     """
     rest = line.strip()
+    # `xargs env NAME=value … <command>`: xargs runs a program, not a shell, so a step that must
+    # set a variable for the command it pipes into writes `env`. It changes no test the command
+    # runs, so it is dropped as the variables themselves are.
+    if rest.split(None, 1)[:1] == ["env"] and len(rest.split(None, 1)) == 2:
+        rest = rest.split(None, 1)[1]
     while True:
         head = rest.split(None, 1)
         if len(head) == 2 and ENV_PREFIX.match(head[0]):

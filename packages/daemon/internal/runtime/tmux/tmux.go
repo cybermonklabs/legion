@@ -319,7 +319,8 @@ func New(opts Options) (*Runtime, error) {
 	case (opts.DispatchURL == "") != (opts.DispatchTokenFile == ""):
 		return nil, errors.New("tmux runtime: the Dispatch URL and token file must be configured together")
 	case opts.DispatchTokenFile != "" && !filepath.IsAbs(opts.DispatchTokenFile):
-		return nil, fmt.Errorf("tmux runtime: Dispatch token file %q is not an absolute path", opts.DispatchTokenFile)
+		// The path is not quoted: a token pasted where dispatch_token_file's path goes would print.
+		return nil, errors.New("tmux runtime: the Dispatch token file's path is not absolute")
 	case opts.GitHubCredential != nil && !filepath.IsAbs(opts.GH):
 		return nil, fmt.Errorf("tmux runtime: the real gh a pane's `legion gh` runs is %q, not an absolute path", opts.GH)
 	case opts.GitHubCredential != nil && opts.ClaimRepository == nil:

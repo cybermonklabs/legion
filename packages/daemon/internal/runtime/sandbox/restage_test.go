@@ -26,8 +26,9 @@ const (
 	movedDaemonURL = "http://192.0.2.9:13370"
 )
 
-// secondRuntime builds another Runtime over g's same fake cluster state, with testOptions edited by
-// move (the addresses a restarted daemon hands its role processes), on g's own context and store:
+// secondRuntime builds another Runtime over g's same fake cluster state, with testOptions' shape,
+// g's BootTimeout, and move's changes (the addresses a restarted daemon hands its role processes),
+// on g's own context and store:
 // the fake controller started in newRig, which goes on reconciling whichever Runtime's patches
 // land, is this package's stand-in for the one real Agent Sandbox controller that ever serves a
 // cluster, whatever daemon address last wrote its Sandboxes. This is how a daemon's own move to a
@@ -39,6 +40,7 @@ func secondRuntime(t *testing.T, g *rig, move func(*Options)) (restarted func() 
 	opts := testOptions()
 	opts.Conns = g.conns
 	opts.Now = func() time.Time { return *g.now.Load() }
+	opts.BootTimeout = g.opts.BootTimeout
 	if g.store != nil {
 		opts.Store = g.store
 	}

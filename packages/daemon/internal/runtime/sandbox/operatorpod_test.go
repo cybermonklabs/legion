@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -311,9 +312,30 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 			t.Errorf("CheckPod(%q) = %v, want it accepted", value, err)
 		}
 	}
+	// A value that can hold no userinfo, query or fragment is quoted as written; one that holds
+	// an "@", "?" or "#" is printed without them (redact.URL), as the fixture's userinfo row shows.
+	const refusal = ", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads"
 	for _, value := range append(fixture.Invalid, fixture.AgentsOnly...) {
-		want := fmt.Sprintf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
-		if err := check(value); err == nil || err.Error() != want {
+		shown := fmt.Sprintf("%+q", value)
+		if strings.ContainsAny(value, "@?#") {
+			shown = redact.URL(value)
+		}
+		if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to " + shown + refusal; check(value) == nil || check(value).Error() != want {
+			t.Errorf("CheckPod(%q) = %v, want %q", value, check(value), want)
+		}
+	}
+	// A made-up user name and a password holding a "'": the refusal holds neither, and names the
+	// URL by its scheme and the mark of a URL with credentials.
+	const password, user = "madeUpDash'boardPassword0123", "madeUpDashboardUser0123"
+	err = check("https://" + user + ":" + password + "@dispatch.example.org:0")
+	if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to https://" + redact.URLWithCredentials + refusal; err == nil || err.Error() != want {
+		t.Errorf("CheckPod(a dashboard URL with userinfo) = %v, want %q", err, want)
+	}
+	// A made-up credential holding a "/" or a "?" written as the user puts an "@" past the host, its
+	// head read as the host: refused, and named as a URL that is not printed.
+	for _, value := range []string{"https://madeUpDashHead0123/madeUpDashTail0123@dispatch.example.org", "https://madeUpDashHead0123?madeUpDashTail0123@dispatch.example.org"} {
+		err := check(value)
+		if want := "runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to " + redact.URLNotPrinted + refusal; err == nil || err.Error() != want {
 			t.Errorf("CheckPod(%q) = %v, want %q", value, err, want)
 		}
 	}
