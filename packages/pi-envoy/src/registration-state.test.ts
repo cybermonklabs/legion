@@ -108,8 +108,6 @@ interface HarnessControl {
    *  the session has none, and can wait again after the dial. */
   connect: (dial: () => Promise<SessionInbound>) => Promise<SessionInbound>;
   subscribeTopic: (topic: string, connect: () => Promise<SessionInbound>) => Promise<boolean>;
-  /** The deployment's role topics, as the module reads them; a row that drives them replaces it. */
-  roleTopics: RoleTopicFollows;
 }
 
 interface Harness {
@@ -138,7 +136,16 @@ interface Harness {
   readonly hold: (role: string, id: string) => Promise<RoleClaimOutcome | undefined>;
 }
 
-function createHarness(): Harness {
+/**
+ * The module over stand-ins of its dependencies. `roleTopics` is the deployment's role topics as
+ * the module reads them; by default no role has any, and the rows that drive them pass their own.
+ */
+function createHarness(
+  roleTopics: RoleTopicFollows = createRoleTopicFollows({
+    roleTopics: readRoleTopics(undefined),
+    follow: () => [],
+  })
+): Harness {
   const notices: { readonly message: string; readonly level: string }[] = [];
   const warnings: { readonly message: string; readonly context: unknown }[] = [];
   const closedSubjects: string[] = [];
@@ -175,12 +182,6 @@ function createHarness(): Harness {
     // about the wait after the dial replaces this.
     connect: (dial) => dial(),
     subscribeTopic: async () => true,
-    // No deployment names a topic for a role unless a test gives this one topics
-    // (`createRoleTopicFollows`); the module's own rows drive it through the harness.
-    roleTopics: createRoleTopicFollows({
-      roleTopics: readRoleTopics(undefined),
-      follow: () => [],
-    }),
   };
 
   const client: EnvoyClient = {
@@ -225,7 +226,7 @@ function createHarness(): Harness {
       return control.subscribeTopic(topic, connect);
     },
     closeSubjects: (_sessionID, subjects) => closedSubjects.push(...subjects),
-    roleTopics: control.roleTopics,
+    roleTopics,
   });
 
   return {
@@ -870,17 +871,87 @@ describe("endUnwantedRole", () => {
   });
 });
 
+// The deployment's role topics (`ENVOY_ROLE_TOPICS`), driven through each hook of the module: a
+// claim and a restored hold open them, a registration that carries them clears what is owed,
+// `isRoleBound` holds only what the role alone wants, and the role's end closes those.
+describe("the deployment's role topics", () => {
+  const ALERTS = "notifications.slack.*.C0ALERTS.message";
+  const OWN = "notifications.slack.*.C0OWN.message";
+
+  /** A harness whose `alpha` role names ALERTS and OWN, over a session that already follows
+   *  `already` itself. */
+  const harnessWith = (...already: string[]) => {
+    const followed = new Set(already);
+    const topics = createRoleTopicFollows({
+      roleTopics: readRoleTopics(JSON.stringify({ alpha: [ALERTS, OWN] })),
+      follow: (topic) => {
+        if (followed.has(topic)) return [];
+        followed.add(topic);
+        return [topic];
+      },
+    });
+    return { harness: createHarness(topics), topics };
+  };
+
+  test("a claim opens them, and only what the role alone wants is role-bound", async () => {
+    const { harness, topics } = harnessWith(OWN);
+    await harness.hold("alpha", "ses_a");
+    expect(topics.subjects()).toEqual([ALERTS, OWN]);
+    expect(harness.state.isRoleBound(ALERTS)).toBe(true);
+    // The session followed OWN itself before the claim, so the ledger keeps recording it.
+    expect(harness.state.isRoleBound(OWN)).toBe(false);
+    // No plugin owns them, so `envoy_role_set` may still move the role.
+    expect(harness.state.pluginRoleSubjects()).toEqual([]);
+  });
+
+  test("what a claim opened is owed until a registration carries it", async () => {
+    const { harness, topics } = harnessWith();
+    await harness.hold("alpha", "ses_a");
+    expect(topics.owed()).toBe(true);
+    await harness.state.refreshRegistration(registrationFor("ses_a"));
+    expect(topics.owed()).toBe(true);
+    await harness.state.refreshRegistration({
+      ...registrationFor("ses_a"),
+      topics: [...registrationFor("ses_a").topics, ALERTS, OWN],
+    });
+    expect(topics.owed()).toBe(false);
+  });
+
+  test("a hold restored after a hand-back opens them too", async () => {
+    const { harness, topics } = harnessWith();
+    harness.control.open = "ses_a";
+    harness.state.recordClaimAfterDeadline(ALPHA, "ses_a");
+    expect(topics.subjects()).toEqual([]);
+    const restored = await harness.state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.settleEndedHolds("alpha");
+    });
+    expect(restored).toBe(true);
+    expect(topics.subjects()).toEqual([ALERTS, OWN]);
+  });
+
+  test("the role's end closes only what the role alone wanted", async () => {
+    const { harness, topics } = harnessWith(OWN);
+    await harness.hold("alpha", "ses_a");
+    harness.state.endUnwantedRole("ses_b", null, ["ses_b"]);
+    expect(harness.closedSubjects).toEqual([ALERTS]);
+    expect(topics.subjects()).toEqual([]);
+    expect(topics.role()).toBeUndefined();
+    expect(harness.state.isRoleBound(ALERTS)).toBe(false);
+  });
+});
+
 describe("markRoleBoundSubjects and unmarkRoleBoundSubjects", () => {
   test("mark the subjects a plugin takes while the role is held, and unmark the ones that never opened", () => {
     const { state } = createHarness();
     expect(state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha")).toEqual([CONTROLLER_NOTICE]);
     expect(state.isRoleBound(CONTROLLER_NOTICE)).toBe(true);
-    expect(state.roleBoundSubjects()).toEqual([CONTROLLER_NOTICE]);
+    expect(state.pluginRoleSubjects()).toEqual([CONTROLLER_NOTICE]);
     // One already marked is not marked twice, so a later failure unmarks nothing it did not add.
     expect(state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha")).toEqual([]);
     state.unmarkRoleBoundSubjects([CONTROLLER_NOTICE]);
     expect(state.isRoleBound(CONTROLLER_NOTICE)).toBe(false);
-    expect(state.roleBoundSubjects()).toEqual([]);
+    expect(state.pluginRoleSubjects()).toEqual([]);
   });
 
   test("the marked role is what a pass that claims it back reports closed, once", async () => {

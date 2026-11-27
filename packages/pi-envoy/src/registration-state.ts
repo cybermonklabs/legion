@@ -395,10 +395,13 @@ export interface RegistrationState {
   readonly holdsRoleTopic: (topic: string) => boolean;
   /** The session id the listener names for the role this session holds. */
   readonly holdSessionID: () => string | undefined;
-  /** Whether `subject` is taken only while this session holds its role. */
+  /** Whether the session follows `subject` only while it holds its role: a notice subject a plugin
+   *  marked (`markRoleBoundSubjects`), or one only the held role's topics want (`roleTopics`). The
+   *  ledger records no such subject as the session's own. */
   readonly isRoleBound: (subject: string) => boolean;
-  /** Every role-bound subject, in the order they were marked. */
-  readonly roleBoundSubjects: () => readonly string[];
+  /** Every notice subject a plugin marked for the held role, in the order they were marked. The
+   *  deployment's role topics are not among them: no plugin owns those. */
+  readonly pluginRoleSubjects: () => readonly string[];
   /** Whether `topic` serves the role this session holds, and how many roles had ended, at once. */
   readonly roleSnapshot: (topic: string) => RoleSnapshot;
   /** The role the listener refused to this session's automatic claim, if any. */
@@ -465,7 +468,16 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
 
   const heldRole = (): string | undefined => claimedRoleTopic?.slice(ROLE_TOPIC_PREFIX.length);
   const isRoleBound = (subject: string): boolean =>
-    roleNoticeSubjects.has(subject) || deps.roleTopics.has(subject);
+    roleNoticeSubjects.has(subject) || deps.roleTopics.roleOnly(subject);
+
+  // A hold of `topic` under `sessionID` lands here, whichever path took it: the topics the
+  // deployment names for its role are opened with it, so no path that lands a hold can miss them.
+  const landHold = (topic: string, sessionID: string): void => {
+    claimedRoleTopic = topic;
+    claimedRoleSessionID = sessionID;
+    const role = heldRole();
+    if (role !== undefined) deps.roleTopics.open(role);
+  };
 
   // The session stops holding its role: close the notice subjects it took for it, so a holder
   // another session replaced stops taking the role's wakes, and take them out of the listener's
@@ -514,9 +526,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   ): Promise<void> => {
     const movedOff = previousTopic === topic ? undefined : previousTopic;
     if (movedOff !== undefined) endRole();
-    claimedRoleTopic = topic;
-    claimedRoleSessionID = sessionID;
-    deps.roleTopics.open(topic.slice(ROLE_TOPIC_PREFIX.length));
+    landHold(topic, sessionID);
     recordClaim?.();
     if (movedOff !== undefined && previousHoldID) {
       await holds.handBackOrAbandon(movedOff, previousHoldID, {
@@ -610,10 +620,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         ) {
           return false;
         }
-        claimedRoleTopic = hold.topic;
-        claimedRoleSessionID = hold.id;
+        landHold(hold.topic, hold.id);
         holdUnconfirmed = true;
-        deps.roleTopics.open(hold.topic.slice(ROLE_TOPIC_PREFIX.length));
         return true;
       });
       // Refused during the last hand-back, or at the break inside it: the restore this task made
@@ -1009,7 +1017,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     holdsRoleTopic: (topic) => claimedRoleTopic === topic,
     holdSessionID: () => claimedRoleSessionID,
     isRoleBound,
-    roleBoundSubjects: () => [...roleNoticeSubjects],
+    pluginRoleSubjects: () => [...roleNoticeSubjects],
     roleSnapshot: (topic) => ({
       roleBound: expandSubscriptionTopics([topic]).some(isRoleBound),
       endsBefore: roleEnds,

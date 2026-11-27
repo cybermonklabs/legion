@@ -23,18 +23,29 @@ export interface RoleTopics {
 const NONE: readonly string[] = [];
 const NOTHING: RoleTopics = { topicsFor: () => NONE, names: () => false };
 
+/** The longest subject the listener takes (`internal/bus/stored.go`, `checkSubject`), in bytes. */
+const MAX_SUBJECT_BYTES = 4_032;
+
 /** A topic a role's holder may follow: one the notification stream stores, and no subject private
  *  to a session (an agent subject, a failed-delivery lane, a controller notice lane), which the
- *  listener stores for nobody. Each token is a NATS token: none empty, no white space, and a
- *  wildcard only as a whole token, `>` only as the last one, which is what the listener's consumer
- *  filter takes (`bus.CheckFilterSubject`). */
+ *  listener stores for nobody. Each token must be a NATS token: none empty, no white space, and
+ *  the whole subject no longer than `MAX_SUBJECT_BYTES`, which is what the listener's consumer
+ *  filter refuses too (`bus.CheckFilterSubject`). This rule is stricter than that filter on
+ *  wildcards: it takes `*` and `>` only as whole tokens and `>` only as the last one, where the
+ *  filter reads `*x` or `a>` as a literal token. A deployment that writes either almost surely
+ *  meant a wildcard, so the variable is refused rather than left to follow a subject that never
+ *  carries a post. */
 function topicRefusal(topic: string): string | undefined {
   const tokens = topic.split(".");
   const wildcardMisplaced = tokens.some(
     (token, index) =>
       (/[*>]/.test(token) && token.length > 1) || (token === ">" && index < tokens.length - 1)
   );
-  if (tokens.some((token) => token === "" || /\s/.test(token)) || wildcardMisplaced) {
+  if (
+    tokens.some((token) => token === "" || /\s/.test(token)) ||
+    wildcardMisplaced ||
+    new TextEncoder().encode(topic).length > MAX_SUBJECT_BYTES
+  ) {
     return `${JSON.stringify(topic)} is not a NATS subject`;
   }
   if (!streamStores(topic)) {
@@ -120,21 +131,39 @@ export function readRoleTopics(value: string | undefined): RoleTopics {
 }
 
 /**
- * What the session follows of the topics the deployment names for the role it holds. Each time a
- * hold of a role lands, `open` follows that role's topics; only the subjects it newly followed
- * are the role's, so a topic the session followed itself before stays its own, and the role's end
- * (`close`) answers only the role's for the caller to close and unregister. A subject an edge
- * listener refused (`refuse`) leaves the role's and is not followed again for it until it ends.
+ * Who wants each subject the session follows for a role, of the topics the deployment names for
+ * it. A subject can be wanted twice: by the role, and by the session itself (a topic it followed
+ * with `envoy_subscribe`, or one its transcript remembers). It stays followed while either wants
+ * it, so the role's end leaves the session's own, and the session's unsubscribe leaves the
+ * role's while the role is held.
+ *
+ * - `open(role)` claims every subject the role's topics expand to, following each the session did
+ *   not follow yet; one it followed already is its own as well as the role's.
+ * - `close()` drops every claim and answers the subjects only the role wanted, for the caller to
+ *   stop following, each exactly, and to take out of the listener's registry.
+ * - `claimOwn` and `releaseOwn` move a subject between the two when the session subscribes to,
+ *   or unsubscribes from, a subject the role wants.
+ * - A subject an edge listener refused (`refuse`) leaves the role's claims and is not asked for
+ *   again until the role ends.
  */
 export interface RoleTopicFollows {
   readonly open: (role: string) => void;
   readonly close: () => readonly string[];
   readonly refuse: (subjects: readonly string[]) => void;
-  /** Whether `subject` is one this module followed for the held role. */
+  /** The session wants `subject` itself too; answers whether only the role wanted it before. */
+  readonly claimOwn: (subject: string) => boolean;
+  /** The session no longer wants `subject` itself, though the role still does; answers whether it
+   *  was the session's own as well, so what the ledger records changes. */
+  readonly releaseOwn: (subject: string) => boolean;
+  /** The role `open` last claimed subjects for, until `close`. */
+  readonly role: () => string | undefined;
+  /** Whether the role wants `subject`. */
   readonly has: (subject: string) => boolean;
-  /** Every subject this module followed for the held role, in the order it followed them. */
+  /** Whether only the role wants `subject`, so the session follows it for no reason of its own. */
+  readonly roleOnly: (subject: string) => boolean;
+  /** Every subject the role wants, in the order `open` claimed them. */
   readonly subjects: () => readonly string[];
-  /** Whether a subject followed for the role is one no registration has carried since. */
+  /** Whether a subject `open` newly followed is one no registration has carried since. */
   readonly owed: () => boolean;
   /** A registration carrying `topics` went out. */
   readonly registered: (topics: readonly string[]) => void;
@@ -148,36 +177,57 @@ export interface RoleTopicFollowsDeps {
 }
 
 export function createRoleTopicFollows(deps: RoleTopicFollowsDeps): RoleTopicFollows {
-  const followedForRole = new Set<string>();
+  // Every subject the role wants, and the part of them the session does not want itself.
+  const wanted = new Set<string>();
+  const onlyRole = new Set<string>();
   const refused = new Set<string>();
+  let openedFor: string | undefined;
   let owed = false;
   return {
     open: (role) => {
+      openedFor = role;
       for (const topic of deps.roleTopics.topicsFor(role)) {
-        if (expandSubscriptionTopics([topic]).some((subject) => refused.has(subject))) continue;
-        for (const subject of deps.follow(topic)) {
-          followedForRole.add(subject);
-          owed = true;
+        const subjects = expandSubscriptionTopics([topic]);
+        if (subjects.some((subject) => refused.has(subject))) continue;
+        const added = new Set(deps.follow(topic));
+        for (const subject of subjects) {
+          if (added.has(subject)) {
+            onlyRole.add(subject);
+            owed = true;
+          }
+          wanted.add(subject);
         }
       }
     },
     close: () => {
-      const closed = [...followedForRole];
-      followedForRole.clear();
+      const closed = [...onlyRole];
+      wanted.clear();
+      onlyRole.clear();
       refused.clear();
+      openedFor = undefined;
       owed = false;
       return closed;
     },
     refuse: (subjects) => {
       for (const subject of subjects) {
-        if (followedForRole.delete(subject)) refused.add(subject);
+        if (!wanted.delete(subject)) continue;
+        onlyRole.delete(subject);
+        refused.add(subject);
       }
     },
-    has: (subject) => followedForRole.has(subject),
-    subjects: () => [...followedForRole],
+    claimOwn: (subject) => onlyRole.delete(subject),
+    releaseOwn: (subject) => {
+      if (!wanted.has(subject) || onlyRole.has(subject)) return false;
+      onlyRole.add(subject);
+      return true;
+    },
+    role: () => openedFor,
+    has: (subject) => wanted.has(subject),
+    roleOnly: (subject) => onlyRole.has(subject),
+    subjects: () => [...wanted],
     owed: () => owed,
     registered: (topics) => {
-      if ([...followedForRole].every((subject) => topics.includes(subject))) owed = false;
+      if ([...wanted].every((subject) => topics.includes(subject))) owed = false;
     },
   };
 }

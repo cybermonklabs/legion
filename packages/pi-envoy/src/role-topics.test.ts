@@ -32,64 +32,69 @@ describe("readRoleTopics", () => {
     expect(read.topicsFor("reviewer")).toEqual([]);
   });
 
-  for (const [label, value, why] of [
-    ["text that is not JSON", `ops-owner=${ALERTS}`, "it is not JSON"],
-    [
-      "a list",
-      JSON.stringify([ALERTS]),
-      "it is not a JSON object of role names to lists of topics",
-    ],
-    ["an empty role name", JSON.stringify({ " ": [ALERTS] }), '" " names no role'],
+  // Each refusal names the role or the topic that caused it; the sentence around it is the
+  // plugin's wording, which no program parses, so only the documented prefix is held, in one row.
+  const LONG_TOPIC = `notifications.slack.*.${"C".repeat(4_032)}.message`;
+  for (const [label, value, names] of [
+    ["text that is not JSON", `ops-owner=${ALERTS}`, "not JSON"],
+    ["a list", JSON.stringify([ALERTS]), "not a JSON object"],
+    ["an empty role name", JSON.stringify({ " ": [ALERTS] }), '" "'],
     [
       "one role named twice",
       `{"ops-owner": [${JSON.stringify(ALERTS)}], " ops-owner": []}`,
-      "role ops-owner is named twice",
+      "role ops-owner",
     ],
     [
       // JSON.parse keeps the last of two keys of one spelling, so the refusal reads the text.
       "the same role name twice, letter for letter",
       `{"ops-owner": [${JSON.stringify(ALERTS)}], "ops-owner": []}`,
-      "role ops-owner is named twice",
+      "role ops-owner",
     ],
     [
-      "a `>` before the last token, which a consumer filter refuses",
+      "a `>` before the last token, which the listener's consumer filter refuses",
       JSON.stringify({ "ops-owner": ["notifications.slack.>.C0ALERTS.message"] }),
-      'role ops-owner: "notifications.slack.>.C0ALERTS.message" is not a NATS subject',
+      "notifications.slack.>.C0ALERTS.message",
     ],
     [
-      "a wildcard inside a token",
+      "a wildcard inside a token, which the rule takes as no deployment's meaning",
       JSON.stringify({ "ops-owner": ["notifications.slack.*x.C0ALERTS.message"] }),
-      'role ops-owner: "notifications.slack.*x.C0ALERTS.message" is not a NATS subject',
+      "notifications.slack.*x.C0ALERTS.message",
     ],
     [
-      "a role with no list",
-      JSON.stringify({ "ops-owner": ALERTS }),
-      "role ops-owner names no list of topics",
+      "a subject past the listener's 4,032 bytes",
+      JSON.stringify({ "ops-owner": [LONG_TOPIC] }),
+      "role ops-owner",
     ],
+    ["a role with no list", JSON.stringify({ "ops-owner": ALERTS }), "role ops-owner"],
     [
       "a topic no stream stores",
       JSON.stringify({ "ops-owner": ["notifications.role.ops-owner"] }),
-      'role ops-owner: the notification stream stores nothing on "notifications.role.ops-owner", so it would deliver nothing',
+      "notifications.role.ops-owner",
     ],
     [
       "another session's agent subject",
       JSON.stringify({ "ops-owner": ["notifications.agent.>"] }),
-      'role ops-owner: "notifications.agent.>" reaches a subject private to one session, which the listener stores for nobody else',
+      "notifications.agent.>",
     ],
     [
       "a subject with an empty token",
       JSON.stringify({ "ops-owner": ["notifications.slack..C0ALERTS.message"] }),
-      'role ops-owner: "notifications.slack..C0ALERTS.message" is not a NATS subject',
+      "notifications.slack..C0ALERTS.message",
     ],
   ] as const) {
     test(`refuses the whole variable for ${label}`, () => {
       const read = readRoleTopics(value);
-      expect(read.error).toBe(
-        `ENVOY_ROLE_TOPICS is refused, so no role follows a topic it names: ${why}`
-      );
+      expect(read.error).toContain(names);
       expect(read.topicsFor("ops-owner")).toEqual([]);
+      expect(read.names(ALERTS)).toBe(false);
     });
   }
+
+  test("a refusal opens with the prefix the README documents", () => {
+    expect(readRoleTopics("[]").error).toStartWith(
+      "ENVOY_ROLE_TOPICS is refused, so no role follows a topic it names: "
+    );
+  });
 
   test("a refusal anywhere takes no role's topics, not even a valid role's", () => {
     const read = readRoleTopics(
@@ -144,16 +149,60 @@ describe("createRoleTopicFollows", () => {
     };
   };
 
-  test("keeps only the subjects its own open followed", () => {
+  test("a subject the session already followed is its own as well as the role's", () => {
     const open = follows(ALERTS);
     open.open("ops-owner");
 
-    // ALERTS was the session's own before the claim, so it is not the role's and the role's end
-    // leaves it followed; BUILDS is the role's.
-    expect(open.has(ALERTS)).toBe(false);
-    expect(open.subjects()).toEqual([BUILDS]);
+    // The role wants both; only BUILDS is the role's alone, so the role's end closes only it and
+    // leaves the session's own ALERTS followed.
+    expect(open.subjects()).toEqual([ALERTS, BUILDS]);
+    expect(open.has(ALERTS)).toBe(true);
+    expect(open.roleOnly(ALERTS)).toBe(false);
+    expect(open.roleOnly(BUILDS)).toBe(true);
     expect(open.close()).toEqual([BUILDS]);
     expect(open.subjects()).toEqual([]);
+  });
+
+  test("an unsubscribe hands its own subject to the role, and a subscribe takes the role's", () => {
+    const open = follows(ALERTS);
+    open.open("ops-owner");
+
+    // The session drops its own claim on ALERTS while the role holds it: it stays followed, now
+    // for the role alone, so the role's end closes it.
+    expect(open.releaseOwn(ALERTS)).toBe(true);
+    expect(open.releaseOwn(ALERTS)).toBe(false);
+    expect(open.roleOnly(ALERTS)).toBe(true);
+    // A subject the role does not want is not the role's to keep.
+    expect(open.releaseOwn("notifications.slack.*.C0OTHER.message")).toBe(false);
+
+    // The session subscribes to BUILDS, which the role wanted alone: it is its own too now, so
+    // the role's end leaves it.
+    expect(open.claimOwn(BUILDS)).toBe(true);
+    expect(open.claimOwn(BUILDS)).toBe(false);
+    expect(open.close()).toEqual([ALERTS]);
+  });
+
+  test("the role's end answers only a `>` topic's own subject when the session follows its base", () => {
+    const BASE = "notifications.github.acme.app";
+    const open = createRoleTopicFollows({
+      roleTopics: readRoleTopics(JSON.stringify({ "ops-owner": [`${BASE}.>`] })),
+      // The session follows the base itself, so the role's follow adds only `.>`.
+      follow: (topic) => (topic === `${BASE}.>` ? [`${BASE}.>`] : []),
+    });
+    open.open("ops-owner");
+    expect(open.subjects()).toEqual([BASE, `${BASE}.>`]);
+    expect(open.roleOnly(BASE)).toBe(false);
+    // The caller deletes each closed subject exactly, so the base stays followed.
+    expect(open.close()).toEqual([`${BASE}.>`]);
+  });
+
+  test("remembers the role it opened for, until the role's end", () => {
+    const open = follows();
+    expect(open.role()).toBeUndefined();
+    open.open("ops-owner");
+    expect(open.role()).toBe("ops-owner");
+    open.close();
+    expect(open.role()).toBeUndefined();
   });
 
   test("owes a registration until one carries every subject it followed", () => {

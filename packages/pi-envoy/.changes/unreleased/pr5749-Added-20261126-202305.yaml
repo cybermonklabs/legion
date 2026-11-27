@@ -4,16 +4,18 @@ body: |-
   session holding a role follows for as long as it holds it. Each time a hold of a named role lands
   in the process, however it was taken (the launch's role, `envoy_role_set`, the Legion plugin's
   claim, a hold restored after a hand-back), the session follows that role's topics and registers
-  them at once; when the role ends they are closed and taken out of the listener's registry. The
-  role's are only the subjects that hold's own follow added, so a topic the session followed
-  itself stays its own. So a relaunched session follows them again when it takes the role, and a
-  session holding any other role follows none, though every pod carries the same variable. A
-  session that resumes a session id whose row still holds the role's topics, which a process that
-  ended never closed, follows none of them: the role's claim does, and the pass takes the rest out
-  of the row. A topic an edge listener refuses leaves the role's until the role ends. A value that
-  is not such an object, two keys the listener reads as one role, or a topic the stream does not
-  store or whose wildcard is misplaced refuses the whole variable, which the plugin logs and each
-  session start says.
+  them at once; when the role ends the subjects only the role wanted are closed and taken out of
+  the listener's registry. A subject the session also wants itself stays followed: the role's end
+  leaves it, `envoy_unsubscribe` of it keeps it for the role, and `envoy_subscribe` of a role's
+  subject makes it the session's own too. So a relaunched session follows them again when it takes
+  the role, and a session holding any other role follows none, though every pod carries the same
+  variable. A session resumed from its transcript opens the topics of the role it wants before its
+  first registration, so a post the stream kept while it was down is shown, and drops them if the
+  claim does not land; once after a resume the pass takes out of the row every role topic nothing
+  follows. A topic an edge listener refuses leaves the role's until the role ends. A value that is
+  not such an object, two keys the listener reads as one role, or a topic the stream does not
+  store, that is too long, or whose wildcard is misplaced, refuses the whole variable, which the
+  plugin logs and each session start says.
 time: 2026-11-26T20:23:05Z
 custom:
     Issue: pr5749

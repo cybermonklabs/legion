@@ -2623,8 +2623,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   };
 
   // What the ledger persists, so a restart follows it again (`replayFollowedSubjects`): the
-  // session's own agent subject and every followed topic that is not a role's. A role's topic is
-  // the role claim's to open again, which a restored process without the role never does.
+  // session's own agent subject and every followed topic the session wants for a reason of its
+  // own (`registrationState.isRoleBound`). A subject only the held role wants is the role claim's
+  // to open again, which a restored process without the role never does.
   const followedSubjects = (): string[] => {
     if (sessionID === "") return [];
     return replayFollowedSubjects(
@@ -3492,19 +3493,28 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     connect: ensureConnection,
     subscribeTopic: async (topic) => follow(topic),
     closeSubjects: (held, subjects) => {
-      for (const subject of subjects) unfollow(subject);
+      // Each closed subject exactly: `unfollow` would expand a closed `X.>` back to `X` as well,
+      // and `X` can be the session's own subject, which the role's end leaves followed.
+      for (const subject of subjects) followed.delete(subject);
       const id = held === "" ? sessionID : held;
       if (subjects.length === 0 || id === "") return;
-      void active?.client.unsubscribe({ sessionID: id, topics: subjects }).catch((error: unknown) =>
-        logger.warn(
-          "envoy: a role's notice subjects or topics were not taken out of the registry",
-          {
-            topics: subjects,
-            sessionID: id,
-            error: messageFor(error),
-          }
-        )
-      );
+      // The client's unsubscribe expands a closed `X.>` to `X` too (`expandSubscriptionTopics`
+      // in `transport.ts`), so a base the session still follows leaves the row with it: the session
+      // registers again, which puts back every subject it follows, as `envoy_unsubscribe` does.
+      const keptBase = expandSubscriptionTopics(subjects).some((subject) => followed.has(subject));
+      void active?.client
+        .unsubscribe({ sessionID: id, topics: subjects })
+        .then(() => (keptBase && id === sessionID ? registerSession() : undefined))
+        .catch((error: unknown) =>
+          logger.warn(
+            "envoy: a role's notice subjects or topics were not taken out of the registry",
+            {
+              topics: subjects,
+              sessionID: id,
+              error: messageFor(error),
+            }
+          )
+        );
     },
     roleTopics: roleTopicFollows,
   });
@@ -3947,8 +3957,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // topics it registered before it died (e.g. dispatch thread replies).
     // Quiet on failure like rebind: a brand-new session has no registry
     // entry, and a listener outage must not fail session start.
-    // Role topics are not followed here (role deliveries arrive on the agent
-    // subject); a pass claims them back once registered (`settleRole`).
+    // The role lanes (`notifications.role.<role>`) are not followed here: role deliveries arrive
+    // on the agent subject, and a pass claims a role back once registered (`settleRole`).
     // In the daemon-launched controller (the bridge's `slackRoleOwned`), every registered Slack
     // topic is unsubscribed from the listener and never restored: a restored topic would be
     // followed for as long as the session runs, outliving the controller role, and the controller
@@ -3956,14 +3966,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // controller-session.ts).
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
     // interests after its grace, and the transcript still says what the session followed. A topic
-    // it unfollowed is absent from that state. Agent and role subjects are never among them.
+    // it unfollowed is absent from that state.
     //
-    // One rule decides each registered or remembered topic, in this order:
+    // `fate` decides each registered or remembered topic once, the first that fits:
+    //  - A lane: the session's agent subject or a role lane, which this function never follows.
     //  - The role's: a topic the deployment names for a role (`ENVOY_ROLE_TOPICS`) that the
     //    ledger does not remember as the session's own. A process that ended never closed it
-    //    (`session_shutdown` deregisters, and a kill runs nothing), so the row still holds it. It
-    //    is not followed here: the pass's claim of the role follows it again, and the pass
-    //    unregisters it once the session holds no role that follows it (`roleTopicsLeftOver`).
+    //    (`session_shutdown` deregisters, and a kill runs nothing), so the row still holds it.
+    //    It is not followed as the session's own; the role this session wants opens it below.
     //  - Retired: a Slack topic in the daemon-launched controller.
     //  - Followed again, so the registration that ends this pass carries it and the session's
     //    consumer relays what the stream kept for it.
@@ -3972,17 +3982,19 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     const registered = registry?.topics ?? [];
     const remembered = rememberedSubjects(activeSessionContext?.sessionManager.getEntries() ?? []);
     const own = new Set(remembered);
-    const fate = (topic: string): "role" | "retired" | "follow" =>
-      roleTopics.names(topic) && !own.has(topic)
-        ? "role"
-        : slackRetired && slackTopicChannel(topic) !== undefined
-          ? "retired"
-          : "follow";
-    roleTopicsLeftOver = {
-      session: sessionID,
-      topics: registered.filter((topic) => fate(topic) === "role"),
-    };
-    const retired = registered.filter((topic) => fate(topic) === "retired");
+    const agentSubject = legacyAgentSubject(sessionID);
+    const fate = (topic: string): "lane" | "role" | "retired" | "follow" =>
+      topic === agentSubject || topic.startsWith(ROLE_TOPIC_PREFIX)
+        ? "lane"
+        : roleTopics.names(topic) && !own.has(topic)
+          ? "role"
+          : slackRetired && slackTopicChannel(topic) !== undefined
+            ? "retired"
+            : "follow";
+    const fates = new Map(
+      [...new Set([...registered, ...remembered])].map((topic) => [topic, fate(topic)] as const)
+    );
+    const retired = registered.filter((topic) => fates.get(topic) === "retired");
     // A step of this pass, so a pass the host left behind unregisters nothing: the listener keeps
     // the retired topics until the pass the move queued reads the registry itself. The failure is
     // this branch's to name: the step warns under the sentence it is handed.
@@ -3992,17 +4004,80 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         retired,
         "envoy: could not unregister a resumed controller's retired Slack topics"
       );
-    for (const topic of new Set([...registered, ...remembered])) {
-      if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
-      if (fate(topic) !== "follow") continue;
-      await handle.subscribe(topic);
+    for (const [topic, decided] of fates) {
+      if (decided === "follow") await handle.subscribe(topic);
     }
+    // The topics of the role this session wants are opened before the pass's first
+    // registration, after the session's own: a follow stamp a registration does not carry is
+    // dropped, and the transcript restored each topic's stamp from before the process ended, so
+    // a topic opened only at the claim would answer done every post the stream kept for it while
+    // the session was down. A topic the session remembers as its own stays its own too. The pass
+    // drops them if the claim does not land (`settleRoleTopics`).
+    const wanted = await desiredRole(
+      handle,
+      sessionID,
+      activeSessionContext?.sessionManager.getBranch?.() ?? [],
+      true
+    );
+    handle.check();
+    if (wanted !== undefined) roleTopicFollows.open(wanted);
+    roleRowCheck = sessionID;
   };
-  // The role topics a resumed session's registry held that `recoverRegisteredInterests` left to
-  // the role's claim, for the pass that read them to unregister once it has settled the role.
-  let roleTopicsLeftOver: { readonly session: string; readonly topics: readonly string[] } = {
-    session: "",
-    topics: [],
+  // The session whose row may still hold role topics a process that ended never closed, which
+  // `settleRoleTopics` reads again after each pass until one read succeeds.
+  let roleRowCheck = "";
+
+  // After a pass settles the role. What the session follows for a role it does not hold now is
+  // dropped: a resumed session opened its wanted role's topics before the claim, and a claim the
+  // listener refused naming another holder leaves them to nobody here. And once after a resume,
+  // the session's row loses every role topic nothing follows, so its consumer stops relaying them
+  // and no later resume reads them as the session's own.
+  const settleRoleTopics = async (handle: TaskHandle, host: string): Promise<void> => {
+    const held = registrationState.heldRole();
+    const opened = roleTopicFollows.role();
+    const unregister = new Set<string>();
+    if (opened !== undefined && opened !== held) {
+      for (const subject of roleTopicFollows.close()) {
+        followed.delete(subject);
+        unregister.add(subject);
+      }
+      if (held !== undefined) roleTopicFollows.open(held);
+    }
+    if (roleRowCheck === host) {
+      const row = await handle.readInterest(host);
+      handle.check();
+      if (row !== undefined) {
+        roleRowCheck = "";
+        for (const topic of row.topics) {
+          if (roleTopics.names(topic) && !followed.has(topic)) unregister.add(topic);
+        }
+      }
+    }
+    if (unregister.size > 0) {
+      await handle.unregisterTopics(
+        host,
+        [...unregister],
+        "envoy: could not unregister the role topics of a role this session does not hold"
+      );
+      // The client's unsubscribe takes a closed `X.>`'s base out of the row too: a base the
+      // session still follows goes back with the registration below.
+      if (expandSubscriptionTopics([...unregister]).some((subject) => followed.has(subject))) {
+        try {
+          await trackRegistration(host, sendRegistration(handle.register));
+        } catch (error) {
+          handle.check();
+          logger.warn(
+            "envoy: a followed subject was not registered again; the next heartbeat does it",
+            {
+              sessionID: host,
+              error: messageFor(error),
+            }
+          );
+        }
+        return;
+      }
+    }
+    await registerRoleTopics(handle, host);
   };
 
   // The newest role claim entry on `branch`, whatever process wrote it: the last one wins, since
@@ -4316,20 +4391,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         settleRole(context, host, cause, registration === undefined, move)
       )) ?? false;
     handle.check();
-    // The role topics this session's registry held when it resumed that no role it now holds
-    // followed again: taken out of the row, so its consumer stops relaying them and no later
-    // resume reads them as the session's own.
-    if (roleTopicsLeftOver.session === host) {
-      const leftOver = roleTopicsLeftOver.topics.filter((topic) => !followed.has(topic));
-      roleTopicsLeftOver = { session: "", topics: [] };
-      if (leftOver.length > 0) {
-        await handle.unregisterTopics(
-          host,
-          leftOver,
-          "envoy: could not unregister the role topics of a role this resumed session does not hold"
-        );
-      }
-    }
+    // A move that decided nothing leaves the role, and so its topics, to the next pass.
+    if (decided) await settleRoleTopics(handle, host);
     // The role move above was the last call for every session this process has left, so each
     // one's key pair and token go now (`leftSessions`), whether or not the move decided, but for
     // a session a delivery still holds (`underWay`), which stays for the next pass. The session
@@ -5539,8 +5602,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
           const added: string[] = [];
           const already: string[] = [];
+          // A subject only the held role wanted is the session's own too from here on, so the
+          // role's end leaves it followed and the ledger records it.
+          let claimed = false;
           for (const topic of requested) {
             (follow(topic) ? added : already).push(topic);
+            for (const subject of expandSubscriptionTopics([topic])) {
+              if (roleTopicFollows.claimOwn(subject)) claimed = true;
+            }
           }
           let warnings: readonly string[] | undefined;
           let registrationError: string | undefined;
@@ -5557,6 +5626,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
             // from here on and nothing the stream stored before it.
             await ledgerFollowedChanged();
           }
+          if (added.length === 0 && claimed) await ledgerFollowedChanged();
           // An edge listener refuses a topic of no project of the session's token, and the
           // registration drops it from what the session follows (`registerWithRelay`): the caller
           // asked for it by name, so it is told by name, not reported subscribed.
@@ -5590,16 +5660,25 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           const candidates = topicsFor(parameters, [...followed]).filter(
             (subject) => subject !== inbox
           );
-          // A subject another plugin opened for the role this session holds lasts as long as the
-          // role does, so the tool keeps it and says so rather than leave the session deaf to it.
-          // Each candidate is dropped on its own: `unfollow` would expand a named `X.>` back to
-          // `X` as well, and `X` can be the role's own subject, kept here.
-          const kept = candidates.filter(registrationState.isRoleBound);
+          // A subject the role this session holds wants lasts as long as the role does: a notice
+          // subject a plugin marked for it, or one of the topics the deployment names for it
+          // (`ENVOY_ROLE_TOPICS`), which the session may have followed itself too. The tool keeps
+          // it and says so rather than leave the session deaf to it; for a role topic it drops only
+          // the session's own claim (`releaseOwn`), so the role's end closes it. Each candidate is
+          // dropped on its own: `unfollow` would expand a named `X.>` back to `X` as well, and `X`
+          // can be the role's own subject, kept here.
+          const notices = new Set(registrationState.pluginRoleSubjects());
+          const keeps = (subject: string): boolean =>
+            notices.has(subject) || roleTopicFollows.has(subject);
+          const kept = candidates.filter(keeps);
+          // A role topic the session also wanted itself is now only the role's, so the ledger
+          // stops recording it as the session's own.
+          const released = kept.filter((subject) => roleTopicFollows.releaseOwn(subject));
           const removed = candidates
-            .filter((subject) => !registrationState.isRoleBound(subject))
+            .filter((subject) => !keeps(subject))
             .filter((subject) => followed.delete(subject));
           // Persisted at once, so the topic stays unfollowed across a restart.
-          if (removed.length > 0) await ledgerFollowedChanged();
+          if (removed.length > 0 || released.length > 0) await ledgerFollowedChanged();
           const registryRemoved = removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX));
           const registrationError =
             registryRemoved.length === 0
@@ -5715,7 +5794,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
               // Moving off a role closes every subscription another plugin opened `whileHolding`
               // it, so the session would stop taking that role's notices without being told. The
               // model's tool never does that; the plugin that owns the role moves it by its claim.
-              const bound = registrationState.roleBoundSubjects();
+              const bound = registrationState.pluginRoleSubjects();
               if (moving && bound.length > 0) {
                 throw new Error(
                   `This session holds role ${held}, and ${bound.join(", ")} lasts only while it does; envoy_role_set does not move it to ${role}`

@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { FOLLOW_CLOCK_ALLOWANCE_MS } from "@legion/envoy-client/consumer-delivery";
 import {
   type EnvoyStack,
   envoyStackEnabled,
@@ -153,7 +154,10 @@ class OmpClient {
     const ready = Promise.withResolvers<void>();
     const client = new OmpClient(label, child);
     void client.read(ready.resolve);
-    const exited = await Promise.race([ready.promise.then(() => undefined), child.exited]);
+    const exited = await settled(
+      `the ${label} client to say it is up`,
+      Promise.race([ready.promise.then(() => undefined), child.exited])
+    );
     if (exited !== undefined) {
       throw new Error(
         `the ${label} client exited ${exited} before it was up: ${await Bun.file(log).text()}`
@@ -215,10 +219,21 @@ class OmpClient {
     )?.data?.client_instance_id;
   }
 
-  /** The host going away for good: its input ends, and the extension's shutdown runs. */
+  /** The session's branch as the extension wrote it, its follow stamps among it: what a resumed
+   *  transcript holds in full. */
+  async branch(): Promise<readonly unknown[]> {
+    return EntriesSchema.parse(await this.send({ op: "entries" })).entries;
+  }
+
+  /** The host going away for good: its input ends, and the extension's shutdown runs. A shutdown
+   *  that hangs fails the row, naming the client; `afterAll` kills what is left. */
   async close(): Promise<void> {
     this.child.stdin.end();
-    await Promise.race([this.child.exited, Bun.sleep(15_000)]);
+    await settled(`the ${this.label} client to exit`, this.child.exited);
+  }
+
+  /** Kills the process if it still runs, for `afterAll`. */
+  forget(): void {
     this.child.kill("SIGKILL");
   }
 
@@ -246,20 +261,29 @@ async function waitFor(
   });
 }
 
-/** The topics the listener's interest registry holds for `session`. */
+/** The topics the listener's interest registry holds for `session`: none for the 404 of a session
+ *  with no row, and any other answer that is not OK throws, so a check that reads an absence
+ *  never passes on an error. */
 async function registeredTopics(stack: EnvoyStack, session: string): Promise<readonly string[]> {
   const response = await fetch(`${stack.envoyUrl}/v1/registry/${session}`);
-  if (!response.ok) return [];
+  if (response.status === 404) return [];
+  if (!response.ok) {
+    throw new Error(`GET /v1/registry/${session}: ${response.status} ${await response.text()}`);
+  }
   return RegistrySchema.parse(await response.json()).topics;
 }
 
-/** The session and client instance the listener's claim of `role` names, if a live claim stands. */
+/** The session and client instance the listener's claim of `role` names: none for the 404 of a
+ *  role no live claim holds, and any other answer that is not OK throws. */
 async function roleHolder(
   stack: EnvoyStack,
   role: string
 ): Promise<z.infer<typeof RoleSchema> | undefined> {
   const response = await fetch(`${stack.envoyUrl}/v1/roles/${role}`);
-  if (!response.ok) return undefined;
+  if (response.status === 404) return undefined;
+  if (!response.ok) {
+    throw new Error(`GET /v1/roles/${role}: ${response.status} ${await response.text()}`);
+  }
   return RoleSchema.parse(await response.json());
 }
 
@@ -348,29 +372,37 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
   }, 180_000);
 
   afterAll(async () => {
-    for (const client of clients) await client.close();
+    for (const client of clients) client.forget();
     await stack?.stop();
   }, 120_000);
 
-  // The control, after each row's last post: the bystander follows nothing of the alert channel,
-  // so it was shown no alert. A message sent to it after the last post shows its consumer
-  // delivered everything the stream stored before that message, in order, so an alert it
-  // followed would have been shown first.
-  const bystanderShownNoAlert = async (sender: OmpClient): Promise<void> => {
-    const live = requireStack();
-    if (bystander === undefined) throw new Error("the bystander did not start");
-    const witness = bystander;
-    const sentinel = `sentinel ${RUN} ${posted.length}`;
+  // A session shown none of the alerts the rows posted. An absence proves nothing by itself: a
+  // message sent to the witness after the last post, once shown, says its consumer delivered
+  // everything the stream stored before that message, in order, so an alert it followed would
+  // have been shown first.
+  const shownNoAlert = async (
+    witness: OmpClient,
+    witnessSession: string,
+    sender: OmpClient
+  ): Promise<void> => {
+    const sentinel = `sentinel ${RUN} ${witnessSession} ${posted.length}`;
     await sender.send({
       op: "tool",
       name: "envoy_send",
-      args: { session_id: BYSTANDER, message: sentinel },
+      args: { session_id: witnessSession, message: sentinel },
     });
-    await waitFor("the bystander's sentinel", () => witness.shown(sentinel));
+    await waitFor(`${witnessSession}'s sentinel`, () => witness.shown(sentinel));
     const shown: string[] = [];
     for (const marker of posted) if (await witness.shown(marker)) shown.push(marker);
     expect(shown).toEqual([]);
-    expect(await registeredTopics(live, BYSTANDER)).not.toContain(ALERTS_TOPIC);
+    expect(await registeredTopics(requireStack(), witnessSession)).not.toContain(ALERTS_TOPIC);
+  };
+
+  // The control, after each row's last post: the bystander holds a role the variable names no
+  // topic for, so it follows nothing of the alert channel and was shown no alert.
+  const bystanderShownNoAlert = async (sender: OmpClient): Promise<void> => {
+    if (bystander === undefined) throw new Error("the bystander did not start");
+    await shownNoAlert(bystander, BYSTANDER, sender);
   };
 
   test("a session pod's role keeps its topic when the pod is killed and its session relaunched", async () => {
@@ -494,10 +526,54 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
     );
     expect((await roleHolder(live, CONTROLLER_ROLE))?.holder).toBe(taker);
 
+    // The resumed session follows none of the role's topics, so after the alert it was shown none;
+    // the taker, the role's holder, is shown it.
     const afterResume = await post("after-resume");
     await waitFor("the role's holder to show the alert", () => other.shown(afterResume));
-    expect(await resumed.shown(afterResume)).toBe(false);
+    await shownNoAlert(resumed, holder, other);
 
     await bystanderShownNoAlert(other);
+  }, 240_000);
+
+  test("a session resumed from its transcript is shown what the stream kept while it was down", async () => {
+    const live = requireStack();
+    const owner = `ses_rt_transcript_${RUN}`;
+    const launch = {
+      ENVOY_ROLE_TOPICS: ROLE_TOPICS,
+      ENVOY_SESSION_ROLE: OWNER_ROLE,
+      ENVOY_SESSION_ROLE_SESSION: owner,
+    };
+    const first = await start("transcript-1", launch);
+    await first.send({ op: "start", session: owner });
+    await waitFor("the owner's registration of the alert topic", async () =>
+      (await registeredTopics(live, owner)).includes(ALERTS_TOPIC)
+    );
+    const beforeKill = await post("transcript-before-kill");
+    await waitFor("the first process to show the alert posted before the kill", () =>
+      first.shown(beforeKill)
+    );
+    // The transcript a resumed process restores in full, the alert topic's follow stamp in it.
+    const transcript = await first.branch();
+    await first.kill();
+
+    const whileDown = await post("transcript-while-down");
+    // The pod is down for longer than the follow clock's allowance, as an evicted pod is: a
+    // follow the resumed process stamped only at its claim would answer done a post the stream
+    // stored this much earlier, so the post below reaches the session only through the stamp the
+    // transcript restored. A span the product measures, not a wait for a fact.
+    await Bun.sleep(FOLLOW_CLOCK_ALLOWANCE_MS + 1_000);
+
+    const second = await start("transcript-2", launch);
+    await second.send({ op: "start", session: owner, branch: transcript });
+    await waitFor(
+      "the resumed process to show the alert posted while the pod was down",
+      () => second.shown(whileDown),
+      async () => {
+        await second.send({ op: "heartbeat" });
+      }
+    );
+    expect(await registeredTopics(live, owner)).toContain(ALERTS_TOPIC);
+
+    await bystanderShownNoAlert(second);
   }, 240_000);
 });

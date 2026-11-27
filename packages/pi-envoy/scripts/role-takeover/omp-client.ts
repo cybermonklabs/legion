@@ -29,10 +29,14 @@
  *   {"id":"4","op":"heartbeat"}
  *   {"id":"5","op":"deliveries"}
  *   {"id":"6","op":"entries"}
+ *   {"id":"7","op":"start","session":"ses_a","branch":[...]}
  *
  * `roles` replaces the session's branch with one `envoy-role-claim` entry per element (a string
  * is a claim, null a release), which is what a resumed or forked transcript carries; omitted, the
- * branch carries on as it is. `heartbeat` runs the pass the extension's own interval would have
+ * branch carries on as it is. `branch` on `start` replaces it with these entries as they are,
+ * which is what a resumed transcript holds in full: what a killed process's `entries` answered,
+ * its follow stamps among them, so the extension restores what that process had followed.
+ * `heartbeat` runs the pass the extension's own interval would have
  * run: it re-registers the session, which is how a holder says it still answers for the role
  * claims it made, and it re-asserts the role that session holds. It answers as soon as the pass
  * is under way, as a timer tick does; the smoke reads the pass's own calls at the proxy.
@@ -45,7 +49,7 @@
 import { appendFileSync } from "node:fs";
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import envoyExtension from "../../extensions/envoy";
-import { createStandInHost, type EventHandler } from "../../test/stand-in-host";
+import { type BranchEntry, createStandInHost, type EventHandler } from "../../test/stand-in-host";
 
 const ROLE_CLAIM_ENTRY = "envoy-role-claim";
 
@@ -55,6 +59,7 @@ interface Command {
   readonly session?: string;
   readonly reason?: string;
   readonly roles?: readonly (string | null)[];
+  readonly branch?: readonly unknown[];
   readonly name?: string;
   readonly args?: Record<string, unknown>;
 }
@@ -151,7 +156,13 @@ async function run(command: Command): Promise<Record<string, unknown>> {
   switch (command.op) {
     case "start": {
       sessionID = command.session ?? "";
-      setBranch(command.roles ?? []);
+      if (command.branch !== undefined) {
+        entries.length = 0;
+        // As the killed process's `entries` answered them: the host's own entry shape.
+        entries.push(...(command.branch as readonly BranchEntry[]));
+      } else {
+        setBranch(command.roles ?? []);
+      }
       await handlerFor("session_start")({}, context);
       return { session: sessionID };
     }

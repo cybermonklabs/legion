@@ -108,7 +108,7 @@ import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/h
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { timeLeft } from "@legion/test-fixtures/wait";
+import { settled, timeLeft } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -7627,6 +7627,95 @@ console.log(JSON.stringify(args));
     // role's followed topics as the bridge documents.
     await claimEnvoyRole("ses_role_bound", "legion-reviewer", context);
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
+  });
+
+  // A subject the deployment names for a role (`ENVOY_ROLE_TOPICS`) that the session also wants
+  // itself stays followed while either wants it: the session's unsubscribe leaves it to the held
+  // role, its subscribe makes a role's subject its own too, and the role's end closes only what
+  // the role alone wanted, each subject exactly, so the base of a `>` topic the session follows
+  // itself stays followed.
+  test("a subject both the session's own and the held role's stays followed while either wants it", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const base = "notifications.github.acme.app";
+    const unregistered: string[][] = [];
+    // A registration that carries the base after the role's end unregistered it with its `.>`.
+    let closedBase = false;
+    const baseBack = Promise.withResolvers<void>();
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/roles/set") {
+        const claimed = typeof body?.role === "string" ? body.role : "";
+        return response({
+          session_id: "ses_two_claims",
+          machine_id: "test",
+          dir: "/tmp/envoy-omp-test",
+          topics: [`notifications.role.${claimed}`],
+        });
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        unregistered.push(topics);
+        if (topics.includes(base)) closedBase = true;
+        return response({});
+      }
+      if (url.pathname === "/v1/interests/subscribe" && closedBase) {
+        if (Array.isArray(body?.topics) && body.topics.includes(base)) baseBack.resolve();
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ "legion-controller": [alerts, `${base}.>`] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?two-claims");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      const context = sessionContext("ses_two_claims");
+      await fixture.handlers.get("session_start")?.({}, context);
+      const tool = (name: string) => {
+        const found = fixture.tools.find((candidate) => candidate.name === name);
+        if (found === undefined) throw new Error(`${name} was not registered`);
+        return found;
+      };
+
+      // The session follows the alert topic and the `>` topic's base itself, then takes the role.
+      await tool("envoy_subscribe").execute("", { topics: [alerts, base] });
+      const claimed = await tool("envoy_role_set").execute("", { role: "legion-controller" });
+      expect(claimed.details.following).toEqual([alerts, base, `${base}.>`]);
+
+      // Its unsubscribe of the alert topic leaves it to the role, so the holder still hears it.
+      const dropped = await tool("envoy_unsubscribe").execute("", { topics: [alerts] });
+      expect(dropped.details).toEqual({ removed: [], kept: [alerts] });
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      expect(unregistered).toEqual([]);
+
+      // The role's end closes what the role alone wanted, the alert topic now among it, and
+      // leaves the base the session follows itself.
+      await tool("envoy_role_set").execute("", { role: "legion-reviewer" });
+      let left = await followedTopics(fixture.tools, context);
+      expect(left).not.toContain(alerts);
+      expect(left).not.toContain(`${base}.>`);
+      expect(left).toContain(base);
+      expect(unregistered.flat()).toEqual(expect.arrayContaining([alerts, `${base}.>`]));
+      // The client's unsubscribe expands the closed `.>` to its base too, so the session
+      // registers again and the base goes back into its row.
+      await settled("the registration that puts the base back into the row", baseBack.promise);
+
+      // Back on the role, the session subscribes to the alert topic the role alone wanted: it is
+      // its own too now, so the role's end leaves it followed.
+      await tool("envoy_role_set").execute("", { role: "legion-controller" });
+      await tool("envoy_subscribe").execute("", { topics: [alerts] });
+      await tool("envoy_role_set").execute("", { role: "legion-reviewer" });
+      left = await followedTopics(fixture.tools, context);
+      expect(left).toContain(alerts);
+      expect(left).toContain(base);
+      expect(left).not.toContain(`${base}.>`);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
   });
 
   // Contract entry 20261125170509: a Legion claim names the session it replaces, as the daemon's registration
