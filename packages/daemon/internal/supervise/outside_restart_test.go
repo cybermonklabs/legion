@@ -832,7 +832,7 @@ func outsideEndQueued(h *harness) string {
 func deathRetyped(h *harness, generation uint64) string {
 	v := h.m.view.Load()
 	switch c := v.Claim; {
-	case c.Generation != generation:
+	case c.Generation != generation || c.Locator == nil:
 	case !c.judgedDeath() || c.recordedFromOutside():
 		return fmt.Sprintf("the claim reads deathCharged=%v over the record %+v, want the death died judged first to stay that death, its end never typed as one from outside the pod",
 			c.DeathCharged, c.EndedWork)

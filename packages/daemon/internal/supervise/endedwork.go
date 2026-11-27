@@ -28,7 +28,11 @@ import (
 type EndedWork struct {
 	// At is when the process was let go, and Cause why: a sentence the daemon writes, beginning
 	// with what the decision that let the process go found (the cause constants and functions
-	// below), so the sentence it is told in can name it after "because".
+	// below), so the sentence it is told in can name it after "because". Both are of one end, the
+	// one whose cause is told, save where an end that ended nothing worth telling leaves its typed
+	// record over an earlier launch's that still tells (leaveRecord): At is then that end's, and
+	// Cause, with Death, the earlier end's, whose words are what is told. A record joined over an
+	// earlier one still untold (joined) takes the newer end's moment and cause.
 	At    time.Time `json:"at"`
 	Cause string    `json:"cause"`
 	// Death is the kind of the cause the runtime read of the death this record is of, where Cause
@@ -84,23 +88,26 @@ type EndedWork struct {
 	// outside the pod and leaves this as it is (markFromOutside), so the record still says
 	// displaced judged the end first.
 	//
-	// It is the second exception to the rule FromOutside states: a displacement always leaves a
-	// record of its launch's end, whatever that end ended, told already by no delivery where it
-	// ended nothing worth telling, so a later report finds the judgement standing whatever the
-	// claim held. It is stored in the claim's JSON with the rest of the record, and an earlier
-	// daemon reading the row passes over the key. A record an earlier daemon stored without it
-	// reads as no displacement, so a later report of that end read neither way goes to died, as
-	// it did on that daemon.
+	// It is the second exception to the rule FromOutside states: a displacement leaves a record of
+	// its launch's end whatever that end ended, but over an end already decided
+	// (Claim.DeathCharged, markDisplaced), where the decision's record or its absence stands; it is
+	// told already by no delivery where it ended nothing worth telling, so a later report finds the
+	// judgement standing
+	// whatever the claim held. It is stored in the claim's JSON with the rest of the record, and
+	// an earlier daemon reading the row passes over the key. A record an earlier daemon stored
+	// without it reads as no displacement, so a later report of that end read neither way goes to
+	// died, as it did on that daemon.
 	Displaced bool `json:"displaced,omitempty"`
 	// Outlived is whether a verdict that found the process running ended the death judgement this
 	// record carried (reportedProcess clears Died and sets this): the process ran on, so what a
 	// later end of it cuts off is that end's own to record and tell. recordEnd records such an
 	// end afresh over this record, with its own turn, task and report, untold, under its own
 	// cause and type, joined with this one while this still tells, as for a first end of the
-	// launch. Where that end ends nothing worth telling, the judgement it is types this record
-	// under its own cause instead (unjudgedRecord). Every write of a type clears it. It is stored
-	// in the claim's JSON with the rest of the record, and an earlier daemon reading the row
-	// passes over the key.
+	// launch, so the role is told that end's own cause where the end cut off its work. Where that
+	// end ends nothing worth telling, the judgement it is types this record under its own cause
+	// instead (unjudgedRecord), keeping its told state. Every write of a type clears it. It is
+	// stored in the claim's JSON with the rest of the record, and an earlier daemon reading the
+	// row passes over the key.
 	Outlived bool `json:"outlived,omitempty"`
 	// Generation is the launch whose process this records the end of, which is what keeps one
 	// process's end to one record: a decision that records the end of a process it already knows
@@ -443,7 +450,9 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 // off as the record of a let-go that follows its take-back says it. The take-back then moves the
 // mark to the id it gives the task (interrupted), and letGo clears it with the process. A
 // take-back the store refuses leaves the mark on the task it left confirmed, which no later
-// let-go of this process reads: the record of this launch already stands (EndedWork.Generation).
+// let-go of this process reads while the record of this launch stands (EndedWork.Generation);
+// a verdict that finds the process running, after which a later end records afresh
+// (EndedWork.Outlived), clears the mark with the judgement it ends (reportedProcess).
 // death, fromOutside, displaced and died are recordEnd's.
 func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, displaced, died bool) {
 	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {

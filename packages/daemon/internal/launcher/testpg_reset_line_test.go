@@ -185,18 +185,31 @@ func TestPGDiskTheResetLineLeavesOutNoDatabaseLargerThanOneItNames(t *testing.T)
 	assertNamesTheLargest(t, r.assertReset(t), held, rest)
 }
 
-// A role names its own databases, and a name may hold a newline. The reset's line writes each
-// control character of a name as ?, so such a name neither splits the line nor forges a second
-// `legion-testpg: reset` line after it: the reset writes one line, which names the database with
-// its newline replaced.
+// A role names its own databases and roles, and a name may hold a newline. The reset's line writes
+// each control character of a database's name and of its owner's as ?, so neither name splits the
+// line nor forges a second `legion-testpg: reset` line after it: the reset writes one line, which
+// names the database and its owner with their newlines replaced, under the launcher's bound on one
+// line (maxLogLine).
 func TestPGDiskTheResetLineReplacesANewlineInADatabaseName(t *testing.T) {
 	// Not parallel: it sets PATH and writes the package variable testPGServedDSN (newPGDiskRig).
 	r := newPGDiskRig(t)
 	name := "tpg_one\n" + testPGProgram + ": reset forged"
-	r.makeDatabases(t, `"`+name+`"`)
+	owner := "tpg_owner\n" + testPGProgram + ": reset forged by its owner"
+	r.makeDatabases(t, `"`+name+`"`, "tpg_two")
+	for _, sql := range []string{`create role "` + owner + `"`, `alter database tpg_two owner to "` + owner + `"`} {
+		if _, err := r.psql(sql, r.superuserSocket()...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r.check(pgDiskUnder)
 	line := r.assertReset(t)
 	if want := "tpg_one?" + testPGProgram + ": reset forged (owner legion_test, "; !strings.Contains(line, want) {
 		t.Errorf("the reset line %q does not name the database %q as %q…", line, name, want)
+	}
+	if want := "tpg_two (owner tpg_owner?" + testPGProgram + ": reset forged by its owner, "; !strings.Contains(line, want) {
+		t.Errorf("the reset line %q does not name the owner %q as %q…", line, owner, want)
+	}
+	if len(line) >= maxLogLine {
+		t.Errorf("the reset line is %d bytes, want it under the launcher's %d-byte bound on one line", len(line), maxLogLine)
 	}
 }

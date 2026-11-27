@@ -72,8 +72,9 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // task is marked as taken by this decision before the record is read (Machine.cutTurnOf), and
 // the record says its turn was cut off. A held suspension's stop then finds that record standing
 // and records no suspension in its place (endHeld), so the next process is told what ended it.
-// The record is typed as displaced's (EndedWork.Displaced), and it is left whatever the end
-// ended (markDisplaced), so a later report of the same launch finds this judgement standing.
+// The record is typed as displaced's (EndedWork.Displaced), and it is left whatever the end ended
+// but over an end already decided (markDisplaced), so a later report of the same launch finds
+// this judgement standing.
 //
 // The cause it records and lets the process go with (launch, letGo) is endDisplaced, an act of the
 // daemon's own: judge sends an end from outside the pod to endedFromOutside, which hands
@@ -370,8 +371,9 @@ func (c Claim) recordedFromOutside() bool {
 // typed as displaced's (EndedWork.Displaced): the daemon judged that end its own replacement of
 // the pod, or its take-over of another runtime's process, before anything else judged it. It
 // reads that typed value and never the record's sentence. Only displaced writes such a record
-// (recordDisplaced, markDisplaced), and it writes one whatever the end ended, so this holds on
-// the daemon that judged the end, and after a restart wherever a write of the claim carried the
+// (recordDisplaced, markDisplaced), and it writes one whatever the end ended, but over an end
+// already decided, so this holds on the daemon that judged the end, and after a restart wherever
+// a write of the claim carried the
 // record into the store. judge sends a report read neither way to displaced where this holds and
 // no death died judged first (judgedDeath), so the daemon's own replacement is never charged as
 // a death; a report read as from outside the pod still goes to endedFromOutside, which types the

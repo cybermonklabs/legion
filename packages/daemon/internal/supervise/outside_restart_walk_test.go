@@ -5,6 +5,7 @@ package supervise
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -39,9 +40,10 @@ const (
 // An end from outside the pod holds its invariants in random orders of the events that can meet
 // it, against the real machine and this file's harness, from a fixed list of seeds, so every run
 // walks the same orders and a failing seed is replayed by its subtest's name. Each seed stands
-// the claim in a turn of its confirmed task, ready holding its task sent and not confirmed, or,
-// in about one seed of four, ready holding nothing, with no task and no turn, parks the relaunch
-// behind another claim's wake, maybe sets a fault for the next writes, and sends the end: in
+// the claim in a turn of its confirmed task, ready holding its task sent and not confirmed, in
+// about one seed of five of those idle after a turn that ran its task to its end, or, in about
+// one seed of four, ready holding nothing, with no task and no turn, parks the relaunch behind
+// another claim's wake, maybe sets a fault for the next writes, and sends the end: in
 // about one seed of three a report read neither way, which died judges a death (diedFirst); in
 // about one of the rest in four the daemon's own replacement of the pod, which displaced judges
 // first (displacedFirst), its relaunch refused by the lifecycle recheck; a second after either;
@@ -50,15 +52,20 @@ const (
 // neither way, an Uncertain report (a claim write), a fault set for the next writes (a write
 // refused or of unknown outcome, or the relaunch refused by the lifecycle recheck), the faults
 // cleared, a second passing, a daemon restart, and the boot's replay a restart owes where its
-// store held the decision (internal/daemon's recordedDeaths). Before each of them, drawn from a
-// stream of their own so the steps above stay the ones each seed walked before them, may come a
-// read of the process at a caller's request that finds it running (ReadProcess), once in a walk,
-// where the claim holds a death died judged, no launch waits and the store takes the claim's
-// writes; and, on the daemon that read the end, where the claim stood holding its task sent and
-// still holds it, a late acknowledgement of that task's prompt (acked), as the send in flight at
-// the end gives one, or the shim's second answer for one prompt. An event the machine answers
-// with an error is allowed. The walk closes with the faults cleared, the replay still owed, one
-// report read neither way, the relaunch's turn and its ready.
+// store held the decision (internal/daemon's recordedDeaths). Before each of them, drawn from
+// streams of their own so the steps above stay the ones each seed walked before them, may come:
+// a read of the process at a caller's request that finds it running (ReadProcess), once in a
+// walk, at any step of a walk whose first report was read neither way before any report read the
+// pod ended, wherever no launch waits and the store takes the claim's writes; on the daemon that
+// read the end, where the claim stood holding its task sent and still holds it, a late
+// acknowledgement of that task's prompt (acked), as the send in flight at the end gives one, or
+// the shim's second answer for one prompt; where a read found the process running and the claim
+// is in a turn, an idle turn end with an activity report that says nothing runs; and, once in a
+// walk, an operator's suspension, held for the turn where the claim is in one over a process the
+// daemon does not hold gone (holdSuspension), and landing where it arrives otherwise. An event
+// the machine answers with an error is allowed. The walk closes with the faults cleared, the
+// replay still owed, one report read neither way, the relaunch's turn, the operator's resume
+// where the claim is suspended, and the relaunch's ready.
 //
 // After every step, with the seed and the steps walked in each failure:
 //
@@ -69,7 +76,8 @@ const (
 //     and a read that finds the process running ends a judged death (reportedProcess), so the
 //     end a later report finds is judged afresh.
 //  2. The claim and the store hold the task, where the claim held one, at every step: it is
-//     never retired.
+//     never retired, but by the end of a turn that confirmed it in a process a read found
+//     running, which served it.
 //  3. Once the claim reads the end decided (Claim.DeathCharged), the end of the turn
 //     (Claim.LastTurnEnd) does not move in it, and once the stored claim reads it decided, not in
 //     the store either (turnEndWatch). A decision D1 made in memory and its store refused is gone
@@ -77,8 +85,10 @@ const (
 //     claim is undecided; the store's never does. A read that finds the process running clears
 //     the decision, in the claim and in the store, so both watches start again there.
 //  4. At the relaunch's ready the task is sent once, never twice, and a claim that held nothing
-//     is sent nothing; an end the claim held decided from outside the pod is never told as a
-//     death (outsideWalk.relaunch).
+//     is sent nothing but the daemon's own delivery of a record that tells (queueRelaunch); an
+//     end the claim held decided from outside the pod is never told as a death
+//     (outsideWalk.relaunch). The walk's claim holds no record of a launch before the ended one,
+//     so every record it tells is one an end of the ended launch made.
 //  5. While the claim holds its end decided from outside the pod, a paced wake the machine holds
 //     at a place waits in the pacing's second queue: such an end charges no death, so its
 //     relaunch is never placed as a charged death's (outsideEndQueued). And once the claim holds
@@ -98,7 +108,17 @@ const (
 //     (deathUnjudged): an end endedFromOutside decided, displaced's first judgement of it
 //     included, reads as decided from outside the pod.
 //  6. No prompt failure is charged for a process reported gone, and the turn-start timer
-//     (TimerTurn) is never armed while the machine holds the process gone (Claim.ProcessGone).
+//     (TimerTurn) is never armed while the machine holds the process gone (Claim.ProcessGone). A
+//     process a read found running can let the wait for a turn of a prompt sent to it run out,
+//     which charges a prompt failure as for any live process.
+//  7. A record that tells a turn cut off (EndedWork.Turn, TaskTurn) is told only where an end cut
+//     one off: an end of the process — a report judged, a suspension landing, the relaunch's turn
+//     — that came while the claim was in a turn or held its task confirmed (outsideWalk.cut).
+//  8. A record of the ended launch that tells, tells the cause of the end that first judged that
+//     launch: died's, displaced's or the end from outside the pod's, as judge routes the first
+//     report it judges (firstJudgement). A read that finds the process running ends that
+//     judgement, and a restart whose store kept no judgement of the launch forgets it, so the
+//     next report judges afresh (storedJudgement).
 //
 // The negative controls are the table test's: judge routing on decidedFromOutside fails
 // invariant 1, a report read neither way over a record with no decision charged a death, on one
@@ -116,28 +136,34 @@ const (
 // invariant 5; displaced leaving no record of an end that ended nothing worth telling fails
 // invariant 1 where the claim stood holding nothing or holding its task sent and not confirmed;
 // reportedProcess leaving the record's death judgement standing fails the running read's own
-// check, the claim and the store still holding the death after it; markFromOutside keeping the
-// cause of a death a running read ended on the record it types fails invariant 4's last
-// sentence; and judge leaving TimerTurn armed on a gone verdict, or acked arming it over a gone
-// process, fails invariant 6.
+// check, the claim and the store still holding the death after it; markFromOutside typing a
+// record of the launch no judgement types without its own cause fails invariant 8, the cleared
+// death's cause told for an end from outside the pod; judge leaving TimerTurn armed on a gone
+// verdict, or acked arming it over a gone process, fails invariant 6; recordEnd recording every
+// end as one that cut off the task's turn, or recording the turn a claim idle after a normal
+// turn end ran as cut off (EndedWork.Turn of an idle state, seed 2 among others), fails invariant
+// 7; and markFromOutside letting a later report read as outside give every standing record of the
+// launch its own cause fails invariant 8 (seed 7 among others).
 //
-// The test fails unless some seed walks each of the three orders the walk was given for them:
-// the running read over a judged death, the late acknowledgement over a gone process, and a
-// report read neither way over displaced's record; it logs how many seeds walk each.
+// The test fails unless some seed walks each of the orders the walk was given for them: the
+// running read, the late acknowledgement over a gone process, a report read neither way over
+// displaced's record, an idle turn end, a suspension held for a turn and an operator's suspension
+// that lands where it arrives; it logs how many seeds walk each.
 func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
-	var reads, acks, displacedReports int
+	var reads, acks, displacedReports, turnEnds, held, suspended int
 	for seed := uint64(1); seed <= outsideSeeds; seed++ {
 		t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
 			w := newOutsideWalk(t, seed)
 			w.run()
 			reads, acks = reads+min(w.reads, 1), acks+min(w.acks, 1)
 			displacedReports += min(w.displacedReports, 1)
+			turnEnds, held, suspended = turnEnds+min(w.turnEnds, 1), held+min(w.held, 1), suspended+min(w.suspended, 1)
 		})
 	}
-	t.Logf("seeds that walk a running read over a judged death: %d; a late acknowledgement over a gone process: %d; a report read neither way over displaced's record: %d",
-		reads, acks, displacedReports)
-	if !t.Failed() && (reads == 0 || acks == 0 || displacedReports == 0) {
-		t.Fatal("a seed list that walks none of one of the three orders, want each walked")
+	t.Logf("seeds that walk a running read: %d; a late acknowledgement over a gone process: %d; a report read neither way over displaced's record: %d; an idle turn end: %d; a suspension held for a turn: %d; an operator's suspension landing: %d",
+		reads, acks, displacedReports, turnEnds, held, suspended)
+	if !t.Failed() && (reads == 0 || acks == 0 || displacedReports == 0 || turnEnds == 0 || held == 0 || suspended == 0) {
+		t.Fatal("a seed list that walks none of one of the orders, want each walked")
 	}
 }
 
@@ -156,6 +182,10 @@ type outsideWalk struct {
 	// acknowledgement comes before a random step where one can (readRunning, lateAck), drawn
 	// apart for the reason more is.
 	extra *rand.Rand
+	// kinds is a fifth stream from the seed, of whether an idle turn end or an operator's
+	// suspension comes before a random step where one can (idleTurnEnd, suspend), drawn apart for
+	// the reason more is.
+	kinds *rand.Rand
 	h     *harness
 	// ended and generation are the process the end ended and its launch, task the task the claim
 	// held, "" for none, owing whether it stood holding that task sent and not confirmed, and sent
@@ -208,13 +238,25 @@ type outsideWalk struct {
 	// reads, acks and displacedReports are how many running reads, late acknowledgements, and
 	// reports read neither way over displaced's record the walk took.
 	reads, acks, displacedReports int
+	// alive is whether a read found the process running and no report has found it gone since,
+	// and podEnded whether a report read the pod ended, from outside it or by the daemon's
+	// replacement, after which no read finds it running.
+	alive, podEnded bool
+	// turnEnds, held and suspended are how many idle turn ends, suspensions held for a turn and
+	// suspensions landing where they arrived the walk took, and suspensions how many it drew.
+	turnEnds, held, suspended, suspensions int
+	// ending is whether the step running is an end of the process (outsideWalk.step), cut whether
+	// an end has cut off a turn or a confirmed task's turn (invariant 7), and judgedCause the cause
+	// of the end that first judged the ended launch, "" while none stands (invariant 8).
+	ending, cut bool
+	judgedCause string
 	// turnEnd holds the end of the turn where the decision of the end put it (invariant 3).
 	turnEnd turnEndWatch
 }
 
 func newOutsideWalk(t *testing.T, seed uint64) *outsideWalk {
 	w := &outsideWalk{t: t, seed: seed, rng: rand.New(rand.NewPCG(seed, 0)), more: rand.New(rand.NewPCG(seed, 1)),
-		extra: rand.New(rand.NewPCG(seed, 3)), h: pacedHarness(t, wakeRate), judged: 1}
+		extra: rand.New(rand.NewPCG(seed, 3)), kinds: rand.New(rand.NewPCG(seed, 4)), h: pacedHarness(t, wakeRate), judged: 1}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("seed %d walked: %s", seed, strings.Join(w.walked, "; "))
@@ -235,10 +277,17 @@ func (w *outsideWalk) run() {
 	w.diedFirst = w.more.IntN(3) == 0
 	w.displacedFirst = !w.diedFirst && rand.New(rand.NewPCG(w.seed, 2)).IntN(4) == 0
 	nothing, inTurn := w.more.IntN(4) == 0, w.rng.IntN(2) == 0
+	// idle, drawn from a sixth stream for the reason more is drawn apart, stands one claim in
+	// five of the rest idle after a turn that ran its task to its end, so an end comes over a
+	// turn that ended normally and that no end cut off (invariant 7).
+	idle := !nothing && rand.New(rand.NewPCG(w.seed, 5)).IntN(5) == 0
 	switch {
 	case nothing:
 		h.reach(StateReady)
 		w.walked = append(w.walked, "stood ready holding nothing")
+	case idle:
+		h.reach(StateIdle)
+		w.walked = append(w.walked, "stood idle after a turn that ran its task to its end")
 	case inTurn:
 		h.reach(StateWorking)
 		w.task = owedTask
@@ -269,11 +318,7 @@ func (w *outsideWalk) run() {
 		// the one that carries DisruptionTarget, so the reports after this one come later.
 		second()
 	case w.displacedFirst:
-		w.step("the end, the daemon's replacement of the pod", func() error {
-			return h.handle(RuntimeObservation{Observation: runtime.Observation{
-				Locator: w.ended, Kind: runtime.Gone, At: h.clock.Now(), Displaced: true,
-			}})
-		})
+		w.observe("the end, the daemon's replacement of the pod", runtime.Observation{Kind: runtime.Gone, Displaced: true})
 		// A read of the same pod as ended from outside it comes at a later event, as after a
 		// restart that lost the runtime's record of the replacement (sandbox's meanToEndPod).
 		second()
@@ -305,53 +350,165 @@ func (w *outsideWalk) run() {
 }
 
 // step runs one step, notes it, and checks the invariants after it. Its error is allowed: a
-// write the store refused or whose outcome is unknown fails the event that made it.
+// write the store refused or whose outcome is unknown fails the event that made it. A step that
+// is an end of the process (ending) and comes while the claim records the ended launch in a turn,
+// or holding its task confirmed, cuts that turn off (invariant 7).
 func (w *outsideWalk) step(name string, run func() error) {
 	w.t.Helper()
+	pre := w.h.claim()
 	if err := run(); err != nil {
 		name += " (answered: " + err.Error() + ")"
 	}
+	if w.ending && pre.Generation == w.generation && pre.Locator != nil &&
+		(pre.State == StateWorking || pre.Pending != nil && !pre.Pending.ConfirmedAt.IsZero()) {
+		w.cut = true
+	}
+	w.ending = false
 	w.walked = append(w.walked, name)
 	w.check()
 }
 
 // report is a step of the runtime's report of the ended process, of kind read as reading.
 func (w *outsideWalk) report(name string, kind runtime.ObservationKind, reading runtime.PodEndReading) {
-	if c := w.h.claim(); kind == runtime.NotRecordedProcess && c.Generation == w.generation && c.recordedDisplaced() {
-		w.displacedReports++
-	}
-	w.step(name, func() error {
-		return w.h.handle(RuntimeObservation{Observation: runtime.Observation{
-			Locator: w.ended, Kind: kind, At: w.h.clock.Now(), EndReading: reading,
-		}})
-	})
+	w.observe(name, runtime.Observation{Kind: kind, EndReading: reading})
 }
 
-// beside is the steps drawn from extra before a random step, each one time in three where it
-// can come: a running read over a death died judged (readRunning), once in a walk, where no
-// launch waits and the store takes every write but the relaunch's recheck, and a late
-// acknowledgement of the prompt of the task the claim stood owing (lateAck). A second running
-// read would let a third death be judged, which fails the claim at the deaths limit (chargeDeath)
-// rather than relaunching it, and the walk closes on the relaunch.
+// observe is a step of the runtime's report of the ended process, observation's locator and
+// moment its own. A report that finds the process gone is an end of it, which judges the launch
+// first where no judgement of it stands and the machine judges the report (judge: the claim
+// records the launch's process and no launch waits), under the cause firstJudgement gives.
+func (w *outsideWalk) observe(name string, observation runtime.Observation) {
+	h := w.h
+	c := h.claim()
+	if observation.Kind == runtime.NotRecordedProcess && c.Generation == w.generation && c.recordedDisplaced() {
+		w.displacedReports++
+	}
+	if gone := observation.Kind == runtime.Gone || observation.Kind == runtime.NotRecordedProcess; gone {
+		judged := c.Generation == w.generation && c.Locator != nil && slices.Contains(LiveStates(), c.State) &&
+			h.m.View().WakeWaiting == nil
+		if judged && w.judgedCause == "" {
+			w.judgedCause = firstJudgement(c, observation)
+		}
+		w.ending, w.alive = true, false
+		w.podEnded = w.podEnded || observation.Displaced || observation.EndReading == runtime.PodEndNotOurs
+	}
+	observation.Locator, observation.At = w.ended, h.clock.Now()
+	w.step(name, func() error { return h.handle(RuntimeObservation{Observation: observation}) })
+}
+
+// diedWords is how a death's cause opens where the runtime read no plain cause of it (endDied).
+const diedWords = "the process died"
+
+// firstJudgement is the cause of the end that a report of the claim's process, observation,
+// judges first, as judge routes it: displaced's for the daemon's own replacement, died's over a
+// death died judged, the end from outside the pod's for a report read so or over that end's
+// record, displaced's for one read neither way over displaced's record, and died's otherwise.
+func firstJudgement(c Claim, observation runtime.Observation) string {
+	switch {
+	case observation.Displaced:
+		return endDisplaced
+	case c.judgedDeath():
+		return diedWords
+	case observation.EndReading == runtime.PodEndNotOurs || c.recordedFromOutside():
+		return endFromOutside
+	case c.recordedDisplaced():
+		return endDisplaced
+	}
+	return diedWords
+}
+
+// storedJudgement is the cause of the end that judged the launch generation names as the claim c
+// a restart restored holds it, and "" where it holds none: a record of that launch typed by its
+// judgement, or the decision of a death that recorded none.
+func storedJudgement(c Claim, generation uint64) string {
+	e, ours := c.EndedWork, c.EndedWork.Generation == generation
+	switch {
+	case c.Generation != generation:
+	case ours && e.Displaced:
+		return endDisplaced
+	case ours && e.FromOutside:
+		return endFromOutside
+	case ours && e.Died, c.DeathCharged:
+		return diedWords
+	}
+	return ""
+}
+
+// beside is the steps drawn before a random step, where each can come: from extra, one time in
+// three, a running read (readRunning), once in a walk, in a walk whose first report was read
+// neither way before any report read the pod ended, where no launch waits and the store takes
+// every write but the relaunch's recheck, and a late acknowledgement of the prompt of the task the
+// claim stood owing (lateAck); from kinds, one time in two an idle turn end where a read found the
+// process running and the claim is in a turn (idleTurnEnd), and one time in four an operator's
+// suspension, once in a walk (suspend). A second running read would let a third death be judged,
+// which fails the claim at the deaths limit (chargeDeath) rather than relaunching it, and the walk
+// closes on the relaunch.
 func (w *outsideWalk) beside() {
 	c := w.h.claim()
 	ours := c.Generation == w.generation && c.Locator != nil
 	writes := w.fault == "" || w.fault == faultRelaunchRefused
-	if ours && w.reads == 0 && c.judgedDeath() && w.h.m.View().WakeWaiting == nil && writes && w.extra.IntN(3) == 0 {
+	if ours && w.reads == 0 && w.diedFirst && !w.podEnded && w.h.m.View().WakeWaiting == nil && writes && w.extra.IntN(2) == 0 {
 		w.readRunning()
 	}
 	if c = w.h.claim(); ours && w.owing && !w.restarted && c.Pending != nil && c.Pending.ConfirmedAt.IsZero() &&
 		w.extra.IntN(3) == 0 {
 		w.lateAck()
 	}
+	if c = w.h.claim(); w.alive && c.Generation == w.generation && c.State == StateWorking && w.kinds.IntN(2) == 0 {
+		w.idleTurnEnd()
+	}
+	if c = w.h.claim(); w.suspensions == 0 && c.Generation == w.generation && slices.Contains(LiveStates(), c.State) &&
+		w.kinds.IntN(8) == 0 {
+		w.suspend()
+	}
+}
+
+// turnEnd is a step of the end of the turn the claim is in, in a process a read found running,
+// with the process's activity report saying nothing runs: a turn that confirmed the task served
+// it, and the claim no longer holds it (invariant 2).
+func (w *outsideWalk) idleTurnEnd() {
+	w.turnEnds++
+	w.step("an idle turn end, its activity report saying nothing runs", func() error {
+		h := w.h
+		before := h.claim().Pending
+		h.reportActivity()
+		err := h.handle(StreamTurnEnd{Claim: h.token})
+		if p := h.claim().Pending; before != nil && !before.ConfirmedAt.IsZero() && (p == nil || p.Task != w.task) {
+			w.task = ""
+		}
+		return err
+	})
+}
+
+// suspend is a step of an operator's suspension of the claim: held for the turn it is in where
+// its process is not one the daemon holds gone (holdSuspension), and an end of the process that
+// lands where it arrives otherwise.
+func (w *outsideWalk) suspend() {
+	w.suspensions++
+	w.ending = true
+	w.step("an operator's suspension", func() error {
+		h := w.h
+		err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		switch {
+		case errors.Is(err, ErrSuspendHeld):
+			w.held++
+			w.ending = false
+			return nil
+		case h.claim().State == StateSuspended:
+			w.suspended++
+			w.alive = false
+		}
+		return err
+	})
 }
 
 // readRunning is a step of a read of the process at a caller's request (ReadProcess) that finds
-// it running, over a death died judged, with no launch waiting, which a read would not make
-// (ProcessReplacedByLaunch), and with the store taking the claim's write. The death is over
-// (reportedProcess): the claim reads no judged death and no decision, in memory and in the store,
-// so the watches of that judgement and of the end of the turn its decision put start again
-// (invariants 3 and 5), and the next death judged of the process is one of its own (invariant 1).
+// it running, with no launch waiting, which a read would not make (ProcessReplacedByLaunch), and
+// with the store taking the claim's write. A death it finds judged is over (reportedProcess): the
+// claim reads no judged death and no decision, in memory and in the store, and the process lives
+// on until a report finds it gone (outsideWalk.alive), so the watches of that judgement and of
+// the end of the turn its decision put start again (invariants 3 and 5), and the next death
+// judged of the process is one of its own (invariant 1).
 func (w *outsideWalk) readRunning() {
 	w.reads++
 	w.step("a read at a caller's request, finding the process running", func() error {
@@ -365,6 +522,7 @@ func (w *outsideWalk) readRunning() {
 				c.judgedDeath(), stored.judgedDeath())
 		}
 		w.death, w.turnEnd, w.judged = false, turnEndWatch{}, w.judged+1
+		w.alive, w.judgedCause = true, ""
 		return nil
 	})
 }
@@ -448,6 +606,7 @@ func (w *outsideWalk) restart() {
 		// record or its decision into the store, which the step's check reads again
 		// (deathStands, displacementStands).
 		w.death, w.displacement = false, false
+		w.judgedCause = storedJudgement(stored, w.generation)
 		w.replayOwed = stored.DeathCharged && stored.Locator != nil && slices.Contains(LiveStates(), stored.State)
 		w.replayRead = stored.Generation
 		return nil
@@ -470,23 +629,34 @@ func (w *outsideWalk) replay() {
 // (advanceToTurn).
 func (w *outsideWalk) relaunch() {
 	h := w.h
-	if c := h.claim(); c.Generation == w.generation {
+	if c := h.claim(); c.Generation == w.generation && c.State != StateSuspended {
 		if waiting := h.m.View().WakeWaiting; waiting == nil || waiting.Kind != WakeLaunch {
 			w.fail("the claim waits for %+v, want its relaunch waiting its turn", waiting)
 		}
+		w.ending = true
 		w.step("the relaunch's turn", func() error { h.advanceToTurn(h.m); return nil })
 	}
-	// own is whether the record the relaunched role is told is the one the ended launch's own end
-	// made: a record of an earlier launch still untold keeps its own words (leaveRecord).
-	own := h.claim().EndedWork.Generation == w.generation
+	if h.claim().State == StateSuspended {
+		w.step("the operator's resume", func() error {
+			return h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator})
+		})
+		if h.m.View().WakeWaiting != nil {
+			w.step("the resumed launch's turn", func() error { h.advanceToTurn(h.m); return nil })
+		}
+	}
+	// Before the ready nothing reaches the ended process, but where a read found it running.
+	before := len(h.prompts())
+	if w.reads == 0 && before != w.sent {
+		w.fail("the claim was sent %+v before its relaunch's ready, want nothing sent to the ended process", h.prompts()[w.sent:before])
+	}
 	w.step("the relaunch's ready", func() error {
 		h.relaunched()
 		return nil
 	})
-	prompts := h.prompts()[w.sent:]
+	prompts := h.prompts()[before:]
 	switch {
-	case w.task == "" && len(prompts) != 0:
-		w.fail("the relaunched role was sent %+v, want nothing: it held no task", prompts)
+	case w.task == "" && (len(prompts) > 1 || len(prompts) == 1 && !strings.Contains(prompts[0].Message, "ended because")):
+		w.fail("the relaunched role was sent %+v, want nothing but the daemon's own delivery of a record that tells: it held no task", prompts)
 	case w.task != "" && (len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, w.task)):
 		w.fail("the relaunched role was sent %+v, want its task %q once", prompts, w.task)
 	}
@@ -494,7 +664,7 @@ func (w *outsideWalk) relaunch() {
 		if w.relaunchedDeath && strings.Contains(p.Message, endFromOutside) {
 			w.fail("the relaunched role was sent %q, want a death died judged never told as an end from outside the pod", p.Message)
 		}
-		if own && (w.relaunchedDisplacement || w.outside) && strings.Contains(p.Message, "the process died") {
+		if (w.relaunchedDisplacement || w.outside) && strings.Contains(p.Message, diedWords) {
 			w.fail("the relaunched role was sent %q, want a displacement or an end decided from outside the pod never told as a death", p.Message)
 		}
 	}
@@ -505,8 +675,13 @@ func (w *outsideWalk) check() {
 	w.t.Helper()
 	h := w.h
 	c, stored := h.claim(), h.store.load(h.token)
+	budgets, storedBudgets := c.Budgets, stored.Budgets
+	if w.reads > 0 {
+		budgets.PromptFailures, storedBudgets.PromptFailures = 0, 0
+	}
+	e := c.EndedWork
 	switch {
-	case c.Budgets.PromptFailures != 0 || stored.Budgets.PromptFailures != 0:
+	case budgets.PromptFailures != 0 || storedBudgets.PromptFailures != 0:
 		w.fail("the claim carries budgets %+v (%+v stored), want no prompt failure for a process reported gone",
 			c.Budgets, stored.Budgets)
 	case c.ProcessGone && h.armed(TimerTurn):
@@ -514,9 +689,14 @@ func (w *outsideWalk) check() {
 	case !w.lost && !w.diedFirst && (c.Budgets != Budgets{} || stored.Budgets != Budgets{}):
 		w.fail("the claim carries budgets %+v (%+v stored), want nothing charged for an end from outside the pod or a displacement that no restart lost the record of",
 			c.Budgets, stored.Budgets)
-	case !atMostDeaths(c.Budgets, w.judged) || !atMostDeaths(stored.Budgets, w.judged):
+	case !atMostDeaths(budgets, w.judged) || !atMostDeaths(storedBudgets, w.judged):
 		w.fail("the claim carries budgets %+v (%+v stored), want at most %d deaths and a launch failure for each",
 			c.Budgets, stored.Budgets, w.judged)
+	case e.Tells() && (e.Turn || e.TaskTurn) && !w.cut:
+		w.fail("the claim's record %+v tells a turn cut off, want none told where no end cut one off", e)
+	case e.Tells() && e.Generation == w.generation && w.judgedCause != "" && !strings.HasPrefix(e.Cause, w.judgedCause):
+		w.fail("the claim's record %+v tells the cause %q, want the cause of the end that first judged the launch, %q",
+			e, e.Cause, w.judgedCause)
 	}
 	if c.Generation == w.generation {
 		w.outside = c.decidedFromOutside()
@@ -540,6 +720,10 @@ func (w *outsideWalk) deathStands() string {
 	case c.Generation != w.generation:
 		w.relaunchedDeath = w.relaunchedDeath || w.death
 		w.death = false
+	case c.Locator == nil:
+		// The claim records no process now, but a restart can restore one whose let-go the
+		// store did not take, and the watch starts again from it.
+		w.death = false
 	case c.judgedDeath():
 		w.death = true
 	}
@@ -560,6 +744,8 @@ func (w *outsideWalk) displacementStands() string {
 	switch c := w.h.claim(); {
 	case c.Generation != w.generation:
 		w.relaunchedDisplacement = w.relaunchedDisplacement || w.displacement
+		w.displacement = false
+	case c.Locator == nil:
 		w.displacement = false
 	case c.recordedDisplaced():
 		w.displacement = true
@@ -582,7 +768,7 @@ func (w *outsideWalk) displacementStands() string {
 func displacementRejudged(h *harness, generation uint64) string {
 	v := h.m.view.Load()
 	switch c := v.Claim; {
-	case c.Generation != generation:
+	case c.Generation != generation || c.Locator == nil:
 	case len(h.logs.lines(diedLine, "claim="+string(h.token))) != 0:
 		return "a report of the displaced process reached died, want each later report taken as that displacement"
 	case !c.recordedDisplaced() || c.judgedDeath():

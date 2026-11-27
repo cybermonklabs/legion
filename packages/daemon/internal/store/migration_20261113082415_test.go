@@ -62,6 +62,41 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 		}
 	})
 
+	// Each judgement of a launch's end types its record (supervise.EndedWork's FromOutside, Died,
+	// Displaced and Outlived), and the judgement a later report or a restarted daemon routes by is
+	// that type: so the cause the role is told and the type the launch was judged under go into
+	// the column with the rest of the record and come back from it as they went in.
+	for _, row := range []struct {
+		name  string
+		ended supervise.EndedWork
+	}{
+		{"an end from outside the pod", supervise.EndedWork{At: at(6), Cause: "its pod was ended from outside it",
+			FromOutside: true, Generation: 3, Turn: true, TaskTurn: true, Reported: true}},
+		{"a death died judged", supervise.EndedWork{At: at(7), Cause: "the pod's roles container, which runs every role of this issue, was killed because it used " +
+			`more than its 8 GiB memory limit. The runtime's detail: "gone: OOMKilled"`,
+			Death: runtime.DeathMemoryLimit, Died: true, Generation: 3, TaskTurn: true, Reported: true}},
+		{"a displacement, told already by no delivery", supervise.EndedWork{At: at(8), Cause: "its pod was replaced",
+			Displaced: true, Generation: 3, Told: true}},
+		{"a death a running read ended", supervise.EndedWork{At: at(9), Cause: `the process died: "not_recorded_process"`,
+			Outlived: true, Generation: 3, Turn: true, TaskTurn: true}},
+	} {
+		t.Run("the record of "+row.name+" round-trips with its judgement's type", func(t *testing.T) {
+			ctx := context.Background()
+			store := migratedStore(t)
+			want := tmuxClaim("legion-LEGION-209-implementer")
+			want.EndedWork = row.ended
+			if err := store.PutClaim(ctx, want); err != nil {
+				t.Fatalf("put the claim with its record: %v", err)
+			}
+			got := onlyClaim(t, store)
+			sameClaim(t, got, want)
+			if e := got.EndedWork; e.Cause != row.ended.Cause || e.FromOutside != row.ended.FromOutside || e.Died != row.ended.Died ||
+				e.Displaced != row.ended.Displaced || e.Outlived != row.ended.Outlived || e.Generation != row.ended.Generation {
+				t.Fatalf("the claim read back records %+v, want %+v: its cause and its judgement's type as written", e, row.ended)
+			}
+		})
+	}
+
 	t.Run("the read answers the report of the launch it names and of no other", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)

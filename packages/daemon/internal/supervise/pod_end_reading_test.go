@@ -7,7 +7,10 @@ package supervise
 // however many such ends come, whatever the claim's agent was doing and whether it was ready or
 // still starting (endedFromOutside). An end the daemon itself made, and one the runtime read
 // neither way, are charged exactly as they were before the reading existed — which is what keeps
-// these cases from being an amnesty.
+// these cases from being an amnesty — but where the claim already records that launch's end as
+// one from outside the pod (recordedFromOutside, endedFromOutside) or as displaced's
+// (recordedDisplaced, displaced), over no death died judged first: such a report is that end
+// again, charged nothing.
 
 import (
 	"errors"
