@@ -1,0 +1,6 @@
+# INFRA-5996's planted label (plan.md, Decision 9): the head with the reviewer's R2 paragraph taken
+# out of packages/daemon/internal/prompts/roles/reviewer.md, the paragraph that checks that each
+# departure from the plan has a Dispatch record. The R1 paragraph, the round order and the message
+# line stay, and so does go/worker-common.md's rule for a departure. patches/README.md names the
+# commit the drop text was read from.
+drop packages/daemon/internal/prompts/roles/reviewer.md controls/drops/infra-5996-r2.txt

@@ -88,3 +88,12 @@ The two E rows in `rig.test.ts` check this checkout's files and the pinned #4902
 D strict removes `plan.md:77-79` at the pinned #4902 head, so it does not apply to the older main
 version. The manifests leave the Dispatch CLI's `plans` help unchanged. `../pr-4902-head/README.md`
 names what else must change with these lines.
+
+## INFRA-5996's planted label (`controls/infra-5996-planted.txt`)
+
+The manifest drops `infra-5996-r2.txt` from `packages/daemon/internal/prompts/roles/reviewer.md`.
+That text is the reviewer's paragraph that checks that each departure from the plan has a Dispatch record, with the end of the paragraph above it and the blank line between them.
+So the planted label is the head with the R1 paragraph, the round order and the message line, and without R2.
+The text was read with `git show 5e3ec9401b89282db3f92dde13114996a7e1c7cd:packages/daemon/internal/prompts/roles/reviewer.md`, and it occurs once in that file there.
+Its sha256 is `d6bb436e2dee940fe1d69fab7411f0be50964e04bc1bc5ebb520ad343a3d94ee`.
+`devcase.sh` of INFRA-5996's Job kit builds the planted label with `rig.sh label-tree planted <head> controls/infra-5996-planted.txt`.
