@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+    The worker image carries Oh My Pi `18.18.6-sami.20261126-222037` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` names, in place of `18.18.6-sami.20261126-110039`. Built-in provider discovery
+    keeps each provider's model list its own, so a gateway's GPT and Gemini models are no longer
+    listed under the `anthropic` provider, and a Claude model receives no other model's thinking,
+    signed or not. A classifier refusal before any output is sent again to the model that refused
+    it, up to two times, before the host walks `retry.fallbackChains`; an OpenAI `cyber_policy`
+    refusal is still never sent again. `--session-id <id>` resumes the session that holds the id
+    or starts one under it, and a resumed session whose provider was removed walks its own
+    `retry.fallbackChains` key to the same model or is refused, naming the key to add. A FIFO that
+    a killed job waited on no longer stalls the next writer. The build writes shell frames version
+    60: a frame stored by `18.18.6-sami.20261126-110039` (version 49) is refused, not restored. Its
+    SQL session store makes and checks the same tables, indexes and grants as
+    `18.18.6-sami.20261126-110039`, so a deployment already on that pin needs no owner run before
+    this one.
+time: 2026-11-26T23:57:29Z
+custom:
+    Issue: pr5769

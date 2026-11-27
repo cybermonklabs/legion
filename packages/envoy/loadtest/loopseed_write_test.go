@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -363,6 +366,24 @@ func TestLoopSeedWriteKeyStable(t *testing.T) {
 	// Its replies are written under it, so the thread's whole record is there after the resume.
 	if got := w.meta().Written; len(got) == 0 {
 		t.Fatal("the second run recorded no write")
+	}
+}
+
+// TestWorkerPoolHoldsOneConnectionPerWorker: the pool loop-seed-write's and replay-seed's workers
+// write through holds as many connections as -workers names, on every machine. pgxpool.New's own
+// size, max(4, runtime.NumCPU()), is 288 on a 288-CPU machine and 4 on four CPUs, which no worker
+// count here is. The pool dials nothing until it is used, so the address is never reached.
+func TestWorkerPoolHoldsOneConnectionPerWorker(t *testing.T) {
+	for _, workers := range []int{1, 3, 8, 17} {
+		pool, err := workerPool(context.Background(), "postgres://u:p@127.0.0.1:1/db", workers)
+		if err != nil {
+			t.Fatalf("workerPool with %d workers: %v", workers, err)
+		}
+		got := pool.Config().MaxConns
+		pool.Close()
+		if got != int32(workers) {
+			t.Errorf("workerPool with %d workers holds %d connections (runtime.NumCPU() = %d), want %d", workers, got, runtime.NumCPU(), workers)
+		}
 	}
 }
 
@@ -898,14 +919,17 @@ func TestLoopSeedWriteResumes(t *testing.T) {
 // --- a live Postgres -------------------------------------------------------------------------
 
 // loopTestPG is the Postgres a test that needs one writes to: $LEGION_TEST_PG_DSN, the pod's own
-// test server. A test skips without it, since this package's checks run where there is none.
+// test server, with connect_timeout set to the test binary's deadline (testdb.WithConnectDeadline),
+// so every connect to it and to the databases made from it waits that long, not pgx's default
+// (two minutes in a pool, no bound through pgx.Connect). A test skips without it, since this
+// package's checks run where there is none.
 func loopTestPG(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN must be set to run the loop seed's Postgres tests")
 	}
-	return dsn
+	return testdb.WithConnectDeadline(t, dsn)
 }
 
 // loopTestDB opens a database of this test's own on that server and drops it afterwards, so a
@@ -921,7 +945,7 @@ func loopTestDB(t *testing.T) *pgxpool.Pool {
 func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, loopTestPG(t))
+	admin, err := testpool.NewPool(ctx, loopTestPG(t))
 	if err != nil {
 		t.Fatalf("open the test server: %v", err)
 	}
@@ -934,19 +958,23 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the test database: %v", err)
 	}
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		_, _ = admin.Exec(ctx, "drop database "+name+" with (force)")
+		t.Fatalf("turn JIT off on the test database: %v", err)
+	}
 	u, err := url.Parse(loopTestPG(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.Path = "/" + name
 	dsn := u.String()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropper, err := pgxpool.New(context.Background(), loopTestPG(t))
+		dropper, err := testpool.NewPool(context.Background(), loopTestPG(t))
 		if err != nil {
 			t.Errorf("open the test server to drop %s: %v", name, err)
 			return

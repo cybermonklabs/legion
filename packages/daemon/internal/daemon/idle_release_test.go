@@ -66,12 +66,29 @@ type releaseRuntime struct {
 	// its issues with them.
 	sandboxReached chan string
 	sandboxGate    map[string]chan struct{}
+	// afterPodRead, when set, runs once each read through the pod's launcher has answered and
+	// before its answer reaches the daemon: a test replaces the issue's pod there, as a launch can
+	// while a read is in flight.
+	afterPodRead func()
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.onImage
+}
+
+// PodWorkspaceWork is the embedded fake's read through the pod's launcher, with afterPodRead run
+// between the read and its answer.
+func (r *releaseRuntime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
+	work, err := r.Runtime.PodWorkspaceWork(ctx, issue)
+	r.mu.Lock()
+	hook := r.afterPodRead
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return work, err
 }
 
 func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
@@ -178,12 +195,29 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
+	return newIdleRigIn(t, phase.Implementing)
+}
+
+// newIdleRigIn is newIdleRig with the issue standing in at: implementing, as every other test of
+// the rig has it, or awaiting_children, where the admission pass stopped the implementer's phase
+// because a Dispatch child of the issue is open. The pass retired the task the implementer held
+// for the phase it stopped (supervise.Machine.RetireStoppedTask), so its claim there holds none,
+// and the rest of the pod is the same pod: one live implementer in its own session, idle, on the
+// daemon's plugin contract and the configured image.
+func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
 		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	if at == phase.AwaitingChildren {
+		waited := time.Now().UTC().Add(-time.Hour)
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "implement it",
+			Reason: endedTheImplementersPhase.Reason, Since: waited}
+		issue.ChildrenWaitedAt = &waited
+	}
 	putOutboxIssue(t, pool, records, issue)
 	st := outboxTreeStore(t, pool, issue.Key)
 	// The store of a daemon with a workflow, which an idle release needs: its claim writes queue
@@ -196,7 +230,7 @@ func newIdleRig(t *testing.T) *idleRig {
 	// (ScriptWorkspaceWork), so the release's check lets it go on.
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion()
 	// The teardown records the release through the supervisor's store, as the daemon's does.
 	sup.store = st
 
@@ -214,8 +248,13 @@ func newIdleRig(t *testing.T) *idleRig {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
-	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
+		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
+	if at == phase.AwaitingChildren {
+		stored.Pending = nil
+		if err := st.PutClaim(ctx, stored); err != nil {
+			t.Fatalf("seed the idle implementer: %v", err)
+		}
+	} else if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}
 	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
@@ -225,8 +264,8 @@ func newIdleRig(t *testing.T) *idleRig {
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if got := machine.Claim(); got.State != supervise.StateIdle || got.Pending == nil {
-		t.Fatalf("the restored claim = %+v, want it idle holding its phase's task", got)
+	if got := machine.Claim(); got.State != supervise.StateIdle || (got.Pending == nil) != (at == phase.AwaitingChildren) {
+		t.Fatalf("the restored claim = %+v, want it idle, holding its phase's task where its phase runs", got)
 	}
 	// The pod last did something half an hour ago, and its session reported five minutes later
 	// that it runs no background work with no reminder armed.
@@ -397,7 +436,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
 		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := r.st.PutClaim(ctx, stored); err != nil {
 		t.Fatalf("seed the architect an earlier release left released: %v", err)
 	}
@@ -532,7 +571,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 	}
 	// The role whose stop is the boundary is retired before that stop runs: it has no process
 	// left to stop, which is what used to take the row out before it read the mark.
-	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token}); err != nil {
+	if err := rig.machine.Handle(ctx, supervise.RequestStop{Claim: rig.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("retire the claim the boundary stops: %v", err)
 	}
 

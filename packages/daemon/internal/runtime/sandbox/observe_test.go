@@ -46,6 +46,7 @@ func unscheduledFor(age time.Duration) corev1.PodStatus {
 // The mapping, row by row and in the order the rows apply, against the synced stores. Every
 // observation carries the recorded locator whatever it saw; the uid it saw goes in the detail.
 func TestTheMappingRowByRowInPrecedence(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	withPod := func(mode string, conditions []metav1.Condition, uid, owner string, status corev1.PodStatus, edit ...func(*corev1.Pod)) []k8sruntime.Object {
@@ -72,7 +73,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 	failed := func(statuses ...corev1.ContainerStatus) corev1.PodStatus {
 		status := corev1.PodStatus{Phase: corev1.PodFailed}
 		for _, s := range statuses {
-			if s.Name == initContainer || s.Name == fetchContainer {
+			if s.Name == initContainer {
 				status.InitContainerStatuses = append(status.InitContainerStatuses, s)
 			} else {
 				status.ContainerStatuses = append(status.ContainerStatuses, s)
@@ -156,11 +157,13 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		p.DeletionTimestamp, p.Finalizers = &now, []string{"test/hold"}
 	}
 	// killedInit is a pod still inside its init containers whose running workspace-init the kubelet
-	// terminated non-zero: what the daemon's own delete of a pod it is replacing leaves behind, and
-	// what an init container failing on its own leaves too. The pod's DeletionTimestamp is the only
-	// thing that tells them apart (verdict).
+	// terminated non-zero past its restart grace (initRestartGrace), so the end is no restart the
+	// grace covers (startingAgain): what the daemon's own delete of a pod it is replacing leaves
+	// behind, and what workspace-init failing on its own leaves too. The pod's DeletionTimestamp is
+	// the only thing that tells them apart (verdict).
 	killedInit := corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
-		Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
+		Name: initContainer, RestartCount: initRestartGrace + 1,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
 	}}}
 	exited := &shimwire.LauncherState{LastExit: &shimwire.LauncherExit{Generation: 1, Code: 143, Signal: "terminated"}}
 	pending := corev1.PodStatus{Phase: corev1.PodPending}
@@ -254,15 +257,15 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			detail:     []string{"pod " + name, "init container workspace-init terminated (Error, exit code 1)", "last lines of workspace-init:"},
 		},
 		{
-			row: "5 workspace-fetch failed, its repository's cache failing",
-			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(fetchContainer, 1, "Error")), func(p *corev1.Pod) {
-				p.Spec.InitContainers = []corev1.Container{{Name: fetchContainer, Command: []string{"/opt/legion/bin/legion", "workspace-init", "fetch", "--repo", "acme/widgets", "--feed", FeedDir}}}
+			row: "5 workspace-init failed, its repository's cache failing",
+			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(initContainer, 1, "Error")), func(p *corev1.Pod) {
+				p.Spec.InitContainers = []corev1.Container{{Name: initContainer, Command: []string{"/opt/legion/bin/legion", "workspace-init", "provision", "--repo", "acme/widgets"}}}
 			}), cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), crashLooping(cachePod(cacheRepo, "uid-cache-pod", "uid-cache", testImage, corev1.PodRunning))),
 			want:       runtime.Gone,
 			initFailed: true,
 			detail: []string{
-				"init container workspace-fetch terminated (Error, exit code 1)",
-				"; the repository cache of acme/widgets, which a fresh feed comes from alone, is failing: container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+				"init container workspace-init terminated (Error, exit code 1)",
+				"; the repository cache of acme/widgets, which workspace-init fills the clone from, is failing: container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 			},
 		},
 		{
@@ -505,7 +508,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		},
 	} {
 		t.Run(tc.row, func(t *testing.T) {
-			g := newRig(t, tc.objects, withoutController())
+			g := newRig(t, tc.objects, withoutController(), withTestBootTimeout())
 			if tc.launcher != nil {
 				g.reportLauncher(workerToken, *tc.launcher)
 			}
@@ -613,6 +616,7 @@ func (b *breakablePods) fail() {
 // list or watch request failed, the runtime answers Uncertain from it (row 1), never the Alive it
 // last saw, and answers from the store again once a request succeeds.
 func TestAFailingWatchMakesTheStoreUncertainUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pods := &breakablePods{}
 	g := newRig(t, nil, withBreakablePods(pods))
 	loc := g.spawn(workerSpec(t))

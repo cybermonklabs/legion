@@ -65,10 +65,14 @@ func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []st
 // reap pass, which would need the registry's own clock moved past that allowance: both go through
 // deleteInterest, so the state they leave - no row in the bucket and none in the cache - is the
 // same, and that state is what the count reads.
+//
+// The delete is a case's setup, so it runs until the test binary's deadline (testwait.Context)
+// and not on a clock of its own: for a record past the NATS max payload it removes every chunk,
+// and beside 48 busy processes on four CPUs a fixed 5 s ran out, failing
+// TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted before it reached what it asks.
 func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
 	}
@@ -107,7 +111,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
 			break
@@ -195,7 +199,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false
@@ -246,7 +250,7 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 	// A session that stopped cleanly more than 20 minutes ago: its entry is gone and the reaper has
 	// taken its interest row, leaving its record alone to say it follows the topic.
 	rig.register(t, "ses_stopped", []string{topic})
-	rig.clock = rig.clock.Add(21 * time.Minute)
+	rig.clock.Advance(21 * time.Minute)
 	rig.stop(t, "ses_stopped")
 	rig.reapInterest(t, "ses_stopped")
 	if _, known := rig.known.Get("ses_stopped"); !known {
@@ -285,7 +289,7 @@ func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
 	rig.register(t, "ses_leaver", []string{topic})
 	assertCounts(t, rig.publish(t, topic, "unsubscribed-1"), 1, 1)
 
-	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	rig.clock.Advance(session.KnownSessionRefreshAge + time.Minute)
 	rig.unsubscribe(t, "ses_leaver", []string{topic})
 	if interest, cached := rig.harness.registry.CachedInterest("ses_leaver"); cached && slices.Contains(interest.Topics, topic) {
 		t.Fatalf("ses_leaver's interest row still holds %q, so the unsubscribe did not take it", topic)

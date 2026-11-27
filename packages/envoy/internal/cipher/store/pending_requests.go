@@ -73,14 +73,14 @@ select id, enrollment_id, record_id from ended`
 // EndPendingRequests moves the requests scope selects that are still pending to end.State inside
 // tx, writing in the same statement each one's audit row and, for a request with a
 // credential-request record, the record's terminal event. A request no longer pending is left as
-// it is. It is how every writer but a human's decision (requests.Machine.ApplyDecision, which
-// writes its own event) ends a pending request: the requesting session's cancel, the sweeper's
-// expiry and its denial of what a broker with BROKER_SIGNIN=off can never put to a person, and an
-// enrollment's end. Each writes the record's event with the request's transition,
-// but no reader relies on that event being there, since a database can hold requests an older
-// broker cancelled without one: requests.Machine.PendingForApprover and ReadRecord take an
-// agent_secret record's state from its request row, and record.ChainVerifier releases only on
-// the approved event ApplyDecision writes.
+// it is. It is how every writer but a decision (requests.Machine.ApplyPageDecision and
+// ApplyJudgeDecision, which write their own event) ends a pending request: the requesting
+// session's cancel, the sweeper's expiry and its denial of what a broker with BROKER_SIGNIN=off
+// can never put to a person, and an enrollment's end. Each writes the record's event with the
+// request's transition, but no reader relies on that event being there, since a database can
+// hold requests an older broker cancelled without one: requests.Machine.PendingForApprover and
+// ReadRecord take an agent_secret record's state from its request row, and record.ChainVerifier
+// releases only on the approved event a decision writes.
 func EndPendingRequests(ctx context.Context, tx pgx.Tx, scope PendingScope, arg any, end RequestEnd) ([]EndedRequest, error) {
 	var auditDetail any
 	if end.AuditDetail != nil {

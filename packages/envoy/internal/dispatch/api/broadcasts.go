@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -39,7 +40,7 @@ import (
 // the same capability list, and the response covers the race where a session's capabilities
 // or liveness changed in between. What persists is who was actually sent to.
 //
-// Broadcasting needs the person scope (routeScopes), like the one-session route it is built from.
+// Broadcasting needs the person scope (its route's OAuthScopes), like the one-session route it is built from.
 
 // broadcastDeliveryWorkers is how many recipients are delivered to at once, once the create
 // request has already answered. Each worker takes a tracking context of its own
@@ -476,11 +477,26 @@ func (s *server) writeBroadcast(
 	sent.Recipients = make([]broadcastRecipient, 0, len(recipients))
 	for position, recipient := range recipients {
 		target := "session:" + recipient.sessionID
+		// Each copy's node goes in before its row, between the sender and the recipient, the
+		// parties of the thread the copy opens, dated with the broadcast's own time, which is the
+		// transaction's now() the copy's created_at defaults to; what that write states waits
+		// for its event.
+		messageID := uuid.NewString()
+		messageNode, err := planMessageNode(ctx, tx, messageID, nil, nil, actor, &target, sent.CreatedAt)
+		if err != nil {
+			return broadcastRead{}, nil, err
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, messageNode)
+			return nil
+		}); err != nil {
+			return broadcastRead{}, nil, err
+		}
 		message, err := scanMessage(tx.QueryRow(ctx, `
-			insert into messages (issue_key, author, body, target, broadcast_id, broadcast_position)
-			values (null, $1, $2, $3, $4, $5)
+			insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position)
+			values ($1, null, $2, $3, $4, $5, $6)
 			returning `+messageColumns+`
-		`, author, body, target, sent.ID, position))
+		`, messageID, author, body, target, sent.ID, position))
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
@@ -488,7 +504,7 @@ func (s *server) writeBroadcast(
 		// its blocks hold none either and the write moves nothing. The copy is inserted above,
 		// so its body is read here rather than planned before the insert, as every other
 		// message write plans it (api.planItemWrite).
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil); err != nil {
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, s.deps.ServerURL, message.CreatedAt, nil, nil); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what
@@ -503,7 +519,9 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		event, err := s.appendEvent(ctx, tx, messageEvent(message, "message.created", actor, payload))
+		// The event and what the copy's node write stated under it, in one batch
+		// (appendCausingEvent).
+		event, err := s.appendCausingEvent(ctx, tx, messageEvent(message, "message.created", actor, payload), messageNode)
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}

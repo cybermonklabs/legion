@@ -132,9 +132,9 @@ func TestRunRelaunchesAClaimOnAnotherPluginContractAtBootChargingNothing(t *test
 	seen := map[claim.Token]bool{}
 	for _, line := range lines {
 		token := claim.Token(line["claim"].(string))
-		if line["pluginContract"] != float64(contracts[token]) || line["daemonApiVersion"] != float64(api.DaemonAPIVersion) || line["trigger"] != "boot" {
+		if line["pluginContract"] != float64(contracts[token]) || line["daemonApiVersion"] != float64(api.DaemonAPIVersion()) || line["trigger"] != "boot" {
 			t.Fatalf("relaunch log line of %s = %+v, want pluginContract %d, daemonApiVersion %d, trigger boot",
-				token, line, contracts[token], api.DaemonAPIVersion)
+				token, line, contracts[token], api.DaemonAPIVersion())
 		}
 		seen[token] = true
 	}
@@ -185,7 +185,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 		},
 		supervise.Claim{Token: current, Project: project, Tree: root, Issue: root, Role: claim.RoleArchitect,
 			Generation: 1, State: supervise.StateReady, Session: "ses_architect", SessionFile: filepath.Join(cfg.StateDir, "architect.jsonl"),
-			PluginContract: api.DaemonAPIVersion, Locator: pluginTestLocator(current)},
+			PluginContract: api.DaemonAPIVersion(), Locator: pluginTestLocator(current)},
 	)
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
@@ -229,8 +229,8 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 	if resume.Spec.ResumeSessionFile != sessionFile || resume.Spec.Generation != 2 {
 		t.Fatalf("resumed %+v, want the recorded session at generation 2", resume.Spec)
 	}
-	if c := storedClaim(t, cfg, stale); c.PluginRelaunchFor != api.DaemonAPIVersion {
-		t.Fatalf("PluginRelaunchFor after the sweep's relaunch = %d, want %d", c.PluginRelaunchFor, api.DaemonAPIVersion)
+	if c := storedClaim(t, cfg, stale); c.PluginRelaunchFor != api.DaemonAPIVersion() {
+		t.Fatalf("PluginRelaunchFor after the sweep's relaunch = %d, want %d", c.PluginRelaunchFor, api.DaemonAPIVersion())
 	}
 	if p := storedClaim(t, cfg, stale).Pending; p == nil || p.ID != "outbox:1" || p.Interrupted {
 		t.Fatalf("pending after the sweep's relaunch = %+v, want the task still waiting for the process the relaunch starts", p)
@@ -271,7 +271,7 @@ func TestRunLeavesAClaimAtTheDaemonsContractAloneAtBoot(t *testing.T) {
 		record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: cfg.Project, Tree: root, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U"},
 		supervise.Claim{Token: current, Project: project, Tree: root, Issue: root, Role: claim.RoleArchitect,
 			Generation: 1, State: supervise.StateReady, Session: "ses_architect", SessionFile: currentSessionFile,
-			PluginContract: api.DaemonAPIVersion, Locator: pluginTestLocator(current)},
+			PluginContract: api.DaemonAPIVersion(), Locator: pluginTestLocator(current)},
 		supervise.Claim{Token: stale, Project: project, Tree: root, Issue: root, Role: claim.RoleImplementer,
 			Generation: 1, State: supervise.StateReady, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl"),
 			PluginContract: 0, Locator: pluginTestLocator(stale)},
@@ -537,8 +537,8 @@ func TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing(t *testing.T) {
 	d := startDaemonLogging(t, cfg, o, jsonLogger(logs))
 
 	lines := loggedLines(t, logs.String(), "supervise: the process speaks another plugin contract, and this daemon knows no plugin versions to relaunch it onto")
-	if len(lines) != 1 || lines[0]["pluginContract"] != float64(1) || lines[0]["daemonApiVersion"] != float64(api.DaemonAPIVersion) {
-		t.Fatalf("the no-source log lines = %+v, want one naming pluginContract 1 and daemonApiVersion %d", lines, api.DaemonAPIVersion)
+	if len(lines) != 1 || lines[0]["pluginContract"] != float64(1) || lines[0]["daemonApiVersion"] != float64(api.DaemonAPIVersion()) {
+		t.Fatalf("the no-source log lines = %+v, want one naming pluginContract 1 and daemonApiVersion %d", lines, api.DaemonAPIVersion())
 	}
 	if c := d.claim(token); c.Generation != 1 || c.State != string(supervise.StateReady) || c.Budgets.LaunchFailures != 0 {
 		t.Fatalf("the stale claim = %+v, want untouched and uncharged", c)
@@ -578,7 +578,7 @@ func TestAStaleRegistrationIsRelaunchedAtOnceChargingNothing(t *testing.T) {
 		AgentID: "agent", PluginContract: 1,
 	}, false)
 
-	wantSentence := fmt.Sprintf("pi-legion speaks daemon API contract 1; this daemon requires %d: the daemon is relaunching this process onto the current plugin", api.DaemonAPIVersion)
+	wantSentence := fmt.Sprintf("pi-legion speaks daemon API contract 1; this daemon requires %d: the daemon is relaunching this process onto the current plugin", api.DaemonAPIVersion())
 	if status != http.StatusConflict || !strings.Contains(string(body), wantSentence) {
 		t.Fatalf("stale register = %d %s, want 409 naming %q", status, body, wantSentence)
 	}
@@ -614,7 +614,7 @@ func TestAStaleControllerRegistrationIsRelaunchedAtOnce(t *testing.T) {
 		AgentID: "ses_controller", PluginContract: 1,
 	}, false)
 
-	wantSentence := fmt.Sprintf("pi-legion speaks daemon API contract 1; this daemon requires %d: the daemon is relaunching this process onto the current plugin", api.DaemonAPIVersion)
+	wantSentence := fmt.Sprintf("pi-legion speaks daemon API contract 1; this daemon requires %d: the daemon is relaunching this process onto the current plugin", api.DaemonAPIVersion())
 	if status != http.StatusConflict || !strings.Contains(string(body), wantSentence) {
 		t.Fatalf("the controller's stale register = %d %s, want 409 naming %q", status, body, wantSentence)
 	}
@@ -755,7 +755,7 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prepare: %v", err)
 		}
-		want := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+		want := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 		if p.plugins == nil || *p.plugins != *want || p.pluginsSource != "legion.yaml" || !p.pluginRelaunchable {
 			t.Fatalf("plugins = %+v, source %q, relaunchable %t; want %+v, \"legion.yaml\", true", p.plugins, p.pluginsSource, p.pluginRelaunchable, want)
 		}
@@ -792,8 +792,8 @@ func TestResolvedPlugins(t *testing.T) {
 	}{
 		{"tmux (no kubernetes block)", nil, nil, ""},
 		{"kubernetes, no plugins", &config.Kubernetes{}, nil, ""},
-		{"kubernetes, the file's pair", &config.Kubernetes{Plugins: k9}, &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}, "legion.yaml"},
-		{"kubernetes, the binary's pair", &config.Kubernetes{Plugins: k9, PluginsFromBinary: true}, &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}, "binary"},
+		{"kubernetes, the file's pair", &config.Kubernetes{Plugins: k9}, &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}, "legion.yaml"},
+		{"kubernetes, the binary's pair", &config.Kubernetes{Plugins: k9, PluginsFromBinary: true}, &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}, "binary"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{Runtime: config.Runtime{Kubernetes: tc.kubernetes}}
@@ -806,14 +806,31 @@ func TestResolvedPlugins(t *testing.T) {
 }
 
 // logPlugins is the boot's one line: Info naming the pair and its source with a pair, Warn naming
-// the gap without one.
+// the gap without one. A source in URL form is logged as the state shows it: a made-up user name,
+// password and signature in a private tarball URL's userinfo and query are not.
 func TestLogPlugins(t *testing.T) {
 	t.Parallel()
 	var buf syncBuffer
-	logPlugins(jsonLogger(&buf), &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}, "legion.yaml")
+	logPlugins(jsonLogger(&buf), &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}, "legion.yaml")
 	if got := buf.String(); !strings.Contains(got, `"msg":"daemon: stale-plugin relaunches install"`) || !strings.Contains(got, `"piLegion":"9.7.0"`) ||
 		!strings.Contains(got, `"piEnvoy":"9.6.1"`) || !strings.Contains(got, `"source":"legion.yaml"`) {
 		t.Fatalf("logPlugins with a pair wrote %q", got)
+	}
+	buf.Reset()
+	const credential = "madeUpPluginUser0123:madeUpPluginPassword0123"
+	logPlugins(jsonLogger(&buf), &runtime.PluginInstall{
+		PiLegion: "https://" + credential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123",
+		PiEnvoy:  "9.6.1", Contract: api.DaemonAPIVersion()}, "legion.yaml")
+	got := buf.String()
+	if !strings.Contains(got, `"piLegion":"https://[a URL with credentials]/pi-legion.tgz"`) {
+		t.Fatalf("logPlugins with a private tarball URL wrote %q, want its piLegion masked as the state shows it", got)
+	}
+	for _, secret := range []string{credential, "madeUpSignature0123"} {
+		for i := 0; i+10 <= len(secret); i++ {
+			if strings.Contains(got, secret[i:i+10]) {
+				t.Fatalf("logPlugins with a private tarball URL wrote %q, which holds %q of its credential", got, secret[i:i+10])
+			}
+		}
 	}
 	buf.Reset()
 	logPlugins(jsonLogger(&buf), nil, "")

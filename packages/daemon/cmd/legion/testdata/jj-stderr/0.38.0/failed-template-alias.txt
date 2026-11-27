@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Warning: Failed to load `template-aliases.x`: Expected a string, but is integer
+--- exit 0

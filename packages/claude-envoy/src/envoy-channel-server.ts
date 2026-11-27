@@ -135,7 +135,7 @@ import {
   phaseStallFile,
 } from "./legion-phase-hook"
 import {
-  executeLegionTool,
+  answerLegionTool,
   LEGION_TOOL_NAME,
   type LegionToolRuntime,
   legionToolDefinition,
@@ -149,6 +149,7 @@ import {
   replayStateFile,
   replayStateWriter,
 } from "./replay-state"
+import { logRoleClaimWarnings } from "./role-claim-warnings"
 import {
   pruneStaleSessionHandoffs,
   pruneStaleSessionRoles,
@@ -476,6 +477,11 @@ export function mcpResult(value: unknown): {
   readonly content: readonly { readonly type: "text"; readonly text: string }[]
 } {
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
+}
+
+/** Writes one line to the server's warning log, its stderr. */
+function warnOnStderr(line: string): void {
+  process.stderr.write(`envoy-channel: ${line}\n`)
 }
 
 function projectDirectory(): string {
@@ -1592,8 +1598,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     ) {
       return "settled"
     }
+    const sessionID = identity.id
     const claim = await options.client.setRole({
-      sessionID: identity.id,
+      sessionID,
       role: persisted.role,
       soft: true,
       previousSessionID: persisted.session_id,
@@ -1604,6 +1611,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (claim.holder !== persisted.session_id) await rm(previousFile, { force: true })
       return "settled"
     }
+    logRoleClaimWarnings(warnOnStderr, persisted.role, sessionID, claim.warnings)
     heldRole = persisted.role
     const currentFile = roleStateFile(options.stateDirectory, identity.id)
     if (previousFile !== currentFile) await rm(previousFile, { force: true })
@@ -1682,8 +1690,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (afterOutage) fireRegained(role, "reregistered")
       return
     }
+    const sessionID = identity.id
     const result = await options.client.setRole({
-      sessionID: identity.id,
+      sessionID,
       role,
       soft: true,
       clientInstanceID: options.clientInstanceID,
@@ -1697,6 +1706,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       await refreshRoleRecord()
       return
     }
+    logRoleClaimWarnings(warnOnStderr, role, sessionID, result.warnings)
     fireRegained(role, "reclaimed")
   }
 
@@ -2450,14 +2460,20 @@ export async function executeEnvoyTool(
       // The claim names this process, as every claim this server makes does: the listener
       // records it as the role's holder, so a second process on this session id cannot be
       // mistaken for the one holding the role.
+      const sessionID = identity.id
       const result = await runtime.client.setRole({
-        sessionID: identity.id,
+        sessionID,
         role: args.role,
         clientInstanceID: runtime.clientInstanceID,
       })
       if (!result.claimed) throw new Error(`role ${args.role} is held by ${result.holder}`)
+      // The listener's warnings about the claim go to the log and, beside the interest row, to the
+      // agent, which must know of a handover of the replaced session the claim did not make.
+      logRoleClaimWarnings(warnOnStderr, args.role, sessionID, result.warnings)
       await runtime.session.rememberRole(args.role)
-      return result.interest
+      return result.warnings.length === 0
+        ? result.interest
+        : { ...result.interest, warnings: result.warnings }
     }
     case EnvoyToolOperation.getRole: {
       const args = parseArguments(spec, input)
@@ -2676,17 +2692,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
-      const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to another phase. Either way this session's phase is no longer open, and the
-      // reminder must stop — the same two operations the Oh My Pi host closes its phase on
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update message, and the worker then waits for its process to be
-      // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
-      // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
-      const op = request.params.arguments?.["op"]
-      if (op === "handoff_complete" || op === "request_backward_move") phaseHook?.phaseClosed()
-      else if (op === "ready_for_update") phaseHook?.updateAnswered()
+      const answer = await answerLegionTool(
+        legionRuntime,
+        request.params.arguments ?? {},
+        {
+          phaseClosed: () => phaseHook?.phaseClosed(),
+          updateAnswered: () => phaseHook?.updateAnswered(),
+        },
+        extra.signal,
+      )
       return mcpResult(answer)
     }
     if (runtime === undefined)

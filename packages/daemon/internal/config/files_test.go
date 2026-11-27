@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,8 +13,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A set pointer is authoritative: its file's trimmed contents, or a refusal naming the pointer
-// and the path — never a fallback.
+// A set pointer is authoritative: its file's trimmed contents, or a refusal naming the pointer,
+// and the path of a file that was read (a file that could not be read is named by the pointer and
+// the system's reason alone) — never a fallback.
 func TestReadSecretPointer(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "ENVOY_TOKEN")
@@ -39,7 +42,7 @@ func TestReadSecretPointer(t *testing.T) {
 	}
 
 	_, err = ReadSecretPointer("operator_token_file", absent)
-	if err == nil || !strings.HasPrefix(err.Error(), "operator_token_file names "+absent+", which could not be read: ") {
+	if err == nil || err.Error() != "operator_token_file names a file that could not be read: it does not exist" || !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("absent file: err = %v", err)
 	}
 }
@@ -80,7 +83,7 @@ func TestReadPrivateSecretPointer(t *testing.T) {
 		{"group-readable", write("group", "op-tok\n", 0o640), "%s is readable by its group or others (mode 0640); chmod 0600 it"},
 		{"other-readable", write("other", "op-tok\n", 0o604), "%s is readable by its group or others (mode 0604); chmod 0600 it"},
 		{"blank", write("blank", " \n\t", 0o600), "names %s, which is empty"},
-		{"absent", filepath.Join(dir, "absent"), "names %s, which could not be read: "},
+		{"absent", filepath.Join(dir, "absent"), "names a file that could not be read: it does not exist"},
 		{"a directory", dir, "names %s, which is not a regular file"},
 		{"a FIFO", fifo, "names %s, which is not a regular file"},
 	} {

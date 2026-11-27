@@ -18,9 +18,10 @@
  *   `token`, `secret`, `auth`, `cookie`, `credential` or `password`) is refused by name before any
  *   call. A Responses body goes with no header of the caller's: one given is refused by name, the
  *   routing header among them.
- * - A 429 or a 5xx, a failed connection, a try past `timeoutMs` (its body read included; the try is
- *   ended) and a reply that does not read as a reply of the body's API are tried again, after the
- *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ... at most 30 s), up to
+ * - An outage (a 5xx, a 408 or a 429), a failed connection, a try past `timeoutMs` (its body read
+ *   included; the try is ended) and a reply that does not read as a reply of the body's API are
+ *   tried again, after the longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ... at
+ *   most 30 s), up to
  *   GATEWAY_TRIES tries in all, whose waits add up to 91 s at least: more than the 60 s a
  *   gateway's rate guard looks back over, so a refusal that names a 1 s `retry-after` but holds a
  *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once, and

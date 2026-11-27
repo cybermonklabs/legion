@@ -55,7 +55,7 @@ func registerReady(t *testing.T, d *daemon, spec runtime.SpawnSpec) {
 	session := "ses_" + string(spec.Claim)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: spec.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + string(spec.Claim) + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s at generation %d = %d; body %s", spec.Claim, spec.Generation, status, body)
@@ -151,7 +151,7 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 	}
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), launcherWait)
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
 	if failed := rt.timedOut.Load(); failed != 0 {
 		t.Fatalf("the daemon answered /healthz only after %d relaunch attempts timed out waiting for it", failed)
@@ -213,7 +213,7 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	t.Cleanup(letThrough)
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), 10*time.Second)
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &record), quietLogger())
 
 	waiting := map[claim.Token]runtime.SpawnSpec{}
 	deadline := time.After(10 * time.Second)
@@ -343,7 +343,7 @@ func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocks
 
 	old := dialShim(t, record.address, oldBootToken)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: oldBootToken, SessionID: "old-session", OmpSessionFile: "/sessions/old.jsonl", AgentID: "old-agent", PluginContract: api.DaemonAPIVersion,
+		BootToken: oldBootToken, SessionID: "old-session", OmpSessionFile: "/sessions/old.jsonl", AgentID: "old-agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusConflict || !strings.Contains(string(body), "previous launch") {
 		t.Fatalf("the pre-restart process's registration = %d %s, want a named 409", status, body)

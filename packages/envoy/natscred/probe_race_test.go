@@ -32,7 +32,7 @@ func TestServiceProbeRacesNoHandlerSet(t *testing.T) {
 	first := platformToken(daemonAccount, time.Now().Add(natscred.ServiceRenewBefore+time.Second))
 	require.NoError(t, os.WriteFile(file, []byte(first+"\n"), 0o600))
 
-	option, keeper := natscred.Service(natscred.ServiceFile(file))
+	option, keeper := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 	nc, err := nats.Connect(rig.url, option, nats.Name("daemon"), nats.Timeout(10*time.Second))
 	require.NoError(t, err, "the service's token was refused:\n%s", rig.log.String())
 	defer nc.Close()

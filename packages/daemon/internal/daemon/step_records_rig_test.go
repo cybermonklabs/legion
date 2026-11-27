@@ -232,7 +232,7 @@ func (r *stepRecordsRig) boot() {
 			<-held.release
 		}
 	}
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
+	r.d = startDaemonLogging(r.t, r.cfg, o, r.log())
 }
 
 // restart stops the daemon and boots it again (reboot).
@@ -777,7 +777,7 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -837,7 +837,7 @@ func (c *stepClaimant) refusedHello(last error) string {
 		}
 	}
 	return fmt.Sprintf("the daemon at contract %d acknowledged no hello of %s's pane, whose claim records plugin contract %d: the daemon holds the claim %s at generation %d, and %s; the pane holds boot token %s, and the shim's last refusal was %v",
-		api.DaemonAPIVersion, c.token, held.PluginContract, held.State, held.Generation, launch, c.bootToken, last)
+		api.DaemonAPIVersion(), c.token, held.PluginContract, held.State, held.Generation, launch, c.bootToken, last)
 }
 
 // serve reads every frame the daemon d sends sh until the connection closes or the test ends it

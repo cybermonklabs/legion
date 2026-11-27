@@ -9,6 +9,7 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts; the pack's bundle inlines it"),
     ("packages/pi-shared/test/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/test/*, and the typecheck compiles `packages/pi-legion/extensions/legion-phase-stall-omp.test.ts#runLegionPane` and `packages/pi-legion/extensions/legion-role-tools-omp.test.ts#toolResultsIn`, which import it"),
     ("packages/envoy-client/test/subscribe-answer.ts", "`packages/pi-shared/test/omp-harness.ts#consumerDelivery` imports it, and the typecheck compiles that harness for the omp tests it includes"),
+    ("packages/envoy-client/test/fake-dispatch.ts", "`packages/pi-legion/src/tools.test.ts#fakeDispatchFetch` imports it from @legion/envoy-client/test/fake-dispatch, and the typecheck compiles the package's src tests"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion-build', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "the typecheck compiles packages/pi-legion's extensions and src tests, which import @legion/test-fixtures"),
@@ -17,6 +18,8 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("packages/dispatch/web/src/api/paths.ts", "`packages/dispatch/e2e/api.ts#PathsOf` imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Result from it, since that client is keyed on the generated document's path patterns"),
     ("skills/**", f"`scripts/pi-plugin-prepack.sh#stage_skills` stages the plugin's skills, run by {at('pi-legion-build', 'Pack pi-legion')}"),
     ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion-build', 'Pack pi-legion')})"),
+    ("scripts/daemon-contract.sh", f"{at('pi-legion-build', 'Pack pi-legion')} writes the number it prints into the packed manifest"),
+    (f"{FIX}/daemon-api/**", "scripts/daemon-contract.sh reads released-contracts.json and lists contracts/*.json for the number the pack writes"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#dist/THIRD_PARTY_NOTICES` writes that file with it"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions` imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
     # What the skills' guard reads beside the skills and the package, run by
@@ -40,4 +43,4 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
                   'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
-  + bun_job("pi-legion-build"))
+  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build"))

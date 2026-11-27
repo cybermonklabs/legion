@@ -106,9 +106,12 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // (plan.Validate); each of those answers records nothing. A plan both take is recorded as
 // intake.PlanGiven, whose rules of a later version are the workflow's.
 //
-// The fact's id is the issue, the generation the plan is given at, the document and the version:
-// a retry of a registration taken is that fact, answered the same, and the same version given at
-// a later generation of the issue is a new one.
+// The fact's id is the issue, the generation the plan is given at, the document and the version.
+// No id decides whether a registration is one already taken (intake.ApplyFact applies every
+// PlanGiven): the workflow decides it against the store, and answers a give of the version that
+// runs, or that the issue's first step will run, as taken, with the plan given, as its first
+// registration was answered. Only an architect of the issue's tree gives a plan (planOwner, and
+// the workflow's judgement of the owner under the fact lock).
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -255,7 +258,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return plan.Plan{}, false
 	case err != nil:
-		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s at version %d failed; retry %s", artifactID, version, registerPlanRoute))
+		s.refuseDispatchRead(w, r, fmt.Sprintf("%s at version %d", artifactID, version), registerPlanRoute)
 		return plan.Plan{}, false
 	}
 	blocks := make([]plan.Block, len(document.Blocks))

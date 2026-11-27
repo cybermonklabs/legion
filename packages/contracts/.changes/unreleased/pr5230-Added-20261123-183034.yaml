@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+    A `@legion/contracts/http-status` subpath exports `outage(status)`, whether the same request
+    may be answered if it is asked again: a 408, a 429 and any 5xx, the set Go's `httpoutage.Is`
+    holds. `retriesUnderKey` reads it, and adds only Dispatch's `409 KEY_IN_FLIGHT`; what it
+    answers does not change. Beside it,
+    `mayHaveReachedServer(status)` says whether a failed request may have reached the server and
+    taken effect: after a 5xx or a 408, which a proxy can send when its own timeout runs out after
+    it forwarded the request, and not after a 429 or any other status. `retryAfterMs(headers)`
+    reads the wait an answer's `Retry-After` asks for, in delay-seconds or as an HTTP-date.
+time: 2026-11-23T18:30:34.654985922Z
+custom:
+    Issue: pr5230

@@ -1,9 +1,19 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { eventDescription } from "./event-description";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** The record an ask event's question is: the ask itself, on its issue. */
+const ASK_SOURCE = { id: "ask-1", issue: "CORE-1", kind: "ask" } as const;
 
 function commentEvent(type: "comment.reopened" | "comment.edited"): DispatchEvent {
   return {
@@ -76,8 +86,42 @@ test("eventDescription labels an edited comment", () => {
   expect(eventDescription(commentEvent("comment.edited"))).toEqual(["Comment edited"]);
 });
 
+test("a recorded deploy names its program and build without claiming a check passed", () => {
+  const payload = {
+    repo: "acme/widgets",
+    program: "worker",
+    commit: "c".repeat(40),
+    deployed_at: "2026-10-25T00:00:00Z",
+    source: "route" as const,
+  };
+  const recorded: DispatchEvent = {
+    ...commentEvent("comment.edited"),
+    type: "deploy.recorded",
+    payload,
+  };
+  expect(eventDescription(recorded)).toEqual([
+    `Recorded a deploy of worker in acme/widgets at ${payload.commit}, deployed ${payload.deployed_at}.`,
+  ]);
+  expect(activityDescription(recorded)).toEqual([
+    `recorded a deploy of worker in acme/widgets at ${payload.commit}, deployed ${payload.deployed_at}.`,
+  ]);
+});
+
 test("eventDescription labels an edited ask with its new question", () => {
-  expect(eventDescription(editedAskEvent())).toEqual(["Ask edited: Publish?"]);
+  // The question is a part of its own, which the one reader draws (`SentenceParts`): the line
+  // never carries the question's source.
+  expect(eventDescription(editedAskEvent())).toEqual([
+    "Ask edited: ",
+    { prose: "Publish?", source: ASK_SOURCE, tree: undefined },
+  ]);
+});
+
+test("eventDescription hands an ask's question the tree its event carries", () => {
+  const tree = { content: [], type: "doc" };
+  expect(eventDescription({ ...editedAskEvent(), trees: { "payload.question": tree } })).toEqual([
+    "Ask edited: ",
+    { prose: "Publish?", source: ASK_SOURCE, tree },
+  ]);
 });
 
 // The line of a deleted post's event says who deleted it, where its body would be. The read of
@@ -125,8 +169,15 @@ test("eventDescription reads a deleted post's events as who deleted it, with no 
   expect(eventDescription(post("message.deleted", { deleted_at: deleted.deleted_at }))).toEqual([
     "Message deleted",
   ]);
-  // The same payload with no marks is a post that stands, and its line is its body.
-  expect(eventDescription(post("message.created", {}))).toEqual(["Ship it on Friday."]);
+  // The same payload with no marks is a post that stands, and its line is its body, a part of its
+  // own that the one reader draws (`SentenceParts`).
+  expect(eventDescription(post("message.created", {}))).toEqual([
+    {
+      prose: "Ship it on Friday.",
+      source: { id: "post-1", issue: "CORE-1", kind: "message" },
+      tree: undefined,
+    },
+  ]);
 });
 
 function answeredAskEvent(
@@ -166,7 +217,8 @@ function answeredAskEvent(
 }
 
 test("eventDescription says an answer changed when it replaced an earlier one", () => {
-  expect(eventDescription(answeredAskEvent())).toEqual(["Ask answered: Publish?"]);
+  const question = { prose: "Publish?", source: ASK_SOURCE, tree: undefined };
+  expect(eventDescription(answeredAskEvent())).toEqual(["Ask answered: ", question]);
   expect(
     eventDescription(
       answeredAskEvent({
@@ -176,7 +228,7 @@ test("eventDescription says an answer changed when it replaced an earlier one", 
         user: "alice",
       })
     )
-  ).toEqual(["Answer changed: Publish?"]);
+  ).toEqual(["Answer changed: ", question]);
 });
 
 test("eventDescription labels a malformed decision", () => {

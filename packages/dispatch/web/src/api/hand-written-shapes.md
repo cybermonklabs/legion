@@ -2,9 +2,9 @@
 
 The Dispatch HTTP API's request and response shapes are generated: `envoy-dispatch openapi`
 reflects the Go route table and the Go types each row takes and answers into
-`packages/contracts/schemas/dispatch-openapi.json`, and `bun run gen:api` renders that into
-`packages/contracts/src/dispatch-api.generated.ts`, which `@legion/contracts` re-exports
-(dispatch://INFRA-1406).
+`packages/contracts/schemas/dispatch-openapi.json`, and every `bun install` renders that into
+`packages/contracts/src/dispatch-api.generated.ts` (`bun run gen:api` in packages/contracts does
+it again), which `@legion/contracts` re-exports (dispatch://INFRA-1406).
 
 So a request or response shape written by hand here is a finding. This file is the list of what
 is left and why each one is not a shape of that kind, so a reader checks the grep's answer rather
@@ -117,17 +117,21 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   entry here that is a wire shape rather than a helper. `writeAmbiguousID` (`id_prefix.go`)
   answers 409 with `{error, code, candidates}` when an id written as a prefix names two items or
   more, and it is written from the **prefix layer that wraps every route taking an id**, not
-  from one route's handler — so no `routeShapes` entry owns it, nothing names it among a route's
+  from one route's handler — so no route's `Shape` owns it, nothing names it among a route's
   `Refusals`, and the emitter has no route to attach it to. The dashboard reads it from this
   hand-written type, and `scripts/gen-go.ts` renders the code into Go. Giving it a Go type and
   attaching it to the `Refusals` of every route that takes an id would generate it; that is a
-  change to which routes declare which refusals, which this issue does not make. Since the
-  type is written by hand, a field the Go candidate (`refs.Candidate`, `refs/prefix.go`) gains
-  is added to it by hand too: `edited_at`, and `deleted_at` with `deleted_by`, are the marks of a
-  candidate comment or message its author edited or deleted, which the match list
-  (`ItemMatchList.tsx`) prints as every other surface prints them, the deleted line in place of
-  the `first_line` the delete cleared. Each is absent on a post that stands unedited, on every
-  other kind, and from a Dispatch older than the fields.
+  change to which routes declare which refusals, which this issue does not make. Its
+  `first_line_tree` is the display tree of `first_line`, which the server sends beside it under
+  `Dispatch-Trees: 1` as it does for every other stored text the dashboard draws, so the list
+  of candidates draws each line from the server's tree rather than the page's own parse; a
+  document candidate, whose first line is its file's name, has none. Since the type is written
+  by hand, a field the Go candidate (`refs.Candidate`, `refs/prefix.go`) gains is added to it by
+  hand too: `edited_at`, and `deleted_at` with `deleted_by`, are the marks of a candidate comment
+  or message its author edited or deleted, which the match list (`ItemMatchList.tsx`) prints as
+  every other surface prints them, the deleted line in place of the `first_line` the delete
+  cleared. Each is absent on a post that stands unedited, on every other kind, and from a
+  Dispatch older than the fields.
 
 ## What is not generated, and is not an exception either
 

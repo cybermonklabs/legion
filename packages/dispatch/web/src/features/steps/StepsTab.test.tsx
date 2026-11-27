@@ -143,6 +143,48 @@ test("the Steps tab draws each of two tasks as its own table, with its own runs"
   }
 });
 
+// An issue a draw put in an experiment shows the experiment and the variant its records name, once,
+// above its tasks; an issue whose records name none shows no such line.
+test("the Steps tab shows the variant of the issue above its tasks, and none where none is named", async () => {
+  const drawn = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({ experiment: "planning", id: "implement-1", variant: "b" }),
+          record({
+            experiment: "planning",
+            id: "review-1",
+            role: "reviewer",
+            step: 3,
+            variant: "b",
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    const line = await screen.findByText("Experiment planning: variant b");
+    const table = screen.getByRole("table");
+    expect(line.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByText(/^Experiment /)).toHaveLength(1);
+  } finally {
+    drawn.restore();
+  }
+
+  const plain = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+  }));
+  try {
+    await screen.findByRole("table");
+    expect(screen.queryByText(/^Experiment /)).toBeNull();
+  } finally {
+    plain.restore();
+  }
+});
+
 // A run's start and end are what a person reads off the row, so the cells show the clock time
 // and day of each instant, not only carry it in `datetime`. The instants are built from local
 // components, so the hour and minute each cell must show hold in any time zone, and differ in day
@@ -230,9 +272,8 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
 });
 
 // At 390 px the table is twice as wide as its card and scrolls sideways inside it, and the column
-// cut at the card's edge read as clipped text. The table wears the trailing fade the tablist and
-// the details rail wear, on the same terms: while columns lie past the edge, not where the table
-// fits, and not at the end of the scroll.
+// cut at the card's edge read as clipped text. The table wears a trailing fade while columns lie
+// past the edge, not where the table fits, and not at the end of the scroll.
 test("a Steps table wider than its box wears the trailing fade, and one that fits or is scrolled to its end does not", async () => {
   const sizes = installResizeObserver();
   const tab = renderTab(async () => ({

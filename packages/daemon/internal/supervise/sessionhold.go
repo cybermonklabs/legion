@@ -78,27 +78,27 @@ const (
 	CheckedNothing = "it held no name to free, so no broker was asked"
 )
 
-// ErrCarryUnanswered is a release the secrets broker did not answer: the release frees nothing,
-// since nothing else can say that no grant follows a name it would free. A run again can change
-// it.
+// ErrCarryUnanswered is a release the secrets broker did not answer, or answered with an outage
+// (a 5xx, a 408 or a 429) or another refusal a retry can change: the release frees nothing, since
+// nothing else can say that no grant follows a name it would free. A run again can change it.
 var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of the names it still carries")
 
 // ErrCarryRefused is a release whose question the secrets broker refused for good (a
-// PermanentError, a 4xx): the release frees nothing, and a run again answers the same until the
-// refusal is fixed, but for a broker from before the question, which answers it 404 or 405 and
-// may be one replica of several while the broker rolls.
+// PermanentError, a 4xx other than a 408 or a 429): the release frees nothing, and a run again
+// answers the same until the refusal is fixed, but for a broker from before the question, which
+// answers it 404 or 405 and may be one replica of several while the broker rolls.
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
 
 // ErrReleaseUnanswered is a release the secrets broker did not answer that it released the claim's
-// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 429, or a 404 or
-// 405 from a broker of a build before the release route, which may be one replica of several while
-// the broker rolls. The release frees nothing, since a registration of this daemon's may still
-// admit its pod's trade under a name it frees. A run again can change it.
+// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 408, a 429, or a
+// 404 or 405 from a broker of a build before the release route, which may be one replica of several
+// while the broker rolls. The release frees nothing, since a registration of this daemon's may
+// still admit its pod's trade under a name it frees. A run again can change it.
 var ErrReleaseUnanswered = errors.New("the secrets broker did not answer that it released the claim's session names")
 
 // ErrReleaseRefused is a release whose session names the secrets broker refused for good to
-// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405 and a 429):
-// the release frees nothing, and a run again answers the same until the refusal is fixed.
+// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405, a 408 and a
+// 429): the release frees nothing, and a run again answers the same until the refusal is fixed.
 var ErrReleaseRefused = errors.New("the secrets broker refused to release the claim's session names")
 
 // RouteUnservedError is a broker answer that it serves no such route (cipher's
@@ -163,11 +163,11 @@ func (e *NamesCarriedError) Error() string {
 // it would free name an enrollment of this daemon's that is live or still carries something
 // (Enroller.Carried), and any answer refuses the whole release with a RefusedError holding a
 // NamesCarriedError, naming each enrollment and when its lease or its carry ends, or saying the
-// answer was too long to list (UnlistedCarryError); a broker that does not answer refuses it with
-// ErrCarryUnanswered, and one that refuses the question for good with ErrCarryRefused. Nothing is
-// freed in any of them. The broker's own rows answer every case a time window only estimated: a
-// revoke the daemon missed, a lease a broker outage held live, a sweep that ran late or kept
-// failing, a longer BROKER_SESSION_CARRY_SECONDS.
+// answer was too long to list (UnlistedCarryError); a broker that does not answer, or answers with
+// an outage, refuses it with ErrCarryUnanswered, and one that refuses the question for good with
+// ErrCarryRefused. Nothing is freed in any of them. The broker's own rows answer every case a
+// time window only estimated: a revoke the daemon missed, a lease a broker outage held live, a
+// sweep that ran late or kept failing, a longer BROKER_SESSION_CARRY_SECONDS.
 //
 // Nor can a pod trade under a name it frees. The broker honours a pod-session registration of this
 // daemon's (Deps.Registrar, exchange_audience) for a day past its last write, whether or not its
@@ -291,6 +291,11 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 			return ReleasedNames{}, err
 		}
 	}
+	// The release writes the claim row alone, so a take-back the claim must carry goes first
+	// (carryPending, writeCarried).
+	if err := m.writeCarried(ctx); err != nil {
+		return ReleasedNames{}, err
+	}
 	c := m.stored()
 	if mark {
 		c.Abandoned.Released, released.Abandoned = m.deps.Clock.Now(), a.Session
@@ -319,7 +324,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 
 // refuseCarried is a release refused because the secrets broker still carries something for some
 // of the names it would free, names of them: logged at Warn, and answered as a RefusedError, which
-// the operator's route answers 409 (operatorFailure).
+// the operator's route answers 409 (operationFailure).
 func (m *Machine) refuseCarried(refusal *NamesCarriedError, names int) error {
 	m.log.Warn("supervise: refused a release of a claim's names: the secrets broker still carries some of them",
 		"names", names, "carried", len(refusal.Carried), "error", refusal.Error())
@@ -716,7 +721,9 @@ func IsSessionHeldElsewhere(err error) bool {
 //
 // The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
 // so nothing else of this claim waits behind it but whoever asked: an operator's forget or
-// retry, the controller keeper's retry, or a workflow start row's (review round 16 of #4220, #66).
+// retry, the controller keeper's retry, a workflow start row's (review round 16 of #4220, #66),
+// or the project controller's own launch, whose replacement of a failing or an old session asks
+// it once (replaceEndedSession, else replaceAgedSession, dispatch://INFRA-2045 R1 and R3).
 func (m *Machine) mayForget(ctx context.Context, request string) error {
 	session := m.claim.Session
 	if session == "" {
@@ -762,7 +769,7 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 		// A holder that is suspended, retired or failed runs no process under the session, so
 		// its suspend changes nothing: the process under it may be this claim's own, which only
 		// the wait ends (review round 16 of #4220, #61).
-		stop = fmt.Sprintf("first stop %s's process, through the daemon, if it runs (`legion claims suspend --claim %s`; a pod or pane stopped by hand is relaunched under the same id); if %s is suspended, retired or failed, no process of it runs under %s, and the process under it may be this claim's own, which the wait below ends", held.holder, held.holder, held.holder, session)
+		stop = fmt.Sprintf("first stop %s's process, through the daemon, if it runs (the operator's `legion claims suspend --claim %s`, or the `suspend` of the controller's `legion` tool; a pod or pane stopped by hand is relaunched under the same id); if %s is suspended, retired or failed, no process of it runs under %s, and the process under it may be this claim's own, which the wait below ends", held.holder, held.holder, held.holder, session)
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: forgetWait{fmt.Errorf(
 		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach %s: %s; then ask again once GET /v1/roles/%s answers 404 with no holder (reason unclaimed) or names another session, at most %s after that process's last registration (ten minutes with the defaults, about 65 minutes where the session bucket keeps records past the gone horizon), longer across a listener restart or a reaper read that fails",

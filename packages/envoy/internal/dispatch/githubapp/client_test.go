@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func testKeyPEM(t *testing.T) (*rsa.PrivateKey, string) {
@@ -498,7 +499,7 @@ func answeringGitHub(t *testing.T) (*Client, string) {
 }
 
 // The client notes on the attempt a request's context carries (githubreads) the answers no
-// caller takes as data: a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
+// caller takes as data: a 408, a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
 // one) and a body past the caller's limit, each in the words of the client's own errors, with no
 // separator left at the end of an answer that has no body. Every other answer is the caller's to
 // judge, so a 200, a 304, a 403 that carries no limit, a 404, a 409 and a 422 are not noted. Each
@@ -522,6 +523,7 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 		{name: "422", path: "/answer/422"},
 		{name: "503", path: "/answer/503", cause: "GET " + base + `/answer/503: status 503: {"message":"answered 503"}`},
 		{name: "500", path: "/answer/500", cause: "GET " + base + `/answer/500: status 500: {"message":"answered 500"}`},
+		{name: "408", path: "/answer/408", cause: "GET " + base + `/answer/408: status 408: {"message":"answered 408"}`},
 		{name: "a 503 with no body", path: "/answer/503?empty=1", cause: "GET " + base + "/answer/503?empty=1: status 503"},
 		{name: "401", path: "/answer/401", cause: "GET " + base + `/answer/401: status 401: {"message":"answered 401"}`},
 		{name: "429", path: "/answer/429?limited=1", cause: "GET " + base + `/answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
@@ -718,20 +720,21 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 // process shutting down -- is no failure of GitHub's. Both are marked sent.
 func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 	t.Run("a transport error", func(t *testing.T) {
-		closed := httptest.NewServer(http.NotFoundHandler())
-		closed.Close()
+		// A port the test holds and nothing listens on: a closed server's port is any process's
+		// to take, and one that takes it answers the read.
+		base := "http://" + testport.Refused(t)
 		_, pemText := testKeyPEM(t)
-		client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, closed.URL)
+		client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
 		if err != nil {
 			t.Fatalf("new client: %v", err)
 		}
 		ctx, attempt := githubreads.Begin(context.Background())
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if readErr == nil {
-			t.Fatal("a read of a closed server succeeded")
+			t.Fatal("a read of a port that refuses every dial succeeded")
 		}
 		sent, failed, cause := attempt.Outcome()
-		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+closed.URL+"/repos/acme/web: ") {
+		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+base+"/repos/acme/web: ") {
 			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
 		}
 	})

@@ -37,6 +37,23 @@ func writeIssuesForTheIndex(t *testing.T, ctx context.Context, store *Store, fro
 	}
 }
 
+// holdAutovacuumOffIssues turns autovacuum off on issues in the test's own database, so the
+// test's own gin_clean_pending_list is the one thing that empties issues_search's pending list.
+// An autovacuum worker's ANALYZE of a table empties every GIN index's pending list on it
+// (PostgreSQL's ginvacuumcleanup, analyze_only in an autovacuum worker; an ANALYZE a client runs
+// does not), and 200 new issues are past autovacuum's analyze threshold, 50 rows plus a tenth of
+// the table. A worker that reached the test's database between its writes and its reading
+// emptied the list first, and the reading answered 0 for a list the writes had filled: both
+// tests below failed so on envoy-go-race (jobs 138920817554 and 139054538161).
+// autovacuum_enabled = false stops autovacuum's VACUUM and its ANALYZE of the table, all but an
+// anti-wraparound vacuum, which a clone seconds old never needs.
+func holdAutovacuumOffIssues(t *testing.T, ctx context.Context, store *Store) {
+	t.Helper()
+	if _, err := store.Pool.Exec(ctx, `alter table issues set (autovacuum_enabled = false)`); err != nil {
+		t.Fatalf("turn autovacuum off on issues: %v", err)
+	}
+}
+
 // What the migration is for: with fastupdate on, which is what a GIN index is created with, a
 // write of issues leaves entries in a pending list that every scan of issues_search then has to
 // read before it reads anything else, and the planner prices that list above a sequential scan
@@ -50,6 +67,7 @@ func TestIssuesSearchFastupdateMigrationStopsTheIndexBatchingItsWrites(t *testin
 	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, issuesSearchFastupdate)
+	holdAutovacuumOffIssues(t, ctx, store)
 
 	var options []string
 	if err := store.Pool.QueryRow(ctx,
@@ -83,6 +101,7 @@ func TestIssuesSearchFastupdateMigrationEmptiesTheListItInherits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, issuesSearchFastupdate-1)
+	holdAutovacuumOffIssues(t, ctx, store)
 
 	writeIssuesForTheIndex(t, ctx, store, 1, 200)
 	var pending bool

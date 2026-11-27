@@ -355,6 +355,14 @@ registerText("link on callout-info", LINK, CALLOUT_INFO_BG);
 registerText("primary text on selected card", TEXT_PRIMARY, SELECTED_CARD_BG);
 registerText("option description text on selected card", TEXT_OPTION_DESCRIPTION, SELECTED_CARD_BG);
 registerText("link text on selected card", LINK, SELECTED_CARD_BG);
+/** The reference picker's rows wear it on the list's own recessed surface as well as on the
+ *  fill of the highlighted row (`RefPickerList`), so the detail line reads the same either
+ *  way. */
+registerText(
+  "option description text on surface-recessed",
+  TEXT_OPTION_DESCRIPTION,
+  SURFACE_RECESSED
+);
 
 // ---------------------------------------------------------------------------------------------
 // Architecture tree: component fill bars and the trust outline
@@ -1237,13 +1245,6 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
-
-/**
- * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
- * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
- * equal.
- */
-export const scrollFadeTrailingPx = 32;
 
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written

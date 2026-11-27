@@ -31,15 +31,21 @@ interface Rig {
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];
   readonly warned: string[];
+  /** Every message the host's cyber-policy classifier was asked about, in order. */
+  readonly classified: unknown[];
 }
 
-/** The reporter over a daemon that answers `answer` to every report, or refuses it. */
+/** The reporter over a daemon that answers `answer` to every report, or refuses it. The host's
+ * cyber-policy classifier is `cyberPolicyRefusal`, one that marks nothing unless the case gives
+ * its own, and every message it is asked about is kept in `classified`. */
 function rig(
   options: {
     readonly claim?: (sessionID: string) => ClaimCapability | undefined;
     readonly answer?: (attempt: number) => Response;
+    readonly cyberPolicyRefusal?: (message: unknown) => Promise<boolean>;
   } = {}
 ): Rig {
+  const classified: unknown[] = [];
   const posted: Record<string, unknown>[] = [];
   const debugged: string[] = [];
   const warned: string[] = [];
@@ -63,6 +69,10 @@ function rig(
     daemon: () => client,
     claim: options.claim ?? ((sessionID) => (sessionID === SESSION ? implementer : undefined)),
     log,
+    cyberPolicyRefusal: async (message) => {
+      classified.push(message);
+      return options.cyberPolicyRefusal === undefined ? false : options.cyberPolicyRefusal(message);
+    },
   });
   return {
     report: reporter.report,
@@ -71,6 +81,7 @@ function rig(
     posted,
     debugged,
     warned,
+    classified,
   };
 }
 
@@ -134,7 +145,9 @@ test("the sequence counts this plugin's own turns, from one and in order, within
 });
 
 // Reports that overlap still take their numbers in the order their turns ended: the number is
-// taken before anything is awaited, so the daemon can order them however late they arrive.
+// taken before anything is awaited, so the daemon can order them however late they arrive. A
+// refused turn waits on the host's classifier before it is sent, so it can arrive after a later
+// clean one; what this holds is the number each turn took, whatever order the bodies came in.
 test("overlapping reports take their numbers in the order the turns ended", async () => {
   const { report, posted } = rig();
 
@@ -142,7 +155,8 @@ test("overlapping reports take their numbers in the order the turns ended", asyn
   const answered = report(SESSION, clean);
   await Promise.all([refused, answered]);
 
-  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([
+  const numbered = posted.map((body) => [body.sequence, body.outcome]);
+  expect(numbered.toSorted(([a], [b]) => Number(a) - Number(b))).toEqual([
     [1, "refused"],
     [2, "clean"],
   ]);
@@ -346,5 +360,106 @@ test("a prompt that arrives during an unprompted turn is the next turn's, not th
   expect(posted.map((body) => [body.sequence, body.unprompted ?? false])).toEqual([
     [1, true],
     [2, false],
+  ]);
+});
+
+/** OpenAI's cyber-policy refusal as Oh My Pi records it: a gateway's 503, or none for a request
+ * the host held after one. The words are the provider's, which this plugin never reads itself. */
+function cyberRefused(errorStatus?: number): AgentEndEvent {
+  return {
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "synthetic refusal: the request was flagged for cyber_policy",
+        ...(errorStatus === undefined ? {} : { errorStatus }),
+      },
+    ],
+  };
+}
+
+/** A host classifier that marks exactly the messages `cyberRefused` builds. */
+const marksCyberRefusals = async (message: unknown) =>
+  typeof message === "object" &&
+  message !== null &&
+  "errorMessage" in message &&
+  typeof message.errorMessage === "string" &&
+  message.errorMessage.includes("cyber_policy");
+
+// The daemon reads a turn with no prompt result from its report alone, and the status of a
+// cyber-policy refusal says nothing it can act on: a gateway relays it as a 503, and a request
+// the host held after one has none. So the report carries the class the host's own classifier
+// gives the refused message (`isCyberPolicyRefusal`, the reading that sets a prompt result's
+// `code`), and the daemon fails the claim on it rather than sending the session another prompt.
+test("a refused turn the host classes as OpenAI's cyber-policy refusal is reported with its code", async () => {
+  const { report, posted, classified } = rig({ cyberPolicyRefusal: marksCyberRefusals });
+
+  await report(SESSION, cyberRefused(503));
+  await report(SESSION, cyberRefused());
+
+  expect(posted[0]).toMatchObject({
+    sequence: 1,
+    outcome: "refused",
+    httpStatus: 503,
+    unprompted: true,
+    code: "cyber_policy",
+  });
+  expect(posted[1]).toMatchObject({ sequence: 2, outcome: "refused", code: "cyber_policy" });
+  expect(posted[1]).not.toHaveProperty("httpStatus");
+  // The classifier is handed the assistant message that ended the turn, as the host hands it.
+  expect(classified).toEqual([cyberRefused(503).messages?.[0], cyberRefused().messages?.[0]]);
+});
+
+// Every other refusal goes with no class, and an answered turn is asked nothing: the daemon reads
+// one class alone, and a turn the provider took is no refusal of any kind.
+test("a refusal the host does not class, and an answered turn, are reported with no code", async () => {
+  const { report, posted, classified } = rig({ cyberPolicyRefusal: marksCyberRefusals });
+
+  await report(SESSION, refusedWith(400));
+  await report(SESSION, clean);
+
+  expect(posted.map((body) => [body.outcome, body.code])).toEqual([
+    ["refused", undefined],
+    ["clean", undefined],
+  ]);
+  for (const body of posted) expect(body).not.toHaveProperty("code");
+  expect(classified).toHaveLength(1);
+});
+
+// A prompt's turn carries the class too: the daemon judges that turn by its prompt's result and
+// reads nothing of the report's class there, so the report says what the turn was and no more.
+test("a prompt's turn the host classes as a cyber-policy refusal carries the code, unmarked unprompted", async () => {
+  const { report, inputArrived, runStarted, posted } = rig({
+    cyberPolicyRefusal: marksCyberRefusals,
+  });
+
+  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
+  runStarted(SESSION);
+  await report(SESSION, cyberRefused(403));
+
+  expect(posted[0]).toMatchObject({ outcome: "refused", httpStatus: 403, code: "cyber_policy" });
+  expect(posted[0]).not.toHaveProperty("unprompted");
+});
+
+// The classifier is the host's module, read when the first refusal comes; a host that cannot
+// answer still has the turn reported, with no class, and the pane says why once per failure.
+test("a classifier that fails leaves the refused turn reported with no code, and warns", async () => {
+  const { report, posted, warned } = rig({
+    cyberPolicyRefusal: async () => {
+      throw new Error("Cannot find module '@oh-my-pi/pi-ai/error'");
+    },
+  });
+
+  await report(SESSION, cyberRefused(503));
+
+  expect(posted[0]).toMatchObject({
+    sequence: 1,
+    outcome: "refused",
+    httpStatus: 503,
+    unprompted: true,
+  });
+  expect(posted[0]).not.toHaveProperty("code");
+  expect(warned).toEqual([
+    "legion: the host could not class a refused turn; it is reported with no code",
   ]);
 });

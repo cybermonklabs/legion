@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,7 +119,7 @@ func newProbeImageCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags := cmd.Flags()
 	f := &probeImageFlags{}
 	flags.StringVar(&f.omp, "omp", "", "the OMP executable to probe (default: $LEGION_OMP_PATH)")
-	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion),
+	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion()),
 		"the daemon API contract the image's pi-legion must declare (the daemon's probe Sandbox passes its own)")
 	flags.StringVar(&f.pluginRoot, "plugin-root", "", "the Legion plugin directory a pod loads as an explicit extension, which the load probe loads the same way (required)")
 	flags.StringVar(&f.envoyPluginRoot, "envoy-plugin-root", "", "the Envoy plugin directory a pod loads as its other explicit extension, which the load probe loads the same way (required)")
@@ -406,14 +407,20 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	return nil
 }
 
-// envValue is the value environ gives name, "" when it gives none.
-func envValue(environ []string, name string) string {
-	value := ""
-	for _, pair := range environ {
+// envLookup is the value environ gives name and whether it gives one, the last entry winning where
+// a name is set twice, as os/exec builds a child's environment from such a list.
+func envLookup(environ []string, name string) (string, bool) {
+	for _, pair := range slices.Backward(environ) {
 		if found, v, _ := strings.Cut(pair, "="); found == name {
-			value = v
+			return v, true
 		}
 	}
+	return "", false
+}
+
+// envValue is the value environ gives name, "" when it gives none (envLookup).
+func envValue(environ []string, name string) string {
+	value, _ := envLookup(environ, name)
 	return value
 }
 

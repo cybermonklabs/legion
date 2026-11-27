@@ -12,4 +12,7 @@ import (
 // 25,000 of them, so one `legion gh` start cost what that init cost, and a test of twenty-two such
 // calls outlasted its deadline. So the nkey seeds these tests hand `legion` come from
 // internal/testnkeys, not internal/testnats, and no test here starts a NATS server.
-func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) { testbinary.LinksNoTestcontainers(t) }
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) {
+	t.Parallel()
+	testbinary.LinksNoTestcontainers(t)
+}
