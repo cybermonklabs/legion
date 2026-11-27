@@ -52,9 +52,10 @@ def timings(paths: list) -> tuple:
     beside each other.
 
     A run is read as a `go test -json` stream, or, where a file holds no JSON event of a test, as
-    the verbose lines of that stream: a wrapper that reads the stream itself and writes its Output
-    fields back out (.github/scripts/race_memory.py, which the document service's lane runs) leaves
-    exactly those lines, and they carry each test's and subtest's own seconds and the pause."""
+    the verbose lines of that stream: a step's log under .github/scripts/go-test.sh, whose
+    gotestsum prints each event's Output (its standard-verbose format), leaves exactly those lines,
+    beside the lines race_memory.py writes in the document service's lane, and they carry each
+    test's and subtest's own seconds and the pause."""
     seconds, parallel = {}, set()
 
     def took(name: str, elapsed: float) -> None:

@@ -727,8 +727,9 @@ check "and the other leg the rest" "$(is "$(legs "$root" job 2 3)" "-run=^(Examp
 exit=0")"
 
 echo "case: the rebalancer reads a run whose -json a wrapper printed as lines"
-# The document service's lane runs its go test under .github/scripts/race_memory.py, which reads
-# the -json stream itself and writes its Output fields back out.
+# Every Go test step runs its go test under .github/scripts/go-test.sh, whose gotestsum prints the
+# -json stream's Output fields as the step's log lines, and the document service's lane writes
+# race_memory.py's lines between them.
 cat > "$work/verbose.txt" <<'LOG'
 race memory: the limit is 8388608 kB (RACE_MEM_LIMIT_KB)
 === RUN   TestTwo

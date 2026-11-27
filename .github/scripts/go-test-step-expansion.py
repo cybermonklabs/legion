@@ -205,6 +205,25 @@ ENVOY_RACE_STEP = ("Race-test delivery, the store, the bus, the listener, the re
 EXCEPTIONS = (
     Exception_(
         steps=frozenset({
+            (".github/workflows/ci-job-daemon-go.yaml", "Test the Go daemon"),
+            (".github/workflows/ci-job-daemon-go.yaml", "Test the shape gate in main's merge order"),
+        }),
+        package="github.com/sjawhar/legion/daemon/internal/api",
+        functions=(
+            "TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes",
+            "TestTheRecordSetIsOneRecordPerAnswerPerContract",
+        ),
+        requirement=(
+            "The daemon API's shape gate runs twice in daemon-go's leg 3: the plain step runs it "
+            "unstamped, which numbers the contract entries by id, and the shape gate step runs it "
+            "again with -ldflags stamping HEAD's entries in main's merge order "
+            "(scripts/daemon-contract-order.sh), the order a production build of main numbers them "
+            "in, so that order is tested before it reaches main (the step's comment in "
+            "ci-job-daemon-go.yaml says why)."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
             (".github/workflows/ci-job-envoy-smoke.yaml", "Live tests of envoy-infra's host:Listener"),
             (".github/workflows/ci-job-envoy-infra-go.yaml", "Unit test envoy-infra"),
         }),

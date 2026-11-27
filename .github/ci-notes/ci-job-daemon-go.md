@@ -200,9 +200,10 @@ test's clock when its function returns, before the parallel subtests it started 
 whose work is in parallel subtests reads close to 0 s by its own clock while it holds its leg for
 as long as they take.
 
-No leg's own run can feed it: this step runs `go test` without `-json`, and prints a package's
-one `ok` line, not each test's time. A rebalance therefore needs a run made for it — a throwaway
-`workflow_dispatch` of the lane's command with `-json`, or a build-cluster Job — on the runner
-the legs run on, and the run it came from goes in the file's header, as the current one names
-scratch run 45609991742. Rebalance when a leg's log shows the groups have drifted apart, and when
-the warnings above name tests the placement rule put somewhere arbitrary.
+A leg's own run can feed it: the step runs its `go test` under `.github/scripts/go-test.sh`,
+whose gotestsum jsonfile is a `go test -json` stream with each test's time, and the leg uploads it
+as the artifact `go-test-daemon-go-race-legs-<leg>`. A rebalance reads one run's jsonfile of every
+leg, from the runner the legs run on, and the run it came from goes in the file's header, as the
+current one names scratch run 45609991742, a run made for it before the legs kept their jsonfiles.
+Rebalance when a leg's log shows the groups have drifted apart, and when the warnings above name
+tests the placement rule put somewhere arbitrary.
