@@ -646,14 +646,23 @@ type killReportQueue struct {
 
 // killReportLabel is what a queue's lines say of the reports it holds. A role's queue writes no
 // role, since the role's prefix in the log names it. The pod's queue of the reports of processes
-// of no role writes role=none after the pid, and marks each report it queues as of no role
-// (shimwire.LauncherMemoryKill.NoRole).
+// of no role (noRole) writes role=none after the pid, and marks each report it queues as of no
+// role (shimwire.LauncherMemoryKill.NoRole).
 type killReportLabel struct {
-	// role is what the lines write after the pid: "" or " role=none".
-	role string
+	// noRole is whether the queue holds the reports of processes of no role.
+	noRole bool
 	// kept is why a full queue drops its oldest report, and next is the connection that carries
 	// a report whose write failed.
 	kept, next string
+}
+
+// role is what the lines write after the pid: " role=none" for the queue of no role, and nothing
+// for a role's.
+func (l killReportLabel) role() string {
+	if l.noRole {
+		return " role=none"
+	}
+	return ""
 }
 
 var (
@@ -662,9 +671,9 @@ var (
 		next: "the next connection carries it",
 	}
 	noRoleReportLabel = killReportLabel{
-		role: " role=none",
-		kept: "reports of no role already wait for a connection, the most the pod keeps",
-		next: "the next connection that can carry it does",
+		noRole: true,
+		kept:   "reports of no role already wait for a connection, the most the pod keeps",
+		next:   "the next connection that can carry it does",
 	}
 )
 
@@ -679,9 +688,7 @@ func newRoleReports(m *manager) killReportQueue {
 // so it never waits for a connection: where the queue is full it drops the oldest report, or the
 // next oldest while a write of the head is underway, since that write may still succeed.
 func (q *killReportQueue) queue(report shimwire.LauncherMemoryKill) {
-	if q.label == noRoleReportLabel {
-		report.NoRole = true
-	}
+	report.NoRole = q.label.noRole
 	q.mu.Lock()
 	var dropped shimwire.LauncherMemoryKill
 	full := len(q.kills) >= maxWaitingMemoryKills
@@ -697,7 +704,7 @@ func (q *killReportQueue) queue(report shimwire.LauncherMemoryKill) {
 	q.mu.Unlock()
 	if full {
 		q.linef("launcher: memory guard: report dropped sequence=%d pid=%d%s reason=%d %s",
-			dropped.Sequence, dropped.PID, q.label.role, maxWaitingMemoryKills, q.label.kept)
+			dropped.Sequence, dropped.PID, q.label.role(), maxWaitingMemoryKills, q.label.kept)
 	}
 	select {
 	case q.wake <- struct{}{}:
@@ -741,7 +748,7 @@ func (q *killReportQueue) sendWaiting() {
 			q.kills = nil
 			q.mu.Unlock()
 			for _, report := range dropped {
-				q.linef("launcher: memory guard: report dropped sequence=%d pid=%d%s reason=%s", report.Sequence, report.PID, q.label.role, reason)
+				q.linef("launcher: memory guard: report dropped sequence=%d pid=%d%s reason=%s", report.Sequence, report.PID, q.label.role(), reason)
 			}
 			return
 		}
@@ -756,7 +763,7 @@ func (q *killReportQueue) sendWaiting() {
 		}
 		q.mu.Unlock()
 		if err != nil {
-			q.linef("launcher: memory guard: report unsent sequence=%d pid=%d%s reason=%v; %s", report.Sequence, report.PID, q.label.role, err, q.label.next)
+			q.linef("launcher: memory guard: report unsent sequence=%d pid=%d%s reason=%v; %s", report.Sequence, report.PID, q.label.role(), err, q.label.next)
 			return
 		}
 	}

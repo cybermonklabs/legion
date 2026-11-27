@@ -45,10 +45,11 @@ type supervisor struct {
 	// beforeDecision is overrides.beforeDecision, run on a claim's feed before its machine decides
 	// each event (add); nil runs nothing. It is set before the first machine is added.
 	beforeDecision func(claim.Token, supervise.Event)
-	// turnEdge is told each start and each end of a turn a decision of any machine wrote to its
-	// claim, once that decision has ended (OnTurnEdge, tellTurnEdge): the claim, whether the edge
-	// is a start, and its moment as the claim records it. Nil tells nobody.
-	turnEdge atomic.Pointer[func(supervise.Claim, bool, time.Time)]
+	// turnEdge is the one callback every machine of this supervisor tells each start and each end
+	// of a turn a decision wrote to its claim, once that decision has ended
+	// (supervise.Machine.OnTurnEdge): the claim, whether the edge is a start, and its moment as the
+	// claim records it. Nil tells nobody.
+	turnEdge func(supervise.Claim, bool, time.Time)
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -98,8 +99,9 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 //
 // It reads each machine's published claim rather than any record of turns kept beside them, and
 // it iterates the lock-free snapshot of the machines (supervised) rather than taking s.mu:
-// publishing takes a machine's own lock, OnDurableState takes s.mu and then every machine's, and a
-// reader here holding s.mu while a machine decides would be those two locks taken in both orders.
+// publishing takes a machine's own lock, OnDurableState and OnTurnEdge take s.mu and then every
+// machine's, and a reader here holding s.mu while a machine decides would be those two locks
+// taken in both orders.
 // View never waits on the decision a machine is making either, so answering this can never be
 // held up by another claim's launch or stop.
 func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token, bool) {
@@ -154,22 +156,19 @@ func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.Cla
 	}
 }
 
-// OnTurnEdge tells callback each start and each end of a turn any decision of any machine of this
-// supervisor writes to its claim, once: the decision of an event of the claim's feed (add), and
-// as well that of a request handed to Machine.Handle directly — the outbox's delivery, which can
-// start a turn (supervise's sendPending), a route's, a timer's, a send's outcome — each machine
-// telling it after the decision that wrote it has ended (supervise.Machine.OnTurnEdge), so the
-// claim the store holds carries the edge when callback runs. It runs on the goroutine of that
-// decision.
+// OnTurnEdge applies one turn-edge callback to every current and future machine. It is told each
+// start and each end of a turn any decision of any machine of this supervisor writes to its
+// claim, once: the decision of an event of the claim's feed (add), and as well that of a request
+// handed to Machine.Handle directly — the outbox's delivery, which can start a turn (supervise's
+// sendPending), a route's, a timer's, a send's outcome — each machine telling it after the
+// decision that wrote it has ended (supervise.Machine.OnTurnEdge), so the claim the store holds
+// carries the edge when callback runs. It runs on the goroutine of that decision.
 func (s *supervisor) OnTurnEdge(callback func(supervise.Claim, bool, time.Time)) {
-	s.turnEdge.Store(&callback)
-}
-
-// tellTurnEdge is every machine's turn-edge callback (add): it tells the supervisor's
-// (OnTurnEdge), whenever that was installed, and tells nobody while none is.
-func (s *supervisor) tellTurnEdge(c supervise.Claim, start bool, at time.Time) {
-	if tell := s.turnEdge.Load(); tell != nil {
-		(*tell)(c, start, at)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turnEdge = callback
+	for _, member := range s.machines {
+		member.machine.OnTurnEdge(callback)
 	}
 }
 
@@ -275,7 +274,7 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 // add supervises m, starting the goroutine that feeds it. The caller holds mu.
 func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	m.OnDurableState(s.durableState)
-	m.OnTurnEdge(s.tellTurnEdge)
+	m.OnTurnEdge(s.turnEdge)
 	queue := newInbox()
 	s.machines[token] = &member{machine: m, inbox: queue, issue: m.Claim().Issue}
 	all := append(slices.Clip(s.supervised()), m)

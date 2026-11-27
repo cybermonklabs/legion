@@ -120,23 +120,24 @@ func (a *Admission) commitDeadline(ctx context.Context, tx pgx.Tx, reading LiveR
 }
 
 // signalFactMoved is the series-moved pass rule for a fact that keeps an input of a signal with no
-// mark of its own (a report of model requests, a turn edge), input being the series it moves
-// (signals.Provider, signals.Idle). While admission by signals is on, it reads the live signals
-// at the admission's clock, sets the deadline again from them, and keeps the mark that runs the
-// pass (record.NoteSignalsMoved) only where they moved against the last committed pass, the
-// record's newest entries of each series (signalsMoved). A pass it runs computes the deadline
-// again itself. Where admission keeps no live signals, it keeps nothing.
+// mark of its own (a report of model requests, a turn edge), input naming the series it moves
+// (signals.Provider, signals.Idle) and readOff being what the fact reads of it while admission by
+// signals is off, nil for nothing. While admission by signals is on, it reads the live signals at
+// the admission's clock, sets the deadline again from them, and keeps the mark that runs the pass
+// (record.NoteSignalsMoved) only where they moved against the last committed pass, the record's
+// newest entries of each series (signalsMoved). A pass it runs computes the deadline again itself.
+// Where admission keeps no live signals, it keeps nothing.
 //
-// While admission by signals is off, it reads the switch and no more than the one series the
-// fact moves, and sets no deadline: every hold is then 0, and no deadline is due
-// (LiveReading.Deadline), so the committed one is none from the pass of the fact that turned the
-// rule off on. A report moves only the provider's headroom, whose value entry a pass writes only
-// where it moves a slot or the hold changes, so it moves nothing the record keeps and reads no
-// series. A turn edge moves the idle share, whose value entry a pass writes while the rule is off
-// too (passChanges), so it reads the idle share alone and runs the pass where that moved. A series
-// that moved since the last pass by the clock alone is left to the next pass, as no entry is
-// written because a clock reached a time.
-func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx, input string) error {
+// While admission by signals is off, it reads the switch and what readOff reads at the
+// admission's clock, no more than the one series the fact moves, and sets no deadline: every hold
+// is then 0, and no deadline is due (LiveReading.Deadline), so the committed one is none from the
+// pass of the fact that turned the rule off on. A report moves only the provider's headroom, whose
+// value entry a pass writes only where it moves a slot or the hold changes, so it moves nothing
+// the record keeps and hands in no read. A turn edge moves the idle share, whose value entry a
+// pass writes while the rule is off too (passChanges), so it hands in the read of the idle share
+// alone and runs the pass where that moved. A series that moved since the last pass by the clock
+// alone is left to the next pass, as no entry is written because a clock reached a time.
+func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx, input string, readOff func(at time.Time) (SeriesReading, error)) error {
 	if a.live == nil {
 		return nil
 	}
@@ -151,14 +152,14 @@ func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx, input string
 		if reading, _, err = a.live.readUnder(ctx, tx, settings, at, signals.MinuteBefore(at)); err != nil {
 			return fmt.Errorf("read the signals at a fact that moves the %s series: %w", input, err)
 		}
-	case input == signals.Idle:
-		idle, err := a.live.idle(ctx, tx, at, nil)
-		if err != nil {
-			return fmt.Errorf("read the idle share at a turn edge: %w", err)
-		}
-		reading = LiveReading{At: at, Series: []SeriesReading{idle}}
-	default:
+	case readOff == nil:
 		return nil
+	default:
+		series, err := readOff(at)
+		if err != nil {
+			return err
+		}
+		reading = LiveReading{At: at, Series: []SeriesReading{series}}
 	}
 	newest, err := store.NewestSeriesEntriesTx(ctx, tx, a.project)
 	if err != nil {

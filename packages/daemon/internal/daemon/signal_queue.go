@@ -93,16 +93,17 @@ func queueTimelineGone(err error) bool {
 // (queueTimelineGone), which no read repairs: it is logged, and the events kept of the pull
 // request are forgotten (intake.QueueTimeline's Gone), as the boot's read forgets them
 // (readQueueOnce), so no entry of it is left open for good. A read GitHub answers whose timeline
-// holds fewer moves in the notified direction than the row needs (MinCount), since the timeline is
-// behind the notification, is read again up to mergeStateLadderReads attempts in all, as the
-// merge-queue read reads a state GitHub has not computed yet; the last attempt keeps what the
-// timeline holds, which is every event GitHub shows and no event the daemon made up. A row of a
-// pull request the store had kept no move of (Unkept) needs instead that the timeline's newest
-// move is of the notified direction, an entry after the last exit or an exit after the last entry:
-// its count needs 1, which the moves before the store kept any meet. A pull request that left the
-// queue before its entry's read ran shows an exit last, so that read is read again to the end of
-// the ladder and then keeps what it shows, the entry and the exit, which its exit's own read, whose
-// newest move is that exit, keeps as well; neither waits longer than the ladder.
+// does not show the notified move (record.QueueTimelineRead.Shows), holding fewer moves in the
+// notified direction than the row needs (MinCount), since the timeline is behind the notification,
+// is read again up to mergeStateLadderReads attempts in all, as the merge-queue read reads a state
+// GitHub has not computed yet; the last attempt keeps what the timeline holds, which is every event
+// GitHub shows and no event the daemon made up. A row of a pull request the store had kept no move
+// of (Unkept) needs instead that the timeline's newest move is of the notified direction, an entry
+// after the last exit or an exit after the last entry: its count needs 1, which the moves before
+// the store kept any meet. A pull request that left the queue before its entry's read ran shows
+// an exit last, so that read is read again to the end of the ladder and then keeps what it shows,
+// the entry and the exit, which its exit's own read, whose newest move is that exit, keeps as
+// well; neither waits longer than the ladder.
 func (r *outbox) queueTimelineRead(ctx context.Context, row record.OutboxRow, payload record.QueueTimelineRead) error {
 	if r.readQueueTimeline == nil || r.mergeStateWait == nil {
 		return errors.New("queue timeline read executor has no read of a pull request's timeline from GitHub")
@@ -127,28 +128,12 @@ func (r *outbox) queueTimelineRead(ctx context.Context, row record.OutboxRow, pa
 		return wait.Until(readAt.Add(delay), fmt.Sprintf("the queue timeline read of %s#%d reads GitHub again in %s, after attempt %d failed: %v",
 			payload.Repo, payload.Number, delay, attempt, failed))
 	}
-	enters := payload.Move == record.QueueEnqueued
-	shown := 0
-	for _, e := range events {
-		if e.Enters == enters {
-			shown++
-		}
-	}
-	current := shown >= payload.MinCount
-	if payload.Unkept {
-		current = len(events) > 0 && events[len(events)-1].Enters == enters
-	}
-	if !current {
-		attributes = append(attributes, "shown", shown, "want", payload.MinCount, "unkept", payload.Unkept, "attempts", mergeStateLadderReads)
+	shown, behind := payload.Shows(events)
+	if behind != "" {
+		attributes = append(attributes, "shown", shown, "behind", behind, "attempts", mergeStateLadderReads)
 		if attempt < mergeStateLadderReads {
 			delay := r.mergeStateWait()
 			r.log.Info("outbox queue-timeline read: GitHub's timeline does not show the notified move yet; it reads again", append(attributes, "wait", delay)...)
-			var behind string
-			if payload.Unkept {
-				behind = fmt.Sprintf("ends in no move of the %s notification's direction, and the store had kept no move of it", payload.Move)
-			} else {
-				behind = fmt.Sprintf("shows %d of the %d %s moves it should", shown, payload.MinCount, payload.Move)
-			}
 			return wait.Until(readAt.Add(delay), fmt.Sprintf("the timeline of %s#%d %s, after attempt %d of %d",
 				payload.Repo, payload.Number, behind, attempt, mergeStateLadderReads))
 		}

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/stateevent"
 )
 
@@ -2371,7 +2372,7 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // moves came before the first boot of the release that keeps them: MinCount, counted from what the
 // store kept, is 1 for it, which a timeline that still shows only the moves before the notified one
 // meets. Its notified move is visible only where the timeline's newest move is of the move's
-// direction, an entry after its last exit or an exit after its last entry.
+// direction, an entry after its last exit or an exit after its last entry (Shows).
 type QueueTimelineRead struct {
 	Repo     string    `json:"repo"`
 	Number   int       `json:"number"`
@@ -2381,6 +2382,29 @@ type QueueTimelineRead struct {
 }
 
 func (QueueTimelineRead) OutboxKind() OutboxKind { return OutboxKindQueueTimelineRead }
+
+// Shows is whether events, the merge-queue events of the pull request's timeline in GitHub's
+// order, show the notified move: shown is how many of them are in the move's direction, and behind
+// is "" where they show the move and otherwise says what they show short of it. They show it where
+// they hold at least MinCount events in its direction, or, for an Unkept read, where the newest of
+// them is in its direction.
+func (r QueueTimelineRead) Shows(events []signals.QueueEvent) (shown int, behind string) {
+	enters := r.Move == QueueEnqueued
+	for _, e := range events {
+		if e.Enters == enters {
+			shown++
+		}
+	}
+	switch {
+	case r.Unkept:
+		if len(events) == 0 || events[len(events)-1].Enters != enters {
+			return shown, fmt.Sprintf("ends in no move of the %s notification's direction, and the store had kept no move of it", r.Move)
+		}
+	case shown < r.MinCount:
+		return shown, fmt.Sprintf("shows %d of the %d %s moves it should", shown, r.MinCount, r.Move)
+	}
+	return shown, ""
+}
 
 // QueueMove is a pull request's move in the merge queue that GitHub notified, as its pull_request
 // action names it: an entry (QueueEnqueued), or an exit, a removal (QueueDequeued) or a merge

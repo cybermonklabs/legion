@@ -2,8 +2,10 @@ package admit
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -120,7 +122,7 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		if err := a.store.KeepModelRequests(ctx, tx, a.project, report, a.countsTokens, a.now()); err != nil {
 			return err
 		}
-		return a.signalFactMoved(ctx, tx, signals.Provider)
+		return a.signalFactMoved(ctx, tx, signals.Provider, nil)
 	case intake.TurnEdge:
 		slots, err := a.store.Slots(ctx, tx)
 		if err != nil {
@@ -129,7 +131,13 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		if !slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == fact.Issue }) {
 			return nil
 		}
-		return a.signalFactMoved(ctx, tx, signals.Idle)
+		return a.signalFactMoved(ctx, tx, signals.Idle, func(at time.Time) (SeriesReading, error) {
+			idle, err := a.live.idle(ctx, tx, at, nil)
+			if err != nil {
+				return SeriesReading{}, fmt.Errorf("read the idle share at a turn edge: %w", err)
+			}
+			return idle, nil
+		})
 	case intake.DaemonBooted:
 		for _, input := range []string{signals.Kills, signals.Queue, signals.Provider} {
 			if err := a.store.BeginSignalInput(ctx, tx, a.project, input, a.now()); err != nil {
