@@ -552,10 +552,16 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // who asks wait on (inboxwrite.QueueMoveWaiting) locks the asks rows it moves `for no key
 // update`, in ascending id, right after its event and before the person nodes and tuples it
 // writes, and reads who each ask waits on, and whom its delivery stands to, in the statement after
-// that lock, so a move it waited for is read as it committed. Every write locking several asks
-// rows takes them in that ascending id order: the close's withdrawal and the reopen's restore
-// (readOpenIssueAsks, prepareRestoration), a settlement's (docs' lockAskBlocksForWrite), and the
-// move. A snooze's foreign key takes its ask `for key share`, which no move waits on.
+// that lock, so a move it waited for is read as it committed. A write locking several asks rows in
+// one pass takes them in that ascending id order (docs' lockAskBlocksForWrite), but a write that
+// locks them in several passes is in no one order with the move: the close's withdrawal, its final
+// sweep and the repair's, one document after another (prepareWithdrawal, sweepIssueAskBlocksTx),
+// the reopen's restore (prepareRestoration), the decisions step's restore (docs'
+// restoreIssueDecisions), and a version write that locks its document's ask blocks and then moves
+// its approval request (docs' moveApprovalAsk). Each takes the project's owner lock shared too,
+// where the asks it writes fall through to the default, after its own owner's and before it locks
+// any asks row, so a move either committed first or waits for it (docs' lockAskBlocksForWrite
+// names them all). A snooze's foreign key takes its ask `for key share`, which no move waits on.
 //
 // The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
 // sequence of its own. Its writers do not all run their steps in one order - one learns its

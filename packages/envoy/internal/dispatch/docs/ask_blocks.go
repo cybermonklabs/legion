@@ -1732,10 +1732,33 @@ func mayDeliverAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, block
 	return delivers, nil
 }
 
-// lockAskBlocksForWrite queues the document's ask row locks before writes of those asks.
-// A move of the project default does not take the document's owner lock, so both writers
-// lock ask rows in ascending id. The document writer has already taken the owner and any
-// project or copy lock it needs. No writer changes the key columns.
+// lockAskBlocksForWrite locks the asks rows of the document's ask blocks `for no key update`, in
+// ascending id, before the writes of those asks: queued where the transaction's writes are queued,
+// so it runs in the write phase, and at once in the decisions step's restore (joinAtOnce). The
+// writer has taken the document owner's lock and any copy lock it needs (lockProjectCopies)
+// already. No writer changes the key columns.
+//
+// A move of a project's default assignee (api's putProjectDefaultAssignee) takes no issue's or
+// document's owner lock: it takes the project's owner lock exclusive and then locks, in ascending
+// id, every open asks row that falls through to that default, across the project's issues nobody
+// holds and its documents. One call of this takes its rows in that order, but a writer that locks
+// asks rows in more than one pass - one document's after another's, or a document's and then its
+// approval request's - is in no one order with the move: each could hold a row of one pass while
+// it waited for a row the other holds, a deadlock. So a writer of an issue's asks holds the
+// issue's owner lock and, where the asks fall through to the project's default (the issue is one
+// nobody holds, or the document is a project's, whose own owner lock it holds), the project's
+// owner lock shared (inboxwrite.HoldDefault, inboxwrite.HoldAskDefault) before it calls this: a
+// move of the default either committed before the writer locked any asks row or waits for it to
+// commit. Where its writes are queued, a hold taken anywhere in its read phase comes before every
+// row this locks. The writers that take it: api's close (prepareWithdrawal), reopen
+// (prepareRestoration) and the close's sweep and the repair's withdrawal (sweepIssueAskBlocksTx),
+// each over every document of its issue (WriteIssueAskStates); the decisions step's restore
+// (restoreIssueDecisions), before any asks row; a settlement that may open or restore an ask
+// (reconcileAskBlocks); and a version write that moves an approval request falling through to the
+// default (moveApprovalAsk) or a carry that answers one (answerApprovalAsk). A writer that locks
+// this one pass of one document and no other asks row needs no hold, and takes none: a settlement
+// that opens, restores and moves nothing, and a version's read of its blocks (askBlocksWithAnAsk)
+// or a carry's (asksAgreeWithTheirNodes) that moves and answers no request.
 func lockAskBlocksForWrite(ctx context.Context, tx pgx.Tx, artifactID string) error {
 	return writeExec(ctx, tx, "lock the ask blocks of document "+artifactID, `
 		select 1 from asks a where a.block_artifact_id = $1 and a.block_id is not null
