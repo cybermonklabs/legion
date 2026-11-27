@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -23,20 +24,32 @@ import (
 
 // A tmux client that exits on its own did not time out, however long pipeDrainDelay then holds
 // runTmux open for something still holding its output pipes (a server that took the client's
-// stdio over the socket): its exit is its answer. The timeout is the rest of the test binary's
-// deadline, far from the client's own exit on a loaded machine. With exit 3 the run keeps the
-// client's own exit and no timeout; with exit 0, a runTmux that took exec.ErrWaitDelay for a
-// failure would report that success as an error. What holds the pipes runs until the test's
-// cleanup releases it (heldChild), so every run is held past pipeDrainDelay.
+// stdio over the socket): its exit is its answer. With exit 3 the run keeps the client's own exit
+// and no timeout; with exit 0, a runTmux that took exec.ErrWaitDelay for a failure would report
+// that success as an error. What holds the pipes runs until the test's cleanup releases it
+// (heldChild), so every run is held past pipeDrainDelay.
+//
+// The timeout is the rest of the test binary's deadline, so a loaded machine that slows the client
+// does not cut it off. Main's form gave the exit 0 a minute from before the client started, and
+// that bound stays (clientBound), on runTmux's own time and no stand-in's, for both exits: the
+// client records when the kernel made its process (testexec.MarkStart) and the moment just before
+// it exits (testexec.MarkNow), and what is left of the call is runTmux's, from the call to that
+// start and from that exit to the return, less the pipeDrainDelay os/exec holds the pipes after
+// the client's reap, which main's timeout, ending at that reap, never counted.
 func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T) {
+	const clientBound = time.Minute
 	for name, exit := range map[string]int{"an exit 3": 3, "an exit 0": 0} {
 		t.Run(name, func(t *testing.T) {
 			timeout := testwait.Remaining(t)
-			client := fakeTmuxClient(t, t.TempDir(), "echo answered\n"+heldChild(t)+"\nexit "+strconv.Itoa(exit))
+			dir := t.TempDir()
+			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
+			client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit "+strconv.Itoa(exit))
 			r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 
+			called := testexec.SinceBoot(t)
 			started := time.Now()
 			res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
+			returned := testexec.SinceBoot(t)
 			elapsed := time.Since(started)
 
 			if err != nil {
@@ -44,6 +57,10 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T)
 			}
 			if elapsed < pipeDrainDelay {
 				t.Fatalf("runTmux returned after %s, inside pipeDrainDelay: nothing held the pipe, so this run proves nothing", elapsed)
+			}
+			if began, after := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited); began+after-pipeDrainDelay > clientBound {
+				t.Errorf("runTmux spent %s of its own, past main's %s: %s from the call to the client's start, and %s from the client's exit to the return, less the %s os/exec holds the pipes (pipeDrainDelay)",
+					began+after-pipeDrainDelay, clientBound, began, after, pipeDrainDelay)
 			}
 			if res.timedOut != 0 || res.exitCode != exit || strings.TrimSpace(res.stdout) != "answered" {
 				t.Errorf("runTmux = exit %d, timed out %s, stdout %q after %s; want exit %d, no timeout, and the answer: the client exited on its own, its timeout far away",
@@ -521,11 +538,12 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 	})
 }
 
-// fakeTmuxClient writes an executable that runs body under sh in place of a tmux client.
+// fakeTmuxClient writes an executable that runs body under sh in place of a tmux client, under the
+// fork lock (testexec.WriteFile).
 func fakeTmuxClient(t *testing.T, dir, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, "tmux")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 		t.Fatalf("write the fake tmux client: %v", err)
 	}
 	return path
@@ -573,4 +591,16 @@ func pidIn(path string) int {
 		return 0
 	}
 	return pid
+}
+
+// exitMark is the moment, as a time since boot, a fake client recorded at path just before it
+// exited (testexec.MarkNow). A client that wrote none never reached its exit, and the row fails
+// saying so.
+func exitMark(t *testing.T, path string) time.Duration {
+	t.Helper()
+	at, err := testexec.ReadNowMark(path)
+	if err != nil {
+		t.Fatalf("read the moment the client exited, which it records just before its exit: %v", err)
+	}
+	return at
 }
