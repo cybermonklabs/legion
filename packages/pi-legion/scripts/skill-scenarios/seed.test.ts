@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { parseHeldoutFile, parseSkillUseFile } from "./heldout-case";
+import { parseHeldoutFile, parseSkillUseFile, type World } from "./heldout-case";
 import type * as ownerWalkSeedModule from "./owner-walk-seed";
+import { parseInstant } from "./production-dispatch";
 import type * as seedModule from "./seed";
 
 // e2e/api.ts, which seed.ts and owner-walk-seed.ts call, reads its port when it loads: set it as
@@ -115,8 +116,30 @@ class FakeDispatch {
       claim: { actor: Actor } | null;
       /** The issue's place on the board, a number here: the read answers it as a rank text. */
       rank: number;
+      created_at: string;
     }
   >();
+  /** The fake's clock, in nanoseconds since the epoch, which it stamps an issue, a handoff, a
+   * comment, an ask and a result from, to the microsecond as PostgreSQL does (stamp). By default
+   * it is the host's, each read at least a microsecond after the read before it; a row that holds
+   * the clock sets its own, under which two writes the seed does not wait between share a stamp. */
+  now: () => bigint = (() => {
+    let last = 0n;
+    return () => {
+      const host = BigInt(Date.now()) * 1_000_000n;
+      last = host > last ? host : last + 1_000n;
+      return last;
+    };
+  })();
+  /** `now` as Dispatch answers a record's created_at: RFC 3339 in UTC, to the microsecond. */
+  stamp(): string {
+    const micros = this.now() / 1_000n;
+    const whole = new Date(Number(micros / 1_000n)).toISOString().slice(0, 19);
+    return `${whole}.${String(micros % 1_000_000n).padStart(6, "0")}Z`;
+  }
+  /** What the step list answers of a run, after the fake's own answer: a Dispatch that lists a
+   * run otherwise than it was written. */
+  misreadRun: (run: Record<string, unknown>) => Record<string, unknown> = (run) => run;
   /** Each step run written, in the order written, with the rating written on it. */
   runs: Record<string, unknown>[] = [];
   /** What the issue read answers of an issue, after the fake's own answer: a Dispatch that holds
@@ -166,6 +189,7 @@ class FakeDispatch {
       blocked_by: [],
       claim: null,
       rank: 1000 + this.issues.size,
+      created_at: this.stamp(),
     });
     this.artifacts.push({
       id: spec,
@@ -251,7 +275,7 @@ class FakeDispatch {
               task = { task: String(run.task), needs: null, steps: [] };
               tasks.push(task);
             }
-            task.steps.push({ result: "", ended_at: null, ...run });
+            task.steps.push(this.misreadRun({ result: "", ended_at: null, ...run }));
           }
           return json({ issue: key, tasks });
         },
@@ -264,6 +288,7 @@ class FakeDispatch {
             issue_key: issue,
             body: body?.body,
             author: actor(),
+            created_at: this.stamp(),
           };
           this.comments.push(row);
           return json(row, 201);
@@ -315,7 +340,10 @@ class FakeDispatch {
             artifact.askBlocks = blocks.map((block) => block.block_id);
             if (blocks.length > 0) this.unsettled.set(key, blocks);
           }
-          return json({ key, primary_artifact_id: spec }, 201);
+          return json(
+            { key, primary_artifact_id: spec, created_at: this.issues.get(key)?.created_at },
+            201
+          );
         },
       ],
       [
@@ -403,7 +431,7 @@ class FakeDispatch {
             state: "open",
             answer: null,
             edited_at: null,
-            created_at: new Date().toISOString(),
+            created_at: this.stamp(),
           };
           this.asks.push(ask);
           return json(ask, 201);
@@ -524,7 +552,7 @@ class FakeDispatch {
             version:
               this.handoffs.filter((h) => h.issue_key === issue && h.phase === phase).length + 1,
             author: actor(),
-            created_at: new Date().toISOString(),
+            created_at: this.stamp(),
             body: body?.body,
           };
           this.handoffs.push(record);
@@ -578,7 +606,7 @@ class FakeDispatch {
             verdict: body?.verdict,
             commit_sha: body?.commit,
             actor: actor(),
-            created_at: new Date().toISOString(),
+            created_at: this.stamp(),
           };
           this.results.push(result);
           return json(
@@ -1721,6 +1749,179 @@ describe("case-world Dispatch", () => {
     return world;
   };
 
+  /** Nanoseconds since the epoch of the RFC 3339 time `text`. */
+  const ns = (text: string): bigint => {
+    const at = parseInstant(text);
+    if (at === undefined) throw new Error(`${text} is no RFC 3339 time`);
+    return at;
+  };
+  type StepRun = NonNullable<World["dispatch"]["steps"]>[number];
+  /** A step run of task `default`, passed where it ended unless `result` says otherwise; one with
+   * no end still runs. */
+  const stepRun = (
+    step: number,
+    kind: StepRun["kind"],
+    role: string,
+    startedAt: string,
+    endedAt: string | null,
+    result: StepRun["result"] = endedAt === null ? null : "passed"
+  ): StepRun => ({ task: "default", step, kind, role, result, startedAt, endedAt });
+
+  /** P05's world (T0's public example) reshaped as H08 is: a planner, an implementer, a tester
+   * whose run failed, a second implementer run, a second tester run, a reviewer, and a retro that
+   * still runs, each run holding its handoffs and results. Comment c-1 comes at the failed tester
+   * run's very end, so between two runs and in neither; comment c-2 at the second implementer
+   * run's very start, so inside it; and ask a1 inside the retro. */
+  const h08World = (): World => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05) throw new Error("missing P05");
+    const world = structuredClone(p05.world);
+    const at = (time: string) => `2030-01-09T${time}Z`;
+    const handoff = (
+      phase: "plan" | "implement" | "test" | "review",
+      version: number,
+      author: string,
+      time: string
+    ) => ({ id: `hnd-${phase}-${version}`, phase, version, author, at: at(time), body: { phase } });
+    world.dispatch.handoffs = [
+      handoff("plan", 1, "ses-planner", "10:15:00"),
+      handoff("implement", 1, "ses-implementer", "10:55:00"),
+      handoff("test", 1, "ses-tester", "11:28:00"),
+      handoff("implement", 2, "ses-implementer-2", "11:58:00"),
+      handoff("test", 2, "ses-tester-2", "12:28:00"),
+      handoff("test", 3, "ses-tester-2", "12:28:20"),
+      handoff("review", 1, "ses-reviewer", "12:45:00"),
+    ];
+    world.dispatch.results = [
+      { check: "k1", role: "tester", verdict: "fail", commit: "a".repeat(40), at: at("11:20:00") },
+      { check: "k1", role: "tester", verdict: "pass", commit: "b".repeat(40), at: at("12:20:00") },
+    ];
+    world.dispatch.comments = [
+      { id: "c-1", author: "alice", body: "Between the runs.", at: at("11:30:00") },
+      { id: "c-2", author: "ses-implementer-2", body: "Starting again.", at: at("11:35:00") },
+    ];
+    world.dispatch.asks = [
+      {
+        id: "a1",
+        author: "ses-retro",
+        question: "Rate the plan?",
+        options: ["Yes"],
+        state: "open",
+        answer: null,
+        at: at("12:58:00"),
+      },
+    ];
+    world.dispatch.steps = [
+      stepRun(1, "step", "planner", at("10:00:00"), at("10:20:00")),
+      stepRun(2, "step", "implementer", at("10:25:00"), at("11:00:00")),
+      stepRun(3, "step", "tester", at("11:05:00"), at("11:30:00"), "failed"),
+      stepRun(2, "step", "implementer", at("11:35:00"), at("12:00:00")),
+      stepRun(3, "step", "tester", at("12:05:00"), at("12:30:00")),
+      stepRun(4, "step", "reviewer", at("12:35:00"), at("12:50:00")),
+      stepRun(0, "retro", "implementer", at("12:55:00"), null),
+    ];
+    return world;
+  };
+  /** The records each run of h08World holds on the case's clock, as the seed names them. */
+  const h08Holds = [
+    ["hnd-plan-1"],
+    ["hnd-implement-1"],
+    ["world.dispatch.results[0]", "hnd-test-1"],
+    ["c-2", "hnd-implement-2"],
+    ["world.dispatch.results[1]", "hnd-test-2", "hnd-test-3"],
+    ["hnd-review-1"],
+    ["a1"],
+  ];
+
+  /** The world's records as the seed names them, in case-time order: each handoff, comment and
+   * ask by its id, and each result as `world.dispatch.results[<i>]`. */
+  const caseRecords = (world: World) =>
+    [
+      ...world.dispatch.handoffs,
+      ...world.dispatch.comments,
+      ...world.dispatch.asks,
+      ...world.dispatch.results.map(({ at }, index) => ({
+        id: `world.dispatch.results[${index}]`,
+        at,
+      })),
+    ]
+      .map(({ id, at }) => ({ id, at: ns(at) }))
+      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  /** `records`, each stamped `gap` nanoseconds after the one before it, the first `gap` after
+   * `created`. */
+  const stampedAfter = (
+    records: readonly { id: string; at: bigint }[],
+    created: bigint,
+    gap = 1_000_000n
+  ): seedModule.Stamped[] =>
+    records.map((record, index) => ({ ...record, stamp: created + BigInt(index + 1) * gap }));
+  /** The world's records with the stamps the fake gave them, as the seed names them. */
+  const fakeStamps = (world: World): seedModule.Stamped[] =>
+    caseRecords(world).map((record) => {
+      const handoff = world.dispatch.handoffs.find(({ id }) => id === record.id);
+      const comment = world.dispatch.comments.find(({ id }) => id === record.id);
+      const ask = world.dispatch.asks.find(({ id }) => id === record.id);
+      const result = world.dispatch.results.find(
+        (_, index) => record.id === `world.dispatch.results[${index}]`
+      );
+      const row = handoff
+        ? dispatch.handoffs.find(
+            ({ phase, version }) => phase === handoff.phase && version === handoff.version
+          )
+        : comment
+          ? dispatch.comments.find(({ body }) => body === comment.body)
+          : ask
+            ? dispatch.asks.find(({ question }) => question === ask.question)
+            : dispatch.results.find(({ commit_sha }) => commit_sha === result?.commit);
+      return { ...record, stamp: ns(String(row?.created_at)) };
+    });
+  /** The start and end of each run the fake holds, as the seed wrote them. */
+  const fakeRuns = (): seedModule.RunTimes[] =>
+    dispatch.runs.map(({ started_at, ended_at }) => ({
+      startedAt: String(started_at),
+      endedAt: ended_at === undefined ? null : String(ended_at),
+    }));
+  /** The names of the records each of `runs` holds: those whose case time is inside the run's
+   * window in the world or, given `written` (runTimes), those whose stamp is inside the window the
+   * seed wrote. A window runs from its start up to its end, with no end for a run that has not
+   * ended. */
+  const holdings = (
+    runs: readonly StepRun[],
+    records: readonly seedModule.Stamped[],
+    written?: readonly seedModule.RunTimes[]
+  ) =>
+    runs.map((run, index) => {
+      const { startedAt, endedAt } = written?.[index] ?? run;
+      const from = ns(startedAt);
+      const to = endedAt === null ? undefined : ns(endedAt);
+      return records
+        .filter(({ at, stamp }) => {
+          const when = written === undefined ? at : stamp;
+          return from <= when && (to === undefined || when < to);
+        })
+        .map(({ id }) => id);
+    });
+  /** Each start and end of `written`, in nanoseconds, in world order. */
+  const instants = (written: readonly seedModule.RunTimes[]) =>
+    written
+      .flatMap(({ startedAt, endedAt }) => (endedAt === null ? [startedAt] : [startedAt, endedAt]))
+      .map(ns);
+  /** Whether each of `values` is after the one before it. */
+  const rising = (values: readonly bigint[]) =>
+    values.every((value, index) => index === 0 || (values[index - 1] ?? value) < value);
+  /** A clock that moves only when the seed sleeps, which the fake stamps from and the seed reads
+   * and sleeps on: two records the seed does not wait between share a stamp. */
+  const heldClock = (): seedModule.SeedClock => {
+    let at = ns("2026-11-27T16:36:00Z");
+    dispatch.now = () => at;
+    return {
+      now: () => at,
+      sleep: async (ms) => {
+        at += BigInt(ms) * 1_000_000n;
+      },
+    };
+  };
+
   test("files the world's other issues and step runs as the daemon writes them, and reads each back", async () => {
     const world = partsWorld();
     const dir = runDir();
@@ -1759,7 +1960,7 @@ describe("case-world Dispatch", () => {
         model: "rig-seed",
         generation: 1,
         result: "passed",
-        ended_at: "2030-01-07T14:10:00Z",
+        ended_at: expect.any(String),
       }),
       expect.objectContaining({
         kind: "retro",
@@ -1770,10 +1971,14 @@ describe("case-world Dispatch", () => {
       expect.objectContaining({
         kind: "merge",
         role: "merger",
-        started_at: "2030-01-07T14:30:00Z",
+        started_at: expect.any(String),
       }),
     ]);
     expect(dispatch.runs[2]).not.toHaveProperty("result");
+    // Each run of the world is after its one record, P05's plan handoff, so each start and end the
+    // seed wrote follows Dispatch's stamp of that handoff a nanosecond apart, in world order.
+    const stamp = ns(dispatch.handoffs[0]?.created_at ?? "");
+    expect(instants(fakeRuns())).toEqual([1n, 2n, 3n, 4n, 5n].map((n) => stamp + n));
     expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8"))).toEqual({
       issue: "ACME-12",
       seedThrough: 0,
@@ -1842,6 +2047,238 @@ describe("case-world Dispatch", () => {
     await expect(seed.seedCaseDispatch(dir)).rejects.toThrow(
       "world.daemon.gate[0].document criteria.md: the scratch Dispatch holds no document of ACME-10"
     );
+  });
+
+  // Catches: a step run written at the world's own instants, on the case's clock, beside records
+  // Dispatch stamped when the seed wrote them, so that no handoff lies inside any run
+  // (dispatch://INFRA-3223/comment/a21351d3-d0bd-4f9d-9672-6f8707ac8e07).
+  test("places the runs of T0's example among its records' stamps, each run holding the records it holds in the world", () => {
+    const file = parseHeldoutFile(example("heldout"));
+    const p05 = file.cases.find(({ id }) => id === "P05")?.world;
+    const p10 = file.cases.find(({ id }) => id === "P10")?.world;
+    if (p05 === undefined || p10 === undefined) throw new Error("missing P05 or P10");
+    const created = ns("2026-11-27T16:36:00.000100Z");
+    // P05's planner run holds its plan handoff, as typed-parts-cases.json writes the run.
+    const planner = [stepRun(1, "step", "planner", "2030-01-07T13:00:00Z", "2030-01-07T13:30:00Z")];
+    const p05Records = stampedAfter(caseRecords(p05), created);
+    const p05Written = seed.runTimes("ACME-12", planner, p05Records, created);
+    expect(holdings(planner, p05Records)).toEqual([["hnd-acme-12-plan-1"]]);
+    expect(holdings(planner, p05Records, p05Written)).toEqual([["hnd-acme-12-plan-1"]]);
+    // P10's tester run holds its passing result, and its reviewer run, which still runs, the review.
+    const p10Runs = [
+      stepRun(3, "step", "tester", "2030-01-08T09:00:00Z", "2030-01-08T09:10:00Z"),
+      stepRun(4, "step", "reviewer", "2030-01-08T09:30:00Z", null),
+    ];
+    const p10Records = stampedAfter(caseRecords(p10), created);
+    const p10Written = seed.runTimes("ACME-21", p10Runs, p10Records, created);
+    expect(holdings(p10Runs, p10Records)).toEqual([
+      ["world.dispatch.results[0]"],
+      ["hnd-acme-21-review-1"],
+    ]);
+    expect(holdings(p10Runs, p10Records, p10Written)).toEqual(holdings(p10Runs, p10Records));
+    expect(p10Written[1]?.endedAt).toBeNull();
+    // Each instant is after the issue's creation, in the world's order.
+    expect(rising([created, ...instants(p05Written)])).toBe(true);
+    expect(rising([created, ...instants(p10Written)])).toBe(true);
+  });
+
+  test("places an H08-shaped world's runs in its order, with the record between two runs in neither and the running retro left open", () => {
+    const world = h08World();
+    const runs = world.dispatch.steps ?? [];
+    const created = ns("2026-11-27T16:36:00.000100Z");
+    expect(holdings(runs, stampedAfter(caseRecords(world), created))).toEqual(h08Holds);
+    // Stamps a millisecond apart, and a microsecond apart, as finely as Dispatch stamps.
+    for (const gap of [1_000_000n, 1_000n]) {
+      const records = stampedAfter(caseRecords(world), created, gap);
+      const written = seed.runTimes("ACME-12", runs, records, created);
+      expect(holdings(runs, records, written)).toEqual(h08Holds);
+      expect(holdings(runs, records, written).flat()).not.toContain("c-1");
+      // The world's runs follow each other, so each start and end comes after the one before it.
+      expect(rising([created, ...instants(written)])).toBe(true);
+      expect(written.at(-1)?.endedAt).toBeNull();
+    }
+  });
+
+  // Catches: a placement that counts the records before a case time and takes the stamp at that
+  // index, which places a time wrongly where Dispatch's stamps do not rise in the world's order.
+  test("refuses, naming the step times and the records, stamps that do not keep the world's order", () => {
+    const created = ns("2026-11-27T16:36:00Z");
+    const hour = (h: number) => ns(`2030-01-09T0${h}:00:00Z`);
+    const times = [
+      { at: hour(2), field: "world.dispatch.steps[0].startedAt" },
+      { at: hour(4), field: "world.dispatch.steps[0].endedAt" },
+    ];
+    const a = { id: "a", at: hour(1), stamp: created + 1_000_000n };
+    const place = (records: seedModule.Stamped[]) => () =>
+      seed.placeStepTimes("ACME-12", records, times, created);
+    expect(place([a, { id: "b", at: hour(3), stamp: a.stamp }])).toThrow(
+      "world.dispatch.steps[0].startedAt, world.dispatch.steps[0].endedAt: Dispatch stamped b 2026-11-27T16:36:00.001000000Z, and a, which the seed wrote before it, 2026-11-27T16:36:00.001000000Z: the stamps do not keep the world's order, so no step time after a can be placed among them"
+    );
+    expect(place([a, { id: "b", at: hour(3), stamp: created + 500_000n }])).toThrow(
+      "Dispatch stamped b 2026-11-27T16:36:00.000500000Z, and a, which the seed wrote before it"
+    );
+    expect(place([{ ...a, stamp: created }])).toThrow(
+      "world.dispatch.steps[0].startedAt, world.dispatch.steps[0].endedAt: Dispatch stamped a 2026-11-27T16:36:00.000000000Z, and ACME-12's creation, which the seed wrote before it, 2026-11-27T16:36:00.000000000Z"
+    );
+    expect(
+      place([
+        { id: "b", at: hour(3), stamp: a.stamp },
+        { ...a, stamp: a.stamp + 1n },
+      ])
+    ).toThrow(
+      "ACME-12: the seed wrote a (case time 2030-01-09T01:00:00.000000000Z) after b (case time 2030-01-09T03:00:00.000000000Z), out of the world's order"
+    );
+    // Two records of one case time may share a stamp: no step time falls between them.
+    expect(place([a, { ...a, id: "a2" }])()).toEqual(
+      new Map([
+        [hour(2), a.stamp + 1n],
+        [hour(4), a.stamp + 2n],
+      ])
+    );
+  });
+
+  test("refuses, naming the step times, two stamps that leave no room for the times between them", () => {
+    const created = ns("2026-11-27T16:36:00Z");
+    const times = [
+      { at: ns("2030-01-09T02:00:00Z"), field: "world.dispatch.steps[0].startedAt" },
+      { at: ns("2030-01-09T02:30:00Z"), field: "world.dispatch.steps[0].endedAt" },
+    ];
+    const a = { id: "a", at: ns("2030-01-09T01:00:00Z"), stamp: created + 1_000n };
+    const b = (stamp: bigint) => ({ id: "b", at: ns("2030-01-09T03:00:00Z"), stamp });
+    expect(() => seed.placeStepTimes("ACME-12", [a, b(a.stamp + 2n)], times, created)).toThrow(
+      "world.dispatch.steps[0].startedAt, world.dispatch.steps[0].endedAt: Dispatch stamped a 2026-11-27T16:36:00.000001000Z and b, which the seed wrote after it, 2026-11-27T16:36:00.000001002Z, which leaves no room between them for 2 step times"
+    );
+    expect([
+      ...seed.placeStepTimes("ACME-12", [a, b(a.stamp + 3n)], times, created).values(),
+    ]).toEqual([a.stamp + 1n, a.stamp + 2n]);
+  });
+
+  // Catches: a seed that writes the records one right after the other, so that two records around
+  // a run's start or end share a stamp on a fast Dispatch and the seed refuses the world by chance.
+  test("waits before each later record, so that each run Dispatch lists holds its records even on a clock that moves only when the seed sleeps", async () => {
+    const clock = heldClock();
+    const world = h08World();
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await seed.seedCaseDispatch(dir, clock);
+    const records = fakeStamps(world);
+    expect(rising(records.map(({ stamp }) => stamp))).toBe(true);
+    expect(holdings(world.dispatch.steps ?? [], records, fakeRuns())).toEqual(h08Holds);
+    expect(fakeRuns().at(-1)?.endedAt).toBeNull();
+    expect(instants(fakeRuns()).every((at) => at <= clock.now())).toBe(true);
+  });
+
+  // Catches: a seed that waits, and checks its stamps, in a world with no step run to place.
+  test("a world with no step run places nothing, so the seed waits for nothing", async () => {
+    const p09 = parseSkillUseFile(example("skilluse")).cases.find(({ id }) => id === "P09");
+    if (!p09) throw new Error("missing P09");
+    const clock = heldClock();
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(p09.world));
+    await seed.seedCaseDispatch(dir, clock);
+    expect(clock.now()).toBe(ns("2026-11-27T16:36:00Z"));
+    expect(dispatch.handoffs).toHaveLength(p09.world.dispatch.handoffs.length);
+  });
+
+  test("a world whose stamps leave a step time no place fails the seed, naming the run, before it writes one", async () => {
+    const at = ns("2026-11-27T16:36:00Z");
+    dispatch.now = () => at;
+    const world = partsWorld();
+    world.dispatch.steps = [
+      stepRun(1, "step", "planner", "2030-01-07T13:00:00Z", "2030-01-07T13:30:00Z"),
+    ];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    // A clock that never moves: the plan handoff takes the stamp of the issue's creation.
+    const seeded = seed.seedCaseDispatch(dir, { now: () => at, sleep: () => Promise.resolve() });
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.steps[0].startedAt, world.dispatch.steps[0].endedAt: Dispatch stamped hnd-acme-12-plan-1 2026-11-27T16:36:00.000000000Z, and ACME-12's creation, which the seed wrote before it, 2026-11-27T16:36:00.000000000Z: the stamps do not keep the world's order"
+    );
+    expect(dispatch.runs).toEqual([]);
+  });
+
+  // Catches: step times placed a second apart after the last record, so that the seed returns
+  // with runs that start or end in the future and a role reads a run that ended after now.
+  test("waits, and logs it, until its clock has passed the last step time it placed", async () => {
+    const clock = heldClock();
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(partsWorld()));
+    await seed.seedCaseDispatch(dir, clock);
+    const written = instants(fakeRuns());
+    expect(written).toHaveLength(5);
+    expect(written.every((at) => at <= clock.now())).toBe(true);
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^waiting 1 ms for the clock to pass \S+, world\.dispatch\.steps\[2\]\.startedAt as the seed placed it$/
+      )
+    );
+  });
+
+  test("a Dispatch whose clock is ahead of the seed's by more than the wait's bound fails the seed, naming the run, before it writes one", async () => {
+    const clock = heldClock();
+    dispatch.now = () => clock.now() + 3_600_000_000_000n;
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(partsWorld()));
+    await expect(seed.seedCaseDispatch(dir, clock)).rejects.toThrow(
+      /^world\.dispatch\.steps\[2\]\.startedAt: the seed placed it at \S+, and its clock reads \S+ after a wait of 0 ms: it waits at most 5000 ms for its clock to pass the step times it placed$/
+    );
+    expect(dispatch.runs).toEqual([]);
+  });
+
+  test("places the runs of a world with no record after the issue's creation, in the world's order", async () => {
+    const runs = partsWorld().dispatch.steps ?? [];
+    const created = ns("2026-11-27T16:36:00.000100Z");
+    const placed = seed.runTimes("ACME-12", runs, [], created);
+    expect(instants(placed)).toEqual([1n, 2n, 3n, 4n, 5n].map((n) => created + n));
+    expect(placed[2]?.endedAt).toBeNull();
+
+    const clock = heldClock();
+    const world = partsWorld();
+    world.dispatch.handoffs = [];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await seed.seedCaseDispatch(dir, clock);
+    const issued = ns(dispatch.issues.get("ACME-12")?.created_at ?? "");
+    expect(instants(fakeRuns())).toEqual([1n, 2n, 3n, 4n, 5n].map((n) => issued + n));
+    expect(instants(fakeRuns()).every((at) => at <= clock.now())).toBe(true);
+  });
+
+  // Catches: a read-back that holds only the listed times to the written ones, and so passes a
+  // Dispatch whose runs do not hold the records the world's runs hold.
+  test("a run Dispatch lists without a record the world's run holds fails the seed, naming the run and the record", async () => {
+    const world = partsWorld();
+    world.dispatch.steps = [
+      stepRun(1, "step", "planner", "2030-01-07T13:00:00Z", "2030-01-07T13:30:00Z"),
+    ];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    // The run as Dispatch lists it starts where it ends, after Dispatch stamped the plan handoff.
+    dispatch.misreadRun = (run) => ({ ...run, started_at: run.ended_at });
+    const seeded = seed.seedCaseDispatch(dir);
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.steps[0]: hnd-acme-12-plan-1 is inside the world's run (case time 2030-01-07T13:10:00.000000000Z), and Dispatch stamped it "
+    );
+    await expect(seeded).rejects.toThrow("outside the run as Dispatch lists it");
+  });
+
+  test("a run Dispatch lists with a record the world's runs do not hold fails the seed, naming the run and the record", async () => {
+    const clock = heldClock();
+    const world = h08World();
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    // The failed tester run as Dispatch lists it ends at c-2's stamp, after c-1's.
+    dispatch.misreadRun = (run) =>
+      run.result === "failed"
+        ? {
+            ...run,
+            ended_at: dispatch.comments.find(({ body }) => body === "Starting again.")?.created_at,
+          }
+        : run;
+    const seeded = seed.seedCaseDispatch(dir, clock);
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.steps[2]: c-1 is outside the world's run (case time 2030-01-09T11:30:00.000000000Z), and Dispatch stamped it "
+    );
+    await expect(seeded).rejects.toThrow("inside the run as Dispatch lists it");
   });
 });
 
