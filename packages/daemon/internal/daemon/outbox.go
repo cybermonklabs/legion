@@ -2380,7 +2380,7 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 			failed = append(failed, fmt.Errorf("list the branches under %s of %s: %w", prefix, repo, err))
 			continue
 		}
-		attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", fixes[i], "prefix", prefix}
+		attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", i + 1, "prefix", prefix}
 		for _, found := range listed {
 			if !strings.HasPrefix(found.Ref, "refs/heads/"+prefix) {
 				refused := fmt.Errorf("GitHub listed %s under %s, which is no branch under that prefix", found.Ref, prefix)
@@ -2420,7 +2420,7 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("delete the branches beside fix %d through %d of task %s of %s: %w", fixes[0], fixes[len(fixes)-1], payload.Task, row.Issue,
+		return fmt.Errorf("delete the branches beside fix 1 through %d of task %s of %s: %w", payload.Through, payload.Task, row.Issue,
 			errors.Join(failed...))
 	}
 	return nil

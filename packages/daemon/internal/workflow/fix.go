@@ -288,7 +288,7 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 	if fix.State != record.FixRunning {
 		return nil
 	}
-	return e.assignRepair(ctx, tx, pass, state, *fixReader(fix), fix.Fix, " It is part of your fix.")
+	return e.assignRepair(ctx, tx, pass, state, *fixReader(*fix), fix.Fix, " It is part of your fix.")
 }
 
 // openFix starts fix of the task of the pass for check at the pass's head, at place, the task's
