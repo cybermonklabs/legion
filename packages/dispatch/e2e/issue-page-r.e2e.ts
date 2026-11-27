@@ -1006,12 +1006,14 @@ test("a block indents, outdents and moves by key while its text is edited @phone
  *  past that page gets there. */
 const SHORT_COMMENTS = 52;
 
-/** About 59,000 characters. The page reads the tree with display trees (`Dispatch-Trees`), so a
- *  comment's words stand four times in the page's JSON - the comment's text and tree and its
- *  block's - and `LONG_COMMENTS` of these, about 2,850,000 bytes after the short ones, put the
- *  issue's own blocks on the second page of the read, which the server cuts a page at 2,000,000
- *  bytes of (`issueTreePageBytes` in `api/issue_tree_json.go`). */
-const LONG_COMMENT = "A long comment fills the first page of the tree read. ".repeat(1_100);
+/** About 59,000 characters, in two paragraphs, since a block of a comment holds at most 32,000
+ *  (`contracts.DispatchBlockUnits`). The page reads the tree with display trees
+ *  (`Dispatch-Trees`), so a comment's words stand four times in the page's JSON - the comment's
+ *  text and tree and its blocks' - and `LONG_COMMENTS` of these, about 2,850,000 bytes after the
+ *  short ones, put the issue's own blocks on the second page of the read, which the server cuts a
+ *  page at 2,000,000 bytes of (`issueTreePageBytes` in `api/issue_tree_json.go`). */
+const LONG_PARAGRAPH = "A long comment fills the first page of the tree read. ".repeat(550);
+const LONG_COMMENT = `${LONG_PARAGRAPH}\n\n${LONG_PARAGRAPH}`;
 
 /** How many long comments the fourth row posts on the issue, after the short ones. */
 const LONG_COMMENTS = 12;
