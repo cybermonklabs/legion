@@ -264,6 +264,13 @@ func (r *roleRig) routedEvent(t *testing.T, key, role string, actor model.Actor)
 // through broker.
 func routedEvent(t *testing.T, database *store.Store, broker *events.Broker, key, role string, actor model.Actor) model.Event {
 	t.Helper()
+	return routedEvents(t, database, broker, key, role, actor, 1)[0]
+}
+
+// routedEvents seeds issue key routed to role:role in database and appends count human messages on
+// it through broker, all in one transaction, so a batch that reads one of them reads them all.
+func routedEvents(t *testing.T, database *store.Store, broker *events.Broker, key, role string, actor model.Actor, count int) []model.Event {
+	t.Helper()
 	route := "role:" + role
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice') on conflict do nothing`); err != nil {
@@ -279,10 +286,26 @@ func routedEvent(t *testing.T, database *store.Store, broker *events.Broker, key
 	`, key, number, route); err != nil {
 		t.Fatalf("create issue %s: %v", key, err)
 	}
-	return appendEvent(t, database, broker, model.Event{
-		IssueKey: new(key), Type: "message.created", Actor: actor,
-		Payload: model.Message{ID: fmt.Sprintf("8f14e45f-ceea-467a-9c1e-%012d", number), IssueKey: new(key), Body: "for the role"},
-	})
+	tx, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin event transaction: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+	appended := make([]model.Event, 0, count)
+	for index := range count {
+		event, err := broker.Append(context.Background(), tx, model.Event{
+			IssueKey: new(key), Type: "message.created", Actor: actor,
+			Payload: model.Message{ID: fmt.Sprintf("8f14e45f-ceea-467a-%04x-%012d", 0x9c1e+index, number), IssueKey: new(key), Body: "for the role"},
+		})
+		if err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		appended = append(appended, event)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit event: %v", err)
+	}
+	return appended
 }
 
 // silent fails t when anything arrives on subject before the test ends.

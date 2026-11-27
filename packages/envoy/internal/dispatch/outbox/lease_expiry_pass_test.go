@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,19 +37,35 @@ const silentTakeOver = 8 * time.Second
 // once the gate opens, or ends with its context's error when its context ends first. A gate that
 // waited past the call's context would measure the gate rather than the holder, whose own end of
 // that context is what the rows test. Every call after the held one goes through.
+//
+// The call's context carries a deadline when the gate sits inside a bound - New puts
+// boundedKeptLanes, probeTimeout, in front of a gate on Deps.KeptLanes - and that deadline counts
+// from the moment the gate is reached, not from the moment the row cuts or freezes the proxy. A
+// held call that deadline ends before the gate opens ended on a healthy connection, before the row
+// acted, and the row would then pass by another path than the call it names. So the gate records
+// such an end (outlived), and the row fails on it: once its own bound was met (requireHeld) and,
+// whatever failed first, as the test ends. An end by cancellation is the product's own - the pass's
+// watcher ending the pass at a connection event - and is not recorded.
 type passGate struct {
 	// due counts down the calls the gate lets through; the call that brings it to zero is the one
 	// held. It stays below zero before the gate is armed and after the held call.
-	due     atomic.Int64
-	reached chan struct{}
-	open    chan struct{}
-	opened  sync.Once
+	due      atomic.Int64
+	reached  chan struct{}
+	open     chan struct{}
+	opened   sync.Once
+	outlived atomic.Bool
 }
 
 // newPassGate is a gate not yet armed. It opens at the latest as the test ends, so a call it still
-// holds then goes on.
+// holds then goes on, and the test fails then when its held call's deadline ended that call before
+// the gate opened.
 func newPassGate(t *testing.T) *passGate {
 	gate := &passGate{reached: make(chan struct{}), open: make(chan struct{})}
+	t.Cleanup(func() {
+		if gate.outlived.Load() {
+			t.Errorf("the held call's deadline ended it before the gate opened: the row did not hold the call it names")
+		}
+	})
 	t.Cleanup(gate.release)
 	return gate
 }
@@ -67,17 +84,34 @@ func (g *passGate) takes() bool {
 }
 
 // wait is the held call's wait: until the gate opens, or until ctx ends, whose error it answers.
+// An end by ctx's deadline while the gate is still shut is recorded (outlived).
 func (g *passGate) wait(ctx context.Context) error {
 	select {
 	case <-g.open:
 		return nil
 	case <-ctx.Done():
+		select {
+		case <-g.open:
+		default:
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				g.outlived.Store(true)
+			}
+		}
 		return ctx.Err()
 	}
 }
 
 // release opens the gate.
 func (g *passGate) release() { g.opened.Do(func() { close(g.open) }) }
+
+// requireHeld fails the row when its held call's deadline ended that call before the gate opened
+// (outlived): the row met its bound by another path than the call it names.
+func (g *passGate) requireHeld(t *testing.T) {
+	t.Helper()
+	if g.outlived.Load() {
+		t.Fatalf("the held call's deadline ended it before the gate opened: the row did not hold the call it names")
+	}
+}
 
 // gatedLanes is the kept-lane reader a process reads its kept lanes and the expiry notices through
 // (Deps.KeptLanes), with a gate in front of its stored-message reads of one subject.
@@ -291,6 +325,7 @@ func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 			waitWithin(t, natsLossGrace+500*time.Millisecond, "the cut process releasing the publisher hold", func() bool {
 				return row.held.outbox.hold.Load() == nil
 			})
+			row.gate.requireHeld(t)
 			t.Logf("the cut process released the publisher hold %s after a cut inside %s",
 				time.Since(downAt).Round(time.Millisecond), call.name)
 			event := writeMessage(t, row.working, "after the cut")
@@ -329,6 +364,7 @@ func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t
 			waitWithin(t, silentTakeOver-time.Since(frozenAt), "the working process publishing the event written after the silence", func() bool {
 				return row.working.outbox.Publishing() && publishedAt(t, row.database, event.ID) != nil
 			})
+			row.gate.requireHeld(t)
 			t.Logf("the working process published the event %s after a silence inside %s",
 				time.Since(frozenAt).Round(time.Millisecond), call.name)
 			requireNoTakeBackWhileSilent(t, row.recorder, row.held, row.working)
