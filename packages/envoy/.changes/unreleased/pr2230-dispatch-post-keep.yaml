@@ -1,0 +1,27 @@
+kind: Added
+body: |-
+  The listener keeps Dispatch's delivery to a role's first holder. `POST /v1/messages/publish`
+  takes an optional `dispatch_post` (`{"kind":"comment"|"message","id":"<uuid>"}`), the Dispatch
+  post a role publish delivers, which Dispatch sends when it publishes a person's message or
+  mention for a role no session holds whose Legion agent registry holds no entry while its project
+  answers. The listener takes the field from Dispatch's own verified principal alone
+  (`ENVOY_DISPATCH_PRINCIPAL`), as it takes a send's `role`: every other caller that carries it,
+  on the shared token, a session's broker token or another service's identity token, and every
+  caller of a listener that names no Dispatch principal, is refused `403` naming the field, with
+  nothing kept. A publish that carries it is refused `400`, naming the field, when its topic is
+  not a role's, its `source` is not `dispatch`, it names a `source_session`, or its post is not a
+  comment or a message named by a lower-case UUID.
+
+  Such a publish is kept for the role's next live holder though it names no source session, and
+  answered `202` kept, and it raises the role's wake as every keep does; the copy carries
+  `source_event_id` `dispatch-post:<kind>:<id>`, which no other publish carries. Its copy gets no
+  dead letter: when its hour ends with no session taking it, however late the walk is, or when
+  the role's live holder does not take its delivery mode, the walk stores an expiry notice on
+  `notifications.envoy.kept.expired.<role>` naming the copy and the post, counted on
+  `envoy_role_kept_expiry_notices_total`; the drop is counted on `envoy_role_kept_expired_total`
+  under `kept_by="listener"`. Every other publish that names no `source_session` is still refused
+  `404` with nothing kept. A listener of an earlier release ignores the field and answers
+  Dispatch's publish `404`, as before.
+time: 2026-11-27T05:43:45.000000000Z
+custom:
+    Issue: pr2230

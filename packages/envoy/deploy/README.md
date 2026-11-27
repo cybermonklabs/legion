@@ -334,11 +334,15 @@ session that takes the role from the one Dispatch sent to; an unmarked one would
 Dispatch sends a message or mention for a `role:` route to a session it resolved for the role -
 the role's holder, or the session the attempt recorded, which it checks again before the send -
 only on its identity, marked, and with none it refuses the send: the attempt fails at once, and
-its recorded error names these settings. A role no live session holds needs no mark where
-Dispatch's resolution takes the target from the Legion agent registry: it publishes to a role
-whose holder's pod was released, or that has no registry entry while its project answers, which
-the listener keeps for that role's next holder, and sends to the role's stopped newest agent,
-whether its issue has left the workflow or not, which the listener hands to that agent's daemon.
+its recorded error names these settings. A role no live session holds whose Legion agent
+registry holds no entry while its project answers is published to for its first holder, naming
+the comment or message it delivers: the listener keeps that publish, which names no sender
+session, only for the post it names, which it takes from Dispatch's identity alone as it takes a
+role mark, and tells Dispatch when the copy's hour ends with no session taking it. So Dispatch
+makes that publish on its identity too, and with none it refuses it: the attempt fails at once,
+naming these settings. A role no live session holds needs no identity where the registry names
+the role's stopped newest agent, whether its issue has left the workflow or not: Dispatch sends
+to that session unmarked, and the listener hands the message to that agent's daemon.
 
 - **On Google Cloud:** set Dispatch's `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's
   `ENVOY_OIDC_GOOGLE_AUDIENCE`, put the address of Dispatch's VM service account in the listener's

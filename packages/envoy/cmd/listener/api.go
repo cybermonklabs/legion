@@ -1245,12 +1245,57 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 }
 
 // publishDedupePrefix opens every dedupe key the publish route makes for a request that chose
-// none: publish.<a new id>, or publish.<the request's idempotency_key>. Three places use it: the
+// none: publish.<a new id>, or publish.<the request's idempotency_key>. Four places use it: the
 // route, which writes it (publishHandler) and refuses a dedupe key chosen for an envelope with
 // source dispatch, so every copy it keeps of a dispatch envelope carries it; a takeover's copy of
-// such a message, whose own key keeps it (takenFrameDedupeKey); and isOutboxCopy, which reads it
-// to tell such a copy from one Dispatch's outbox kept under a key of its own.
+// such a message, whose own key keeps it (takenFrameDedupeKey); isOutboxCopy, which reads it to
+// tell such a copy from one Dispatch's outbox kept under a key of its own; and
+// isDispatchDeliveryCopy, which reads it to tell a copy of Dispatch's delivery of a post the route
+// kept.
 const publishDedupePrefix = "publish."
+
+// dispatchPostField is the publish route's request field naming the Dispatch post a role publish
+// delivers (listenerwire.PublishRequest.DispatchPost), as the route's refusals name it.
+const dispatchPostField = "dispatch_post"
+
+// refuseDispatchPost answers a publish carrying a Dispatch post (request.DispatchPost), before
+// anything is read, when the route does not take it, and reports whether it answered; a publish
+// that carries none is never answered here. The post is taken from Dispatch's own principal alone,
+// as a send's role mark is (dispatchFieldRefusal): from any other caller, and on a listener that
+// names no Dispatch principal, it is the 403 naming the field. Dispatch's own publish that carries
+// it is the 400 naming the field when it is not one Dispatch makes for a role's first holder
+// (publishForRole in internal/dispatch/api): a topic that is not a role's, a source other than
+// dispatch, a source_session named, or a post that is no comment or message named by its UUID
+// (bus.ValidDispatchPost). A post the route takes is written into the envelope as its
+// source_event_id (bus.DispatchPostEventID), which is what keeps the copy though it names no
+// source session (roleSend.keepTellsNobody) and what tells Dispatch the end of its hour
+// (isDispatchDeliveryCopy).
+func refuseDispatchPost(w http.ResponseWriter, r *http.Request, d *listenerDeps, record *requestRecord, request listenerwire.PublishRequest) bool {
+	post := request.DispatchPost
+	if post == nil {
+		return false
+	}
+	if refusal := dispatchFieldRefusal(r, d.dispatchPrincipal, dispatchPostField); refusal != "" {
+		record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, dispatchPostField)
+		return true
+	}
+	var message string
+	switch {
+	case !strings.HasPrefix(request.Topic, contracts.RoleTopicPrefix):
+		message = dispatchPostField + " is taken only on a publish to a role's topic (" + contracts.RoleTopicPrefix + "<role>)"
+	case request.Source != "dispatch":
+		message = dispatchPostField + " is taken only on a publish whose source is dispatch"
+	case request.SourceSession != "":
+		message = dispatchPostField + " is taken only on a publish that names no source_session"
+	case !bus.ValidDispatchPost(*post):
+		message = fmt.Sprintf("%s names no Dispatch post: its kind must be %s or %s and its id a UUID in lower case, not kind %q and id %q",
+			dispatchPostField, listenerwire.DispatchPostComment, listenerwire.DispatchPostMessage, post.Kind, post.ID)
+	default:
+		return false
+	}
+	record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, dispatchPostField)
+	return true
+}
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
 // instead) and the listener's own lanes, the kept one and the session resume one, and sends the
@@ -1299,7 +1344,12 @@ const publishDedupePrefix = "publish."
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
 // keep itself refuses, for this route and the role lane alike (keepForNextHolder), and neither does
 // a send that names no source session, whose copy's expiry no dead letter could report
-// (roleSend.keepTellsNobody): both are answered that 404.
+// (roleSend.keepTellsNobody): both are answered that 404. The one send that names no source session
+// and is kept is Dispatch's delivery of a post (dispatch_post, refuseDispatchPost), whose copy's
+// end the walk tells Dispatch with an expiry notice instead (isDispatchDeliveryCopy); a Dispatch
+// of an earlier release sends no post, and its publish is answered that 404 as before, as is
+// every publish of this release's Dispatch to a listener of an earlier release, which ignores the
+// field.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()
@@ -1318,6 +1368,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		record.lane = request.Topic
 		if refusal := sessionNotBound(r, logger, strings.TrimSpace(request.SourceSession)); refusal != "" {
 			record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "source_session")
+			return
+		}
+		if refuseDispatchPost(w, r, d, record, request) {
 			return
 		}
 		// At the edge a publish is the session's own, as a send is (edgeSenderRefusal).
@@ -1400,6 +1453,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			dedupeKey = publishDedupePrefix + request.IdempotencyKey
 		}
 		item := contracts.MessageEnvelope(listenerMessage(request.MessageBody, bodyExpectsReply), request.Topic, dedupeKey)
+		if request.DispatchPost != nil {
+			item.SourceEventID = bus.DispatchPostEventID(*request.DispatchPost)
+		}
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())

@@ -236,7 +236,12 @@ keep itself fails. A publish that names no `source_session` is refused the same 
 dead letter of an expired copy goes to that session and there is none: its `error` names the role
 and says that nothing was kept and why. Whether a live session holds the role is then read from
 the role bucket's and the session bucket's stream leaders, so a copy of either bucket that is
-behind refuses no message a live holder can take. If the holder does not take the message's delivery mode, the refusal is
+behind refuses no message a live holder can take. The one publish that names no `source_session`
+and is kept is Dispatch's delivery of a person's message or mention to a role's first holder,
+which names the post it delivers (`dispatch_post`): the listener takes that field from
+Dispatch's own verified principal alone (`ENVOY_DISPATCH_PRINCIPAL`) and refuses it `403` from
+every other caller, and that copy gets no dead letter, since the listener tells Dispatch instead
+(below). If the holder does not take the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is
 `504` naming the holder, with the reason `delivery_failed`, and that message is not kept: send it
 again, and the listener reads the holder again. A forward stored so long after the listener read
@@ -268,7 +273,12 @@ delivered message gets. A role is handed off to its newest session whether its i
 workflow or not, and a session whose idle pod the daemon released is handed off like any other
 stopped session: the daemon decides what wakes it. A message handed off raises no wake report,
 and costs its sender what its publish stored, as a send's own publish does. A role the registry
-holds no entry for keeps the message for its first holder and wakes it. An edge listener hands
+holds no entry for keeps the message for its first holder and wakes it: Dispatch publishes it on
+its own identity, naming the post it delivers, and its attempt reads `queued`. When that copy's
+hour ends with no session taking it, or the role's live holder does not take its delivery mode,
+the listener stores an expiry notice for Dispatch, and Dispatch records each attempt the copy
+carried that no session answered as `failed`, with no envelope, so a person can retry it. An
+edge listener hands
 nothing off: its grant
 (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics
 (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject

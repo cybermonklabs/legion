@@ -43,11 +43,12 @@ type ClaimStore interface {
 	RoleClaim(ctx context.Context, role string) (store.RoleClaim, error)
 }
 
-// SessionLookup reads a role holder's session record and judges it. Three types implement it:
-// cmd/listener's roleHolderSessions and leaderHolderSessions, each of which adds Holder to the
-// listener's session registry (session.SessionRegistry) and reads a holder the cache does not
-// show live from the session bucket, the first by a direct get and the second from the bucket
-// stream's leader, and Dispatch's Buckets.
+// SessionLookup reads a role holder's session record and judges it. Outside this package's tests,
+// four types implement it: cmd/listener's roleHolderSessions, leaderHolderSessions and
+// leaderOnlyHolderSessions, each of which adds Holder to the listener's session registry
+// (session.SessionRegistry), and Dispatch's Buckets. The first two answer a holder the cache shows
+// live from the cache and read any other from the session bucket, the first by a direct get and
+// the second from the bucket stream's leader; the third reads every holder from that leader.
 type SessionLookup interface {
 	// Holder returns sessionID's record, read within ctx, whatever state that record is in:
 	// judging it is EntryState's. nats.ErrKeyNotFound says no record stands here at all; any

@@ -19,13 +19,13 @@ import (
 
 // refuseRoleMark answers a send carrying role, before anything is read, when the mark is not
 // taken: from any caller but Dispatch's own principal it is the 403 naming the field
-// (roleMarkRefusal), and a role no claim can name is the 400 naming it. It reports whether it
+// (dispatchFieldRefusal), and a role no claim can name is the 400 naming it. It reports whether it
 // answered; a send with no role is never answered here.
 func refuseRoleMark(w http.ResponseWriter, r *http.Request, d *listenerDeps, record *requestRecord, role string) bool {
 	if role == "" {
 		return false
 	}
-	if refusal := roleMarkRefusal(r, d.dispatchPrincipal); refusal != "" {
+	if refusal := dispatchFieldRefusal(r, d.dispatchPrincipal, "role"); refusal != "" {
 		record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "role")
 		return true
 	}
@@ -83,23 +83,27 @@ func refuseRoleClaimRead(w http.ResponseWriter, record *requestRecord, role stri
 	record.refuseBusUnavailable(w, err)
 }
 
-// roleMarkRefusal is why a send carrying a role mark is refused, or "" for one this listener takes
-// it from: a request whose identity token proved dispatchPrincipal, Dispatch's own
-// (ENVOY_DISPATCH_PRINCIPAL, verifiedPrincipal). The mark decides who receives the message once
-// the role moves - the listener copies a marked message to the role's next holder, and keeps one
-// whose role moved before it arrived - so it is taken from Dispatch's verified identity alone, and
-// never from the body's source, which is the caller's own word. Every other caller is refused: a
+// dispatchFieldRefusal is why a request carrying field, a field the listener takes from Dispatch
+// alone, is refused, or "" for one this listener takes it from: a request whose identity token
+// proved dispatchPrincipal, Dispatch's own (ENVOY_DISPATCH_PRINCIPAL, verifiedPrincipal). Two
+// fields are taken so. A send's role mark (listenerwire.SendRequest.Role) decides who receives
+// the message once the role moves - the listener copies a marked message to the role's next
+// holder, and keeps one whose role moved before it arrived. A role publish's Dispatch post
+// (listenerwire.PublishRequest.DispatchPost, refuseDispatchPost) has the listener keep a message
+// that names no source session and tell Dispatch the end of its copy's hour, which settles a
+// person's delivery attempt. So each is taken from Dispatch's verified identity alone, and never
+// from the body's source, which is the caller's own word. Every other caller is refused: a
 // session's broker token, the shared token, another service's identity token, no credential, and
 // any caller of a listener that names no Dispatch principal.
-func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
+func dispatchFieldRefusal(r *http.Request, dispatchPrincipal, field string) string {
 	if dispatchPrincipal == "" {
-		return "role is taken from Dispatch's own principal alone, and this listener names none (ENVOY_DISPATCH_PRINCIPAL)"
+		return field + " is taken from Dispatch's own principal alone, and this listener names none (ENVOY_DISPATCH_PRINCIPAL)"
 	}
 	if principal := verifiedPrincipal(r); principal != dispatchPrincipal {
 		if principal == "" {
-			return "role is taken from Dispatch's own principal alone, and this request's credential proves no principal"
+			return field + " is taken from Dispatch's own principal alone, and this request's credential proves no principal"
 		}
-		return fmt.Sprintf("role is taken from Dispatch's own principal alone, and this request's credential proves %s", principal)
+		return fmt.Sprintf("%s is taken from Dispatch's own principal alone, and this request's credential proves %s", field, principal)
 	}
 	return ""
 }
@@ -107,16 +111,18 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // handOffOrKeepRoleSend answers a send marked with its role whose claim names holder - another
 // session, or none - rather than the target the send names. A claim naming a session is resolved
 // first with the resolution every role route makes (roles.ResolveHolder, within the send's
-// window), its claim read from the role bucket stream's leader (leaderRoleClaims), as
-// answerRoleSend's own read is, and its holder's session record from the session bucket stream's
-// leader where this listener's cache does not show it live (leaderHolderSessions), as the publish
-// route's confirmation of a miss reads both (roleSend.missConfirmed): on a replicated bucket a
-// direct get can answer the claim as it stood before a takeover, naming the previous holder,
-// which is not live, or answer that the session that took the role has no record yet, and either
-// way the message would be handed to the daemon of the role's stopped agent while the session
-// that took the role never receives it. A resolution that failed is answered as a claim read that
-// failed is (refuseRoleClaimRead), with no wake reported and nothing handed off or kept, and the
-// answers below name the holder the resolution read.
+// window), from the buckets' stream leaders alone, as the publish route's confirmation of a miss
+// reads them (roleSend.resolveFromLeaders): its claim from the role bucket stream's leader
+// (leaderRoleClaims), as answerRoleSend's own read is, and its holder's session record from the
+// session bucket stream's leader whatever this listener's cache holds (leaderOnlyHolderSessions).
+// The cached record, read live when the resolution looks it up, can pass its live deadline before
+// the resolution judges it, and on a replicated bucket a direct get can answer the claim as it
+// stood before a takeover, naming the previous holder, which is not live, or answer that the
+// session that took the role has no record yet: each way the message would be handed to the
+// daemon of the role's stopped agent while the role's live holder never receives it. A resolution
+// that failed is answered as a claim read that failed is (refuseRoleClaimRead), with no wake
+// reported and nothing handed off or kept, and the answers below name the holder the resolution
+// read.
 //
 // A role that a session holds live is that holder's, whether its issue is finished or not: the
 // session that took the role over - a person's resumed or forked session among them (#4387's
@@ -148,7 +154,7 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
 	live := false
 	if holder != "" {
-		resolved, err := roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, leaderHolderSessions{d.sessions}, item.Role)
+		resolved, err := roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, leaderOnlyHolderSessions{d.sessions}, item.Role)
 		if err != nil {
 			refuseRoleClaimRead(w, record, item.Role, err)
 			return

@@ -1,12 +1,15 @@
 package envoy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -18,6 +21,19 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
+
+// testPublishedPost is the post the role publishes of these tests deliver (RolePublishInput.Post).
+var testPublishedPost = listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: "8f14e45f-ceea-467a-9c1e-000000000001"}
+
+// identityTokenFile is a file holding an account token for Dispatch's principal that expires in an
+// hour, which a client presents as Dispatch's identity (WithAccountTokenFile), and the token.
+func identityTokenFile(t *testing.T) (path, token string) {
+	t.Helper()
+	path = filepath.Join(t.TempDir(), "listener-account-token")
+	token = accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour))
+	writeAccountToken(t, path, token)
+	return path, token
+}
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
 // after: the listener publishes before it answers, so the message may already be on the agent's
@@ -708,8 +724,10 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 // 502 or 504, so on a role lookup, a send and a role publish alike those are ErrUnavailable - a
 // caller's "ask again" - whatever body they carry, and the error keeps the listener's reason
 // because a person reads it. A 4xx is the listener's answer, never unavailable: that is the
-// discriminating control.
+// discriminating control. Each client presents Dispatch's identity, as a deployment's does: a role
+// publish is made on it alone (PublishToRole).
 func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
+	identity, _ := identityTokenFile(t)
 	calls := map[string]func(*Client) error{
 		"role": func(client *Client) error {
 			_, err := client.Role(context.Background(), "legion-planner")
@@ -720,7 +738,7 @@ func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 			return err
 		},
 		"publish": func(client *Client) error {
-			_, err := client.PublishToRole(context.Background(), RolePublishInput{Role: "legion-planner", Message: "m", IdempotencyKey: "k"})
+			_, err := client.PublishToRole(context.Background(), RolePublishInput{Role: "legion-planner", Post: testPublishedPost, Message: "m", IdempotencyKey: "k"})
 			return err
 		},
 	}
@@ -741,7 +759,7 @@ func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		for name, call := range calls {
-			err := call(New(listener.URL))
+			err := call(New(listener.URL, WithAccountTokenFile(identity)))
 			if err == nil || errors.Is(err, ErrUnavailable) != tc.unavailable || !strings.Contains(err.Error(), tc.reason) {
 				t.Errorf("%s answered %d %s: err = %v, want ErrUnavailable %v carrying %q", name, tc.status, tc.body, err, tc.unavailable, tc.reason)
 			}
@@ -1216,8 +1234,10 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 // listenerwire.FaultStatus) - is ErrUnreachable, the failure a sender may wait out; a status the
 // listener chose (a 401 for a token it refuses, a 403, its 500) and an answer that does not decode
 // are its answer, which asking again repeats. ErrUnreachable is ErrUnavailable too, with the same
-// text, so a caller that asks only for ErrUnavailable reads a take-over exactly as before.
+// text, so a caller that asks only for ErrUnavailable reads a take-over exactly as before. Each
+// client presents Dispatch's identity, which a role publish is made on alone (PublishToRole).
 func TestOnlyATakeOverIsUnreachable(t *testing.T) {
+	identity, _ := identityTokenFile(t)
 	calls := map[string]func(*Client) error{
 		"session": func(client *Client) error {
 			_, err := client.Session(context.Background(), "s1")
@@ -1232,13 +1252,13 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			return err
 		},
 		"publish": func(client *Client) error {
-			_, err := client.PublishToRole(context.Background(), RolePublishInput{Role: "legion-planner", Message: "m", IdempotencyKey: "k"})
+			_, err := client.PublishToRole(context.Background(), RolePublishInput{Role: "legion-planner", Post: testPublishedPost, Message: "m", IdempotencyKey: "k"})
 			return err
 		},
 	}
 	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		err := call(New(closed))
+		err := call(New(closed, WithAccountTokenFile(identity)))
 		if !errors.Is(err, ErrUnreachable) || !errors.Is(err, ErrUnavailable) ||
 			!strings.HasPrefix(err.Error(), "envoy listener unavailable: ") {
 			t.Errorf("%s refused: err = %v, want ErrUnreachable and ErrUnavailable with ErrUnavailable's text", name, err)
@@ -1270,7 +1290,7 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		for name, call := range calls {
-			err := call(New(listener.URL))
+			err := call(New(listener.URL, WithAccountTokenFile(identity)))
 			if err == nil || errors.Is(err, ErrUnreachable) != tc.unreachable {
 				t.Errorf("%s answered %d %s: err = %v, want ErrUnreachable %v", name, tc.status, tc.body, err, tc.unreachable)
 			}
@@ -1284,11 +1304,13 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 
 // A role publish is the listener's publish route under a role topic, carrying what a send carries
 // and asking the listener to keep the message: the body names the role's topic, Dispatch as its
-// source, the frame as a JSON string, the key, the urgency, expects_reply and keep true, and
-// names no session. The route's three answers are told apart by status: 200 a live holder took
-// it, 202 the listener kept it until kept_until, 404 nothing was kept - ErrNoRoleHolder carrying the
-// listener's own text.
+// source, the frame as a JSON string, the key, the urgency, expects_reply, keep true and the post
+// it delivers (dispatch_post), and names no session. It is made on Dispatch's identity, never on
+// the shared token the client also holds. The route's three answers are told apart by status: 200
+// a live holder took it, 202 the listener kept it until kept_until, 404 nothing was kept -
+// ErrNoRoleHolder carrying the listener's own text.
 func TestPublishToRoleAnswersEachStatus(t *testing.T) {
+	identity, account := identityTokenFile(t)
 	const role = "legion-infra-infra-204-planner"
 	for _, tc := range []struct {
 		name   string
@@ -1330,8 +1352,8 @@ func TestPublishToRoleAnswersEachStatus(t *testing.T) {
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
-				if got := r.Header.Get("Authorization"); got != "Bearer listener-token" {
-					t.Errorf("Authorization = %q, want Bearer listener-token", got)
+				if got := r.Header.Get("Authorization"); got != "Bearer "+account {
+					t.Errorf("Authorization = %q, want Dispatch's account token", got)
 				}
 				if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
 					t.Errorf("decode the publish: %v", err)
@@ -1340,8 +1362,9 @@ func TestPublishToRoleAnswersEachStatus(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer listener.Close()
-			result, err := New(listener.URL, WithToken("listener-token")).PublishToRole(context.Background(), RolePublishInput{
+			result, err := New(listener.URL, WithAccountTokenFile(identity), WithToken("listener-token")).PublishToRole(context.Background(), RolePublishInput{
 				Role:           role,
+				Post:           testPublishedPost,
 				Message:        "Who planned this?",
 				Payload:        json.RawMessage(`{"event":{"type":"message.created"},"delivery":{"attempt":1,"mode":"aside"}}`),
 				IdempotencyKey: "message-1:aside",
@@ -1352,6 +1375,7 @@ func TestPublishToRoleAnswersEachStatus(t *testing.T) {
 				"topic": "notifications.role." + role, "source": "dispatch", "message": "Who planned this?",
 				"payload":         `{"event":{"type":"message.created"},"delivery":{"attempt":1,"mode":"aside"}}`,
 				"idempotency_key": "message-1:aside", "urgency": "high", "expects_reply": "optional", "keep": true,
+				"dispatch_post": map[string]any{"kind": testPublishedPost.Kind, "id": testPublishedPost.ID},
 			}
 			if !reflect.DeepEqual(asked, want) {
 				t.Fatalf("publish body = %#v, want %#v", asked, want)
@@ -1377,6 +1401,7 @@ func TestPublishToRoleAnswersEachStatus(t *testing.T) {
 // A publish whose answer misses the client's window may have been kept or forwarded, so it is a
 // receipt timeout, as a send's is; a publish refused outright is not.
 func TestPublishToRoleDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
+	identity, _ := identityTokenFile(t)
 	held := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -1397,8 +1422,8 @@ func TestPublishToRoleDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		listener.Close()
 	}()
 
-	_, err := New(listener.URL, WithTimeout(150*time.Millisecond)).PublishToRole(context.Background(), RolePublishInput{
-		Role: "legion-planner", Message: "held past the window", IdempotencyKey: "held:steer",
+	_, err := New(listener.URL, WithTimeout(150*time.Millisecond), WithAccountTokenFile(identity)).PublishToRole(context.Background(), RolePublishInput{
+		Role: "legion-planner", Post: testPublishedPost, Message: "held past the window", IdempotencyKey: "held:steer",
 	})
 	if !errors.Is(err, ErrReceiptTimeout) || !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("publish that missed the window = %v, want ErrReceiptTimeout and ErrUnreachable", err)
@@ -1406,11 +1431,76 @@ func TestPublishToRoleDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 	if !strings.Contains(err.Error(), "POST /v1/messages/publish") {
 		t.Fatalf("publish that missed the window = %q, want it to name the publish route", err)
 	}
-	_, err = New(listener.URL).PublishToRole(context.Background(), RolePublishInput{
-		Role: "legion-planner", Message: "refused outright", IdempotencyKey: "refused:steer",
+	_, err = New(listener.URL, WithAccountTokenFile(identity)).PublishToRole(context.Background(), RolePublishInput{
+		Role: "legion-planner", Post: testPublishedPost, Message: "refused outright", IdempotencyKey: "refused:steer",
 	})
 	if err == nil || errors.Is(err, ErrReceiptTimeout) || err.Error() != "message is required" {
 		t.Fatalf("refused publish = %v, want the listener's reason and no receipt timeout", err)
+	}
+}
+
+// refusedRolePublishLine is the Error line a client with no identity writes for each publish for a
+// role's first holder it refuses (PublishToRole).
+const refusedRolePublishLine = "dispatch: a publish for a role's first holder is refused: this Dispatch presents no identity to the Envoy listener"
+
+// The listener keeps a role publish that names no session only for the Dispatch post it names,
+// which it takes from Dispatch's own identity alone, so a publish for a role's first holder is made
+// on that identity and on nothing else. A client that presents none - one holding only the shared
+// token, and one holding no credential - refuses it with ErrNoListenerIdentity, which names the
+// setting and the README section and is not ErrUnavailable, makes no listener call and writes one
+// Error line naming the role. A client whose identity token the listener refuses on both tries
+// fails the publish naming the role, as ErrUnavailable, with one Error line, and never makes it on
+// the shared token it holds, which the stand-in would take. The control is the identity client's
+// publish the listener takes, made on its account token.
+func TestAPublishForARolesFirstHolderIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
+	identity, account := identityTokenFile(t)
+	stand := &identityStand{takes: map[string]bool{"Bearer shared": true}}
+	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
+	defer listener.Close()
+	publish := RolePublishInput{Role: "legion-planner", Post: testPublishedPost, Message: "m", IdempotencyKey: "k"}
+	const sharedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token"
+	const refusedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential"
+
+	var logs bytes.Buffer
+	logger := WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	for i, client := range []*Client{New(listener.URL, WithToken("shared"), logger), New(listener.URL, logger)} {
+		_, err := client.PublishToRole(context.Background(), publish)
+		if !errors.Is(err, ErrNoListenerIdentity) || errors.Is(err, ErrUnavailable) ||
+			!strings.Contains(err.Error(), "ENVOY_ACCOUNT_TOKEN_FILE") || !strings.Contains(err.Error(), "Dispatch's identity at the Envoy listener") {
+			t.Fatalf("client %d's publish for a role with no identity = %v, want ErrNoListenerIdentity naming ENVOY_ACCOUNT_TOKEN_FILE and the README section, and not ErrUnavailable", i, err)
+		}
+	}
+	if got := stand.taken(); len(got) != 0 {
+		t.Fatalf("the listener was called %+v by clients with no identity, want no call", got)
+	}
+	if n := logLines(&logs, "ERROR", refusedRolePublishLine, map[string]any{"role": "legion-planner"}); n != 2 {
+		t.Fatalf("the clients with no identity wrote %d Error lines %q for their two refused publishes, want two:\n%s", n, refusedRolePublishLine, logs.String())
+	}
+
+	logs.Reset()
+	_, err := New(listener.URL, WithAccountTokenFile(identity), WithToken("shared"), logger).PublishToRole(context.Background(), publish)
+	if err == nil || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrUnreachable) || !strings.Contains(err.Error(), "for role legion-planner") {
+		t.Fatalf("a publish whose identity token the listener refused on two tries = %v, want ErrUnavailable naming role legion-planner, not ErrUnreachable", err)
+	}
+	got := stand.taken()
+	if len(got) != 2 || got[0].authorization != "Bearer "+account || got[1].authorization != "Bearer "+account {
+		t.Fatalf("the listener was called %+v, want two tries on the account token and none on the shared token", got)
+	}
+	if n := logLines(&logs, "ERROR", refusedLine, nil); n != 1 {
+		t.Fatalf("the client wrote %d Error lines %q, want one:\n%s", n, refusedLine, logs.String())
+	}
+	if n := logLines(&logs, "WARN", sharedLine, nil); n != 0 {
+		t.Fatalf("the client wrote %d WARN lines %q for a publish for a role's first holder, want none", n, sharedLine)
+	}
+
+	stand.mu.Lock()
+	stand.takes["Bearer "+account] = true
+	stand.mu.Unlock()
+	if _, err := New(listener.URL, WithAccountTokenFile(identity), WithToken("shared")).PublishToRole(context.Background(), publish); err != nil {
+		t.Fatalf("control: a publish the listener takes on Dispatch's identity: %v", err)
+	}
+	if got := stand.taken(); len(got) != 1 || got[0].authorization != "Bearer "+account {
+		t.Fatalf("control: the listener was called %+v, want one call on the account token", got)
 	}
 }
 

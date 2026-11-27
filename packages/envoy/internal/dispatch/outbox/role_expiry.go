@@ -106,16 +106,18 @@ func lockPublisherHold(ctx context.Context, tx pgx.Tx, instance uuid.UUID) (bool
 }
 
 // inHolderTransaction runs write in one transaction the publisher hold fences, and publishes the
-// event write appended, if any, once the transaction has committed. It covers every write of the
-// expiry work that may append a role.undelivered record: a notice's record (recordKeptExpiry) and
-// a record of a copy that cannot be kept again (recordCannotKeep). The pass's other writes to
-// outbox_role_copy_expiries are single statements that check the hold themselves
-// (expiryClaimQuery, expiryRecordQuery). The transaction reads the hold's row first with no lock
-// (holdsPublisherHold), runs write, and locks the hold's row for share as its last statement
-// before the commit (lockPublisherHold); when the row does not name instance at either read it
-// writes nothing and answers errNotTheHolder. For a test, Deps.holdRead runs once the first read
-// found the hold this process's, and Deps.holdLocked once the final lock found it so.
-func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, write func(pgx.Tx) (*model.Event, error)) error {
+// events write appended, if any, once the transaction has committed. It covers every write of the
+// expiry work that may append an event: a notice's record (recordKeptExpiry), which appends a
+// role.undelivered record or, for a notice of a copy of Dispatch's delivery of a post, a delivery
+// receipt for each attempt it settles, and a record of a copy that cannot be kept again
+// (recordCannotKeep). The pass's other writes to outbox_role_copy_expiries are single statements
+// that check the hold themselves (expiryClaimQuery, expiryRecordQuery). The transaction reads the
+// hold's row first with no lock (holdsPublisherHold), runs write, and locks the hold's row for
+// share as its last statement before the commit (lockPublisherHold); when the row does not name
+// instance at either read it writes nothing and answers errNotTheHolder. For a test,
+// Deps.holdRead runs once the first read found the hold this process's, and Deps.holdLocked once
+// the final lock found it so.
+func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, write func(pgx.Tx) ([]model.Event, error)) error {
 	tx, err := deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -144,10 +146,19 @@ func inHolderTransaction(ctx context.Context, deps Deps, instance uuid.UUID, wri
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	if appended != nil {
-		deps.Broker.Publish(*appended)
+	for _, event := range appended {
+		deps.Broker.Publish(event)
 	}
 	return nil
+}
+
+// oneEvent is the events of a write that appends one event at most, appended (nil for none), as
+// a holder transaction's write answers them (inHolderTransaction).
+func oneEvent(appended *model.Event, err error) ([]model.Event, error) {
+	if err != nil || appended == nil {
+		return nil, err
+	}
+	return []model.Event{*appended}, nil
 }
 
 // endRoleDelivery is the one way an event's delivery to a role ends, in tx, for both reasons it
@@ -579,7 +590,7 @@ func recordExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID, rec
 // later pass claimed is not written. The caller runs it under recordTimeout.
 func recordCannotKeep(ctx context.Context, deps Deps, instance uuid.UUID, row cannotKeep) error {
 	held := row.held
-	return inHolderTransaction(ctx, deps, instance, func(tx pgx.Tx) (*model.Event, error) {
+	return inHolderTransaction(ctx, deps, instance, func(tx pgx.Tx) ([]model.Event, error) {
 		var carried bool
 		if err := tx.QueryRow(ctx, `
 			select exists (
@@ -608,8 +619,8 @@ func recordCannotKeep(ctx context.Context, deps Deps, instance uuid.UUID, row ca
 				"event_id", held.eventID, "role", held.role, "attempt", held.attempt, "sequence", held.sequence, "reason", row.reason)
 			return nil, nil
 		}
-		return endRoleDelivery(ctx, deps, tx, model.RoleUndeliveredEventPayload{
+		return oneEvent(endRoleDelivery(ctx, deps, tx, model.RoleUndeliveredEventPayload{
 			EventID: held.eventID, Role: held.role, Keeps: held.attempt, KeptAt: held.keptAt, DroppedAt: held.droppedAt, Reason: row.reason,
-		})
+		}))
 	})
 }

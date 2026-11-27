@@ -12,7 +12,8 @@ body: |-
   capability check is skipped), the send goes to it through the listener, which hands it to the
   agent's daemon, so the attempt is `sent`, and the reply the daemon posts as that session on
   that attempt is accepted. That send carries no role mark, a role's route included, so it
-  needs no Dispatch identity at the listener. A send that checks the attempt's pinned session
+  needs no Dispatch identity at the listener; the publish for a role's first holder (below)
+  does. A send that checks the attempt's pinned session
   again first - a mention's, and a targeted message's after a listener take-over or when a sweep
   resumes it - finds the listener's known-session record of that stopped session and is marked
   with the role.
@@ -28,8 +29,8 @@ body: |-
   listener's own answer and is sent nothing, but for the roles kept for their next holder below:
   a mention fails `no live session <id>`, a role message gets the listener's no-holder text
   naming no session, and a targeted message to a session is queued by Dispatch on the session's
-  own subject. A registry read that does not
-  answer is logged and changes nothing, and a send the listener refuses because no daemon
+  own subject. A registry read that does not answer, or that answers a record the registry
+  cannot decode, is logged and changes nothing, and a send the listener refuses because no daemon
   answers for that agent, or answers `state: stopped` because it only stored the message for the
   stopped session, records the listener's own answer and session, as with no registry: a mention
   fails, and a targeted message to the session is queued by Dispatch, whose copy the listener
@@ -42,15 +43,24 @@ body: |-
   suspended, is answered by its daemon as a finished role's last worker is, and a session whose
   idle pod the daemon released is named like any other stopped agent.
   A role the registry holds no entry for while its project answers is kept for its first holder:
-  Dispatch publishes the message on the role's topic, the listener keeps it on the role's kept
-  lane and wakes the role, and the attempt records `queued`.
+  Dispatch publishes the message on the role's topic, on its own identity and naming the comment
+  or message it delivers (`dispatch_post`); the listener keeps it on the role's kept lane, though
+  it names no source session, and wakes the role, and the attempt records `queued`. When that
+  copy's hour ends with no session taking it, or the role's live holder does not take its
+  delivery mode, the listener tells Dispatch, which records the attempt `failed`.
   `GET /v1/legion/agents/roles/{token}` now answers `{"entries":[…],"answering":<bool>}`, the
   flag the role token's own project last stated written out beside the entries, an empty list's
   included (an edge listener answers it only for a role of one of its token's projects), and the
   Dispatch Envoy client's `RoleAgents` returns both. A role with no entry whose project does not
-  answer, a registry read that does not answer, and a role that is no Legion workflow role keep
-  the listener's own no-holder answer, recorded against no session; Dispatch does not ask the
-  registry about the last.
+  answer, a registry read that does not answer or answers a record it cannot decode, and a role
+  that is no Legion workflow role keep the listener's own no-holder answer, recorded against no
+  session; Dispatch does not ask the registry about the last.
+  The registry routes answer a record the `legion_agents` bucket holds that does not decode, a
+  session's entry, an index key's or a project's answering record, `500` with no `Retry-After`,
+  naming the session, the key or the project (`envoy: the legion agent registry holds a record it
+  cannot decode: …`): on each read that meets it, and on both entry PUTs, which read the session's
+  stored entry before they write. Asking again reads the same record, so it is no longer the
+  `503` with `Retry-After: 1` that a read or write the bucket did not answer still gets.
 time: 2026-11-08T10:01:00.000000000Z
 custom:
     Issue: pr2230

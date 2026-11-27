@@ -248,7 +248,9 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 
 // keptLaneWakesItsRole reports whether role's kept lane holds, from the copy stored at from on and
 // within roleKeepScanMax copies, a copy the listener kept (isOutboxCopy) whose age at now is at
-// most roleKeepWakeAge. The read goes forward because the stream reads no message before a
+// most roleKeepWakeAge - a copy of Dispatch's delivery of a post the publish route kept
+// (isDispatchDeliveryCopy) among them, whose keep raised the role's wake as every keep of the
+// route does. The read goes forward because the stream reads no message before a
 // sequence; a lane's copies grow younger along it, so the read ends at the first copy that wakes
 // the role. An outbox copy wakes nothing, as the outbox's own keep raises no report, and a copy
 // whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it, nor does a

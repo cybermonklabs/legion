@@ -686,7 +686,10 @@ func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
 // names that publish's copy, as the keep's own is (publishPastInProcess). A copy of a frame
 // Dispatch's outbox forwarded, which carries no role mark, is an outbox copy to the walk
 // (isOutboxCopy): it raises no wake and gets no dead letter. A copy of a send Dispatch's API marked
-// with its role is the listener's own copy, which the sweep's wake report counts.
+// with its role is the listener's own copy, which the sweep's wake report counts, and so is a copy
+// of a forward of Dispatch's delivery of a post, whose source event id and key prefix it keeps, so
+// the walk tells Dispatch of its end as it tells of the copy it was forwarded from
+// (isDispatchDeliveryCopy).
 func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, seq uint64) error {
 	key := strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix)
 	kept := item

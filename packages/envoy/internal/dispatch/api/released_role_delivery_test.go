@@ -226,9 +226,9 @@ func TestRoleMessageToARoleWithNoEntryIsKeptForItsFirstHolder(t *testing.T) {
 				if len(published) != 2 {
 					t.Fatalf("listener publishes = %#v, want the message's and the mention's", published)
 				}
-				for i, want := range []struct{ key, expectsReply, mode string }{
-					{key: message.ID + ":aside", expectsReply: "optional", mode: "aside"},
-					{key: model.CommentMentionIdempotencyKey(comment.ID, roleTarget, "btw"), expectsReply: "required", mode: "btw"},
+				for i, want := range []struct{ key, expectsReply, mode, postKind, postID string }{
+					{key: message.ID + ":aside", expectsReply: "optional", mode: "aside", postKind: "message", postID: message.ID},
+					{key: model.CommentMentionIdempotencyKey(comment.ID, roleTarget, "btw"), expectsReply: "required", mode: "btw", postKind: "comment", postID: comment.ID},
 				} {
 					got := published[i]
 					if got["topic"] != "notifications.role."+tc.role || got["keep"] != true || got["source"] != "dispatch" ||
@@ -238,6 +238,11 @@ func TestRoleMessageToARoleWithNoEntryIsKeptForItsFirstHolder(t *testing.T) {
 					}
 					if _, named := got["target_session"]; named {
 						t.Fatalf("publish %d = %#v, want it to name no session", i, got)
+					}
+					// The post the publish delivers, which the listener keeps the copy for and names
+					// back to Dispatch when the copy's hour ends.
+					if post, _ := got["dispatch_post"].(map[string]any); post["kind"] != want.postKind || post["id"] != want.postID {
+						t.Fatalf("publish %d names the post %#v, want the %s %s it delivers", i, got["dispatch_post"], want.postKind, want.postID)
 					}
 					var frame struct {
 						Delivery struct {

@@ -46,14 +46,10 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 
 // leaderHolderSessions is roleHolderSessions with its bucket read made from the session bucket
 // stream's leader (session.SessionRegistry.RefreshFromLeader) instead of by a direct get, for the
-// three resolutions that read the claim from the role bucket stream's leader too
-// (leaderRoleClaims), each of which acts on a holder it reads as not live:
-//
-//   - the publish route's confirmation of a miss (roleSend.missConfirmed) and the marked send's
-//     resolution before it hands the send off or keeps it (handOffOrKeepRoleSend), which hand the
-//     message to the daemon of the role's stopped Legion agent, and no read takes a hand-off back;
-//   - the kept lane handover's (handOverKeptRole), which walks the lane with no holder and leaves
-//     the copy on it until the next handover, a sweep minutes later where nothing else starts one.
+// one resolution that reads through it: the kept lane handover's (handOverKeptRole), which reads
+// the claim from the role bucket stream's leader too (leaderRoleClaims) and, for a holder it reads
+// as not live, walks the lane with no holder and leaves the copy on it until the next handover, a
+// sweep minutes later where nothing else starts one.
 //
 // A direct get of a replicated bucket is answered by any copy near enough to current, and a copy
 // that has not applied the registration of a session that took the role a moment ago answers that
@@ -62,7 +58,12 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 //
 // Like Holder, it answers the cached record while that reads live, so only a holder this
 // listener's cache does not show live costs the leader a read. What the leader answers is applied
-// to the cache (RefreshFromLeader), so the next resolution of that holder finds it there.
+// to the cache (RefreshFromLeader), so the next resolution of that holder finds it there. A cached
+// record read live can pass its live deadline before the resolution judges it, and the handover
+// then walks with no holder; that takes nothing away, since the copy waits on the lane for the
+// next handover, so the handover keeps the cache's answer. The resolutions whose miss refuses a
+// send or hands its message off, which no read takes back, read every holder from the leader
+// instead (leaderOnlyHolderSessions).
 type leaderHolderSessions struct{ *session.SessionRegistry }
 
 func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
@@ -81,18 +82,31 @@ func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessio
 	return read(readCtx, sessionID)
 }
 
-// leaderOnlyHolderSessions is roleHolderSessions for the one resolution that reads its holder from
-// the leader whatever the cache holds: a role send that asks to be kept and names no source
-// session, which the route refuses with nothing kept when its role has no live holder
-// (roleSend.noHolder). A `keep: false` send and a send whose keep failed are refused on a "no live
-// holder" too, and read the cache; roleSend.resolve says why they need no read of the leaders. Its
-// holder is always read from the session bucket stream's leader (bucketSessionEntry), never from
-// the cache, as leaderHolderSessions reads one the cache shows live, and never by a direct get. A
-// cached record read live can pass its live deadline before the resolution judges it
-// (roles.ResolveHolder reads the holder's state again), and on a replicated bucket a copy that has
-// not applied a registration made a moment ago answers that the session has no record; either
-// would refuse the send for a holder that can take it. nats.ErrKeyNotFound is the leader's word
-// that no record stands, as it is Holder's.
+// leaderOnlyHolderSessions is roleHolderSessions for the resolutions that read their holder from
+// the leader whatever the cache holds, each of which reads the claim from the role bucket stream's
+// leader too (leaderRoleClaims) and acts on a holder it reads as not live in a way no later read
+// undoes:
+//
+//   - each resolution of a role send whose keep would tell nobody (roleSend.resolve,
+//     keepTellsNobody: it asks to be kept, names no source session and delivers no Dispatch
+//     post), which the route refuses with nothing kept when its role has no live holder
+//     (roleSend.noHolder);
+//   - the publish route's confirmation of any other send's miss before it hands the message off
+//     (roleSend.missConfirmed);
+//   - the marked send's resolution before it hands the send off or keeps it
+//     (handOffOrKeepRoleSend).
+//
+// The last two hand the message to the daemon of the role's stopped Legion agent on a miss, and no
+// read takes a hand-off back; the publish route's two read through roleSend.resolveFromLeaders. A
+// `keep: false` send and a send whose keep failed are refused on a "no live holder" too, and read
+// the cache; roleSend.resolve says why they need no read of the leaders. Its holder is always read
+// from the session bucket stream's leader (bucketSessionEntry), never from the cache, as
+// leaderHolderSessions reads one the cache shows live, and never by a direct get. A cached record
+// read live can pass its live deadline before the resolution judges it (roles.ResolveHolder reads
+// the holder's state again), and on a replicated bucket a copy that has not applied a registration
+// made a moment ago answers that the session has no record; either would refuse the send, or hand
+// its message off, for a holder that can take it. nats.ErrKeyNotFound is the leader's word that no
+// record stands, as it is Holder's.
 type leaderOnlyHolderSessions struct{ *session.SessionRegistry }
 
 func (s leaderOnlyHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
@@ -160,8 +174,9 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // may act only on a session answering now pass sessionIsLive: that same lookup asked without
 // include, and a soft claim weighing the holder it found (roleSupersessionVerdict). A
 // role-holder resolution reads its holder through roleHolderSessions.Holder instead, or
-// leaderHolderSessions.Holder where its miss hands the message off, each of which asks the same
-// two reads in the same order and leaves the judgement to internal/roles.
+// leaderHolderSessions.Holder for the kept lane handover, each of which asks the same two reads in
+// the same order, or through leaderOnlyHolderSessions.Holder where its miss refuses the send or
+// hands the message off, which asks the leader alone; each leaves the judgement to internal/roles.
 //
 // The cache answers when it holds a record accept takes (session.SessionRegistry.Lookup, which
 // judges the record's own age and never its membership of the cache); otherwise the session is
@@ -175,12 +190,13 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // caught up with.
 //
 // read is session.SessionRegistry.RefreshFromLeader for a caller that takes something away from
-// the session on a miss - both reapers, a soft claim that takes the holder's role, and the
-// resolutions that hand a message to a stopped Legion agent's daemon or walk the kept lane with no
-// holder (leaderHolderSessions) - and Refresh, a direct get, for one that only answers or waits on
-// it. On a replicated bucket a copy that has not applied a registration made a moment ago answers
-// that the session has no record, and the reaper would delete a live session's interest or
-// release its role, and the soft claim take a live holder's role.
+// the session on a miss - both reapers, a soft claim that takes the holder's role, and the kept
+// lane handover's resolution, which walks the lane with no holder (leaderHolderSessions) - and
+// Refresh, a direct get, for one that only answers or waits on it. The resolutions whose miss
+// refuses a send or hands its message to a stopped Legion agent's daemon read the leader alone
+// (leaderOnlyHolderSessions). On a replicated bucket a copy that has not applied a registration
+// made a moment ago answers that the session has no record, and the reaper would delete a live
+// session's interest or release its role, and the soft claim take a live holder's role.
 //
 // nats.ErrKeyNotFound is the answer for a session the bucket holds no record of and for one whose
 // record accept refuses, and the state returned with it says which: session.Gone for the first,
@@ -227,6 +243,9 @@ func liveSessionEntry(
 // direct get trails the leader the same way on a replicated bucket: a copy that has not applied
 // the predecessor's registration answers that it has no record, and the soft claim would take a
 // live predecessor's role out of the instance that still runs it.
+//
+// A role's holder is read through it too where a resolution's miss refuses a send or hands its
+// message off (leaderOnlyHolderSessions, which says why the cache cannot answer those either).
 //
 // nats.ErrKeyNotFound is the leader's word that the session is gone, and the caller acts on it;
 // any other error is a read that did not answer, on which nothing is taken from a holder. The read

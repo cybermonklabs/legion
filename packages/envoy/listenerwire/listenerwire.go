@@ -24,13 +24,13 @@
 // A request's fields are omitempty but where the listener reads an absent field differently from
 // an empty one: the listener only decodes a request, so each client sends the fields it sets. A
 // field whose absence the listener reads differently is a pointer, written whenever the client
-// sets it (MessageBody.Payload and Handoff, PublishRequest.Keep, SubscribeDelivery.Resume,
-// SubscribeResume.Seq and LegionProjectRequest.Answering), or carries no omitempty, so an empty
-// value arrives as the empty value it is (SubscribeRequest.Topics and Capabilities). An answer's
-// fields carry the tags the listener has always written them with. LegionAgentEntry is both: the
-// daemon's registry writes send it and the registry's reads answer it, so its fields the daemon
-// leaves out are omitempty, and the listener writes each of them on every answer it gives
-// (recorded_at).
+// sets it (MessageBody.Payload and Handoff, PublishRequest.Keep and DispatchPost,
+// SubscribeDelivery.Resume, SubscribeResume.Seq and LegionProjectRequest.Answering), or carries no
+// omitempty, so an empty value arrives as the empty value it is (SubscribeRequest.Topics and
+// Capabilities). An answer's fields carry the tags the listener has always written them with.
+// LegionAgentEntry is both: the daemon's registry writes send it and the registry's reads answer
+// it, so its fields the daemon leaves out are omitempty, and the listener writes each of them on
+// every answer it gives (recorded_at).
 package listenerwire
 
 import (
@@ -44,10 +44,12 @@ import (
 // lasting answer, so its clients read it as the listener answering, not as an outage, though it
 // is a 5xx: the listener gives it the same way however often it is asked, and with no Retry-After.
 // On the routes its Go clients call it means a record the listener cannot decode - a role's claim
-// record (GET /v1/roles/<role>) or a session's interest record (GET /v1/registry/<session_id> and
-// the interest reads) - or, on a write route (POST /v1/interests/unsubscribe, DELETE
-// /v1/sessions/<session_id> and the listener's other writes), an answer its store gave (a key the
-// store refuses, no key, a conditional write another writer beat, a record it cannot decode), and
+// record (GET /v1/roles/<role>), a session's interest record (GET /v1/registry/<session_id> and
+// the interest reads) or a record of the Legion agent registry (the reads of /v1/legion/agents,
+// and the entry writes, which read the session's stored entry first) - or, on a write route (POST
+// /v1/interests/unsubscribe, DELETE /v1/sessions/<session_id> and the listener's other writes), an
+// answer its store gave (a key the store refuses, no key, a conditional write another writer beat,
+// a record it cannot decode), and
 // on the listings of GET /v1/sessions and GET /v1/interests/ a failure of the copy they serve from
 // other than a refill, which is their 503. Its bus failing, which asking again can clear, it
 // answers 503 with Retry-After: 1, never this. The listener writes it through this constant, and
@@ -185,7 +187,7 @@ type SendRequest struct {
 	// Role marks a send Dispatch makes for a route to a role with that role, which the envelope
 	// then carries (Envelope.Role): the target is the session the role's claim named when
 	// Dispatch resolved the route. The listener takes it from Dispatch's own verified principal
-	// alone (its roleMarkRefusal), since the body's source is the caller's own word, and refuses
+	// alone (its dispatchFieldRefusal), since the body's source is the caller's own word, and refuses
 	// every other caller carrying it 403 naming the field. A send that carries it is answered 200
 	// SendResponse while the role's claim still names the target, and 202 KeptSendResponse when
 	// the claim names another session, or none. Absent, nothing changes.
@@ -196,11 +198,40 @@ type SendRequest struct {
 // them. Keep false asks the listener to refuse a role nobody holds with its 404 rather than keep
 // the message for the role's next holder, which is what it does when Keep is absent. A role
 // message whose MessageBody names no SourceSession is refused with that 404 whatever Keep says,
-// since the dead letter of a kept copy that expires goes to the source session alone.
+// since the dead letter of a kept copy that expires goes to the source session alone - unless it
+// is Dispatch's delivery of a post (DispatchPost), whose kept copy ends with a notice to Dispatch
+// instead.
 type PublishRequest struct {
 	MessageBody
 	Topic string `json:"topic,omitempty"`
 	Keep  *bool  `json:"keep,omitempty"`
+	// DispatchPost names the Dispatch post this publish is a delivery of: Dispatch's publish of a
+	// person's message or mention for a role no session holds, kept for the role's first holder
+	// (Dispatch's PublishToRole). The listener takes it from Dispatch's own verified principal
+	// alone, as it takes a send's role mark (SendRequest.Role), and refuses every other caller
+	// carrying it 403 naming the field, a listener that names no Dispatch principal included; it
+	// refuses 400, naming the field, a publish that carries it to a topic that is not a role's,
+	// whose source is not dispatch, that names a source_session, or whose post is no comment or
+	// message named by its UUID. A publish that carries it is kept for the role's next holder
+	// though it names no source session, and the end of its copy's hour is told to Dispatch, which
+	// settles the delivery's attempt undelivered. Absent, nothing changes: a listener of an
+	// earlier release ignores it and answers such a publish its 404.
+	DispatchPost *DispatchPost `json:"dispatch_post,omitempty"`
+}
+
+// The kinds of Dispatch post a role publish delivers (DispatchPost.Kind): a comment's mention of a
+// role, and a message to one.
+const (
+	DispatchPostComment = "comment"
+	DispatchPostMessage = "message"
+)
+
+// DispatchPost is a Dispatch post a role publish delivers (PublishRequest.DispatchPost): its kind,
+// DispatchPostComment or DispatchPostMessage, and its id, the comment's or the message's UUID in
+// its canonical lower-case form.
+type DispatchPost struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }
 
 // SendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
@@ -659,9 +690,10 @@ type RoleHolder struct {
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a
 // role send through POST /v1/messages/publish that kept nothing answers: one with keep false, one
-// that names no source session (its Error says so), or one whose keep failed. HolderState says which
-// of the three states the claim's holder is in, so a caller can tell a holder that is merely
-// unresponsive - stalled, still claiming, still being stored for - from one that is gone.
+// that names no source session and delivers no Dispatch post (its Error says so), or one whose keep
+// failed. HolderState says which of the three states the claim's holder is in, so a caller can tell
+// a holder that is merely unresponsive - stalled, still claiming, still being stored for - from one
+// that is gone.
 // ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a
 // holder, whatever its state, so a caller that used to read this answer as "the role is free now"
 // is told plainly that the claim still stands. A listener of an earlier release leaves some of

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
@@ -869,7 +870,8 @@ func (s *server) deliverMessageResuming(
 	err = takeover.retry(ctx,
 		func() string {
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, messageTarget(message.Target), listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: message.ID},
+				message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},

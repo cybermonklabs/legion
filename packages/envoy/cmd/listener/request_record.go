@@ -216,9 +216,10 @@ func (rec *requestRecord) refuseRoleHolder(w http.ResponseWriter, role string, r
 	rec.write(http.StatusNotFound, outcome)
 }
 
-// refuseRoleNoSourceSession answers a role send that names no source session, to a role with no
-// live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also says that
-// nothing was kept and why (noSourceSessionNotKept), and records it under
+// refuseRoleNoSourceSession answers a role send whose keep would tell nobody
+// (roleSend.keepTellsNobody: it names no source session and delivers no Dispatch post), to a role
+// with no live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also
+// says that nothing was kept and why (noSourceSessionNotKept), and records it under
 // outcomeRoleNoSourceSession, carrying a lapsed holder as refuseRoleHolder does.
 func (rec *requestRecord) refuseRoleNoSourceSession(w http.ResponseWriter, role string, result roles.Resolution) {
 	refusal := roleHolderRefusal(role, result)

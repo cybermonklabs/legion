@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // ResolvedMention binds a canonical mention to the session that owned it when the comment was
@@ -151,7 +152,9 @@ type sendOutcome struct {
 // sendResolvedDelivery sends one already-resolved delivery and reports what the listener did.
 // route is the delivery's route as its row names it (a mention's target, a message's target),
 // whose role, for a route to a role, the send is marked with (routeRole,
-// dispatchenvoy.SendInput.Role), unless the Legion agent registry named the target (below).
+// dispatchenvoy.SendInput.Role), unless the Legion agent registry named the target (below). post is
+// the Dispatch post the delivery is of - the comment whose mention it delivers, or the message -
+// which a publish for a role's first holder names (publishForRole).
 // connectedOnly asks the listener to refuse a stopped target rather than store the message for
 // it (pendingMessageDelivery.connectedOnly).
 //
@@ -206,14 +209,14 @@ type sendOutcome struct {
 // A role kept for its next holder (target.redirect.keepForRole) is published on the role's topic
 // rather than sent (publishForRole).
 func (s *server) sendResolvedDelivery(
-	ctx context.Context, target ResolvedMention, route, body, idempotencyKey string, urgency *string,
-	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+	ctx context.Context, target ResolvedMention, route string, post listenerwire.DispatchPost, body, idempotencyKey string,
+	urgency *string, wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
 ) sendOutcome {
 	if target.ResolveError != "" {
 		return sendOutcome{failure: target.ResolveError}
 	}
 	if target.redirect != nil && target.redirect.keepForRole != "" {
-		return s.publishForRole(ctx, target.Delivery, target.redirect, body, idempotencyKey, urgency, wanted, frame, connectedOnly)
+		return s.publishForRole(ctx, target.Delivery, target.redirect, post, body, idempotencyKey, urgency, wanted, frame, connectedOnly)
 	}
 	if target.SessionID == nil {
 		return sendOutcome{failure: contracts.NoLiveSession}
@@ -313,22 +316,30 @@ func deliveryExpectsReply(delivery string, wanted contracts.ExpectsReply) contra
 // publishForRole delivers in mode delivery to the role a redirect keeps for (kept.keepForRole), a
 // role no live session holds whose first holder is coming: it publishes the frame on the role's
 // topic through the listener's publish route (dispatchenvoy.Client.PublishToRole) with the body,
-// key, urgency and expects_reply a send carries. The listener keeps the message on the role's kept
-// lane for the role's next live holder, for one hour, and raises the role's wake
-// (cmd/listener/confirmed.go roleSend.noHolder).
+// key, urgency and expects_reply a send carries, and post, the comment or message it delivers. The
+// listener keeps the message on the role's kept lane for the role's next live holder, for one
+// hour, and raises the role's wake (cmd/listener/confirmed.go roleSend.noHolder). The publish names
+// no session, and the listener keeps such a publish only for the post it names, which it takes
+// from Dispatch's own identity alone (its dispatch_post), so the publish is made on that identity:
+// a Dispatch that presents none records dispatchenvoy.ErrNoListenerIdentity. When the copy's hour
+// ends with no session taking it, or the role's live holder does not take its delivery mode, the
+// listener tells Dispatch, and Dispatch's outbox settles every attempt of post that copy carried
+// and no session answered as undelivered (internal/dispatch/outbox, recordKeptExpiry).
 //
 // The listener's 202, kept, is outcome queued with the kept copy's envelope: the listener took
-// the message for a recipient that takes it later. Its 200 - a live session claimed the role by
-// the publish and took the message - is a delivery like any send's. Its 404, nothing kept, and
-// every other refusal or failure is the failure the listener's answer gives, worded as a send's
-// is (deliveryErrorText, receiptTimeoutText, storeUnconfirmedText), with no envelope.
+// the message for a recipient that takes it later, and the attempt reads queued until a holder
+// answers it or the outbox settles it. Its 200 - a live session claimed the role by the publish
+// and took the message - is a delivery like any send's. Its 404, nothing kept - which a listener
+// of an earlier release, that ignores the post, answers - and every other refusal or failure is
+// the failure the listener's answer gives, worded as a send's is (deliveryErrorText,
+// receiptTimeoutText, storeUnconfirmedText), with no envelope.
 //
 // A connected-only send - a model or thinking switch, or a message whose request asked for a
 // running session - asks for a session that is running now, and a kept message waits for one
 // that is not running yet, so it is not kept: it settles with the listener's own no-holder answer
 // (kept.listenerAnswer) as refused, as a stopped session refuses it, and nothing is published.
 func (s *server) publishForRole(
-	ctx context.Context, delivery string, kept *registryRedirect[ResolvedMention], body, idempotencyKey string,
+	ctx context.Context, delivery string, kept *registryRedirect[ResolvedMention], post listenerwire.DispatchPost, body, idempotencyKey string,
 	urgency *string, wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
 ) sendOutcome {
 	if connectedOnly {
@@ -337,6 +348,7 @@ func (s *server) publishForRole(
 	carried, _ := model.EventBody(body)
 	published, err := s.deps.Envoy.PublishToRole(ctx, dispatchenvoy.RolePublishInput{
 		Role:           kept.keepForRole,
+		Post:           post,
 		Message:        carried,
 		Payload:        frame,
 		IdempotencyKey: idempotencyKey,
@@ -1114,7 +1126,8 @@ func (s *server) deliverResolvedCommentMention(
 		}
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
-		outcome = s.sendResolvedDelivery(ctx, target, target.Target, stored.Body, key, nil, wanted, frame, false)
+		outcome = s.sendResolvedDelivery(ctx, target, target.Target,
+			listenerwire.DispatchPost{Kind: listenerwire.DispatchPostComment, ID: stored.ID}, stored.Body, key, nil, wanted, frame, false)
 		return outcome.failure
 	}
 	if decided && claimed.pending.SessionID == nil {

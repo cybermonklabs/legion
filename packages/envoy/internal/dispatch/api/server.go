@@ -280,17 +280,20 @@ type DepsInput struct {
 	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token for
 	// the listener's audience (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which every listener call
 	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
-	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
+	// EnvoyToken. It is the one credential the listener takes a send's role mark, and the post a
+	// publish for a role's first holder delivers, from.
 	EnvoyAccountTokenFile string
 	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
 	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
 	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
 	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
-	// send marked with a role (envoy.ErrNoListenerIdentity): a send for a role route to a session
-	// it resolved for the role, the role's holder or the session the attempt recorded. What it
-	// sends for a role no live session holds whose target the Legion agent registry named - a
-	// publish for a released holder or a role's first holder, a send to the role's stopped newest
-	// agent - carries no mark (sendResolvedDelivery).
+	// send marked with a role, and every publish for a role's first holder
+	// (envoy.ErrNoListenerIdentity): a send for a role route to a session it resolved for the role,
+	// the role's holder or the session the attempt recorded, and a publish for a role the Legion
+	// agent registry holds no entry for while its project answers, which names the post it delivers
+	// so the listener keeps it and tells Dispatch the end of its copy's hour (publishForRole). A send
+	// to a role's stopped newest agent the registry named carries no mark and needs no identity
+	// (sendResolvedDelivery).
 	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.

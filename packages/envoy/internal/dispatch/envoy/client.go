@@ -463,13 +463,16 @@ func (b windowedBody) Close() error {
 // rewrites a projected token in place, or a Google token minted again, the refused one dropped
 // (listenerIdentity.forget). A call that still has no token the listener takes is made on the
 // shared token (WithToken), with a WARN line, when the client holds one and the call carries no
-// role mark (marked unset): a listener that does not verify Dispatch's identity yet - one of the
-// release before, still serving while a deploy rolls - takes the shared token, and nothing of such
-// a call needs Dispatch's identity. A marked call - a send for a role (Send) - is never made on the
-// shared token, since the listener takes the role mark from Dispatch's identity alone and a send
-// without it is not copied when the role moves: it ends with the second try's answer, logged at
-// Error, and the delivery records that failure. A 401 is answered before the listener's route runs
-// (cmd/listener, apiAuth), so a try it answered did nothing and the next is no repeat.
+// field the listener takes from Dispatch's identity alone (marked unset): a listener that does not
+// verify Dispatch's identity yet - one of the release before, still serving while a deploy rolls -
+// takes the shared token, and nothing of such a call needs Dispatch's identity. A marked call - a
+// send for a role (Send), and a publish for a role's first holder, which names the post it
+// delivers (PublishToRole) - is never made on the shared token, since the listener takes the role
+// mark and the post from Dispatch's identity alone, and a send without the mark is not copied when
+// the role moves while a publish without the post is not kept: it ends with the second try's
+// answer, logged at Error, and the delivery records that failure. A 401 is answered before the
+// listener's route runs (cmd/listener, apiAuth), so a try it answered did nothing and the next is
+// no repeat.
 func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
 	try := func(shared bool) (*http.Response, error) {
 		request, err := build()
@@ -1005,8 +1008,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	case response.StatusCode == http.StatusAccepted:
 		return keptSend(response)
 	case marked && response.StatusCode == http.StatusUnauthorized:
-		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send for role %s: the listener refused Dispatch's identity token (ENVOY_ACCOUNT_TOKEN_FILE or ENVOY_ACCOUNT_GOOGLE_AUDIENCE) on two tries, and a send for a role is made on that identity alone; the listener verifies it with its ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE or ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS and takes the role mark from ENVOY_DISPATCH_PRINCIPAL alone: %w",
-			ErrUnavailable, input.Role, listenerResponseError(response))
+		return SendResult{}, identityRefusedError(response, sendRoute, input.Role, "a send for a role", "the role mark")
 	case response.StatusCode != http.StatusOK:
 		err := listenerResponseError(response)
 		if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
@@ -1024,11 +1026,24 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}, nil
 }
 
+// identityRefusedError is the failure of a call made on Dispatch's identity alone - what, carrying
+// carried, which the listener takes from that identity alone - for role, after the listener
+// answered 401 to that identity on two tries (do): ErrUnavailable with the listener's own answer,
+// naming the role and the settings an operator checks on both sides. A send for a role and a
+// publish for a role's first holder (Send, PublishToRole) report it alike.
+func identityRefusedError(response *http.Response, route, role, what, carried string) error {
+	return fmt.Errorf("%w: POST %s for role %s: the listener refused Dispatch's identity token (ENVOY_ACCOUNT_TOKEN_FILE or ENVOY_ACCOUNT_GOOGLE_AUDIENCE) on two tries, and %s is made on that identity alone; the listener verifies it with its ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE or ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS and takes %s from ENVOY_DISPATCH_PRINCIPAL alone: %w",
+		ErrUnavailable, route, role, what, carried, listenerResponseError(response))
+}
+
 // RolePublishInput is a targeted Dispatch delivery published to a role's topic through the
 // listener (PublishToRole): the same body, frame, key, urgency and expects_reply a send carries
-// (SendInput), addressed to the role token rather than to a session.
+// (SendInput), addressed to the role token rather than to a session, and the post the delivery is
+// of (Post: the comment whose mention, or the message, it delivers), which the listener writes
+// into the copy it keeps and names back to Dispatch when the copy's hour ends.
 type RolePublishInput struct {
 	Role           string
+	Post           listenerwire.DispatchPost
 	Message        string
 	Payload        json.RawMessage
 	IdempotencyKey string
@@ -1053,29 +1068,51 @@ type RolePublishResult struct {
 // PublishToRole publishes a Dispatch frame on a role's topic (contracts.RoleTopicPrefix + role)
 // through the listener's publish route (cmd/listener/api.go publishHandler), asking it to keep the
 // message for the role's next holder when no live session holds the role (keep true, the route's
-// own default written out). The route answers a role publish one of three ways (roleSend): 200, a
-// live holder took it; 202, it was kept (RolePublishResult.Kept); 404, nothing was kept, which is
-// an error carrying the listener's own text that matches ErrNoRoleHolder. Every other answer and every
-// failure is Send's: a refusal the listener named is its reason alone, a 502, 503 or 504 and a
-// transport failure are ErrUnavailable and ErrUnreachable, and a publish written whose answer
-// missed the client's window is ErrReceiptTimeout, since the listener keeps or forwards the
-// message before it answers.
+// own default written out), and naming the post the publish delivers
+// (listenerwire.PublishRequest.DispatchPost). The route answers a role publish one of three ways
+// (roleSend): 200, a live holder took it; 202, it was kept (RolePublishResult.Kept); 404, nothing
+// was kept, which is an error carrying the listener's own text that matches ErrNoRoleHolder. Every
+// other answer and every failure is Send's: a refusal the listener named is its reason alone; a
+// listener outage (listenerwire.Outage: a 408, a 429, each 5xx but 500) and a transport failure
+// are ErrUnavailable and ErrUnreachable; and a publish written whose answer missed the client's
+// window is ErrReceiptTimeout, since the listener keeps or forwards the message before it answers.
+//
+// The publish names no session, and the listener keeps such a publish only for the post it names,
+// whose copy's end it tells Dispatch (internal/dispatch/outbox settles the attempt it carried); it
+// takes the post from Dispatch's own identity alone, as a send's role mark (Send). So the publish is
+// made on that identity and never on the shared token (do, marked): a publish the listener's
+// authentication refused on two tries fails here, naming the role, as Send's does. A client that
+// presents no identity (neither WithAccountTokenFile nor WithGoogleIdentity) refuses it
+// (ErrNoListenerIdentity, logged at Error) and makes no call. A listener of an earlier release
+// ignores the post and answers the publish its 404, which keeps nothing: the attempt fails with the
+// listener's text, as it did before the post existed.
 func (c *Client) PublishToRole(ctx context.Context, input RolePublishInput) (RolePublishResult, error) {
 	payload := string(input.Payload)
 	body, err := deliveryBody(sendSource, input.Message, &payload, input.IdempotencyKey, input.Urgency, input.ExpectsReply)
 	if err != nil {
 		return RolePublishResult{}, fmt.Errorf("encode POST %s body: %w", publishRoute, err)
 	}
+	if !c.presentsIdentity() {
+		err := fmt.Errorf("%w (a publish for role %s's first holder, delivering %s %s)", ErrNoListenerIdentity, input.Role, input.Post.Kind, input.Post.ID)
+		c.logger.Error("dispatch: a publish for a role's first holder is refused: this Dispatch presents no identity to the Envoy listener",
+			"role", input.Role, "post_kind", input.Post.Kind, "post_id", input.Post.ID, "error", err.Error())
+		return RolePublishResult{}, err
+	}
 	keep := true
-	response, err := c.post(ctx, publishRoute, false, listenerwire.PublishRequest{
-		MessageBody: body,
-		Topic:       contracts.RoleTopicPrefix + input.Role,
-		Keep:        &keep,
+	post := input.Post
+	response, err := c.post(ctx, publishRoute, true, listenerwire.PublishRequest{
+		MessageBody:  body,
+		Topic:        contracts.RoleTopicPrefix + input.Role,
+		Keep:         &keep,
+		DispatchPost: &post,
 	})
 	if err != nil {
 		return RolePublishResult{}, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized {
+		return RolePublishResult{}, identityRefusedError(response, publishRoute, input.Role, "a publish for a role's first holder", "the post it delivers")
+	}
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
 		err := listenerResponseError(response)
 		if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
@@ -1096,7 +1133,8 @@ func (c *Client) PublishToRole(ctx context.Context, input RolePublishInput) (Rol
 
 // post makes one POST of body, encoded as JSON, to route: the one shape both delivery routes take
 // (Send, PublishToRole), each with its listenerwire request. It is made through do, on the
-// credential do picks; marked is a send carrying a role mark, which is made on Dispatch's identity
+// credential do picks; marked is a call carrying a field the listener takes from Dispatch's
+// identity alone - a send's role mark, a role publish's post - which is made on that identity
 // alone. A request that reached no answer is sendTransportError's. Both name the key-taken answer
 // as one Dispatch reads (listenerwire.ReadsHeader).
 func (c *Client) post(ctx context.Context, route string, marked bool, body any) (*http.Response, error) {
@@ -1117,7 +1155,10 @@ func (c *Client) post(ctx context.Context, route string, marked bool, body any) 
 		written.Store(false)
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+route, bytes.NewReader(encoded))
 		if err != nil {
-			return nil, fmt.Errorf("%w: build POST %s request: %v", ErrUnavailable, route, err)
+			// url.Parse's error quotes the URL whole, and the listener's URL can carry a credential:
+			// it prints as redact.Cause prints a failure beside it, its class alone where it is no
+			// clean URL.
+			return nil, fmt.Errorf("%w: build POST %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
 		}
 		request.Header.Set("Content-Type", "application/json")
 		// Dispatch reads the key-taken answer (SendResult, RolePublishResult): a duplicate's

@@ -7,7 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // KeptExpiredSubjectPrefix begins the expiry notice of every role (KeptExpiredSubject): what
@@ -19,12 +22,64 @@ import (
 // (natsgrant.listenerGrant).
 const KeptExpiredSubjectPrefix = KeptTopicPrefix + "expired."
 
-// KeptExpiredSubject is the subject of role's expiry notices: one for each copy Dispatch's outbox
-// kept on role's kept lane (KeptRoleSubject) whose hour ended with no session taking it, which
-// the listener's walk stores as it drops that copy (cmd/listener/role_keep.go). The role name is
-// written into the subject as KeptRoleSubject writes it.
+// KeptExpiredSubject is the subject of role's expiry notices: one for each copy on role's kept
+// lane (KeptRoleSubject) that Dispatch answers for, whose hour ended with no session taking it,
+// which the listener's walk stores as it drops that copy (cmd/listener/role_keep.go): a copy
+// Dispatch's outbox kept, and a copy of Dispatch's delivery of a post that the publish route kept
+// (DispatchPostEventID), whose notice also ends that copy when the role's live holder does not
+// take its delivery mode. The role name is written into the subject as KeptRoleSubject writes it.
 func KeptExpiredSubject(role string) string {
 	return KeptExpiredSubjectPrefix + role
+}
+
+// dispatchPostEventIDPrefix begins the source_event_id of the envelope of a role publish that
+// delivers a Dispatch post (DispatchPostEventID).
+const dispatchPostEventIDPrefix = "dispatch-post:"
+
+// DispatchPostEventID is the source_event_id the listener's publish route writes into the envelope
+// it builds for a role publish that delivers post (listenerwire.PublishRequest.DispatchPost, which
+// the route takes from Dispatch's own verified principal alone): dispatch-post:<kind>:<id>. No
+// other writer of that route produces it - every other envelope the route builds carries a new id
+// of 32 hex digits (contracts.MessageEnvelope, internal/id) - and Dispatch's outbox writes its
+// event's decimal id there. So a kept copy that carries it is a delivery of Dispatch's the route
+// kept (cmd/listener, isDispatchDeliveryCopy), and the expiry notice of that copy (KeptCopyExpiry)
+// names the post by it, which Dispatch's outbox reads back (ParseDispatchPostEventID) to settle
+// the attempts of that post the copy carried. The envelope gains no field for it: the envelope's
+// schema takes none (packages/contracts/schemas/envelope.schema.json), and the plugins that read
+// envelopes only carry this one. post is one ValidDispatchPost takes, which the route checks first.
+func DispatchPostEventID(post listenerwire.DispatchPost) string {
+	return dispatchPostEventIDPrefix + post.Kind + ":" + post.ID
+}
+
+// ParseDispatchPostEventID is the post a source_event_id in DispatchPostEventID's form names, and
+// whether it is in that form: the prefix, then a kind and an id ValidDispatchPost takes, so every
+// id it takes is the one spelling DispatchPostEventID writes for its post. An outbox event's
+// decimal id, and every id the publish route mints for anything else, is in no such form. A
+// Dispatch of an earlier release reads a notice carrying it as one whose source event id is no
+// event id of its own (it is not a number), and passes it over with one Error line and its cursor
+// moved past it (internal/dispatch/outbox, recordKeptExpiry).
+func ParseDispatchPostEventID(sourceEventID string) (listenerwire.DispatchPost, bool) {
+	rest, ok := strings.CutPrefix(sourceEventID, dispatchPostEventIDPrefix)
+	if !ok {
+		return listenerwire.DispatchPost{}, false
+	}
+	kind, id, ok := strings.Cut(rest, ":")
+	post := listenerwire.DispatchPost{Kind: kind, ID: id}
+	if !ok || !ValidDispatchPost(post) {
+		return listenerwire.DispatchPost{}, false
+	}
+	return post, true
+}
+
+// ValidDispatchPost reports whether post names a Dispatch post a role publish may deliver: its kind
+// is listenerwire.DispatchPostComment or listenerwire.DispatchPostMessage, and its id a UUID in its
+// canonical lower-case form, the one Dispatch's store writes.
+func ValidDispatchPost(post listenerwire.DispatchPost) bool {
+	if post.Kind != listenerwire.DispatchPostComment && post.Kind != listenerwire.DispatchPostMessage {
+		return false
+	}
+	parsed, err := uuid.Parse(post.ID)
+	return err == nil && parsed.String() == post.ID
 }
 
 // KeptExpiryMsgID is the Nats-Msg-Id of the expiry notice of the copy stored at seq on role's
@@ -76,13 +131,17 @@ func KeptCopyAttempt(msgID, dedupeKey, role string) int {
 	return attempt
 }
 
-// KeptCopyExpiry is the body of an expiry notice (KeptExpiredSubject): a copy Dispatch's outbox
-// kept on Role's kept lane ended its hour with no session taking it, and a listener's walk dropped
-// it. It names the copy's envelope by its EventID and SourceEventID - the outbox's own event id,
-// which Dispatch reopens the event's delivery to the role by - the Attempt it was kept for
-// (KeptCopyAttempt), its DedupeKey, the stream Sequence it was stored at on the kept lane, which is
-// where Dispatch reads the copy back to keep it again, and the Unix-millisecond times the stream
-// stored it (KeptAt) and the walk dropped it (DroppedAt).
+// KeptCopyExpiry is the body of an expiry notice (KeptExpiredSubject): a copy on Role's kept lane
+// that Dispatch answers for ended with no session taking it, and a listener's walk dropped it -
+// a copy Dispatch's outbox kept, at the end of its hour, or a copy of Dispatch's delivery of a
+// post the publish route kept, at the end of its hour or when the role's live holder does not
+// take its delivery mode. It names the copy's envelope by its EventID and SourceEventID - for an
+// outbox copy the outbox's own event id, which Dispatch reopens the event's delivery to the role
+// by, and for a delivery's copy the post it delivers (DispatchPostEventID), whose attempts that
+// copy carried Dispatch settles undelivered - the Attempt it was kept for (KeptCopyAttempt), its
+// DedupeKey, the stream Sequence it was stored at on the kept lane, which is where Dispatch reads
+// the copy back, and the Unix-millisecond times the stream stored it (KeptAt) and the walk dropped
+// it (DroppedAt).
 //
 // It lives here, as KeptRoleCursor does, because the listener writes it and Dispatch's outbox
 // reads it: a body each spelled out for itself would decode a drifted tag as zero.

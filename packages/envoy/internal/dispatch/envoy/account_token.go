@@ -37,16 +37,18 @@ func (accountTokenError) Is(target error) bool {
 
 func (e accountTokenError) Unwrap() error { return e.error }
 
-// ErrNoListenerIdentity is a send for a role this client refused because Dispatch has no identity
-// to present to the listener, which takes a role mark from Dispatch's own identity alone: neither
-// WithAccountTokenFile nor WithGoogleIdentity is set. A send for a role is never made unmarked,
-// since the session that takes the role from its holder would not receive it, so it is refused,
-// loudly, and the delivery records this error, which names the setting that gives Dispatch an
-// identity. It is not ErrUnavailable: no try repeats it until an operator sets that identity. A
-// machine with WithGoogleIdentity set and no Google metadata server is refused at Dispatch's start
-// instead (CheckGoogleIdentity), so a metadata server that does not answer at a call is a failure
-// of that call (ErrAccountToken), never this.
-var ErrNoListenerIdentity = errors.New("envoy: this Dispatch presents no identity to the Envoy listener, which takes a send's role mark from Dispatch's own identity alone; set ENVOY_ACCOUNT_TOKEN_FILE to Dispatch's service-account token for the listener's audience, or on Google Cloud ENVOY_ACCOUNT_GOOGLE_AUDIENCE to the listener's ENVOY_OIDC_GOOGLE_AUDIENCE (packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\")")
+// ErrNoListenerIdentity is a send for a role, or a publish for a role's first holder, this client
+// refused because Dispatch has no identity to present to the listener, which takes a send's role
+// mark and a role publish's post from Dispatch's own identity alone: neither WithAccountTokenFile
+// nor WithGoogleIdentity is set. A send for a role is never made unmarked, since the session that
+// takes the role from its holder would not receive it, and a publish for a role's first holder is
+// never made without its post, which the listener would not keep (Send, PublishToRole), so each is
+// refused, loudly, and the delivery records this error, which names the setting that gives
+// Dispatch an identity. It is not ErrUnavailable: no try repeats it until an operator sets that
+// identity. A machine with WithGoogleIdentity set and no Google metadata server is refused at
+// Dispatch's start instead (CheckGoogleIdentity), so a metadata server that does not answer at a
+// call is a failure of that call (ErrAccountToken), never this.
+var ErrNoListenerIdentity = errors.New("envoy: this Dispatch presents no identity to the Envoy listener, which takes a send's role mark, and the post a publish for a role's first holder delivers, from Dispatch's own identity alone; set ENVOY_ACCOUNT_TOKEN_FILE to Dispatch's service-account token for the listener's audience, or on Google Cloud ENVOY_ACCOUNT_GOOGLE_AUDIENCE to the listener's ENVOY_OIDC_GOOGLE_AUDIENCE (packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\")")
 
 // CheckGoogleIdentity is Dispatch's start-time check of ENVOY_ACCOUNT_GOOGLE_AUDIENCE: the machine
 // must have a Google metadata server to mint its identity token (googleidentity.Probe). A machine

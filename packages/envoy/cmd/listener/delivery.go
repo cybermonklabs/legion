@@ -107,17 +107,20 @@ type listenerDeliveryHandlerConfig struct {
 	// role, under two labels: kept_by, listener or dispatch_outbox for a copy Dispatch's outbox
 	// kept (isOutboxCopy), and stale, true for a copy no walk had claimed whose hour ended more
 	// than an hour before the walk that dropped it (roleKeepStaleAge). A listener copy dropped
-	// with stale false is one whose sender is sent a dead letter when its publish named one, so
+	// with stale false is one whose sender is sent a dead letter when its publish named one, or
+	// Dispatch an expiry notice for a copy of its delivery of a post (isDispatchDeliveryCopy), so
 	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
 	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped
 	// (envoy_role_dead_letters_total, endKeptCopyWithDeadLetter), under the label result: stored
 	// for one the stream took, refused for one it refused for good, which is not sent again.
 	roleDeadLetters *metrics.Counter
-	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch's
-	// outbox kept that it dropped at the end of its hour (envoy_role_kept_expiry_notices_total,
-	// endKeptCopyWithExpiryNotice), under the label result: stored for one the stream took, refused for
-	// one it refused for good, which is not sent again.
+	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch
+	// answers for that it dropped (envoy_role_kept_expiry_notices_total,
+	// endKeptCopyWithExpiryNotice): a copy Dispatch's outbox kept, at the end of its hour, and a
+	// copy of Dispatch's delivery of a post, at the end of its hour or when the role's live holder
+	// does not take its delivery mode. It counts under the label result: stored for one the stream
+	// took, refused for one it refused for good, which is not sent again.
 	roleKeptExpiryNotices *metrics.Counter
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
@@ -146,12 +149,13 @@ type listenerDeliveryHandlerConfig struct {
 	// while a test that must fail a dead letter's publish alone, with the cursor's writes going
 	// through, replaces it on its copy.
 	publishDeadLetter func(ctx context.Context, subject string, item contracts.Envelope, msgID string) error
-	// publishExpiryNotice stores notice, the expiry notice of a copy Dispatch's outbox kept whose
-	// hour ended, on its role's expiry subject under the copy's own message id, and returns the
-	// stream's refusal or failure; a duplicate the stream drops is no error
-	// (endKeptCopyWithExpiryNotice). main.go sets it to client.PublishKeptCopyExpiry, and so does
-	// every test that builds a config, while a test that stops a walk at the notice - before it, or
-	// after it and before the confirm - replaces it on its copy.
+	// publishExpiryNotice stores notice, the expiry notice of a copy Dispatch answers for that a
+	// walk dropped (an outbox copy, or a copy of Dispatch's delivery of a post), on its role's
+	// expiry subject under the copy's own message id, and returns the stream's refusal or
+	// failure; a duplicate the stream drops is no error (endKeptCopyWithExpiryNotice). main.go
+	// sets it to client.PublishKeptCopyExpiry, and so does every test that builds a config, while
+	// a test that stops a walk at the notice - before it, or after it and before the confirm -
+	// replaces it on its copy.
 	publishExpiryNotice func(ctx context.Context, notice bus.KeptCopyExpiry) error
 	// unplaceableRetryWindow is how long an agent delivery this listener cannot place is held
 	// in the stream and redelivered before it is given up with a record of its own

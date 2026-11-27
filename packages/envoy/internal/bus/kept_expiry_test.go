@@ -1,6 +1,11 @@
 package bus
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/listenerwire"
+)
 
 // The attempt a kept copy was kept for is read back from the message id it was stored under
 // exactly as Dispatch's outbox wrote it: the first keep is the id the listener keeps the same
@@ -39,5 +44,45 @@ func TestAKeptCopysAttemptIsReadBackFromItsMessageID(t *testing.T) {
 	}
 	if got, want := KeptExpiredSubject(role), "notifications.envoy.kept.expired.reviewer"; got != want {
 		t.Errorf("KeptExpiredSubject = %q, want %q", got, want)
+	}
+}
+
+// The source_event_id the publish route writes for a Dispatch delivery names its post in one
+// spelling that reads back as that post, and no source event id any other writer produces reads
+// as a post: the decimal id of an outbox event, the 32 hex digits the route mints for every other
+// envelope, and a post spelled any other way - another kind, a UUID in upper case, in braces or
+// as a URN, no id, no kind.
+func TestADeliverysSourceEventIDNamesItsPostInOneSpellingAlone(t *testing.T) {
+	t.Parallel()
+	for _, post := range []listenerwire.DispatchPost{
+		{Kind: listenerwire.DispatchPostComment, ID: "6f1c2b9a-4d3e-4f5a-8b7c-9d0e1f2a3b4c"},
+		{Kind: listenerwire.DispatchPostMessage, ID: "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d"},
+	} {
+		if !ValidDispatchPost(post) {
+			t.Fatalf("ValidDispatchPost(%+v) is false, want true", post)
+		}
+		encoded := DispatchPostEventID(post)
+		if got, ok := ParseDispatchPostEventID(encoded); !ok || got != post {
+			t.Fatalf("ParseDispatchPostEventID(%q) = %+v, %v; want %+v", encoded, got, ok, post)
+		}
+	}
+	const comment = "6f1c2b9a-4d3e-4f5a-8b7c-9d0e1f2a3b4c"
+	for _, sourceEventID := range []string{
+		"",
+		"42",
+		id.New(),
+		"dispatch-post:",
+		"dispatch-post:comment",
+		"dispatch-post:comment:",
+		"dispatch-post::" + comment,
+		"dispatch-post:ask:" + comment,
+		"dispatch-post:comment:6F1C2B9A-4D3E-4F5A-8B7C-9D0E1F2A3B4C",
+		"dispatch-post:comment:{" + comment + "}",
+		"dispatch-post:comment:urn:uuid:" + comment,
+		"dispatch-post:comment:" + comment + ":again",
+	} {
+		if post, ok := ParseDispatchPostEventID(sourceEventID); ok {
+			t.Errorf("ParseDispatchPostEventID(%q) = %+v, want no post", sourceEventID, post)
+		}
 	}
 }

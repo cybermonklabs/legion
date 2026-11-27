@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  Dispatch settles a delivery the listener kept for a role's first holder when no session takes
+  it. Its publish for such a role now names the comment or message it delivers (`dispatch_post`)
+  and is made on Dispatch's own identity alone (`ENVOY_ACCOUNT_TOKEN_FILE` or
+  `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`): a Dispatch with neither refuses it, and the attempt fails
+  naming those settings, and an identity the listener refuses on two tries fails it naming the
+  role, never retried on the shared token. The attempt records `queued` while the listener keeps
+  the copy. When the listener's expiry notice of that copy arrives - its hour ended with no
+  session taking it, or the role's live holder does not take its delivery mode - the outbox
+  settles every attempt of that post the copy carried that nobody answered (`queued`, no session
+  pinned, no reply) as `failed`, with the error "The Envoy listener kept this message for the
+  role, and no session took it before the listener dropped it." and no envelope, so the dashboard
+  offers Retry, and appends one `comment.delivery` or `message.delivery` receipt for each, written
+  by the outbox's own system actor. An attempt a session already answered is left as it is, a
+  repeated notice settles nothing twice, and a notice naming a post the store does not hold is
+  passed over with one Error line. Nothing is kept again and no `outbox_role_copy_expiries` row is
+  written for it. With a listener of an earlier release, which ignores the post, the publish is
+  answered `404` and the attempt fails with the listener's text, as before. No migration.
+time: 2026-11-27T05:43:46.000000000Z
+custom:
+    Issue: pr2230

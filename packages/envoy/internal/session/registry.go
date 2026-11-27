@@ -1315,17 +1315,21 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 //     registration of a declared predecessor (roleSupersessionVerdict);
 //   - the Legion hand-off's read of the stopped agent it would hand a message to its daemon for
 //     (legionHandoff.handOffToLegion);
-//   - the three resolutions of a role's holder that read through leaderHolderSessions: the
-//     publish route's confirmation of a miss before it hands the message off
-//     (roleSend.missConfirmed), the marked send's resolution before it hands the send off or
-//     keeps it (handOffOrKeepRoleSend), and the kept lane handover's (handOverKeptRole).
+//   - the resolutions of a role's holder that act on a holder they read as not live: through
+//     leaderOnlyHolderSessions, which reads every holder here (bucketSessionEntry), each
+//     resolution of a publish whose keep would tell nobody (roleSend.resolve), the publish
+//     route's confirmation of a miss before it hands the message off (roleSend.missConfirmed)
+//     and the marked send's resolution before it hands the send off or keeps it
+//     (handOffOrKeepRoleSend); through leaderHolderSessions, for a holder the cache does not
+//     show live, the kept lane handover's (handOverKeptRole).
 //
 // A copy that has not applied a relaunch's registration, or the registration of a session that
 // took a role a moment ago, would answer that read "not found": the delete would then remove the
 // consumer of a live relaunch, whose relay stops until it registers again, the reaper a live
 // session's interest or role, the soft claim a live holder's role, the hand-off would give a live
-// session's message to its daemon, and a resolution would read a live holder as lapsed, handing
-// its message to the daemon of the role's stopped agent or leaving its kept copy on the lane.
+// session's message to its daemon, and a resolution would read a live holder as lapsed, refusing
+// its message with nothing kept, handing it to the daemon of the role's stopped agent, or leaving
+// its kept copy on the lane.
 //
 // The other two read a registration for its client instance id, which an entry a copy has not
 // caught up with can lack or carry stale (bucketSessionEntry): the claimant's own registration in
