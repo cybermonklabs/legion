@@ -1,6 +1,7 @@
 package docstest
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
+	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -78,10 +80,16 @@ func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
 	}
 	got := testwait.Receive(t, "the room's read of the peer's write on the socket the reader gave up on", received)
 	if got.err != nil {
-		t.Fatalf("the room's read of the peer's write failed, so the socket was not open: %v", got.err)
+		t.Fatalf("the room's read of the peer's write returned an error: %v", got.err)
 	}
-	if len(got.message) == 0 {
-		t.Fatal("the room read an empty frame where the peer's sync step 1 should be")
+	// AskForDocument sends a sync step 1 naming no state, in the peer's Hocuspocus frame.
+	want := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString("doc")
+		encoder.WriteVarUint(messageSync)
+		encoder.WriteRaw(ygsync.EncodeSyncStep1(crdt.New()))
+	})
+	if !bytes.Equal(got.message, want) {
+		t.Fatalf("the room read %x, want the peer's sync step 1 frame %x", got.message, want)
 	}
 }
 
