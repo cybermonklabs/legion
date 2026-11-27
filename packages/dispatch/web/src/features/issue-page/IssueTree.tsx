@@ -579,17 +579,25 @@ export function IssueTree({
       above.some((one) => held.has(one)) ? withoutIds(held, above) : held
     );
   }, []);
-  // Unfolds the path down to one node where the tree stands, zooming nowhere (`unfoldPath`), and
-  // the row takes the focus once this render has drawn it. Answers the ids above the node, the
-  // outermost first.
-  const unfoldTo = useCallback(
+  // Unfolds the path down to one node where the tree stands, zooming nowhere and moving no focus
+  // (`unfoldPath`). Answers the ids above the node, the outermost first.
+  const unfoldAbove = useCallback(
     (id: string): readonly string[] => {
       const above = (pathTo(root, id) ?? []).slice(0, -1).map((node) => node.id);
       unfoldPath(above);
-      setWanted(id);
       return above;
     },
     [root, unfoldPath]
+  );
+  // Unfolds the path down to one node (`unfoldAbove`), and the row takes the focus once this
+  // render has drawn it. Answers the ids above the node, the outermost first.
+  const unfoldTo = useCallback(
+    (id: string): readonly string[] => {
+      const above = unfoldAbove(id);
+      setWanted(id);
+      return above;
+    },
+    [unfoldAbove]
   );
   // Takes the reader to one node, wherever it is: the path down to it is unfolded, a zoom it
   // sits outside of is left, and the row takes the focus once this render has drawn it.
@@ -1204,14 +1212,15 @@ export function IssueTree({
   // of theirs already under it are noted first and the one that is new is gone to once a read
   // draws it. A read that never draws one where it was looked for - a filter's view that holds
   // no such row - leaves the reader on their newest node there, or on the row they wrote under.
-  // Either way only while they have not acted since the landing began (`READER_ACTS`,
-  // `landingActs`): a reader who pressed another row or the title's editor while the read was
-  // out is going somewhere of their own, so the focus stays where they put it, and the read that
-  // draws the node, or the fallback's wait, only ends the landing. The line asks for none where
-  // they moved on while the send itself was out (`IssueComposer.tsx`'s `finish`). A landing the
-  // writer already holds as the tree mounts was asked for while no outline was drawn - under a
-  // view drawn in its place, or before a reload - so the reader has been elsewhere since, and it
-  // ends with the focus where it is. Each landing goes to its node as `reach` does and notes
+  // The focus moves only while the reader has not moved on: not while the send was out
+  // (`Landing.movedOn`, from `IssueComposer.tsx`'s `finish`), and not since the landing began
+  // (`READER_ACTS`, `landingActs`). A reader who pressed another row or the title's editor is
+  // going somewhere of their own, so the focus stays where they put it; what they wrote is drawn
+  // all the same, its branch unfolded with no zoom (`unfoldAbove`), and the fallback's wait,
+  // which finds nothing new drawn, only ends the landing. A landing the writer already holds as
+  // the tree mounts was asked for while no outline was drawn - under a view drawn in its place,
+  // or before a reload - so the reader has been elsewhere since, and it ends with the focus
+  // where it is. Each landing that takes the focus goes to its node as `reach` does and notes
   // that node (`landedOn`): a read that drops its row before the reader's next key or press is
   // their write's (`heldRow`).
   const landing = writer?.landing;
@@ -1247,7 +1256,8 @@ export function IssueTree({
     }
     if (landing.to === "self") {
       line.landed();
-      reachWritten(parent.id);
+      if (landing.movedOn === true) unfoldAbove(parent.id);
+      else reachWritten(parent.id);
       return;
     }
     const own = parent.children.filter((child) => readerWrote(child, reader));
@@ -1260,9 +1270,12 @@ export function IssueTree({
     if (made === undefined) return;
     line.landed();
     const acts = landingActs.current;
-    if (acts?.landing === landing && acts.acted.aborted) return;
+    if (landing.movedOn === true || (acts?.landing === landing && acts.acted.aborted)) {
+      unfoldAbove(made.id);
+      return;
+    }
     reachWritten(made.id);
-  }, [landing, reachWritten, reader, root]);
+  }, [landing, reachWritten, reader, root, unfoldAbove]);
   useEffect(() => {
     if (landing === undefined || landing === heldAtMount.current) return;
     const acted = abortOnReaderAct();
@@ -1270,7 +1283,7 @@ export function IssueTree({
     const late = window.setTimeout(() => {
       const now = latest.current;
       now.writer?.landed();
-      if (acted.signal.aborted) return;
+      if (acted.signal.aborted || landing.movedOn === true) return;
       const parent = landingParent(now.root, landing.under);
       if (parent === undefined) return;
       const newest = parent.children

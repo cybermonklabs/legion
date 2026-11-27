@@ -1619,6 +1619,54 @@ test.each(["bob's comment's row", "the title's editor"] as const)(
   }
 );
 
+// F1's rule leaves the focus where the reader put it and nothing else: what they wrote is drawn
+// all the same. A reply under bob's comment, a thread folded shut, is drawn once the read that
+// holds it answers, its branch unfolded, whether the reader moved to their own comment's row
+// while the reply was out or after it landed, while its read was out; the focus stays on that
+// row. The tester's browser row found the reply drawn nowhere: the landing the box asks for is
+// what unfolds its branch, and the box asked for none.
+test.each(["while it is out", "after it landed, while its read is out"] as const)(
+  "a reply under a folded thread is drawn once its read answers, and the focus stays on the row the reader moved to %s",
+  async (when) => {
+    const user = userEvent.setup();
+    const out = Promise.withResolvers<CommentWithTrees>();
+    const createComment = stub(spyOn(api, "createComment").mockImplementation(() => out.promise));
+    const drawn = outline();
+    const page = renderPage({}, drawn);
+    const moveOn = async () => {
+      await user.click(rowOf("comment-2"));
+      await waitFor(() => expect(focusedRowId()).toBe("comment-2"));
+    };
+
+    await page.press(user, "comment-1", "r");
+    await waitFor(() => expect(writeField()).toHaveFocus());
+    await user.keyboard("Under the fold{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    if (when === "while it is out") await moveOn();
+    await act(async () =>
+      out.resolve(commentRecord("comment-9", ALICE, "Under the fold", { reply_to: "comment-1" }))
+    );
+    // The send has landed once its draft is cleared.
+    await waitFor(() => expect(writeField()).toHaveValue(""));
+    if (when !== "while it is out") await moveOn();
+    // The read answers with the reply under bob's comment, whose thread nothing has opened.
+    page.redrawOutline({
+      ...drawn,
+      children: drawn.children.map((child) =>
+        child.id === "comment-1"
+          ? { ...child, children: [commentNode("comment-9", ALICE, "Under the fold")], held: 1 }
+          : child
+      ),
+    });
+    await waitFor(() => rowOf("comment-9"));
+    expect(
+      focusedRowId(),
+      `the reply was drawn and took the focus from the row the reader moved to ${when}`
+    ).toBe("comment-2");
+    expect(page.writer().landing).toBeUndefined();
+  }
+);
+
 // F1's rule for a reply, with a document open beside the outline, where the box hides once its
 // target ends: a reader who opened the title's editor while the reply was out keeps the caret
 // there once the outline draws the reply. A focus that fell to the page's body while a comment on

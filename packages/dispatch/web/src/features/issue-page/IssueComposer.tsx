@@ -379,8 +379,8 @@ interface LinePlace {
    *  noted in the task that started it (`sentFrom`). A reader who has moved on - to another row,
    *  the title's editor, Details - keeps where they went: otherwise the landing or the focus given
    *  back would take the caret out of a field they were typing in, as `AgentMessageComposer`'s
-   *  `refocusComposer` and the outline's late landing (`IssueTree.tsx`) leave such a focus. Every
-   *  end of the line but a send's is the reader's own press in the box, which holds the focus. */
+   *  `refocusComposer` and the outline's landing (`IssueTree.tsx`) leave such a focus. Every end
+   *  of the line but a send's is the reader's own press in the box, which holds the focus. */
   readonly focusStays: () => boolean;
   /** Gives the focus back to where the reader came to the box from, once the commit that ends
    *  the line's target has drawn. */
@@ -396,15 +396,15 @@ interface LinePlace {
  * Ends the line's target and puts the reader back: on the outline, on the row `landing` names
  * once its read draws it (R4); under a view, where no outline is drawn to consume a landing and
  * one would act on the outline the next time it mounts, where the reader came to the box from.
- * Only while the focus is still where the line left it (`LinePlace.focusStays`): a reader who
- * moved on while a send was out is left where they went, the line asks for no landing, and one it
- * asked for before is ended (`OutlineWriter.landed`), so no read the send makes takes them back.
+ * The focus moves only while it is still where the line left it (`LinePlace.focusStays`): for a
+ * reader who moved on while a send was out, the outline still draws what they wrote, its branch
+ * unfolded, and leaves the focus where they went (`Landing.movedOn`), and under a view no focus
+ * is given back.
  */
 function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void {
   const stays = place.focusStays();
   if (place.outlineDrawn) {
-    if (stays) writer.land(landing);
-    else writer.landed();
+    writer.land(stays ? landing : { ...landing, movedOn: true });
     writer.clear();
     return;
   }
