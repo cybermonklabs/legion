@@ -194,7 +194,9 @@ step (on a parent, once nothing holds it, `retro-held`). Every started role keep
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge puts the
 child in `verifying`. Its first fresh read opens the production check in the tester's own session
-and on the pull request. The issue closes only after that check passes. It asks nothing of you. A
+and on the pull request, where the project opens one. That check asks nothing of you. The child
+waits in `verifying` and closes only after its Verification checks pass, and after that production
+check passes where there is one. A
 tester completion that rejects the implementer's results goes back to the implementer, or to the
 earlier step its completion names;
 a worker that reports

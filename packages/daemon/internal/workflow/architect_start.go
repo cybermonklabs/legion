@@ -372,8 +372,8 @@ func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
 		"Decompose nothing and release no child.",
 		start.Root.Key, start.Root.Phase, ArchitectCarriedPhaseLabel, gate)
 	if start.PhaseFinished {
-		task.WriteString(" Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
-			"there until the rest of its tree has left the workflow, when the daemon closes it.")
+		task.WriteString(" Its pull request has merged, so the daemon starts no worker for that phase. The root moves into " +
+			"verifying, where it waits for its checks and the rest of its tree before the daemon closes it.")
 		return
 	}
 	switch phase.RoleFor(start.Root.Phase) {

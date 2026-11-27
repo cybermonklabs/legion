@@ -92,9 +92,10 @@ func TestTheComposedPromptsTellEveryArchitectToWriteTheProductionCheck(t *testin
 }
 
 // A production check that finds no `after_merge` check on its issue records no result and writes
-// no check, since a closed issue refuses every new document, and names the gap in its
-// pull-request comment and its report, as a named gap and never a failure (dispatch://INFRA-175
-// R8). The tester works the production check (dispatch://INFRA-809), so each of its three parts
+// no check, since an open issue's checks are the architect's to write and a closed issue refuses
+// every new document, and names the gap in its pull-request comment and its report, as a named gap
+// and never a failure (dispatch://INFRA-175 R8). The tester works the production check
+// (dispatch://INFRA-809), so each of its three parts
 // that hold the check carries the rule; a check opened before that release keeps the implementer,
 // so each of the implementer's two paragraphs on such a check carries it too. Each part holds it
 // once, and the composed prompt of each role carries it. Removing it from the implementer's part,

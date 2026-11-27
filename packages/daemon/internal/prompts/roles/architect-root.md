@@ -169,7 +169,8 @@ Register each on this issue's own document for that step. The tree's work waits 
 those gates, and when a gate's `design-approved` arrives, start nothing. In `merging` the work is
 already through every gate and may have merged, so register no document and ask no human to approve
 one. The merge puts the issue in `verifying`. Its first fresh read opens the production check in
-the tester's session, where the project opens one. The issue closes only after that check passes.
+the tester's session, where the project opens one. The issue waits in `verifying` and closes only
+after its Verification checks pass, and after that production check passes where there is one.
 
 Necessary work remains your responsibility until it is complete, and deferral is not allowed.
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
@@ -215,10 +216,11 @@ A decision you send a role about a task is such a reply too: write it in that ta
 first, then send its link. A role acts on no decision that has no Dispatch record, so a decision
 you send by message alone comes back to you as a request to write it there.
 
-The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
-writes `done`, except that a root whose tree still runs, and a child with an issue beneath it still
-in the workflow, first wait in `merging` for those issues (below); the production check, where the
-project opens one, follows in the tester's own session, on the pull request, asking nothing of you. Your acceptance comes before it where the issue's task holds your
+The merge does not close the issue: once a pull request merges while its issue awaits the merge,
+the daemon puts the issue in `verifying`. It closes only after its Verification checks pass and
+every issue beneath it has left the workflow. Where the project opens a production check, the issue
+also waits for that check to pass. That check runs in the tester's own session, on the pull request,
+and asks nothing of you. Your acceptance comes before the merge where the issue's task holds your
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
@@ -258,7 +260,7 @@ that part with a check on the child's own Verification document whose `serves` n
 requirement, which clears the root's coverage flag for it. The root's own checks are proven after
 the merges of every child its checks need, at the root's own head, or on the default branch where
 its pull request merged before those merges; no `after_merge` result is asked there, since the
-production check records it after the close.
+production check records it after the merge, while the issue waits in `verifying`.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 that a tester step and a reviewer step name and neither refuses, so your acceptance is the only
 gate on it: give such an issue the step `acceptance:owner`, and
