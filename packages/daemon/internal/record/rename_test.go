@@ -113,7 +113,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		}
 		left := renameLeft(t, ctx, tx, "LEGION", from)
 		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableClearedPullRequests: 1, RenameTableProductionChecks: 1,
-			RenameTableRepoNotes: 2}; !reflect.DeepEqual(left, want) {
+			RenameTableRepoNotes: 2, RenameTableMergeSnapshot: 0}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s before the write = %v, want %v", from, left, want)
 		}
 	})
@@ -146,7 +146,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 			t.Fatalf("OTHER-9's note = %v, want another project's note left on %s", got, from)
 		}
 		none := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableClearedPullRequests: 0, RenameTableProductionChecks: 0,
-			RenameTableRepoNotes: 0}
+			RenameTableRepoNotes: 0, RenameTableMergeSnapshot: 0}
 		if left := renameLeft(t, ctx, tx, "LEGION", from); !reflect.DeepEqual(left, none) {
 			t.Fatalf("rows on %s after the write = %v, want none", from, left)
 		}
@@ -161,7 +161,9 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 // Where the new name would give pull_requests_repo_branch one repository and branch twice — another
 // issue's pull request already holds the branch under the new name, in any spelling — the issue's
 // row under the old name is deleted and the other's stays, and the deletion names both issues; the
-// issue's other rows are written as ever. Control: with the collision read removed, the update of
+// issue's other rows are written as ever. The deletion is a clear's (clearPullRequests), so the
+// deleted row's clock stands under the new name, beside the merge it saved
+// (TestARenameKeepsTheDeletedIssuesMerge). Control: with the collision read removed, the update of
 // the row fails on the unique index and the issue's whole write with it.
 func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *testing.T) {
 	ctx := context.Background()
@@ -181,12 +183,13 @@ func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *tes
 	if !reflect.DeepEqual(written.Deleted, want) {
 		t.Fatalf("deleted = %+v, want %+v", written.Deleted, want)
 	}
-	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 {
-		t.Fatalf("rows written = %v, want the record, the check and the note, and no pull request", rows)
+	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 ||
+		rows[RenameTableRepoNotes] != 1 || rows[RenameTableClearedPullRequests] != 1 || rows[RenameTableMergeSnapshot] != 1 {
+		t.Fatalf("rows written = %v, want the record, the check, the note, the kept clock and the saved merge, and no pull request", rows)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		if got, want := storedNames(t, ctx, tx, "LEGION-1"), map[string]string{"issues.repo": to, "issues.github_repo": to,
-			"production_checks.repo": to, "repo_notes.resolved_repo": to}; !reflect.DeepEqual(got, want) {
+			"production_checks.repo": to, "repo_notes.resolved_repo": to, "cleared_pull_requests.repo": to}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-1's names = %v, want %v and no pull request", got, want)
 		}
 		if got := storedNames(t, ctx, tx, "LEGION-2")["pull_requests.repo"]; got != to {

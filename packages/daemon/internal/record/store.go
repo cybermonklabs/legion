@@ -827,6 +827,14 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	if !merge.Merged() {
 		return false, fmt.Errorf("record the merge of %s: a merge names the pull request that merged", issue)
 	}
+	// A merge is positive evidence, and positive evidence wins over a person's confirmation that
+	// the work never merged: the confirmation goes, whether or not this merge replaces the stored
+	// one (ConsumeNeverMergedConfirmation).
+	cleared, err := tx.Exec(ctx, `update issues set never_merged_confirmed = false where key = $1 and never_merged_confirmed`, issue)
+	if err != nil {
+		return false, fmt.Errorf("record the merge of %s: take its never-merged confirmation: %w", issue, err)
+	}
+	noteRowsWritten(ctx, cleared)
 	var mergedAt any
 	if !merge.MergedAt.IsZero() {
 		mergedAt = merge.MergedAt
@@ -852,15 +860,30 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	return false, nil
 }
 
-// ConfirmNeverMerged records that a person confirmed the work of issue key never merged.
+// ConfirmNeverMerged records, on issue key's row, that a person confirmed its work never merged
+// (issues.never_merged_confirmed), and refuses a key the record holds no issue of.
 func (s *Postgres) ConfirmNeverMerged(ctx context.Context, tx pgx.Tx, key string) error {
+	tag, err := tx.Exec(ctx, `update issues set never_merged_confirmed = true where key = $1`, key)
+	if err != nil {
+		return fmt.Errorf("confirm that the work of %s never merged: %w", key, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("confirm that the work of %s never merged: the issue has no record", key)
+	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
-// ConsumeNeverMergedConfirmation takes issue key's confirmation that its work never merged, and
-// answers whether one stood.
+// ConsumeNeverMergedConfirmation takes issue key's confirmation that its work never merged, in one
+// statement, and answers whether one stood: the statement that finds it true sets it false, so
+// one confirmation allows one rerun.
 func (s *Postgres) ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
-	return false, nil
+	tag, err := tx.Exec(ctx, `update issues set never_merged_confirmed = false where key = $1 and never_merged_confirmed`, key)
+	if err != nil {
+		return false, fmt.Errorf("take the never-merged confirmation of %s: %w", key, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return tag.RowsAffected() == 1, nil
 }
 
 // phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
@@ -1997,9 +2020,24 @@ func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue s
 	if err := s.clearPullRequests(ctx, tx, now, "issue = $1 and state <> 'open'", issue); err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
+	if err := clearNeverMergedConfirmations(ctx, tx, "key = $1", issue, describe); err != nil {
+		return err
+	}
 	return clearRun(ctx, tx, "issue = $1",
 		"issue = $1 and not (role = '"+string(claim.RoleArchitect)+"' and exists (select 1 from issues root where root.key = $1 and root.tree = root.key))",
 		issue, describe)
+}
+
+// clearNeverMergedConfirmations resets the never-merged confirmation of each issue issues selects,
+// with key as $1: a clear starts a generation, and a confirmation given for the one it leaves
+// authorizes nothing of the next (ConsumeNeverMergedConfirmation).
+func clearNeverMergedConfirmations(ctx context.Context, tx pgx.Tx, issues, key, describe string) error {
+	tag, err := tx.Exec(ctx, "update issues set never_merged_confirmed = false where never_merged_confirmed and "+issues, key)
+	if err != nil {
+		return fmt.Errorf("%s: reset the never-merged confirmation: %w", describe, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return nil
 }
 
 // clearGeneration deletes the pull requests pullRequests selects (clearPullRequests), and runs each
@@ -2010,6 +2048,9 @@ func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue s
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, pullRequests, where, issues, key, describe string, now time.Time) error {
 	if err := s.clearPullRequests(ctx, tx, now, pullRequests, key); err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if err := clearNeverMergedConfirmations(ctx, tx, issues, key, describe); err != nil {
+		return err
 	}
 	if err := clearRun(ctx, tx, where, where, key, describe); err != nil {
 		return err
