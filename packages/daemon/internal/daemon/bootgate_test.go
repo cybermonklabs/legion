@@ -856,6 +856,7 @@ func budgetPassedOnceTheProbeIsGone(leader string, timeout time.Duration, until 
 		run, pass, cancel := testwait.StandInDeadline(ctx)
 		go func() {
 			defer close(watch.done)
+			time.Sleep(2 * time.Second) // CONTROL ONLY: the watch of the budget starts 2 s late.
 			if watch.gone = testwait.Holds(time.Until(until), testwait.Poll, gone); watch.gone {
 				pass(context.DeadlineExceeded)
 				return
