@@ -21,8 +21,11 @@ or anchors a path on its own source with runtime.Caller - and finds in them thre
     at a go.mod, go.work, .git, .jj or .github; its root is the nearest directory above the package
     that holds what it stops at. A start traced to nowhere (a parameter, another call) is the root of
     each climb of the same file, in a file that climbs; a temporary directory is nothing of the
-    repository. A part this cannot read (a variable, a call) puts the path anywhere below where it
-    had got to, and a literal after it makes a glob of it;
+    repository. In a walk's start, a part this cannot read (a variable, a call) puts the path
+    anywhere below where it had got to, and a literal after it makes a glob of it. In a file a Join
+    reads, the later parts are resolved the same way (a constant from any file of the package), and
+    one that cannot be (a field, a list in a struct) stands for each path literal of the package's
+    own test files that no comparison holds a value to;
   * an envoy command a test builds through testbuild.EnvoyBinary, which runs go build in
     packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#envoyModule`).
 
@@ -89,8 +92,15 @@ ANCHORS = ("go.mod", "go.work", ".git", ".github", ".jj")
 FUNC = re.compile(r"^func\s+(?:\([^)]*\)\s*)?(\w+)", re.M)
 ENTRY = re.compile(r"^(?:Test|Fuzz|Example|Benchmark)")
 NAME = re.compile(r"\b[A-Za-z_]\w*\b")
-# A string constant of the file, as a path a Join may take: `name = "..."`, in a const block or not.
-CONSTANT = re.compile(r'^\s*(?:const\s+)?(\w+)(?:\s+string)?\s*=\s*("(?:[^"\\\n]|\\.)*"|`[^`]*`)\s*$', re.M)
+# A string constant of the file, as a path a Join may take: a top-level `const name = "..."`, or an
+# entry of a top-level `const (...)` block. An assignment inside a function is no constant: it can
+# be a parameter's or a variable's, which only its own function's assignments and callers say.
+CONST_LINE = re.compile(r'^const\s+(\w+)(?:\s+string)?\s*=\s*("(?:[^"\\\n]|\\.)*"|`[^`]*`)\s*(?://.*)?$', re.M)
+CONST_BLOCK = re.compile(r"^const\s*\((.*?)^\)", re.M | re.S)
+CONST_ENTRY = re.compile(r'^\s*(\w+)(?:\s+string)?\s*=\s*("(?:[^"\\\n]|\\.)*"|`[^`]*`)\s*(?://.*)?$', re.M)
+# A literal a comparison holds a value to (`x != "a/b"`, `"a/b" == x`): a value checked, not a path read.
+COMPARED = re.compile(r"[!=]=\s*$")
+COMPARED_AFTER = re.compile(r"\s*[!=]=")
 # A wrapper that leaves where a path is as it is.
 UNWRAP = re.compile(r"^(?:filepath\.FromSlash|filepath\.Clean|filepath\.ToSlash|filepath\.Abs|path\.Clean)\((.*)\)$",
                     re.S)
@@ -237,7 +247,10 @@ def functions(text: str) -> list:
 
 
 def constants(text: str) -> dict:
-    return {m.group(1): unquote(m.group(2)) for m in CONSTANT.finditer(text)}
+    found = {m.group(1): unquote(m.group(2)) for m in CONST_LINE.finditer(text)}
+    for block in CONST_BLOCK.finditer(text):
+        found.update({m.group(1): unquote(m.group(2)) for m in CONST_ENTRY.finditer(block.group(1))})
+    return found
 
 
 def literal_value(argument: str, consts: dict) -> str | None:
@@ -311,7 +324,20 @@ class Scope:
 
     def __post_init__(self):
         self.spans = {source: functions(text) for source, text in self.texts.items()}
-        self.consts = {source: constants(text) for source, text in self.texts.items()}
+        # A Go constant is the package's, not its file's: one file reads another's.
+        package = {}
+        for text in self.texts.values():
+            package.update(constants(text))
+        self.consts = {source: package for source in self.texts}
+        # The string literals of the package's own test files that could be a path, but those a
+        # comparison holds a value to: what a Join part this cannot follow may be. A non-test file's
+        # literals are left out, since what it names (a route's docs, a product path) is no read
+        # of a test's; a constant of it that a test reads resolves through `consts` instead.
+        self.path_literals = {unquote(m.group(0)) for source, text in self.texts.items()
+                              if source.endswith("_test.go") for m in STRING.finditer(text)
+                              if not COMPARED.search(text[max(0, m.start() - 4):m.start()])
+                              and not COMPARED_AFTER.match(text, m.end())}
+        self.path_literals = {v for v in self.path_literals if "/" in v and not re.search(r"\s", v)}
 
     def function_at(self, source: str, line: int):
         return next((span for span in self.spans[source] if span[0] <= line <= span[1]), None)
@@ -356,6 +382,9 @@ def values_of(expression: str, scope: Scope, source: str, span, depth: int = 0) 
     string constant; a variable each value its function assigns it, or a range over a []string
     literal or over another such variable gives it; a parameter each value a call passes it."""
     expression = expression.strip()
+    wrapped = UNWRAP.match(expression)
+    if wrapped:
+        return values_of(wrapped.group(1), scope, source, span, depth)
     value = literal_value(expression, scope.consts[source])
     if value is not None:
         return [value]
@@ -651,9 +680,12 @@ class Check:
 
     def traced(self, roots: list) -> None:
         """The reads traced from where their paths start: each file a Join of something and then
-        literals names, and each tree a walk or a directory read reads. A start traced to nowhere
-        known is each root the file's own climbs end at (`roots`); in a file that climbs nowhere,
-        nothing."""
+        further parts names, and each tree a walk or a directory read reads. A start traced to
+        nowhere known is each root the file's own climbs end at (`roots`); in a file that climbs
+        nowhere, nothing. A Join's later parts are resolved as a walk's start is (`values_of`); a
+        part that cannot be resolved stands for each path literal of the package's own files (a
+        list in a struct, a field), so a read of a repository file named anywhere in the package
+        is held even where the code between the literal and the read cannot be followed."""
         consts = self.scope.consts[self.source]
 
         def origins(expression: str, at: int) -> list:
@@ -662,21 +694,27 @@ class Check:
 
         for call in JOIN.finditer(self.text):
             arguments = call_arguments(self.text, call.end())
-            values = [literal_value(a, consts) for a in arguments]
-            if not values or values[0] is not None or not values[1:] or None in values[1:]:
-                continue
-            tail = "/".join(values[1:])
-            if WILDCARD.search(tail) or os.path.basename(tail) in ANCHORS:
-                continue
+            if len(arguments) < 2 or literal_value(arguments[0], consts) is not None:
+                continue  # a Join of literals from the package's own directory: climbing_paths reads it
+            span = self.scope.function_at(self.source, line_of(self.text, call.start()))
+            parts = [values_of(a, self.scope, self.source, span) for a in arguments[1:]]
+            if None in parts or math.prod(len(p) for p in parts) > PATHS:
+                tails = sorted(self.scope.path_literals)
+            else:
+                tails = ["/".join(c) for c in itertools.product(*parts)]
+            tails = [t for t in tails if not WILDCARD.search(t) and os.path.basename(t) not in ANCHORS]
             for origin in origins(arguments[0], call.start()):
                 if origin.below or WILDCARD.search(origin.tail):
                     continue
                 for root, climbed in self.starts(origin, roots):
-                    target = os.path.normpath(os.path.join(root, origin.tail, tail))
-                    if target in self.checker.files and self.outside(target):
-                        problem = unnamed_path(self.names, target, True, True, self.checker.files, self.checker.dirs)
-                        if problem:
-                            self.say(line_of(self.text, call.start()), f"reads {target} {problem}")
+                    for tail in tails:
+                        target = os.path.normpath(os.path.join(root, origin.tail, tail))
+                        if target in self.checker.files and self.outside(target):
+                            problem = unnamed_path(self.names, target, True, True, self.checker.files,
+                                                   self.checker.dirs)
+                            if problem:
+                                self.say(line_of(self.text, call.start()), f"reads {target} {problem}")
+                                break
         for call in WALK.finditer(self.text):
             arguments = call_arguments(self.text, call.end())
             walks = call.group(1) in DEEP

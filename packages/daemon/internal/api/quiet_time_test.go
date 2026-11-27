@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/src/legion-api.ts TestTheShippedTextsNameTheQuietTimesOwnContract reads it through readContractTexts, which joins each name of its scan under the repository root
+
 import (
 	"encoding/json"
 	"fmt"

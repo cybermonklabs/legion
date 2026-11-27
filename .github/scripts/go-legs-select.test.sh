@@ -491,6 +491,85 @@ undo
 git reset -q --hard HEAD~1
 git clean -qfd
 
+echo "case: a file a Join reads through a part the check cannot follow is held: each path literal of the package stands for it"
+put mod/leaf/leaf_test.go 'package leaf
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+var scanned = struct{ names []string }{names: []string{"fixtures/data.json"}}
+
+func repoRoot(t *testing.T) string {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+func TestLeaf(t *testing.T) {
+	for _, name := range scanned.names {
+		_, _ = os.ReadFile(filepath.Join(repoRoot(t), name))
+	}
+}'
+status=0
+out=$(check_reads) || status=$?
+check "a read of fixtures/data.json through a struct field, no line: refused" "$(is "$status" 1)"
+check "naming the file" "$(contains "$out" 'mod/leaf/leaf_test.go:[0-9]*: reads fixtures/data.json')"
+sed -i 's/^package leaf$/package leaf\n\n\/\/ci:reads fixtures\/data.json TestLeaf reads each name of scanned under the root/' mod/leaf/leaf_test.go
+status=0
+out=$(check_reads) || status=$?
+check "with the line: passes" "$(is "$status" 0)"
+undo
+
+echo "case: an assignment inside another function is no constant, so a walked parameter is traced to its callers"
+put mod/leaf/leaf_test.go 'package leaf
+
+import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func moduleRoot(t *testing.T) string {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+func walkAll(dir string) {
+	_ = filepath.WalkDir(dir, func(string, fs.DirEntry, error) error { return nil })
+}
+
+func TestLeaf(t *testing.T) { walkAll(moduleRoot(t)) }
+
+func TestOther(t *testing.T) {
+	var dir string
+	dir = "testdata"
+	_ = dir
+}'
+status=0
+out=$(check_reads) || status=$?
+check "a walk of a parameter another function assigns a literal, no line: refused" "$(is "$status" 1)"
+check "naming the walk from the climb" "$(contains "$out" 'mod/leaf/leaf_test.go:[0-9]*: walks mod from a climb')"
+undo
+
 echo "case: a read in a test the legs step skips runs in no leg, and is not held"
 put mod/leaf/leaf_test.go 'package leaf
 

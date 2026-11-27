@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/src/dispatch-api.ts declaredShapesUnchanged reads contractsModule through readRepositoryFile, which joins it under the repository root
+
 import (
 	"bytes"
 	"cmp"
