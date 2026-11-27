@@ -52,7 +52,7 @@ import { focusOnDocument } from "../shell/roving";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
+import { type KeyedPress, useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 
 /**
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
@@ -100,6 +100,13 @@ interface ReviewPress {
   readonly input: CreateArtifactReviewInput;
   readonly version: number;
 }
+
+/** The reviews a closed Request changes dialog let go of outside `NoTooltips`, as on `main`
+ *  (`onClose`), each by the press it was made with, which the mutation cache holds it as: no chip
+ *  of the document holds its actions or refuses a send for a review let go of, a chip drawn again
+ *  since among them. Every other review out holds them, on both sides of `NoTooltips`. A press is
+ *  a new object, so a review pressed after the dialog closed holds the chips again. */
+const letGo = new WeakSet<ReviewPress>();
 
 /** Dispatch's refusal of a review whose version moved after the page read it (`409
  *  REVIEW_VERSION_MOVED`): its words name the version a review would now record. */
@@ -484,12 +491,14 @@ export interface ApprovalChipProps {
  *
  * It holds the review it made and the change-request dialog, with the reason typed into it, so a
  * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
- * Inside `NoTooltips` the review goes under the document's name, so a chip drawn again while it
- * is out, before it lands - the document page's header after another document and back, the
- * reading pane's head after the selection moves off the request and back - holds its actions
- * from that press until the review's deadline, as the chip it was made on did
- * (`usePendingKeyedPress`). Outside it the chip holds from its own press alone, as on `main`, so
- * a chip that lets go of its write (`reset`, as its dialog closes) takes a press again.
+ * The review goes under the document's name, so a chip drawn again while it is out, before it
+ * lands - today's issue header after the reader left the issue in the app and came back, the
+ * document page's header after another document and back, the reading pane's head after the
+ * selection moves off the request and back or across 1280 px into the reading view - holds its
+ * actions from that press until the review's deadline, as the chip it was made on did
+ * (`usePendingKeyedPress`), on both sides of `NoTooltips`. Outside it a closed Request changes
+ * dialog lets go of its review, as on `main` (`letGo`): every chip of the document then takes a
+ * press again.
  *
  * Each review that lands reads the reviewed document's issue again, which every chip of that
  * issue draws from, so a line that draws more than one chip with actions holds them all through
@@ -539,7 +548,7 @@ function ChipOfReads({
   const unsettled = artifact === undefined ? undefined : unsettledOf(artifact.id);
 
   const mutationKey = ["artifact-review", artifact?.id];
-  const reviewOut = usePendingKeyedPress(mutationKey);
+  const reviewOut = usePendingKeyedPress<ReviewPress>(mutationKey, (press) => !letGo.has(press));
   const review = useKeyedWrite({
     // The press carries the document it reviews: the indicator names it, the route takes its id,
     // and the reads made again are its own, from the press rather than from the render the write
@@ -629,15 +638,14 @@ function ChipOfReads({
   }
 
   /** Whether a review holds the actions and the dialog's submit: while it is out within its
-   *  deadline, until the reads it made stale are read again (`onSuccess`). Inside `NoTooltips`
-   *  that is the press of the document's review out, which holds a chip drawn again while it is
-   *  out too, and which a closed dialog leaves going (`reviewOut`); outside it, this chip's own
-   *  press, which a closed dialog lets go of (`reset`), as on `main`. A review past its deadline
+   *  deadline, until the reads it made stale are read again (`onSuccess`). That is the press of
+   *  the document's review out, on both sides of `NoTooltips`, which holds a chip drawn again
+   *  while it is out too (`reviewOut`), unless a closed dialog let go of it outside `NoTooltips`,
+   *  as on `main` (`letGo`); inside, a closed dialog leaves it going. A review past its deadline
    *  (`late`) holds them no longer: it is still tried under its key, and the shell's indicator
    *  offers to stop it, but one that never answers - the browser offline - would otherwise hold
    *  them for good. */
-  const reviewHolds =
-    page === null ? review.isPending && !review.late : reviewOut.isPending && !reviewOut.late;
+  const reviewHolds = reviewOut.isPending && !reviewOut.late;
   /** Held while a review holds them, and in the pane's head until the read has given the
    *  approval. */
   const held = reviewHolds || approval === undefined;
@@ -657,12 +665,18 @@ function ChipOfReads({
         };
   /** Sends the review of the version the page read: the latest, which Approve names when the
    *  approval it follows is stale, and which the reading pane draws. Inside `NoTooltips` the
-   *  review is remembered (`sentReview`), and nothing is sent while a review of the document is
-   *  out, past its deadline too: the press's own guard holds this chip's until it settles, and a
-   *  chip drawn again since finds the press by the document's name for it. */
+   *  review is remembered (`sentReview`). Nothing is sent while a review of the document is out
+   *  that no closed dialog let go of (`letGo`), past its deadline too: the press's own guard holds
+   *  this chip's until it settles, and a chip drawn again since finds the press by the document's
+   *  name for it. */
   const send = (input: CreateArtifactReviewInput) => {
     if (artifact === undefined || approval === undefined) return;
-    if (page !== null && queryClient.isMutating({ exact: true, mutationKey }) > 0) return;
+    const out = queryClient.isMutating({
+      exact: true,
+      mutationKey,
+      predicate: ({ state }) => !letGo.has((state.variables as KeyedPress<ReviewPress>).variables),
+    });
+    if (out > 0) return;
     const press: ReviewPress = { artifact, input, version: approval.latest_version };
     submitGuard.guard(() => {
       if (page !== null) setSentReview(input.state);
@@ -798,13 +812,17 @@ function ChipOfReads({
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
             // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel
             // is held then (`RequestChangesDialog`). Outside `NoTooltips` closing lets go of the
-            // write (`reset`), as on `main`. Inside, a write that is out goes on, and Approve and
-            // Request changes stay refused until it lands and its read is drawn, or until it ends
-            // without landing: `reset` would let them be pressed again before it lands. A refusal
-            // that comes later is shown by the shell's write indicator, as every write's is. A
-            // write that keeps trying never holds the reader in the dialog, whose focus trap would
-            // keep the indicator's Stop trying out of reach. With nothing out, closing clears the
-            // refusal the dialog showed, on both sides.
+            // write (`reset`), as on `main`, and of its review, which then holds no chip of the
+            // document, this one, one drawn again since or another beside it (`letGo`): it is
+            // noted before `reset`, whose word to the mutation cache has every chip read its hold
+            // again. Inside, a write that is out goes on, and Approve and Request changes stay
+            // refused until it lands and its read is drawn, or until it ends without landing:
+            // `reset` would let them be pressed again before it lands. A refusal that comes later
+            // is shown by the shell's write indicator, as every write's is. A write that keeps
+            // trying never holds the reader in the dialog, whose focus trap would keep the
+            // indicator's Stop trying out of reach. With nothing out, closing clears the refusal
+            // the dialog showed, on both sides.
+            if (page === null && review.variables !== undefined) letGo.add(review.variables);
             if (page === null || !review.isPending) review.reset();
             setRequestChangesOpen(false);
           }}

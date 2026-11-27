@@ -12637,6 +12637,118 @@ test("below 1280 px Escape in the Request changes box Shift+R opened from a shor
   }
 });
 
+/** The head of the reading pane, beside the list or in the reading view, once it draws the
+ *  approval of the request it shows: its Approve and Request changes, then held only while a
+ *  review holds them, never for the read. */
+async function approvalHead(): Promise<{
+  approve: HTMLButtonElement;
+  requestChanges: HTMLButtonElement;
+}> {
+  const head = await waitFor(() => {
+    const found = document.querySelector<HTMLElement>("[data-inbox-pane-head]");
+    if (found === null) throw new Error("the pane drew no head");
+    return found;
+  });
+  await within(head).findByRole("button", { name: "Awaiting approval" });
+  return {
+    approve: within(head).getByRole<HTMLButtonElement>("button", { name: "Approve" }),
+    requestChanges: within(head).getByRole<HTMLButtonElement>("button", {
+      name: "Request changes",
+    }),
+  };
+}
+
+/** Approve and Request changes of the head drawn again for the request whose review is out
+ *  (`approvalHead`), checked held and pressed, as the reader presses them: a press sends no
+ *  second review of `review` and opens no dialog. */
+async function expectHeadHeld(
+  user: UserEvent,
+  review: { readonly mock: { readonly calls: readonly unknown[] } }
+): Promise<void> {
+  const { approve, requestChanges } = await approvalHead();
+  expect(
+    {
+      approve: heldNotDisabled(approve, "Approve"),
+      requestChanges: heldNotDisabled(requestChanges, "Request changes"),
+    },
+    "the head drawn again let its actions go while the review was out"
+  ).toEqual({ approve: true, requestChanges: true });
+  await user.click(approve);
+  await user.click(requestChanges);
+  expect(review.mock.calls, "a press of the Approve drawn again sent a second review").toHaveLength(
+    1
+  );
+  expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+}
+
+// R2 of the tester's F3: the column's head keys its chip by the item it shows
+// (`ReadingPaneHead`), so the reader who steps to another item and back while Approve's review
+// is out is drawn a new chip. It holds Approve and Request changes from that review, as the chip
+// pressed did, and its Approve sends no second review.
+test("the column's Approve, drawn again after the reader steps to another item and back while its review is out, is held with Request changes and sends no second review", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    approvalRow("ask-approval", "CORE-1"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const reads = approvalViewReads(rows);
+  const { unmount } = renderInbox("/?item=ask-approval", { runtime: reads.runtime });
+
+  try {
+    await user.click((await approvalHead()).approve);
+    await waitFor(() => expect(reads.review).toHaveBeenCalledTimes(1));
+
+    act(() => shortRow("ask-approval").focus());
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    await within(screen.getByTestId("inbox-pane")).findByTestId("ask-ask-b");
+    await user.keyboard("k");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-approval"]));
+    await expectHeadHeld(user, reads.review);
+  } finally {
+    unmount();
+    narrow();
+    reads.restore();
+  }
+});
+
+// R2 of the tester's F3: below 1280 px the request the reader picked beside the column is read in
+// the reading view (`ReadingView`), which draws the pane, and its chip, anew. Narrowed while
+// Approve's review is out, the view's chip holds Approve and Request changes from that review, as
+// the column's did, and its Approve sends no second review.
+test("below 1280 px the reading view's Approve, drawn as the window narrows while the column's review is out, is held with Request changes and sends no second review", async () => {
+  const user = userEvent.setup();
+  const width = movableReadingPaneWidth(1440);
+  const rows = [
+    approvalRow("ask-approval", "CORE-1"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const reads = approvalViewReads(rows);
+  const { unmount } = renderInbox("/", { runtime: reads.runtime });
+
+  try {
+    // Beside the list the column shows the request by itself. The reader steps to the question
+    // and back to the request: a row the reader picks beside the column is theirs, and narrowing
+    // keeps it open.
+    await waitFor(() => expect(address()).toBe("/?item=ask-approval"));
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(address()).toBe("/?item=ask-b"));
+    await user.click(shortRow("ask-approval"));
+    await waitFor(() => expect(address()).toBe("/?item=ask-approval"));
+    await user.click((await approvalHead()).approve);
+    await waitFor(() => expect(reads.review).toHaveBeenCalledTimes(1));
+
+    act(() => width.setWidth(1024));
+    await screen.findByTestId("inbox-reading-view");
+    await expectHeadHeld(user, reads.review);
+  } finally {
+    unmount();
+    width.restore();
+    reads.restore();
+  }
+});
+
 test("on a card a picks Approve and sends it, and Shift+R picks Request changes, whose reason Escape lets go of back to the row", async () => {
   const user = userEvent.setup();
   const rows = [

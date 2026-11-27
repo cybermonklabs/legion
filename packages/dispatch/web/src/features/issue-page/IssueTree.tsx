@@ -1203,18 +1203,27 @@ export function IssueTree({
   // send has landed when the line asks, but the read that draws it is still out, so the nodes
   // of theirs already under it are noted first and the one that is new is gone to once a read
   // draws it. A read that never draws one where it was looked for - a filter's view that holds
-  // no such row - leaves the reader on their newest node there, or on the row they wrote under,
-  // unless they have acted since the landing (`READER_ACTS`): the focus is then where they put
-  // it, and the fallback only ends the landing. A landing the writer already holds as the tree
-  // mounts was asked for while no outline was drawn - under a view drawn in its place, or before
-  // a reload - so the reader has been elsewhere since, and it ends with the focus where it is.
-  // Each landing goes to its node as `reach` does and notes that node (`landedOn`): a read that
-  // drops its row before the reader's next key or press is their write's (`heldRow`).
+  // no such row - leaves the reader on their newest node there, or on the row they wrote under.
+  // Either way only while they have not acted since the landing began (`READER_ACTS`,
+  // `landingActs`): a reader who pressed another row or the title's editor while the read was
+  // out is going somewhere of their own, so the focus stays where they put it, and the read that
+  // draws the node, or the fallback's wait, only ends the landing. The line asks for none where
+  // they moved on while the send itself was out (`IssueComposer.tsx`'s `finish`). A landing the
+  // writer already holds as the tree mounts was asked for while no outline was drawn - under a
+  // view drawn in its place, or before a reload - so the reader has been elsewhere since, and it
+  // ends with the focus where it is. Each landing goes to its node as `reach` does and notes
+  // that node (`landedOn`): a read that drops its row before the reader's next key or press is
+  // their write's (`heldRow`).
   const landing = writer?.landing;
   const heldAtMount = useRef(landing);
   const landedFrom = useRef<
     { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
   >(undefined);
+  // The reader's first act since the landing began, heard from the commit that draws it on, for
+  // both of its paths: the read that draws the new node, and the late fallback.
+  const landingActs = useRef<{ readonly acted: AbortSignal; readonly landing: object } | undefined>(
+    undefined
+  );
   const reachWritten = useCallback(
     (id: string) => {
       landedOn.current = { node: id, presses: presses.current };
@@ -1250,11 +1259,14 @@ export function IssueTree({
     const made = own.find((child) => !held.before.has(child.id));
     if (made === undefined) return;
     line.landed();
+    const acts = landingActs.current;
+    if (acts?.landing === landing && acts.acted.aborted) return;
     reachWritten(made.id);
   }, [landing, reachWritten, reader, root]);
   useEffect(() => {
     if (landing === undefined || landing === heldAtMount.current) return;
     const acted = abortOnReaderAct();
+    landingActs.current = { acted: acted.signal, landing };
     const late = window.setTimeout(() => {
       const now = latest.current;
       now.writer?.landed();

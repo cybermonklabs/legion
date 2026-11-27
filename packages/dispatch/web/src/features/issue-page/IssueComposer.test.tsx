@@ -5,6 +5,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
+import { type HeldNotifications, holdNotifications } from "../../__tests__/commits";
 import {
   endAsAReload,
   newQueryClient,
@@ -1518,6 +1519,255 @@ test("under a view a sent write leaves no landing and gives the focus back where
   expect(page.writer().landing).toBeUndefined();
   expect(page.writer().reply).toBeNull();
   expect(composerBox()).toHaveAttribute("hidden");
+});
+
+/** A text field of the page outside the box and the outline, standing for the issue title's
+ *  editor, which the header's Edit title opens with the caret in it; taken off the page by
+ *  `remove`. */
+function titleEditor(): HTMLInputElement {
+  const field = document.createElement("input");
+  field.setAttribute("aria-label", "Issue title");
+  document.body.append(field);
+  return field;
+}
+
+// F1 of round 23: a send from the box takes the reader to what they wrote once a read draws it
+// (`Landing`), only while the focus is still where the send left it: in the box, lost to the
+// page's body, or on what the send was made from. A reader who moved on while it was out - to
+// another row, the title's editor, Details - keeps where they went, and the landing moves no
+// focus. Here the reader stays in the box while the first comment is out, whose row then takes
+// the focus, and moves to bob's comment while the second is out, which keeps it.
+test("a comment sent from the box lands on its row, and one sent while the reader moved to another row leaves the focus on that row once the outline draws it", async () => {
+  const user = userEvent.setup();
+  const first = Promise.withResolvers<CommentWithTrees>();
+  const second = Promise.withResolvers<CommentWithTrees>();
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+  );
+  const drawn = outline();
+  const staying = commentNode("comment-8", ALICE, "Staying here");
+  const moving = commentNode("comment-9", ALICE, "Moving on");
+  const page = renderPage({}, drawn);
+
+  await user.click(writeField());
+  await user.keyboard("Staying here{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  await act(async () => first.resolve(commentRecord("comment-8", ALICE, "Staying here")));
+  // The send has landed once its draft is cleared.
+  await waitFor(() => expect(writeField()).toHaveValue(""));
+  page.redrawOutline({ ...drawn, children: [...drawn.children, staying] });
+  await waitFor(() => expect(focusedRowId()).toBe("comment-8"));
+
+  await user.click(writeField());
+  await user.keyboard("Moving on{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  await user.click(rowOf("comment-1"));
+  await waitFor(() => expect(focusedRowId()).toBe("comment-1"));
+  await act(async () => second.resolve(commentRecord("comment-9", ALICE, "Moving on")));
+  await waitFor(() => expect(writeField()).toHaveValue(""));
+  page.redrawOutline({ ...drawn, children: [...drawn.children, staying, moving] });
+  rowOf("comment-9");
+  expect(
+    focusedRowId(),
+    "the comment landed and took the focus from the row the reader moved to while it was out"
+  ).toBe("comment-1");
+  expect(page.writer().landing).toBeUndefined();
+});
+
+// F1's rule after the send has landed, while the read that draws what it wrote is still out: the
+// landing waits for that read (`Landing`), and a reader who acts in the meantime - a press on
+// another row, or on the title's editor - is going somewhere of their own. The landing ends as
+// the read draws the new node, and the focus stays where they put it, as it does where the late
+// fallback's wait runs out after such an act (`IssueTree.tsx`).
+test.each(["bob's comment's row", "the title's editor"] as const)(
+  "a comment that landed while its read is out leaves the focus on %s, where the reader moved before the outline draws it",
+  async (moveTo) => {
+    const user = userEvent.setup();
+    const out = Promise.withResolvers<CommentWithTrees>();
+    const createComment = stub(spyOn(api, "createComment").mockImplementation(() => out.promise));
+    const title = titleEditor();
+    const drawn = outline();
+    const page = renderPage({}, drawn);
+    const target = moveTo === "the title's editor" ? title : rowOf("comment-1");
+
+    try {
+      await user.click(writeField());
+      await user.keyboard("Moving on{Enter}");
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+      await act(async () => out.resolve(commentRecord("comment-9", ALICE, "Moving on")));
+      // The send has landed once its draft is cleared, with the reader still in the box, and the
+      // landing waits for the read that draws the new comment.
+      await waitFor(() => expect(writeField()).toHaveValue(""));
+      expect(page.writer().landing).toBeDefined();
+      await user.click(target);
+      await waitFor(() => expect(document.activeElement).toBe(target));
+      page.redrawOutline({
+        ...drawn,
+        children: [...drawn.children, commentNode("comment-9", ALICE, "Moving on")],
+      });
+      rowOf("comment-9");
+      expect(
+        document.activeElement,
+        `the read drew the comment and took the focus from ${moveTo}, where the reader moved after it landed`
+      ).toBe(target);
+      expect(page.writer().landing).toBeUndefined();
+    } finally {
+      title.remove();
+    }
+  }
+);
+
+// F1's rule for a reply, with a document open beside the outline, where the box hides once its
+// target ends: a reader who opened the title's editor while the reply was out keeps the caret
+// there once the outline draws the reply. A focus that fell to the page's body while a comment on
+// a statement was out is no move of the reader's, so that comment lands on the statement's row.
+test("with a document open, a reply sent while the reader opened the title's editor leaves the caret there, and a statement's comment sent while the focus fell to the page's body lands on its row", async () => {
+  const user = userEvent.setup();
+  const reply = Promise.withResolvers<CommentWithTrees>();
+  const onStatement = Promise.withResolvers<CommentWithTrees>();
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockImplementationOnce(() => reply.promise)
+      .mockImplementationOnce(() => onStatement.promise)
+  );
+  const title = titleEditor();
+  const drawn = outline();
+  const page = renderPage({ documentOpen: true }, drawn);
+
+  try {
+    await page.press(user, "comment-1", "r");
+    await waitFor(() => expect(writeField()).toHaveFocus());
+    await user.keyboard("Moving on{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await user.click(title);
+    expect(title).toHaveFocus();
+    await act(async () =>
+      reply.resolve(commentRecord("comment-9", ALICE, "Moving on", { reply_to: "comment-1" }))
+    );
+    await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
+    page.redrawOutline({
+      ...drawn,
+      children: drawn.children.map((child) =>
+        child.id === "comment-1"
+          ? { ...child, children: [commentNode("comment-9", ALICE, "Moving on")], held: 1 }
+          : child
+      ),
+    });
+    await act(async () => {});
+    expect(
+      document.activeElement,
+      "the reply landed and took the caret from the title's editor the reader opened while it was out"
+    ).toBe(title);
+
+    await page.press(user, "spec#b-r1", "r");
+    await waitFor(() => expect(writeField()).toHaveFocus());
+    await user.keyboard("Agreed{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    await act(async () => writeField().blur());
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => onStatement.resolve(commentRecord("comment-10", ALICE, "Agreed")));
+    await waitFor(() => expect(focusedRowId()).toBe("spec#b-r1"));
+  } finally {
+    title.remove();
+  }
+});
+
+// F1's rule where the reader moves on before the page has drawn the send: the box notes where the
+// focus is in the very task that starts the send, from the mutation cache's own event for it, and
+// TanStack tells React of the send a task or more later. A reader who moves to another row in
+// that gap keeps it once the comment lands and the outline draws it.
+test("a comment sent from the box while the reader moves to another row in the task of the press, before the page draws the send, leaves the focus on that row", async () => {
+  const user = userEvent.setup();
+  const out = Promise.withResolvers<CommentWithTrees>();
+  const createComment = stub(spyOn(api, "createComment").mockImplementation(() => out.promise));
+  const drawn = outline();
+  const page = renderPage({}, drawn);
+  /** The reader's move, made in the task of the press that sends, after the box's own handler,
+   *  before any timer runs. */
+  let moveOn = () => {};
+  const afterPress = (event: KeyboardEvent) => {
+    if (event.key === "Enter") moveOn();
+  };
+  window.addEventListener("keydown", afterPress);
+  let notifications: HeldNotifications | undefined;
+
+  try {
+    await user.click(writeField());
+    await user.keyboard("Moving on");
+    moveOn = () => rowOf("comment-1").focus();
+    notifications = holdNotifications();
+    await user.keyboard("{Enter}");
+    expect(focusedRowId()).toBe("comment-1");
+    notifications.tell();
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await act(async () => out.resolve(commentRecord("comment-9", ALICE, "Moving on")));
+    await waitFor(() => expect(writeField()).toHaveValue(""));
+    page.redrawOutline({
+      ...drawn,
+      children: [...drawn.children, commentNode("comment-9", ALICE, "Moving on")],
+    });
+    rowOf("comment-9");
+    expect(
+      focusedRowId(),
+      "the comment landed and took the focus from the row the reader moved to in its press"
+    ).toBe("comment-1");
+  } finally {
+    notifications?.tell();
+    window.removeEventListener("keydown", afterPress);
+  }
+});
+
+// F2 of round 23: under a view - the Decisions view - a send from the box gives the focus back to
+// where the reader came to the box from as the box goes, only while the focus is still where the
+// send left it. A focus that fell to the page's body while the first reply was out is no move of
+// the reader's, and the Reply they came from takes it back; a reader who opened the title's editor
+// while the second was out keeps the caret there.
+test("under a view a reply sent while the focus fell to the page's body gives the focus back where it came from, and one sent while the reader opened the title's editor leaves the caret there", async () => {
+  const user = userEvent.setup();
+  const first = Promise.withResolvers<CommentWithTrees>();
+  const second = Promise.withResolvers<CommentWithTrees>();
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+  );
+  const title = titleEditor();
+  const page = renderPage({ viewOn: true });
+
+  try {
+    const reply = screen.getByRole("button", { name: "Reply" });
+    await user.click(reply);
+    await waitFor(() => expect(writeField()).toHaveFocus());
+    await user.keyboard("Lost on the way{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await act(async () => writeField().blur());
+    expect(document.activeElement).toBe(document.body);
+    await act(async () =>
+      first.resolve(commentRecord("comment-8", ALICE, "Lost on the way", { reply_to: "comment-1" }))
+    );
+    await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
+    await waitFor(() => expect(reply).toHaveFocus());
+
+    await user.click(reply);
+    await waitFor(() => expect(writeField()).toHaveFocus());
+    await user.keyboard("Moving on{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    await user.click(title);
+    expect(title).toHaveFocus();
+    await act(async () =>
+      second.resolve(commentRecord("comment-9", ALICE, "Moving on", { reply_to: "comment-1" }))
+    );
+    await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
+    expect(
+      document.activeElement,
+      "the box gave the focus back to the Reply and took the caret from the title's editor"
+    ).toBe(title);
+    expect(page.writer().reply).toBeNull();
+  } finally {
+    title.remove();
+  }
 });
 
 // R11: `r` on a statement aims the box at it: the target line names it by the page's word for its

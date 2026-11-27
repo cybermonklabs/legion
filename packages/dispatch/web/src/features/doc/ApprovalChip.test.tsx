@@ -741,16 +741,14 @@ test("offline, Approve is held until its review's deadline, let go there, and ke
   }
 });
 
-// A host draws its chip again within the page - the document page's header after another document
-// and back (`ArtifactHeader` keys it by the document), the Inbox's reading pane after the
-// selection moves off the request and back - and may do so while a review's write is still out,
-// before it lands. Inside `NoTooltips`, the new issue page, the chip drawn again holds Approve and
-// Request changes from that review's own state (`usePendingKeyedPress`), as the chip pressed did:
-// a press of Approve sends no second review, one of Request changes opens no dialog, and both let
-// go at the review's deadline (`SEND_DEADLINE_MS`). Outside it the chip holds from its own press
-// alone, as on `main` (`shared-controls.options.test.tsx`'s Escape row). Dispatch never answers
-// the review: each try fails at the network and is tried again under its key.
-test("a chip drawn again while its review's write is out holds Approve and Request changes until the review's deadline and sends no second review", async () => {
+/** Draws the header's chip of a document awaiting approval, `around` it the surface it stands
+ *  on, presses Approve, takes the chip off the page and draws it again while that review is out,
+ *  and checks the chip drawn again: it holds Approve and Request changes from that review's own
+ *  state (`usePendingKeyedPress`), as the chip pressed did - a press of Approve sends no second
+ *  review, one of Request changes opens no dialog - and both let go at the review's deadline
+ *  (`SEND_DEADLINE_MS`). Dispatch never answers the review: each try fails at the network and is
+ *  tried again under its key. */
+async function expectHeldWhenDrawnAgain(around: (chip: ReactNode) => ReactNode): Promise<void> {
   const review = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
     new NetworkError(
       "/api/v1/artifacts/artifact-1/versions/3/reviews",
@@ -763,7 +761,7 @@ test("a chip drawn again while its review's write is out holds Approve and Reque
   const target = artifact({ latest_version: 3, state: "awaiting" });
   const chip = (drawn: boolean) => (
     <QueryClientProvider client={queryClient}>
-      <NoTooltips>{drawn ? <ApprovalChip artifact={target} variant="header" /> : null}</NoTooltips>
+      {around(drawn ? <ApprovalChip artifact={target} variant="header" /> : null)}
     </QueryClientProvider>
   );
   const view = render(chip(true));
@@ -806,6 +804,24 @@ test("a chip drawn again while its review's write is out holds Approve and Reque
     realClock();
     review.mockRestore();
   }
+}
+
+// A host draws its chip again within the page - the document page's header after another document
+// and back (`ArtifactHeader` keys it by the document), the Inbox's reading pane after the
+// selection moves off the request and back - and may do so while a review's write is still out,
+// before it lands. Inside `NoTooltips`, the new issue page, the chip drawn again holds Approve and
+// Request changes until the review's deadline, as the chip pressed did.
+test("a chip drawn again while its review's write is out holds Approve and Request changes until the review's deadline and sends no second review", async () => {
+  await expectHeldWhenDrawnAgain((chip) => <NoTooltips>{chip}</NoTooltips>);
+});
+
+// Outside `NoTooltips` too, as today's issue header is drawn again once the reader has left the
+// issue in the app and come back while Approve's review is out: the chip drawn again holds both
+// actions until the review's deadline, so its Approve sends no second review. Only a review the
+// Request changes dialog's Escape let go of frees them (`shared-controls.options.test.tsx`'s
+// Escape row).
+test("outside NoTooltips a chip drawn again while its Approve review is out, as today's issue header after an in-app return, holds Approve and Request changes until the review's deadline and sends no second review", async () => {
+  await expectHeldWhenDrawnAgain((chip) => chip);
 });
 
 // A review that lands just as the browser goes offline: the reads it made stale are asked again,
@@ -1285,6 +1301,71 @@ test("a change request refused on one document posts none of its reason on the d
     );
   } finally {
     createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// R2 of the tester's F3: outside `NoTooltips` the document page's header keys its chip by the
+// document (`ArtifactHeader`), so the reader who goes to another document of the issue and back
+// while Approve's review is out is drawn a new chip. It holds Approve and Request changes from
+// that review, as the chip pressed did, and its Approve sends no second review.
+test("outside NoTooltips the document page's chip, drawn again after another document and back while its Approve review is out, holds Approve and Request changes and sends no second review", async () => {
+  const user = userEvent.setup();
+  const designNotes = artifact({ latest_version: 3, state: "awaiting" });
+  const releaseNotes: Artifact = {
+    ...designNotes,
+    id: "artifact-2",
+    name: "Release notes",
+    ref_key: "CORE-1/release-notes",
+    slug: "release-notes",
+  };
+  const written = Promise.withResolvers<ArtifactReview>();
+  const review = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => written.promise
+  );
+  // The reader's way back from the design notes runs through the release notes to the design
+  // notes again.
+  const view = render(
+    <MemoryRouter
+      initialEntries={[pathOf(designNotes), pathOf(releaseNotes), pathOf(designNotes)]}
+      initialIndex={2}
+    >
+      <QueryClientProvider client={chipClient()}>
+        <HeaderOfRoute documents={[designNotes, releaseNotes]} />
+        <GoBack />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByRole("heading", { name: "Design notes" });
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Release notes" });
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Design notes" });
+    const approve = screen.getByRole<HTMLButtonElement>("button", { name: "Approve" });
+    const requestChanges = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Request changes",
+    });
+    expect(
+      {
+        approve: heldNotDisabled(approve, "Approve"),
+        requestChanges: heldNotDisabled(requestChanges, "Request changes"),
+      },
+      "the chip drawn again let its actions go while the review was out"
+    ).toEqual({ approve: true, requestChanges: true });
+    await user.click(approve);
+    await user.click(requestChanges);
+    expect(review, "a press of the Approve drawn again sent a second review").toHaveBeenCalledTimes(
+      1
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  } finally {
+    written.reject(new Error("the connection dropped"));
+    review.mockRestore();
     view.unmount();
   }
 });

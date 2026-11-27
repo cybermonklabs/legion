@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { matchMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Actor } from "../../api/types";
@@ -20,6 +20,7 @@ import { type StatementAnchor, sameStatement, saveCommentEdit } from "../convers
 import { AgentName, type AgentStateWords } from "../refs/AgentName";
 import type { RefPickerWords } from "../refs/ref-picker";
 import { EVENT_FRESH } from "../refs/reference-target";
+import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
@@ -215,7 +216,9 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
  * row; no margin beside the statement draws it yet. Under a view no outline is drawn to
  * consume a landing, so the box asks for none there and gives the focus back to where the reader
  * came to it from. Either way the focus never falls to the page's body as a line's controls
- * unmount.
+ * unmount. A reader who moved the focus on while the send was out - to another row, the title's
+ * editor, Details - keeps it where they put it, and the box asks for no landing and gives no
+ * focus back (`LinePlace.focusStays`).
  *
  * Hidden rather than unmounted while it is not drawn (`useComposerShown`), and the line that
  * writes on the issue stays mounted, hidden, while the line edits a comment, so what the reader
@@ -242,6 +245,29 @@ export function IssueComposer({
   // The element that held the focus when the reader came to the box - a row, or a control of
   // Details - while it is still in the document; the view's tab-stop row once it is not.
   const cameFrom = useRef<HTMLElement | null>(null);
+  // Where the focus was as a send from the box went out (`sentFrom`), noted in the task that
+  // starts it, from the mutation cache's own event for the send it adds (`held-sends.ts`'s
+  // `composerSend`, which holds the line's name there before it runs): TanStack tells React of
+  // the send a task or more later, and a reader who moves on in that gap has put the focus on
+  // another control by then, which a note taken there would name as the place the send left. Only
+  // a new send notes: one added under the line's name - a write's, or an edit's beneath it - while
+  // none under it is out. The hold past its deadline (`pastDeadlineKey`) and the hold a send a
+  // lapse stopped takes again in its line (`write-store.ts`'s `#rejoin`) are the send already out.
+  // A send started again from the shell's pending writes is noted too, from where the focus is as
+  // it starts.
+  const queryClient = useQueryClient();
+  const sendKey = writer?.sendKey;
+  const sentFrom = useRef<Element | null>(null);
+  useEffect(() => {
+    if (sendKey === undefined) return;
+    return queryClient.getMutationCache().subscribe((event) => {
+      if (event.type !== "added") return;
+      if (!matchMutation({ mutationKey: sendKey }, event.mutation)) return;
+      // The cache adds a mutation before it runs it, so this counts the sends out before this one.
+      if (queryClient.isMutating({ mutationKey: sendKey }) > 0) return;
+      sentFrom.current = document.activeElement;
+    });
+  }, [queryClient, sendKey]);
   // Each ask to give the focus back, acted on once the commit that ended the line's target has
   // drawn: a line's controls unmount in that commit, which would take the focus after an earlier
   // move.
@@ -288,6 +314,14 @@ export function IssueComposer({
   if (writer === undefined) return null;
   const place: LinePlace = {
     atRest: !viewOn && !documentOpen,
+    focusStays: () => {
+      const active = document.activeElement;
+      return (
+        focusOnDocument() ||
+        section.current?.contains(active) === true ||
+        active === sentFrom.current
+      );
+    },
     giveBack: () => setGivenBack((count) => count + 1),
     outlineDrawn: !viewOn,
     phone,
@@ -340,6 +374,14 @@ interface LinePlace {
   /** No view is on and no document is open, so the box stays drawn when the line's target ends
    *  (`useComposerShown`). */
   readonly atRest: boolean;
+  /** Whether the focus is still where the line left it, so the line may take the reader on from
+   *  there: in the box; lost to the page's body; or on what the line's latest send was made from,
+   *  noted in the task that started it (`sentFrom`). A reader who has moved on - to another row,
+   *  the title's editor, Details - keeps where they went: otherwise the landing or the focus given
+   *  back would take the caret out of a field they were typing in, as `AgentMessageComposer`'s
+   *  `refocusComposer` and the outline's late landing (`IssueTree.tsx`) leave such a focus. Every
+   *  end of the line but a send's is the reader's own press in the box, which holds the focus. */
+  readonly focusStays: () => boolean;
   /** Gives the focus back to where the reader came to the box from, once the commit that ends
    *  the line's target has drawn. */
   readonly giveBack: () => void;
@@ -354,15 +396,20 @@ interface LinePlace {
  * Ends the line's target and puts the reader back: on the outline, on the row `landing` names
  * once its read draws it (R4); under a view, where no outline is drawn to consume a landing and
  * one would act on the outline the next time it mounts, where the reader came to the box from.
+ * Only while the focus is still where the line left it (`LinePlace.focusStays`): a reader who
+ * moved on while a send was out is left where they went, the line asks for no landing, and one it
+ * asked for before is ended (`OutlineWriter.landed`), so no read the send makes takes them back.
  */
 function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void {
+  const stays = place.focusStays();
   if (place.outlineDrawn) {
-    writer.land(landing);
+    if (stays) writer.land(landing);
+    else writer.landed();
     writer.clear();
     return;
   }
   writer.clear();
-  place.giveBack();
+  if (stays) place.giveBack();
 }
 
 /** What the write line is aimed at: the entry a reply answers, or the statement a comment is on.
@@ -516,8 +563,9 @@ function WriteLine({
       // The reader is taken to what they wrote - their newest node under the row the line was
       // aimed at, or under the issue - and the line writes on the issue again. A comment on a
       // statement's text takes the reader back to the statement's own row, whichever row draws
-      // the comment itself. Neither is refused here: the write store drops the send before it
-      // calls this, so no send is out by then.
+      // the comment itself. A reader who moved on while the send was out is left where they went
+      // (`finish`). Neither is refused here: the write store drops the send before it calls this,
+      // so no send is out by then.
       onSent={() => finish(writer, place, { to: aim?.landsOn ?? "newest", under })}
       outline={look}
       owner={owner}
