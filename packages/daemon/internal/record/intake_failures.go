@@ -429,8 +429,8 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 	if len(failures) == 0 {
 		return nil
 	}
-	registered, err := s.ControllerRegistered(ctx, tx, project)
-	if err != nil || !registered {
+	session, err := s.ControllerSession(ctx, tx, project)
+	if err != nil || session == "" {
 		return err
 	}
 	for i := range failures {

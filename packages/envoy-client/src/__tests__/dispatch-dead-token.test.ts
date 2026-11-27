@@ -10,6 +10,7 @@
 // token traded again for nothing, and the dead one kept for the next call.
 
 import { expect, test } from "bun:test";
+import { routeAnswer } from "../../test/route-answers";
 import { brokerCredential } from "../broker-credential";
 import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
@@ -58,10 +59,10 @@ test.each([
     (client: DispatchClient) =>
       client.comment("DSP-1", { body: "Shipped.", actor: { kind: "session", id: "ses-one" } }),
     (key: string) =>
-      Response.json(
-        { comment: { id: "c-1" } },
-        { status: 201, headers: key === "" ? {} : { "Idempotency-Key": key } }
-      ),
+      Response.json(routeAnswer("POST /api/v1/issues/{key}/comments", { id: "c-1" }), {
+        status: 201,
+        headers: key === "" ? {} : { "Idempotency-Key": key },
+      }),
   ],
 ] as const)(
   "%s whose token is dead while the host moves to a warm session drops the dead token alone",

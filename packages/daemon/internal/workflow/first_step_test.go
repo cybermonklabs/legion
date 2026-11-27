@@ -257,7 +257,7 @@ func TestAnIssueOfThisReleaseJudgesALaterPlanAsALaterVersion(t *testing.T) {
 		id, version1 := planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 
 		before := planStandingOf(t, pool, engine, key, gen)
-		reason := "task default is running: stop it with stop_task before you change it."
+		reason := plan.RunningTaskChanged(plan.DefaultTask).Reason
 		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, version1), &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Task: plan.DefaultTask, Reason: reason}}}, before)
 

@@ -718,7 +718,8 @@ func TestACopyOfANoticeWaitsOrEndsAsItsArchitectsClaimDoes(t *testing.T) {
 // A person's spec decision whose architect's claim retired goes to the controller once: two
 // reports of the same failed publish queue one copy, that copy finds no holder of the role and
 // finishes undelivered because nobody will hold the role again, and its decision is relayed to
-// the controller once (the outbox's parkDecision); the architect is told nothing.
+// the controller once, on its role topic (the outbox's parkDecision); the architect is told
+// nothing.
 func TestASpecDecisionToARetiredArchitectGoesToTheControllerOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -728,8 +729,10 @@ func TestASpecDecisionToARetiredArchitectGoesToTheControllerOnce(t *testing.T) {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateRetired, "ses_arch")
 	var logged bytes.Buffer
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
 	publisher.setAbsent(architectTopic(t, "LEGION-1"))
+	publisher.holds(legionController, "ses_controller")
 	clock := time.Now()
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
 		project: "legion", now: func() time.Time { return clock }}
@@ -766,9 +769,9 @@ func TestASpecDecisionToARetiredArchitectGoesToTheControllerOnce(t *testing.T) {
 			t.Fatalf("run the copy and the controller row: %v", err)
 		}
 	}
-	if relayed() != 1 || to(notify.ControllerTopic("legion")) != 1 || to(architectTopic(t, "LEGION-1")) != 0 || outboxRows(t, pool) != 0 {
+	if relayed() != 1 || to(controllerRoleTopic) != 1 || to(architectTopic(t, "LEGION-1")) != 0 || outboxRows(t, pool) != 0 {
 		t.Fatalf("%d relays, %d to the controller, %d to the architect, %d rows left, log %q; want one relay told to the controller once and none to the architect",
-			relayed(), to(notify.ControllerTopic("legion")), to(architectTopic(t, "LEGION-1")), outboxRows(t, pool), logged.String())
+			relayed(), to(controllerRoleTopic), to(architectTopic(t, "LEGION-1")), outboxRows(t, pool), logged.String())
 	}
 }
 

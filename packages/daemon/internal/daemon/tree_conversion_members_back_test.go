@@ -20,7 +20,7 @@ import (
 
 // releaseBeforeMigrations are this release's own migrations, the ones main, the release before the
 // one that stores no tree, does not carry, as `comm` reads the up.sql files of this tree against
-// those of main's tip (45f6e9d3 at the last forward merge). A store migrated with every migration
+// those of main's tip (f9809362 at the last forward merge). A store migrated with every migration
 // but these is the store main leaves.
 var releaseBeforeMigrations = []int{20261122154644, 20261122154645, 20261126035722, 20261127104032}
 

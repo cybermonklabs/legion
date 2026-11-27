@@ -22,8 +22,9 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	accepting := func(starts int64) record.StepEntry {
 		return record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}, Starts: starts}
 	}
-	running := RunningTaskChanged("a")
-	if want := (plan.Refusal{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."}); running != want {
+	running := plan.RunningTaskChanged("a")
+	if want := (plan.Refusal{Task: "a", Reason: "task a is running, so a later version can change only its text. " +
+		"Stop it with stop_task before you change any other part of it or remove it."}); running != want {
 		t.Fatalf("RunningTaskChanged(a) = %+v, want %+v", running, want)
 	}
 	reasons := []plan.Refusal{
@@ -37,7 +38,8 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	}{
 		{"a refused plan", PlanRefused(reasons), Refusal{Status: http.StatusConflict, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: the plan has 2 tasks (a, b), and this release runs one task for each issue. " +
-				"This release of Legion does not carry it out yet. task a is running: stop it with stop_task before you change it.",
+				"This release of Legion does not carry it out yet. task a is running, so a later version can change only its text. " +
+				"Stop it with stop_task before you change any other part of it or remove it.",
 			Reasons: reasons}},
 		{"a version at or below the one in force", PlanVersionOld("LEGION-208", 3, 2), Refusal{Status: http.StatusConflict, Code: "PLAN_VERSION_OLD",
 			Message: "the plan in force of LEGION-208 is version 3, and Legion takes only a later version: version 2 changed nothing."}},
@@ -72,10 +74,11 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "the plan was given for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Give the plan again. This plan changed nothing."}},
 		{"a plan of an issue whose group runs the default steps", PlanNotTaken("LEGION-208", inPlanningB), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
-				"Legion takes no plan from its owner for this issue. This plan changed nothing."}},
+				"Legion takes no plan from its owner for this issue, only a version that changes nothing but the text of its running task default. " +
+				"This plan changed nothing."}},
 		{"a stop of a task of an issue whose group runs the default steps", TaskNotStopped("LEGION-208", inPlanningB), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
-				"Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}},
+				"Legion takes no stop of its tasks from its owner. This stop changed nothing."}},
 		{"a stop asked at a generation the issue has left", TaskStaleGeneration("LEGION-208", 1, 2), Refusal{Status: http.StatusConflict, Code: "TASK_STALE_GENERATION",
 			Message: "the stop was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Ask for the stop again if the task of this run must stop. This stop changed nothing."}},
 		{"a sign-off asked at a generation the issue has left", SignOff{Issue: "LEGION-208", Generation: 1}.StaleGeneration(2), Refusal{Status: http.StatusConflict, Code: "SIGNOFF_STALE_GENERATION",

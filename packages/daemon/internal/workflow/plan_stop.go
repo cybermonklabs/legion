@@ -155,8 +155,8 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // the architect's levers over them, as its sign-off and its move back are (waitingRefusal,
 // dispatch://INFRA-3320 R11).
 //
-// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
-// tasks from that owner either: the experiment decides how the issue is done. The stop is
+// An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes no stop of
+// its tasks from its owner: the experiment decides how the issue is done. The stop is
 // answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood, so a
 // parent of such a group in awaiting_children is answered PLAN_NOT_TAKEN, not WAITING_ON_CHILDREN.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {

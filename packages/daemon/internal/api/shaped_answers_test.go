@@ -1302,10 +1302,11 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the eight rows whose shape has
-// moved shape a State, an Issue, the release records, a refusal, the two registrations and the two
-// answers of the status calls and panic on anything else: a row handed the wrong type would fail
-// here as an answer with no row does, and never serve that body unshaped.
+// Each row is handed a body its own route could write, because the ten rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal, the two answers of the status
+// calls, the plan registration's answer, the two registrations and an agent action's answer and
+// panic on anything else: a row handed the wrong type would fail here as an answer with no row
+// does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers() {
@@ -1374,6 +1375,23 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if encoded, err := json.Marshal(own); err != nil || !bytes.Contains(encoded, []byte(`"queued":[{"issue":"LEGION-209","status":"todo","row":42}]`)) {
 					t.Errorf("the %s answer served at chainContract = %s (%v), want its queued write", answer.ID, encoded, err)
 				}
+			case AnswerPlanRegister:
+				// A task that runs carries `running` from the running-step entry on, and a caller
+				// below it is served the task without it, on a copy: the body the route built
+				// keeps it.
+				taken := PlanRegisterResponse{Plan: RegisteredPlan{Version: 2, Tasks: []RegisteredTask{
+					{ID: "a", Steps: []string{"implementer"}, Running: []RunningStep{{Kind: "step", Place: 1, Role: "implementer"}}}}}}
+				below, _ := shapeAnswer(AnswerPlanRegister, taken, entryNumber(runningStepContract)-1, entryNumber(runningStepContract)-1)
+				if shaped, isTaken := below.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running != nil {
+					t.Errorf("register_plan's answer served below the running-step entry = %+v, want its task without `running`", below)
+				}
+				if taken.Plan.Tasks[0].Running == nil {
+					t.Error("the shaping wrote the task of the body the route built: the tasks are copied before one is written")
+				}
+				at, _ := shapeAnswer(AnswerPlanRegister, taken, entryNumber(runningStepContract), entryNumber(runningStepContract))
+				if shaped, isTaken := at.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running == nil {
+					t.Errorf("register_plan's answer served at the running-step entry = %+v, want its task with `running`", at)
+				}
 			case AnswerRegister:
 				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"}, Replaces: "ses_before"}
 				older := claim.RegisterResponse{ClaimToken: registration.ClaimToken, PromptAgents: registration.PromptAgents}
@@ -1410,11 +1428,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The nine rows that shape a body of their own panic on a body of another type, as a row that
+// The ten rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerWaveRelease, AnswerStatusCall, AnswerRegister, AnswerRegisterController, AnswerAgentAction} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerWaveRelease, AnswerStatusCall, AnswerPlanRegister, AnswerRegister, AnswerRegisterController, AnswerAgentAction} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

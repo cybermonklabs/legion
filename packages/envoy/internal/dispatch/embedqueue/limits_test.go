@@ -671,6 +671,23 @@ func (f *bedrockFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(response)
 }
 
+// callErrors is the embedder it holds, writing to the test's log the error of each call that
+// fails. A test that counts the calls a stand-in saw then names what failed when the count is off:
+// the queue answers a failed call of a group by sending its halves (bisectSplit) and logs the
+// failure nowhere.
+type callErrors struct {
+	embed.Embedder
+	t *testing.T
+}
+
+func (c callErrors) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	vectors, err := c.Embedder.Embed(ctx, texts, inputType)
+	if err != nil {
+		c.t.Logf("a call of %d texts failed: %v", len(texts), err)
+	}
+	return vectors, err
+}
+
 // The largest group Bedrock's token ceiling alone allows, 25 pending full texts (800,000 bytes),
 // goes through ProcessBatch and the paced Bedrock client cmd/dispatch builds, over HTTP to a
 // stand-in Bedrock, as three calls of 10, 10 and 5 texts: two exactly at the 320,000-byte budget
@@ -682,7 +699,7 @@ func TestNoBedrockCallCarriesMoreThanItsByteBudget(t *testing.T) {
 	fake := &bedrockFake{}
 	server := httptest.NewServer(fake)
 	defer server.Close()
-	client := bedrockClientFor(server)
+	client := callErrors{Embedder: bedrockClientFor(server), t: t}
 	const budget = 320_000 // Bedrock's MaxBatchBytes, which TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff checks
 
 	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), Deps{Store: database, Embedder: client}.Paced())

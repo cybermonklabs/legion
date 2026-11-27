@@ -342,8 +342,10 @@ export interface LegionDaemonClient {
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
    * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
-   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and a plan
-   * of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and
+   * every other plan of an issue whose experiment's group runs the project's default steps
+   * `PLAN_NOT_TAKEN`: such an issue takes only a version that changes nothing but the text of its
+   * running task `default`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
@@ -577,7 +579,9 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * repeat after the sequence moved is a new fact, which the gate takes as a re-registration of the
  * same document and tells no one again), `register_plan` (the daemon judges every give against its
  * store: a repeat of a give it applied is answered as taken while that version is in force, and
- * writes nothing), `stop_task` (a repeat finds the task stopped and changes nothing) and
+ * writes nothing; its answer names the same plan, and the act each running task stands at
+ * (`running`) as the record holds it at the repeat, which can be a later act), `stop_task` (a
+ * repeat finds the task stopped and changes nothing) and
  * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive

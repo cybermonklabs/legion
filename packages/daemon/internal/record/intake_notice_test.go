@@ -17,7 +17,7 @@ import (
 
 // registerIntakeController records project's controller as the daemon does when
 // `legion controller start` mints a capability and its session registers with it, under the
-// project token (ControllerRegistered reads that row).
+// project token (ControllerSession reads that row).
 func registerIntakeController(t *testing.T, st *store.Store, project string) {
 	t.Helper()
 	ctx := context.Background()

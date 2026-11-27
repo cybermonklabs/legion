@@ -882,7 +882,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 			ID:    "a",
 			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
-	})})
+	}, []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}})})
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 

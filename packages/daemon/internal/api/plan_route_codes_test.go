@@ -80,7 +80,7 @@ func TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory(t *testing.T) {
 			t.Errorf("register_plan or stop_task can answer %s, and no entry of the contract history (version.go and the entry files) names it", code)
 		}
 	}
-	t.Logf("codes the two routes answer of their own, each held to the history: %v", codes)
+	t.Logf("codes the two routes answer of their own, each held to the history of version.go and %d entry files: %v", len(entries), codes)
 }
 
 // codeCensus is the type-checked source of this package, the workflow and intake: each function

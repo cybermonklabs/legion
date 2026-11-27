@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -17,8 +16,9 @@ import (
 // nobody told: where the owning architect will not hold its role again (its claim failed, as the
 // root of a production issue's round did on a provider's 429), the notice goes to the project's controller
 // instead, once, however often its row runs, and the controller's row publishes it on the
-// controller topic with the notice's own words. Control: an architect that holds its role gets
-// the notice, and nothing goes to the controller.
+// controller's role topic, once the registered controller session holds that role live, with the
+// notice's own words. Control: an architect that holds its role gets the notice, and nothing goes
+// to the controller.
 func TestAKeptPodsNoticeGoesToTheControllerWhenNoArchitectWillHearIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -37,7 +37,9 @@ func TestAKeptPodsNoticeGoesToTheControllerWhenNoArchitectWillHearIt(t *testing.
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", tc.state)
+			registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 			publisher := &holderPublisher{}
+			publisher.holds(legionController, "ses_controller")
 			if tc.absent {
 				publisher.setAbsent(architectTopic(t, "LEGION-1"))
 			}
@@ -72,7 +74,7 @@ func TestAKeptPodsNoticeGoesToTheControllerWhenNoArchitectWillHearIt(t *testing.
 					continue
 				}
 				switch published.topic {
-				case notify.ControllerTopic("legion"):
+				case controllerRoleTopic:
 					toController++
 				case architectTopic(t, "LEGION-1"):
 					toArchitect++

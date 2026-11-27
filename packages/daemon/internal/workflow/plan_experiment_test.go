@@ -229,7 +229,8 @@ func TestTheGroupDefaultPassesOverEveryCopyOfItsOwnersPlanOnce(t *testing.T) {
 // planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
 func planNotTakenOfB(key string) *intake.Refusal {
 	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) +
-		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
+		" Legion takes no plan from its owner for this issue, only a version that changes nothing but the text of its running task default. " +
+		"This plan changed nothing."}
 }
 
 // drawnForMemory records key's tree as drawn into the arm memory of the `memory` experiment,
@@ -286,10 +287,10 @@ func TestTheGroupDefaultRunsTheDefaultSteps(t *testing.T) {
 	})
 }
 
-// An issue whose group runs the project's default steps takes no plan from its owner:
-// register_plan is answered 409 PLAN_NOT_TAKEN with the group's clause, the registration stays
-// unspent, and nothing is recorded. The control is the same issue drawn into the arm whose owner
-// gives the plan: the plan is taken.
+// An issue whose group runs the project's default steps takes no plan from its owner before its
+// first step: register_plan is answered 409 PLAN_NOT_TAKEN with the group's clause, the
+// registration stays unspent, and nothing is recorded. The control is the same issue drawn into the
+// arm whose owner gives the plan: the plan is taken.
 func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 	t.Parallel()
 	t.Run("the group default takes no plan", func(t *testing.T) {
@@ -328,29 +329,38 @@ func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 // answered PLAN_NOT_TAKEN. Where the run holds a plan one of whose givers owns the issue, the run
 // went on without the plan of generation 0, which is answered PLAN_STALE_GENERATION. Where the run
 // holds no plan, the plan given would wait at generation 0 for a first step that passes it over,
-// and is answered PLAN_NOT_TAKEN. None stores anything. The plan of the run is written as the store
-// keeps it, given by the architect of LEGION-300's tree, which owns nothing of LEGION-208, or by
+// and is answered PLAN_NOT_TAKEN. So is the same version given again where it waits at generation
+// 0 already, given there by the architect of LEGION-209, which stands above LEGION-208 on its
+// Dispatch chain and so owns the issue (record.PlanOwners): it is the owner's version, not one the
+// group stores as its own (record.PlanSourceDefault). None stores or changes anything, at the
+// run's generation or at generation 0. The plans are written as the store keeps them: the run's
+// given by the architect of LEGION-300's tree, which owns nothing of LEGION-208, or by
 // LEGION-208's own architect.
 //
 // The faults it catches: a run holding an earlier owner's plan read as having taken it (its
 // control: waitsAtZero keeping every plan of the run, whoever gave it, under which the first row
-// answers PLAN_STALE_GENERATION), and a run holding its owner's plan read as still waiting (its
+// answers PLAN_STALE_GENERATION), a run holding its owner's plan read as still waiting (its
 // control: waitsAtZero reading no row of the run, under which the second row answers
-// PLAN_NOT_TAKEN).
+// PLAN_NOT_TAKEN), and an owner's version given again taken as the group's own (its control:
+// versionRefusal taking every version in force given again, under which the fourth row is
+// answered taken and adds LEGION-208's architect to the givers of the version at generation 0).
 func TestAPlanGivenAtGenerationZeroForAnIssueOfTheGroupDefaultIsJudgedByItsRunsPlan(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		giver string
-		want  func(root record.Issue) *intake.Refusal
+		name    string
+		giver   string
+		waiting string
+		want    func(root record.Issue) *intake.Refusal
 	}{
-		{"the run holds an earlier owner's plan", "LEGION-300",
+		{"the run holds an earlier owner's plan", "LEGION-300", "",
 			func(root record.Issue) *intake.Refusal { return planNotTakenOfB(root.Key) }},
-		{"the run holds its owner's plan", "LEGION-208",
+		{"the run holds its owner's plan", "LEGION-208", "",
 			func(root record.Issue) *intake.Refusal {
 				return intake.PlanStaleGeneration(root.Key, 0, root.Generation)
 			}},
-		{"the run holds no plan", "",
+		{"the run holds no plan", "", "",
+			func(root record.Issue) *intake.Refusal { return planNotTakenOfB(root.Key) }},
+		{"the same version waits at generation 0", "", "LEGION-209",
 			func(root record.Issue) *intake.Refusal { return planNotTakenOfB(root.Key) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,22 +368,36 @@ func TestAPlanGivenAtGenerationZeroForAnIssueOfTheGroupDefaultIsJudgedByItsRunsP
 			engine := returnEngine()
 			root := stepRoot(t, pool, phase.Admitted)
 			drawnInto(t, pool, root.Key, "planning", "b", "default")
-			if tc.giver != "" {
-				at := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
+			seedVersion := func(generation uint64, giver string) {
 				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return record.NewStore().PutPlan(t.Context(), tx, record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 1,
-						ArtifactID: planArtifact, Source: record.PlanSourceOwner, GivenBy: claim.Token(treeRoleToken(t, tc.giver, claim.RoleArchitect)), GivenAt: at},
-						[]record.PlanTask{{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}}, nil)
+					return record.NewStore().PutPlan(t.Context(), tx, record.PlanVersion{Issue: root.Key, Generation: generation, Version: 1,
+						ArtifactID: planArtifact, Source: record.PlanSourceOwner, GivenBy: claim.Token(treeRoleToken(t, giver, claim.RoleArchitect)),
+						GivenAt: time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)},
+						[]record.PlanTask{{Issue: root.Key, Generation: generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}}, nil)
 				})
 			}
+			if tc.giver != "" {
+				seedVersion(root.Generation, tc.giver)
+			}
+			if tc.waiting != "" {
+				// The waiting version's giver acts on the root from above it on its Dispatch
+				// chain, its own issue there.
+				above := tc.waiting
+				recordedAt(t, pool, above, above)
+				root.Parent = &above
+				seedIssue(t, pool, root)
+				seedVersion(0, above)
+			}
 			before := planStandingOf(t, pool, engine, root.Key, root.Generation)
+			atZero := planStandingOf(t, pool, engine, root.Key, 0)
 			id := planID(root.Key, 0, 1)
 			given := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 
-			assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, applyFacts(t, pool, engine)(id, given), tc.want(root), before)
-			if got := planStandingOf(t, pool, engine, root.Key, 0).versions; len(got) != 0 {
-				t.Errorf("the versions of %s at generation 0 = %v, want none stored", root.Key, got)
+			result := applyFacts(t, pool, engine)(id, given)
+			if after := planStandingOf(t, pool, engine, root.Key, 0); !reflect.DeepEqual(after, atZero) {
+				t.Errorf("the plan given changed %s at generation 0:\n before %v %+v\n after  %v %+v", root.Key, atZero.versions, atZero.plan, after.versions, after.plan)
 			}
+			assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, result, tc.want(root), before)
 		})
 	}
 }
@@ -430,9 +454,9 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	}
 }
 
-// Legion takes no plan from the owner of an issue whose group runs the project's default steps,
-// and so no stop of its tasks either: its stop_task is answered 409 PLAN_NOT_TAKEN with the
-// sentence that names the group and that reason, and the task goes on running. The control is the
+// Legion takes no stop of its tasks from the owner of an issue whose group runs the project's
+// default steps: its stop_task is answered 409 PLAN_NOT_TAKEN with the sentence that names the
+// group and that reason, and the task goes on running. The control is the
 // same issue drawn into the arm whose owner gives the plan, whose owner gave none: it runs the
 // default task, which its owner did not write, and its owner's stop of that task is taken.
 func TestTheGroupDefaultStopsNoTask(t *testing.T) {
@@ -446,7 +470,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
 		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
-			" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
+			" Legion takes no stop of its tasks from its owner. This stop changed nothing."}
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}

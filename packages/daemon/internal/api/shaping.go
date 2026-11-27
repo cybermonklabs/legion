@@ -336,6 +336,18 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			return EmptyResponse{}, took
 		}
 		return body, took
+	case AnswerPlanRegister:
+		// The running-step entry's row. Every numbered contract reads this answer whole, so it
+		// stands among the numbered entries' identity answers (frozenIdentityAnswers), and this
+		// case, which shapeAnswer reads first, takes `running` off a caller below the entry.
+		taken, isTaken := body.(PlanRegisterResponse)
+		if !isTaken {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(runningStepContract) {
+			return withoutRunningSteps(taken), took
+		}
+		return taken, took
 	case AnswerRegister:
 		registration, isRegistration := body.(claim.RegisterResponse)
 		if !isRegistration {
@@ -2206,6 +2218,24 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 	}
 	records.Resumes = resumes
 	return records
+}
+
+// withoutRunningSteps is taken with no task carrying `running`, the one key runningStepContract
+// added to register_plan's answer. The key is `omitempty` and absent from a task that does not
+// run, so an answer whose tasks carry none is returned as it is, with no copy made. Otherwise the
+// tasks are copied before one is written, so the body the route built is left as it was, and the
+// list stays non-nil, as register_plan writes it (RegisteredPlan).
+func withoutRunningSteps(taken PlanRegisterResponse) PlanRegisterResponse {
+	if !slices.ContainsFunc(taken.Plan.Tasks, func(task RegisteredTask) bool { return task.Running != nil }) {
+		return taken
+	}
+	tasks := make([]RegisteredTask, len(taken.Plan.Tasks))
+	for i, task := range taken.Plan.Tasks {
+		task.Running = nil
+		tasks[i] = task
+	}
+	taken.Plan.Tasks = tasks
+	return taken
 }
 
 // withoutClaimRoundReport is the issue with no claim view carrying `updateState` or `wake`, the

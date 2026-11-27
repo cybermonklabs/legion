@@ -70,9 +70,12 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The owner's plan", declares: []declarationSite{
 		{"internal/api/plan.go", "OwnerPlanContract"},
 	}},
+	// The running-step entry's row of shapeAnswer takes `running` off register_plan's answer for a
+	// caller below the entry, as the two refusals' rows take their bodies' newer parts off.
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(runningStepContract)"),
 	}},
 	// The chain entry's answers of the status calls: shapeAnswer serves the wave release without
 	// `queued`, and the status call as the empty object, to a caller below that entry's number.

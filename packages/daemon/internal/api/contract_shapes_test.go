@@ -808,12 +808,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Pause: ended, Released: 3,
 		}}},
 		// The plan-register golden's own value (TestOwnerPlanRouteGoldens): one task with the
-		// steps its block names.
+		// steps its block names, running at its first step, the implementer's.
 		AnswerPlanRegister: {roots: typesOf(PlanRegisterResponse{}), bodies: []any{PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
 			ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
 			Version:    4,
 			Tasks:      []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}},
-		})}}},
+		}, []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}})}}},
 		// The replay golden's own value (goldenIntakeReplay, TestIntakeReplayAnswerGolden).
 		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).

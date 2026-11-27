@@ -186,8 +186,9 @@ type keptRace struct {
 // catch-up it takes, the generation that catch-up's own root stood at then (atPublish). A kept
 // publish (PublishKept) is answered by the run's mode as any
 // other is and never kept: the mode's no-holder is the 404 a listener before #4079 answers a
-// claim whose holder is gone.
+// claim whose holder is gone. Its role read is fakeRoleListener's.
 type keptPublisher struct {
+	fakeRoleListener
 	mu        sync.Mutex
 	mode      keptPublishMode
 	delivered []outboxPublish

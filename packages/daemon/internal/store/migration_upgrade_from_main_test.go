@@ -206,23 +206,24 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 }
 
-// thisBranchsMigrationsMainLacks are the versions this head embeds that main at 45f6e9d3, this
+// thisBranchsMigrationsMainLacks are the versions this head embeds that main at f9809362, this
 // branch's newest merge of main, has not recorded, read off that commit as releaseDatabase says:
 // dispatch://INFRA-4730's three (20261122154644, 20261122154645 and 20261126035722), every one of
 // them below main's newest, 20261126163320, and the merge's union of the kind lists
 // (20261127104032), above it. Every other embedded version is one main's run applied, #4065's two
 // (20261115060739 and 20261115121838) and its merge holds kind (20261126110259),
-// dispatch://INFRA-3931's state events (20261126163320) and cybermonklabs/legion#3712's four
-// (20261112012123, 20261112215432, 20261118073048 and 20261122212816) among them. 20261122154645
-// rewrites outbox_kind_check over the rows main's daemon left, and 20261127104032 rewrites it last,
-// as it does on every database this release upgrades. The upgrade applies all four whatever
-// main's newest version is: Store.apply asks each migration whether its own version is recorded.
+// dispatch://INFRA-3931's state events (20261126163320), cybermonklabs/legion#3712's four
+// (20261112012123, 20261112215432, 20261118073048 and 20261122212816) and #5204's parent of a plan
+// task (20261124022547) among them. 20261122154645 rewrites outbox_kind_check over the rows main's
+// daemon left, and 20261127104032 rewrites it last, as it does on every database this release
+// upgrades. The upgrade applies all four whatever main's newest version is: Store.apply asks each
+// migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	holdsGateVersion: true, issueFactsVersion: true, claimsIssueVersion: true,
 	kindsAfterTheStateEventsVersion: true,
 }
 
-// A daemon of this release is also deployed over the database main at 45f6e9d3 migrated, and that
+// A daemon of this release is also deployed over the database main at f9809362 migrated, and that
 // database's outbox can hold a row of each of main's newest kinds: main's daemon queues a
 // step_record at each start and end of a step, its roll forward (20261117064152) queues one for
 // each run a rollback left open, it queues a plan_record for each retro that rates its plan, a
@@ -560,9 +561,16 @@ const readmittedApprovalArtifactVersion = 20261122212816
 // lacks the four, the ones below its newest among its lacks. One that main at 45f6e9d3 migrated
 // holds them, an issue whose repository was corrected and an approval kept with its document
 // among its rows, and lacks INFRA-4730's three, below its newest, 20261126163320, as main's at
-// dc18a1fe does. One that this branch's head before that merge (f4a07e03) migrated lacks the four
-// alone, every one of them below its newest, 20261127104032, and can hold a phase entry a resume
-// raised marked to be sent as written (entry_verbatim), which 20261118073048 gives the empty wait.
+// dc18a1fe does. One that this branch's head before that merge (f4a07e03) migrated lacks the four,
+// every one of them below its newest, 20261127104032, and can hold a phase entry a resume raised
+// marked to be sent as written (entry_verbatim), which 20261118073048 gives the empty wait.
+// The merge of main f9809362 brought #5204's parent of a plan task (20261124022547), a column it
+// adds to 20261117034837's plan_tasks, which stands below the issue priority (20261124060500).
+// It adds no outbox kind. No database of an earlier merge recorded it: the one of main with
+// Dispatch priority, main's at a2ac5fd7, ca20a512, dc18a1fe and 45f6e9d3 and this branch's at
+// 40b2ad0e and f4a07e03 lack it below their newest, and every other one above its newest. One that
+// main at f9809362 migrated holds it, a plan task whose block names its parent among its rows, and
+// lacks INFRA-4730's three, below its newest, 20261126163320, as main's at 45f6e9d3 does.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and
 // never compares it with the newest, so each upgrade applies the versions that database lacks,
 // below its newest and above it alike, and leaves every embedded version recorded once.
@@ -589,7 +597,9 @@ const readmittedApprovalArtifactVersion = 20261122212816
 // KeepReadmittedApproval), and the upgrade keeps all three and gives the issue, a root, its own
 // gate (20261122154644). This branch's database at f4a07e03 holds a root architect's entry that a
 // resume raised, marked to be sent as written as the release before 20261118073048 marks it, and
-// the upgrade gives it the empty wait (migration_20261118073048_test.go).
+// the upgrade gives it the empty wait (migration_20261118073048_test.go). Main's database at
+// f9809362 holds a plan task whose block names its parent, as #5204's daemon writes it (record's
+// PutPlan), and the upgrade keeps the parent (migration_20261124022547_test.go).
 //
 // Each database is built from the migrations numbered up to its own newest alone, but those it
 // lacks, so a migration added after this test still finds the database that release left, and the
@@ -819,7 +829,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
 				suspendedByControllerVersion, dropControllerWakesVersion, phaseEntryAwaitingVersion,
 				issueReleaseCommittedVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion,
-				readmittedApprovalArtifactVersion, planEarlierGiversVersion},
+				readmittedApprovalArtifactVersion, planTasksParentRefVersion, planEarlierGiversVersion},
 			seed: func(t *testing.T, store *Store) {
 				queueMainsKinds(t, store)
 				if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, priority)
@@ -862,7 +872,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			newest: mergeHoldsChangedVersion,
 			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
 				issueReleaseCommittedVersion, holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion,
-				sessionRunVersion, p0StartVersion, podReleaseGiveUpsVersion, claimsIssueVersion},
+				planTasksParentRefVersion, sessionRunVersion, p0StartVersion, podReleaseGiveUpsVersion, claimsIssueVersion},
 			seed: queueMainsKinds,
 			check: func(t *testing.T, store *Store) {
 				for _, kind := range []string{"merge_holds_changed", "retention_end"} {
@@ -877,7 +887,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			newest: mergeHoldsChangedVersion,
 			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
 				issueReleaseCommittedVersion, holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion,
-				podReleaseGiveUpsVersion, claimsIssueVersion},
+				planTasksParentRefVersion, podReleaseGiveUpsVersion, claimsIssueVersion},
 			seed: func(t *testing.T, store *Store) {
 				queueMainsKinds(t, store)
 				if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
@@ -902,7 +912,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			name:   "main at dc18a1fe",
 			newest: stateEventsVersion,
 			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
-				holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion, claimsIssueVersion},
+				holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion, planTasksParentRefVersion, claimsIssueVersion},
 			seed:  queueMainsKinds,
 			check: keepsMainsStateRows,
 		},
@@ -910,7 +920,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			name:   "this branch at 40b2ad0e",
 			newest: mergeHoldsChangedVersion,
 			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
-				issueReleaseCommittedVersion, readmittedApprovalArtifactVersion, podReleaseGiveUpsVersion},
+				issueReleaseCommittedVersion, readmittedApprovalArtifactVersion, planTasksParentRefVersion, podReleaseGiveUpsVersion},
 			// This branch's daemon queues every kind of its own list, retention_end among them.
 			seed: func(t *testing.T, store *Store) { queueKinds(t, store) },
 			check: func(t *testing.T, store *Store) {
@@ -928,7 +938,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at 45f6e9d3",
 			newest: stateEventsVersion,
-			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion},
+			lacks:  []int{holdsGateVersion, issueFactsVersion, planTasksParentRefVersion, claimsIssueVersion},
 			seed: func(t *testing.T, store *Store) {
 				queueMainsKinds(t, store)
 				// #3712's daemon writes a correction with the repository the issue left and its
@@ -959,7 +969,8 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at f4a07e03",
 			newest: kindsAfterTheStateEventsVersion,
-			lacks:  []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion, readmittedApprovalArtifactVersion},
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion, readmittedApprovalArtifactVersion,
+				planTasksParentRefVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261118073048 marks the entry a resume raises to be sent as
 				// written (record's PutPhase, phases.entry_verbatim).
@@ -978,6 +989,33 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 				const entries = `select row(issue, role, entry, entry_awaiting)::text from phases order by issue, role`
 				if got, want := rowsAsText(t, store, entries), []string{"(LEGION-704,architect,2,{})"}; !slices.Equal(got, want) {
 					t.Errorf("the phases rows after the upgrade (issue, role, entry, entry_awaiting) = %v, want %v: the resume's entry, holding the empty wait", got, want)
+				}
+			},
+		},
+		{
+			name:   "main at f9809362",
+			newest: stateEventsVersion,
+			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				// #5204's daemon writes the parent a task's block names on the task's row (record's
+				// PutPlan, plan_tasks.parent_ref).
+				for _, seed := range []string{
+					`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
+						values ('LEGION-706', 1, 1, 'owner', 'artifact-706', 'legion-legion-legion-706-architect', now())`,
+					`insert into plan_tasks (issue, generation, task, plan_version, block_text, state, parent_ref)
+						values ('LEGION-706', 1, 'a', 1, 'Build the widget.', 'waiting', 'dispatch://LEGION-706/spec#b-r1')`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a plan task that names its parent as main's daemon at f9809362 did: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				keepsMainsStateRows(t, store)
+				const parents = `select task || '=' || parent_ref from plan_tasks where issue = 'LEGION-706' order by task`
+				if got, want := rowsAsText(t, store, parents), []string{"a=dispatch://LEGION-706/spec#b-r1"}; !slices.Equal(got, want) {
+					t.Errorf("the plan tasks after the upgrade (task=parent_ref) = %v, want %v: the parent its block names, kept", got, want)
 				}
 			},
 		},

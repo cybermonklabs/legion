@@ -302,7 +302,7 @@ func TestAnOwnersPlanIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 		// Given again at the generation the record holds, the plan meets the rules of a later
 		// version over the default steps, which the child already runs.
 		again := apply(planID("LEGION-209", 1, 1), ownersPlan(t, "LEGION-209", 1, 1, widget(t)))
-		if want := intake.PlanRefused([]plan.Refusal{intake.RunningTaskChanged(plan.DefaultTask)}); !reflect.DeepEqual(again.Refusal, want) {
+		if want := intake.PlanRefused([]plan.Refusal{plan.RunningTaskChanged(plan.DefaultTask)}); !reflect.DeepEqual(again.Refusal, want) {
 			t.Fatalf("the plan given again at generation 1 = %+v, want %+v", again.Refusal, want)
 		}
 	})

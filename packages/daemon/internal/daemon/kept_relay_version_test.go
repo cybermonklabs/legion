@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -56,13 +55,14 @@ func TestAKeptAndARelayedChangesRequestAgreeOnAnApprovalOfALaterVersionMarkedBef
 
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, "LEGION-1", supervise.StateFailed)
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
-	publisher.setAbsent(architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion"))
+	publisher.setAbsent(architectTopic(t, "LEGION-1"), controllerRoleTopic)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION",
 		records: records, notices: publisher, supervisor: sup, project: "legion",
 		gatedSteps: steps, now: now}
 	// The first run relays the request, whose notice finds its architect's claim failed; the
-	// second is the relay's first attempt, which waits for the controller's claim.
+	// second is the relay's first attempt, which waits for the controller's role.
 	for run := range 2 {
 		if err := runner.RunOnce(ctx); err != nil {
 			t.Fatalf("run %d before the clear: %v", run, err)

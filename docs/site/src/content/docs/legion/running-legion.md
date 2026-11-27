@@ -686,11 +686,15 @@ What each part is for:
   ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
   "Operator configuration").
   Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
-- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
-  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
-  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
-  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
-  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+  An issue of `owner` takes the plan its owner gives with `register_plan`.
+  An issue of `default` runs the project's `default_steps`.
+  Legion takes from its owner only a version that changes nothing but the text of its running
+  task `default`.
+  Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
+  owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
+  notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
@@ -1175,11 +1179,12 @@ answer. A pre-registration states seven things.
      lines and count the unit out of the exposure for that period.
    - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
      only the files the file still holds, so from the moment the arm leaves the file its units load
-     none of its files. Its `plan` is the one part that stays: Legion reads each issue's group
-     from the draw it recorded, so an issue of an arm whose `plan` is `default` still runs the
-     project's default steps and takes no plan from its owner. Take an arm out of the file only
-     when the experiment is over, and record the date if you do it sooner, because every unit of
-     that arm is unexposed to its files from then on.
+     none of its files. Its `plan` is the one part that stays, since Legion reads each issue's
+     group from the draw it recorded. So an issue of an arm whose `plan` is `default` still runs
+     the project's default steps. Legion takes from its owner only a version that changes nothing
+     but the text of its running task `default`. Take an arm out of the file only when the
+     experiment is over, and record the date if you do it sooner, because every unit of that arm
+     is unexposed to its files from then on.
 
 A template to copy:
 
