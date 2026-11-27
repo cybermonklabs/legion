@@ -2889,9 +2889,10 @@ content rather than as a touched path:
   path or by a bare name (`.omp-pin`), a local action that job uses and each file that action's
   steps name, `$GITHUB_ACTION_PATH` read as the action's own directory, what each such script runs
   or sources in turn, go_legs.py, go_legs_select.py, go-legs-select.sh - every package of that job.
-  So a tool pin the legs' tests run is one: install-jj reads worker.Dockerfile's `ARG JJ_TOOL` and
-  .github/ci-tools.yaml through ci-tools.sh, install-omp .omp-pin and `ARG OMP_SHA256`, install-uv
-  and setup-bun .github/ci-tools.yaml;
+  So a tool pin the legs' tests run is one: install-jj reads the jj
+  `packages/daemon/docker/worker.Dockerfile#ARG JJ_TOOL` names, and .github/ci-tools.yaml through
+  ci-tools.sh; install-omp .omp-pin and `packages/daemon/docker/worker.Dockerfile#ARG OMP_SHA256`;
+  install-uv and setup-bun .github/ci-tools.yaml;
 - a legs workflow file: every package of its job only when the legs' definition changed, read as
   parsed YAML, so a comment or a reflow selects none: the legs job, and the file's `on:`, `env:` and
   `defaults:`, which every leg inherits; ci.yaml the same, for the `affected` job, the job that calls

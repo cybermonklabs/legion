@@ -563,8 +563,8 @@ class JobPackages:
 
 
 class Selector:
-    """What each job's packages read, computed from the working tree and its go-legs.yaml
-    (`document`, parsed), and the selection for a change to it (`choose`)."""
+    """What each job's packages read, computed from the working tree and the parsed go-legs.yaml
+    it is given (`document`), and the selection for a change to it (`choose`)."""
 
     def __init__(self, document: dict):
         self.document = document
