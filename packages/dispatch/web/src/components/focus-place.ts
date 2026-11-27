@@ -38,13 +38,14 @@ import { ROW_SELECTOR } from "./row-marker";
  * region its container was in (`walkBackInRegion`). A component's hand-off answers only for its
  * own controls: a focus in a dialog, a panel or a selection bar drawn inside its container is
  * that region's, and in a selection bar the bar's own hand-off answers a loss the reader caused
- * (`SelectionBar`). Each walk back passes over every control that takes typed text (`takesText`)
- * and every control the reader cannot see now (`inSightNow`). It lands a control with `land`,
- * which scrolls a control partly in sight to its nearest edge and one wholly in sight not at all,
- * as it lands and again once the commit it landed in is done. A region's own stop takes the focus
- * with no scroll (`focusOwnStop`). A loss of a control the reader had scrolled out of their sight,
- * read against what the reader could see while the press was armed, scrolls nothing and focuses
- * no control (`outOfSight`).
+ * (`SelectionBar`). So is a focus lost in a list or a panel a control of the container opened
+ * outside it, while that list or panel stays (`portalRegionOf`). Each walk back passes over every
+ * control that takes typed text (`takesText`) and every control the reader cannot see now
+ * (`inSightNow`). It lands a control with `land`, which scrolls a control partly in sight to its
+ * nearest edge and one wholly in sight not at all, as it lands and again once the commit it
+ * landed in is done. A region's own stop takes the focus with no scroll (`focusOwnStop`). A loss
+ * of a control the reader had scrolled out of their sight, read against what the reader could see
+ * while the press was armed, scrolls nothing and focuses no control (`outOfSight`).
  */
 
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
@@ -162,6 +163,9 @@ interface Place {
   readonly container: Element;
   readonly element: Element;
   index: number;
+  /** The region of its own a portal's element stands in (`portalRegionOf`), else null: for a
+   *  control of the container itself, and for a portal's element in no such region. */
+  readonly portal: Element | null;
   spots: readonly Spot[];
 }
 
@@ -248,7 +252,13 @@ function walkBackInRegion(element: Element, around: RegionPlace): void {
  * selection bar, the bar's own hand-off (`SelectionBar`) answers a loss the reader caused. An
  * element React bubbled up from a portal is no control of the container, so it is counted at the
  * place of the one counted before it there, in that one's spots, and not at all without one: a
- * nested panel's input is counted where the trigger that opened that panel is.
+ * nested panel's input is counted where the trigger that opened that panel is. A loss inside a
+ * region of its own that such an element stands in (`portalRegionOf`) - the list a `MultiSelect`
+ * among the container's controls opens - is that region's to answer while the region stays in the
+ * page and drawn: the hand-off moves nothing then, and keeps the place, so the focus the region
+ * hands on, as the list hands a focused option its pick takes away to its own text box, is
+ * counted where the control that opened the region is. A loss that takes the region away with it
+ * is the container's, and the walk starts at that control's place.
  *
  * The place is counted again once the element has gone, off the spot it went from in the
  * container (`placeLeft`): its place counted while it stood there takes in every control before
@@ -291,6 +301,10 @@ export function useFocusPlace(
       }
       return;
     }
+    // Lost inside a list or a panel a control of the container opened outside it, which stays:
+    // the list's to hand on, as `MultiSelect` does in an effect of this commit or a later one. The
+    // place is kept for the focus the list hands on (`portalRegionOf`).
+    if (held.portal !== null && !held.element.isConnected && present(held.portal)) return;
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
     if (!causedByReader(held.element)) return;
@@ -327,7 +341,10 @@ export function useFocusPlace(
     const carried = before?.container === container ? before : null;
     if (!container.contains(element)) {
       // A portal's element: at the place of the control counted before it, or nowhere.
-      place.current = carried === null ? null : { ...carried, element };
+      place.current =
+        carried === null
+          ? null
+          : { ...carried, element, portal: portalRegionOf(container, element) };
       return;
     }
     const { counted, index } = placeIn(container, element);
@@ -336,6 +353,7 @@ export function useFocusPlace(
       container,
       element,
       index: counted ? index : (carried?.index ?? -1),
+      portal: null,
       spots: spotsOf(element, container),
     };
   };
@@ -430,6 +448,16 @@ function handOffRegionOf({ around, container }: Place): HTMLElement | null {
 function inRegionWithin(container: Element, element: Element): boolean {
   const region = element.closest(PRESS_REGION);
   return region !== null && region !== container && container.contains(region);
+}
+
+/** The region of its own (`DIALOG`) that `element`, a portal's element React bubbled up to a
+ *  component's container from outside it, stands in, where that region is not around
+ *  `container`: the list a `MultiSelect` among the container's controls opens, or the panel a
+ *  `PanelTrigger` among them opens, each drawn on the page's body; else null. A loss inside it is
+ *  the region's to answer while the region stays (`useFocusPlace`). */
+function portalRegionOf(container: Element, element: Element): Element | null {
+  const region = element.closest(DIALOG);
+  return region !== null && !region.contains(container) ? region : null;
 }
 
 /** How many of `controls` come before `node` in the page. */

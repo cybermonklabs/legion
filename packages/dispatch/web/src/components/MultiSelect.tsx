@@ -466,30 +466,41 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // `flushMutationEffects`). A row the press takes off the page loses the focus, as in Details a
   // label only the open draft holds does as the reader unpicks it: `IssueLabels` lists the draft's
   // labels with the issue's and the project's, so that label is listed only while the draft holds
-  // it. So a press of a row that holds the focus only notes it, and the commit that answers the
-  // press gives the search box the focus only where the focus is lost then (`focusLost`): on the
-  // body, or still on the removed row in an engine that moves the focus off a removed element only
-  // at its next rendering update. A pointer press focuses none of them (`onMouseDown` below), and
-  // leaves the focus where it is. A row or a Create row the options take away holds no press, and
-  // its focus stays on the page's body, as for every change the reader did not make. A popover that
-  // closes takes the search box along, and the close above gives the focus back to the trigger
-  // instead.
+  // it. So a press of a row that holds the focus only notes it, with whether the host's pick held
+  // its value, and waits for the commit that answers the press: the one in which the host's pick
+  // holds that value otherwise. That commit can come after the press's own, since a host applies a
+  // pick in its own time: the Inbox's Filter panel applies it through the address, and its Project
+  // list draws a project no row carries only while the address names it, so the commit that
+  // answers the unpick of that project takes its row away. The commit that answers the press gives
+  // the search box the focus only where the focus is lost then (`focusLost`): on the body, or still
+  // on the removed row in an engine that moves the focus off a removed element only at its next
+  // rendering update. A panel the list stands in leaves that loss to the list (`useFocusPlace`). A
+  // press the host's pick does not answer, as where the host keeps its pick, answers nothing: the
+  // next press of a row or the close ends its wait. A pointer press focuses none of them
+  // (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the options take
+  // away holds no press, and its focus stays on the page's body, as for every change the reader did
+  // not make. A popover that closes takes the search box along, and the close above gives the focus
+  // back to the trigger instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };
-  // Whether a row was pressed while it held the focus, until the commit that answers the press:
-  // the press asks for a render, so that commit comes even where the press changes nothing else.
-  const focusedRowPressed = useRef(false);
-  const [, renderAfterPress] = useState(0);
-  const noteFocusedRow = (event: { readonly currentTarget: EventTarget }) => {
-    if (event.currentTarget !== document.activeElement) return;
-    focusedRowPressed.current = true;
-    renderAfterPress((renders) => renders + 1);
+  // The press of a row that held the focus, by the row's value, with whether the host's pick held
+  // that value at the press, until the commit that answers it; null while no such press waits.
+  const focusedPress = useRef<{ readonly picked: boolean; readonly value: string } | null>(null);
+  const noteFocusedRow = (event: { readonly currentTarget: EventTarget }, value: string) => {
+    focusedPress.current =
+      event.currentTarget === document.activeElement ? { picked: isPicked(value), value } : null;
   };
   useEffect(() => {
-    const pressed = focusedRowPressed.current;
-    focusedRowPressed.current = false;
-    if (pressed && focusLost()) inputRef.current?.focus();
+    const pressed = focusedPress.current;
+    if (pressed === null) return;
+    if (!open) {
+      focusedPress.current = null;
+      return;
+    }
+    if (isPicked(pressed.value) === pressed.picked) return;
+    focusedPress.current = null;
+    if (focusLost()) inputRef.current?.focus();
   });
 
   // Whether this open draws the Clear foot: a multi-select draws it once its pick holds a value,
@@ -852,7 +863,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                   // A pointer's click counts its clicks (`detail` 1 or more); the click a key makes
                   // on a row that holds the focus counts none.
                   onClick={(event) => choose(option, event.detail > 0)}
-                  onClickCapture={noteFocusedRow}
+                  onClickCapture={(event) => noteFocusedRow(event, option)}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"

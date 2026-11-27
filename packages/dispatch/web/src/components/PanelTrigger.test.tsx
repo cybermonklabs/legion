@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
 import { act, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
+import { disarm } from "../__tests__/armed-press";
+import { ControlRow } from "./ControlRow";
+import { filterChips } from "./filter-chips";
+import { holdHandOff } from "./focus-place";
+import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 
 function Host({ count, held = false }: { count?: number; held?: boolean }) {
@@ -314,6 +319,183 @@ test("a menu inside the panel that goes with the focus in its own list hands the
   } finally {
     view.unmount();
   }
+});
+
+/** The Inbox's control row under `?project=PANE,ZZZ`: a chip for each project the filter picks,
+ *  and the Filter panel, holding one control and then the Project list (`MultiSelect`), whose list
+ *  is portalled out of the panel. No row carries ZZZ, so the list draws ZZZ's row only while ZZZ
+ *  is picked, as the Inbox lists a value the address names (`fieldOptions`). Each pick, from the
+ *  list or a chip, waits in `answers` until the case applies it in a commit of its own, as the
+ *  Inbox applies a pick through the address after the press's own commit, and holds the press
+ *  until then (`holdHandOff`), as the address answers the press in a browser before it ends. */
+function ProjectFilterRow({ answers }: { readonly answers: (() => void)[] }) {
+  const [open, setOpen] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  const [picked, setPicked] = useState<readonly string[]>(["PANE", "ZZZ"]);
+  const pick = (next: readonly string[]) => {
+    const answered = holdHandOff();
+    answers.push(() => {
+      setPicked(next);
+      answered();
+    });
+  };
+  return (
+    <ControlRow
+      chips={filterChips(
+        picked.map((project) => ({
+          label: `Project: ${project}`,
+          remove: () => pick(picked.filter((other) => other !== project)),
+        }))
+      )}
+      trigger={
+        <PanelTrigger label="Filter" onOpenChange={setOpen} open={open} stacked>
+          {() => (
+            <>
+              <button type="button">Blocked on you</button>
+              <MultiSelect
+                emptyMessage="No matching project."
+                label="Project"
+                onChange={pick}
+                onOpenChange={setListOpen}
+                open={listOpen}
+                options={["PANE", ...picked.filter((project) => project !== "PANE")]}
+                searchLabel="Search project"
+                selected={picked}
+                triggerAriaLabel="Filter by project"
+              />
+            </>
+          )}
+        </PanelTrigger>
+      }
+    />
+  );
+}
+
+/** Opens `ProjectFilterRow`'s Filter panel and its Project list, with the pointer. */
+async function openProjectList(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Filter" }));
+  const panel = screen.getByRole("dialog", { name: "Filter" });
+  await user.click(within(panel).getByRole("button", { name: "Filter by project" }));
+}
+
+/** Records the name of each element the focus moves to from now on (`focusin`), its
+ *  `aria-label` else its text, and answers them when read, which ends the record. */
+function recordFocusMoves(): () => string[] {
+  const moves: string[] = [];
+  const note = (event: FocusEvent) => {
+    const { target } = event;
+    if (target instanceof Element) {
+      moves.push(target.getAttribute("aria-label") ?? target.textContent ?? "");
+    }
+  };
+  document.addEventListener("focusin", note);
+  return () => {
+    document.removeEventListener("focusin", note);
+    return moves;
+  };
+}
+
+// The focus on ZZZ's row of the open Project list, as a screen reader's cursor puts it there, and
+// Enter or Space unpicks ZZZ: the press's own commit leaves the row, and its focus, where they
+// were, and the address's answer takes the row away while the list stays open. The list hands
+// that focus to its own search box in the commit of that answer (`MultiSelect`), and the panel,
+// which the list stands outside of, leaves the loss to the list (`useFocusPlace`): the focus
+// lands on neither the list's trigger, at the list's place in the panel, nor the page's body.
+test("a focused option its unpick takes out of a list the panel portals out hands the focus to the list's search box in the commit that takes it away", async () => {
+  const user = userEvent.setup();
+  const landed: Record<string, readonly string[]> = {};
+  for (const key of ["{Enter}", " "]) {
+    const answers: (() => void)[] = [];
+    const view = render(<ProjectFilterRow answers={answers} />);
+    try {
+      await openProjectList(user);
+      const search = screen.getByRole("combobox", { name: "Search project" });
+      const zzz = screen.getByRole("option", { name: "ZZZ" });
+      act(() => zzz.focus());
+      await user.keyboard(key);
+      expect(answers.length, "the unpick of ZZZ was not handed to the host").toBe(1);
+      expect(zzz, "the press's own commit moved the focus off the row it kept").toHaveFocus();
+      const moves = recordFocusMoves();
+      act(() => answers.shift()?.());
+      landed[key] = moves();
+      expect(zzz.isConnected, "the answer did not take ZZZ's row away").toBe(false);
+      expect(screen.getByRole("listbox", { name: "Project options" })).toBeInTheDocument();
+      expect(search, "the focus did not end in the list's search box").toHaveFocus();
+    } finally {
+      view.unmount();
+      disarm();
+    }
+  }
+  expect(landed).toEqual({ " ": ["Search project"], "{Enter}": ["Search project"] });
+});
+
+// The list's Clear foot is the other way a reader takes ZZZ off from inside the list: a keyboard
+// press of it hands the focus to the search box at the press itself (`MultiSelect`), in a panel as
+// outside one, and the address's answer, which empties the pick and takes ZZZ's row away, leaves
+// the focus there. Clear stays, held and saying that nothing is picked.
+test("a keyboard press of the Clear foot of a list the panel portals out hands the focus to the list's search box, where the answer leaves it", async () => {
+  const user = userEvent.setup();
+  const answers: (() => void)[] = [];
+  const view = render(<ProjectFilterRow answers={answers} />);
+  try {
+    await openProjectList(user);
+    const search = screen.getByRole("combobox", { name: "Search project" });
+    const clear = screen.getByRole("button", { name: "Clear project" });
+    act(() => clear.focus());
+    const moves = recordFocusMoves();
+    await user.keyboard("{Enter}");
+    expect(search, "the press of Clear did not hand the focus to the search box").toHaveFocus();
+    act(() => answers.shift()?.());
+    expect(screen.queryByRole("option", { name: "ZZZ" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "No project picked" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    expect(moves()).toEqual(["Search project"]);
+    expect(search).toHaveFocus();
+  } finally {
+    view.unmount();
+    disarm();
+  }
+});
+
+// ZZZ's chip in the row is the third way: its removal is the row's to hand on (`ControlRow`), and
+// the address's answer that takes the chip away hands the focus to the chip before it, PANE's, as
+// the row's last chip does. So it does where the reader's pointer takes the chip off while the
+// panel's Project list holds the focus on ZZZ's row, which that press closes with the panel.
+test("a chip taken off the row hands the focus to the chip before it, with the panel shut or its list holding the focus", async () => {
+  const user = userEvent.setup();
+  const landed: Record<string, readonly string[]> = {};
+  for (const way of ["the panel shut", "the panel's list on ZZZ's row"] as const) {
+    const answers: (() => void)[] = [];
+    const view = render(<ProjectFilterRow answers={answers} />);
+    try {
+      const chip = screen.getByRole("button", { name: "Remove Project: ZZZ filter" });
+      if (way === "the panel shut") {
+        act(() => chip.focus());
+        await user.keyboard("{Enter}");
+      } else {
+        await openProjectList(user);
+        const zzz = screen.getByRole("option", { name: "ZZZ" });
+        act(() => zzz.focus());
+        await user.click(chip);
+        expect(screen.queryByRole("dialog", { name: "Filter" })).not.toBeInTheDocument();
+      }
+      expect(answers.length, "the chip's removal was not handed to the host").toBe(1);
+      const moves = recordFocusMoves();
+      act(() => answers.shift()?.());
+      landed[way] = moves();
+      expect(chip.isConnected, "the answer did not take ZZZ's chip away").toBe(false);
+      expect(screen.getByRole("button", { name: "Remove Project: PANE filter" })).toHaveFocus();
+    } finally {
+      view.unmount();
+      disarm();
+    }
+  }
+  expect(landed).toEqual({
+    "the panel shut": ["Remove Project: PANE filter"],
+    "the panel's list on ZZZ's row": ["Remove Project: PANE filter"],
+  });
 });
 
 /** A panel opened from inside a modal dialog, as the search bar's Filter panel and the Inbox

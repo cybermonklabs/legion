@@ -11,7 +11,7 @@ import { frameAndTasks, nextFrame } from "../__tests__/frames";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS } from "../api/client";
 import { useReadBound } from "../api/read-bound";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
-import { useKeymap } from "../features/shell/keymap";
+import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import {
@@ -1355,6 +1355,81 @@ test("a second press on the control a pick's write holds leaves the pick the cau
     "a click on the held Snooze": "After",
     "a second Enter on the held Snooze": "After",
     "nothing after the pick": "After",
+  });
+});
+
+/** A component that hands its own focus off and counts every focus inside it in its line of
+ *  buttons, one per label, a portal's focus too, as a panel counts every focus in its content
+ *  (`PanelTrigger`). With `list`, a list one of its buttons opened is drawn as well, outside the
+ *  line in a portal on the page's body, as a panel of its own holding one button per label: the
+ *  shared list's panel (`MultiSelect`), which `AnchoredPanel` marks with `PANEL_ATTRIBUTE`. */
+function LineWithList(props: {
+  readonly labels: readonly string[];
+  readonly list?: readonly string[];
+}): ReactNode {
+  const line = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    () => line.current,
+    () => null
+  );
+  const button = (label: string) => createElement("button", { key: label, type: "button" }, label);
+  return createElement(
+    "div",
+    { ...ARM_ON_PRESS, onFocus: noteFocus },
+    createElement("div", { ref: line }, props.labels.map(button)),
+    props.list === undefined
+      ? null
+      : createPortal(
+          createElement("div", { [PANEL_ATTRIBUTE]: "" }, props.list.map(button)),
+          document.body
+        )
+  );
+}
+
+/** The button named `label` anywhere in the document. */
+function buttonNamed(label: string): HTMLButtonElement {
+  const found = [...document.querySelectorAll("button")].find(
+    (button) => button.textContent === label
+  );
+  if (found === undefined) throw new Error(`no button ${label} is drawn`);
+  return found;
+}
+
+// (dt) Armed by a press on an option of a list a control of the component opened, which the page
+// draws as a panel of its own outside the component: the Inbox Filter panel's Project list, on the
+// option of a project the press unpicks. The focus on the option is counted at the place of the
+// control that opened the list. Where the press's commit takes the option away and the list stays,
+// the loss is the list's to hand on (`MultiSelect` gives it to its search box), and the
+// component's hand-off moves nothing. Where the list goes with the option, as where the control
+// that opened it goes, the hand-off lands on the control now at that control's place.
+test("a loss inside a list a control opened outside the component is the list's while the list stays, and the component's once the list goes with it", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const way of ["the list stays", "the list goes with the option"] as const) {
+    landed[way] = await inMain([], async (main) => {
+      const host = document.createElement("div");
+      main.append(host);
+      const view = render(createElement(LineWithList, { labels: LINE, list: ["Alpha", "Beta"] }), {
+        container: host,
+      });
+      try {
+        buttonNamed("Two").focus();
+        clickPress(buttonNamed("Alpha"));
+        view.rerender(
+          createElement(LineWithList, {
+            labels: LINE,
+            list: way === "the list stays" ? ["Beta"] : undefined,
+          })
+        );
+        return landing();
+      } finally {
+        view.unmount();
+        host.remove();
+      }
+    });
+  }
+  expect(landed).toEqual({
+    "the list goes with the option": "Two",
+    "the list stays": "the page",
   });
 });
 

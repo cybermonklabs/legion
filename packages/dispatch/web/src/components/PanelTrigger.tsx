@@ -63,7 +63,10 @@ export interface PanelTriggerProps {
  * author is taken - hands the focus to the control now at that control's place in the panel,
  * else to the one before it, else to the panel itself, from which Escape still closes it
  * (`useFocusPlace`). A control of a panel opened inside this one counts at the place of the
- * trigger that opened it.
+ * trigger that opened it, as does a control of a list a `MultiSelect` in it opens. A focus lost
+ * inside such a panel or list while it stays open is that one's to hand on, not this panel's: the
+ * Project list of the Inbox's Filter panel hands a focused option its unpick takes away to its own
+ * search box. A focus lost with the panel or list, as its trigger goes, is this panel's.
  */
 export function PanelTrigger({
   align = "left",

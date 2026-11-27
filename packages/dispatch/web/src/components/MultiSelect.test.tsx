@@ -2090,6 +2090,52 @@ test("where the engine still names a removed row focused, a focused row that its
   }
 });
 
+/** A host whose list stays open, as `OpenHost`'s does, that lists only the values not yet picked,
+ *  as `dropPicked` does, and applies each pick in a commit after the press's own, as the Inbox's
+ *  Filter panel applies one through the address: each pick waits in `answers` until the case
+ *  applies it. */
+function LaterHost({ answers }: { readonly answers: (() => void)[] }) {
+  const [selected, setSelected] = useState<string[]>([]);
+  return (
+    <MultiSelect
+      emptyMessage="Nothing here."
+      label="Labels"
+      onChange={(next) => answers.push(() => setSelected(next))}
+      onOpenChange={() => undefined}
+      open
+      options={["api", "bug", "docs"].filter((option) => !selected.includes(option))}
+      searchLabel="Search labels"
+      selected={selected}
+    />
+  );
+}
+
+// The host's answer to a focused row's press can come in a commit after the press's own, as the
+// Inbox's Filter panel's does through the address. The press's own commit leaves the row on the
+// page, and its focus on it. The commit of the answer takes the row away, and gives the search box
+// the focus the row loses.
+test("a focused row that the host's later answer to its pick takes off the page gives the focus to the search box in the commit of that answer", async () => {
+  const user = userEvent.setup();
+  const answers: (() => void)[] = [];
+  const view = render(<LaterHost answers={answers} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    const bug = screen.getByRole("option", { name: "bug" });
+    bug.focus();
+    await user.keyboard("{Enter}");
+    expect(answers.length, "the pick was not handed to the host").toBe(1);
+    expect(bug, "the press's own commit took the focus off the row it kept").toHaveFocus();
+    act(() => answers.shift()?.());
+    expect(bug.isConnected, "the answer did not take the row off the page").toBe(false);
+    expect(
+      search,
+      "the answer took the row off the page, and the focus did not go to the search box"
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 // Only a press of the row that holds the focus is noted, so a press of a row the focus is not on
 // moves no focus, though its pick takes the row off the page. A pointer press focuses nothing
 // (`onMouseDown`) and leaves the focus in the search box. A click with no pointer press, which the
@@ -2127,8 +2173,8 @@ test("a press of a row the focus is not on, which its pick takes off the page, l
   }
 });
 
-// A host can keep the pick as a row is pressed, so the press changes nothing it draws. The press
-// of a focused row still asks for a commit of its own, which forgets the press, so the press
+// A host can keep the pick as a row is pressed, so the press changes nothing it draws. No commit
+// answers that press, since the host's pick never holds the row's value otherwise, so the press
 // answers no later loss: new options that then take that row away are no press of the reader's,
 // and its focus stays on the page's body.
 test("a focused row's press that changes nothing drawn answers no later loss: new options that drop the row leave the focus on the page's body", async () => {
