@@ -12,6 +12,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keyedLayer } from "../../test/keyed-layer";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
@@ -25,6 +26,14 @@ import { pruneSessions } from "../dispatch-session-state";
 // CLI consumes a marker before it posts a gated write, and refuses one with no marker, whatever
 // form ran it. These tests write the record and the markers by hand, in the format the gate
 // writes, so they hold the CLI to that format and to nothing of the gate's.
+
+// The programs themselves, never a mise shim of them, read here at module scope as docs/testing.md
+// says: the row below gives each child a HOME of its own, where a shim reads the real home's
+// config as untrusted, or finds no version, and exits 1 before the program runs. That row calls
+// requireHostTools first, which fails it by name on a host that lacks either program, so the bare
+// name each fallback holds is never what runs.
+const node = hostTool("node") ?? "node";
+const python3 = hostTool("python3") ?? "python3";
 
 interface Recorded {
   readonly method: string;
@@ -852,18 +861,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const script = join(stateDir, "post.sh");
     writeFileSync(script, "dispatch message --issue DSP-1 --body 'from a script'\n");
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
-    // node and python3 by the paths they run from, read in this process's environment, as the bun
-    // form names `process.execPath`. A version manager's shim (mise's) picks its tool from HOME and
-    // its own variables, which each child's environment replaces: where the machine has no tool of
-    // its own to fall back to, the shim starts nothing and the form prints the shim's error, not
-    // the refusal. Measured: on a machine whose node is mise's shim the `node -e` form failed so.
-    const interpreter = (command: string[]): string => {
-      const found = Bun.spawnSync(command);
-      expect({ command, exitCode: found.exitCode }).toEqual({ command, exitCode: 0 });
-      return found.stdout.toString().trim();
-    };
-    const node = interpreter(["node", "-p", "process.execPath"]);
-    const python3 = interpreter(["python3", "-c", "import sys; print(sys.executable)"]);
+    requireHostTools("node", "python3");
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
       ["python3 -c", [python3, "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],

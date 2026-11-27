@@ -497,10 +497,10 @@ func githubUnanswered(what, code string, err error) *apiError {
 // workflow file at the run's commit shows that job to be the one check names (check being the
 // facts the files give the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why,
 // or githubReadRefusal's for the file. The file is read for either shape of name. A check run is
-// the job's when its name is the job's name and the file shows no other job can make that name
-// (workflowJobs.whyNotTheJob); or when its name is the job's name and a leg in parentheses
-// (legOf) and the file makes the job a matrix job and no other job can make the name
-// (workflowJobs.whyNotALeg). A name of neither shape is refused before the file is read.
+// the job's where workflowJobs.whyNotTheJob finds nothing against its name, or, for a name that
+// legOf reads as a leg of the job, where workflowJobs.whyNotALeg finds nothing against it. Each
+// rule lives in its own function, and is not written again here. A name of neither shape is
+// refused before the file is read.
 func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, run oauthwire.Run, checkRun githubapp.CheckRun, id string, check specCheckFacts) (job, leg string, err error) {
 	isLeg := false
 	if checkRun.Name != check.Job {
@@ -557,13 +557,14 @@ func legOf(name, job string) (leg string, ok bool) {
 
 // whyNotTheJob is why jobs, the jobs of the run's workflow file (where names that file at its
 // commit), do not show the check run called name to be the job of that very name, or "" where
-// they show it. They show it where one job of the file is named name and it has no matrix, no
-// matrix job can make that name for a leg, and no job's name holds an expression. A matrix job
-// named name makes no check run of that name, since every leg's name carries its values, so a
-// second job of the name, of either kind (named counts both), means the name says nothing about
-// which ran; so does a matrix job J whose leg's name can be the name (legOf(name, J)), and so
-// does a name a run evaluates. A matrix job's legs are known only once a run expands its matrix,
-// and Dispatch reads no matrix values, so the leg's shape alone refuses the name.
+// they show it. The one job of the file named name must have no matrix, since every leg of a
+// matrix job carries its values in its name, so a matrix job named name makes no check run of
+// that name at all. The route takes the name only where one job of the file has it, so a second
+// job of the name is refused whatever its kind (named counts both): the file is then read by two
+// jobs' names at once, which is the route's rule and not a claim about what either job can make.
+// A matrix job J whose leg's name can be the name (legOf(name, J)) is refused too, and so is a
+// name a run evaluates. A matrix job's legs are known only once a run expands its matrix, and
+// Dispatch reads no matrix values, so the leg's shape alone refuses the name.
 func (jobs workflowJobs) whyNotTheJob(name, where string) string {
 	switch {
 	case jobs.Problem != "":
@@ -571,7 +572,7 @@ func (jobs workflowJobs) whyNotTheJob(name, where string) string {
 	case jobs.Expressions:
 		return fmt.Sprintf("a job in %s is named by an expression, so the name of a check run its run makes is known only to that run, and this name does not say which job ran", where)
 	case jobs.named(name) > 1:
-		return fmt.Sprintf("%d jobs in %s are named %q, so the name does not say which job ran", jobs.named(name), where, name)
+		return fmt.Sprintf("%d jobs in %s are named %q, and a check run's name says its job only where one job of the file has it", jobs.named(name), where, name)
 	case !slices.Contains(jobs.Plain, name):
 		return fmt.Sprintf("no job with no matrix in %s is named %q, and a matrix job of that name makes no check run of it", where, name)
 	}
