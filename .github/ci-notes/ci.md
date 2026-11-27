@@ -2893,8 +2893,8 @@ detector alone (994.286 s, job 137289139624, against 1770.949 s for this run, jo
 is gone.
 The package's TestMain count of the services its tests left alive, which that job ran with -v
 to print, prints here too, since gotestsum's standard-verbose format prints the test binary's own
-output, as the step's earlier `go test -json` did (`docs: 1286 services built, 0 still alive` in
-job 137289139255), and fails the run as it did there. What the race
+output (`docs: 1286 services built, 0 still alive` in job 137289139255), and fails the run as it
+did there. What the race
 build cannot run or runs shrunk runs plain, under the cleanup detector too: the room-memory
 bounds and the full-size render-reuse storms in envoy-go-race-impossible's step "Test what the
 race build cannot run at all or at full size", and the xid window tests, whose gap bound only a
@@ -3165,16 +3165,20 @@ passed -timeout, a build error, more than 10 failed tests, or an error line of g
 go-test.sh fails a package that failed with no test failing whatever a rerun did.
 GO_TEST_RETRY=off is the switch that takes the retry away from a run whose expected result is a
 failure (airlock-mutants.sh against a mutant) or whose -run a rerun of the root test would widen
-(kind's runtime legs), where a job runs such a run under go-test.sh. No job does today, and no
-workflow sets GO_TEST_RETRY: CI runs airlock-mutants.sh only in its harness, over a fixture tree
-and a stand-in go, and kind's runtime legs are no job of ci.yaml. The command keeps its own words,
-so check-ci-filters.sh, the test-reach search and go-test-step-expansion.py read it with the
-wrapper taken off, as they read a command behind race_memory.py.
+(kind's runtime legs), where a job runs such a run under go-test.sh. No workflow sets
+GO_TEST_RETRY: CI runs airlock-mutants.sh only in its harness, over a fixture tree and a stand-in
+go, and kind's runtime legs are no job of ci.yaml. Beside go-test.sh's own harness, which sets the
+event and GO_TEST_RETRY each case needs, the only runs CI makes under go-test.sh whose expected
+result is a failure are the planted failures of packages/envoy/scripts/database-skips.test.sh
+(envoy-go-skips), through database-skips.sh: each fails on every attempt or panics on its
+-timeout, so a merge group's rerun changes no verdict. The command keeps its own words, so
+check-ci-filters.sh, the test-reach search and go-test-step-expansion.py read it with the
+wrapper taken off.
 
-Each call writes a gotestsum jsonfile, and a job's last step, .github/actions/go-test-upload,
-uploads its jsonfiles and rerun reports as the artifact go-test-<job>[-<leg>]: the record of each
-test's result that the sibling children's checks of skips read, and that ci-ok reads to name, in
-its summary, each test that passed only on its retry (.github/actions/ci-ok-retries,
+Each call writes a gotestsum jsonfile, and a job's step before its ci-ok report,
+.github/actions/go-test-upload, uploads its jsonfiles and rerun reports as the artifact
+go-test-<job>[-<leg>]: the record of each test's result that ci-ok reads to name, in its summary,
+each test that passed only on its retry (.github/actions/ci-ok-retries,
 .github/scripts/ci-ok-retries.sh). database-skips.sh and backend-count.sh run their go test under
 the same script and count each test by the last attempt that ran it (.github/scripts/go-test.jq's
 last_attempt_results), so a test that failed once and passed on its rerun is counted as passed.

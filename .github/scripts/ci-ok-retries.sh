@@ -35,11 +35,24 @@ directory=$1
 
 mapfile -t jsonfiles < <(find "$directory" -type f -name '*.json' | sort)
 
+# Each jsonfile's packages that failed with no test failing, read by one jq per processor at a
+# time (nproc): each run's output, standard error with it, goes to $work/<n> and its exit status
+# to $work/<n>.status, n the file's place in the sorted list, so the loop below reads them in
+# that order.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# shellcheck disable=SC2016 # $1 to $4 are the inner bash's arguments, expanded there
+for index in "${!jsonfiles[@]}"; do printf '%s\0' "${jsonfiles[index]}" "$work/$index"; done |
+  xargs -0 -r -n 2 -P "$(nproc)" bash -c 'status=0
+    jq -n -r -L "$1" "$2" "$3" >"$4" 2>&1 || status=$?
+    echo "$status" >"$4.status"' _ "$here" 'include "go-test"; no_test_failures(inputs) | "\(.package)\t\(.attempt)"'
+
 flakes=()
 lone=()
 unread=()
 reports=0
-for jsonfile in "${jsonfiles[@]}"; do
+for index in "${!jsonfiles[@]}"; do
+  jsonfile=${jsonfiles[index]}
   name=${jsonfile#"$directory"/}
   rerun_report="${jsonfile%.json}.rerun-fails.txt"
   if [ -f "$rerun_report" ]; then
@@ -51,7 +64,8 @@ for jsonfile in "${jsonfiles[@]}"; do
       fi
     done <"$rerun_report"
   fi
-  if ! found=$(jq -n -r -L "$here" 'include "go-test"; no_test_failures(inputs) | "\(.package)\t\(.attempt)"' "$jsonfile" 2>&1); then
+  found=$(<"$work/$index")
+  if [ "$(<"$work/$index.status")" -ne 0 ]; then
     unread+=("$name: $(head -c 200 <<<"$found")")
     continue
   fi

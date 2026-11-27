@@ -4,11 +4,12 @@
 # event: the first run prints one for each package, and each rerun of a failed test prints one
 # more for the package it reruns.
 #
-# Read by .github/scripts/go-test.sh, .github/scripts/ci-ok-retries.sh,
-# packages/envoy/scripts/database-skips.sh and packages/envoy/scripts/backend-count.sh as
-# `jq -n -L .github/scripts 'include "go-test"; no_test_failures(inputs)' FILE`: each def reads
-# the events as a stream, one at a time, so a jsonfile of a whole module's verbose output is never
-# held whole; what each keeps is one entry per package attempt or per test.
+# Read by .github/scripts/go-test.sh and .github/scripts/ci-ok-retries.sh (no_test_failures),
+# packages/envoy/scripts/database-skips.sh, packages/envoy/scripts/backend-count.sh and
+# packages/envoy/scripts/forced-order.sh (last_attempt_results), and .github/scripts/go-test.test.sh
+# (with_attempts), each as `jq -n -L .github/scripts 'include "go-test"; <def>(inputs)' FILE`: each
+# def reads the events as a stream, one at a time, so a jsonfile of a whole module's verbose output
+# is never held whole; what each keeps is one entry per package attempt or per test.
 
 # with_attempts(events): each event, given `_attempt`, the number of its package's `start` events
 # up to and including it: 1 for the first run, 2 for the first rerun of that package. An event
@@ -53,7 +54,6 @@ def last_attempt_results(events):
           | select(.Action != "start")) as $e ({};
     "\($e.Package // "")\t\($e.Test // "")" as $key
     | if .[$key] == null or .[$key]._attempt < $e._attempt then .[$key] = $e
-      elif .[$key]._attempt == $e._attempt and $e.Action == "fail" then .[$key] = $e
-      elif .[$key]._attempt == $e._attempt and .[$key].Action != "fail" then .[$key] = $e
+      elif .[$key]._attempt == $e._attempt and ($e.Action == "fail" or .[$key].Action != "fail") then .[$key] = $e
       else . end)
   | .[];

@@ -101,8 +101,7 @@ jobs:
       # (TestTheClaimModelCatchesEachBrokenSender) is a test of its own, which envoy-go's
       # race-impossible job runs at the same time as this one, so this job waits on the as-built
       # search alone (dispatch://INFRA-5794/spec#b-r5). gotestsum's standard-verbose format prints
-      # the model's table of states and checks to the log, as -v did before the step ran under
-      # .github/scripts/go-test.sh.
+      # the model's table of states and checks to the log.
       - name: Search every order of the mention sender's claims
         run: ../../.github/scripts/go-test.sh go test -count=1 -timeout 40m -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
         working-directory: packages/envoy

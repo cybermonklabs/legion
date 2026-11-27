@@ -3,11 +3,11 @@ description: >-
   Uploads every jsonfile and rerun report the `.github/scripts/go-test.sh` calls of one job, or of
   one leg of a job, left under $RUNNER_TEMP/go-test-reports, as the artifact go-test-<name>, which
   ci.yaml's ci-ok job downloads with every other go-test-* artifact to name each test that passed
-  only on its retry (.github/actions/ci-ok-retries), and which the sibling children's checks of
-  skips read. <name> is the job's id, with its leg where it runs in legs, so no two jobs or legs of
-  a run upload under one name. The name carries no run attempt and the upload overwrites, so a
-  re-run of one leg replaces what its earlier attempt uploaded. Use it as the job's last step with
-  `if: always()`, so a failed step's reports reach ci-ok too.
+  only on its retry (.github/actions/ci-ok-retries). <name> is the job's id, with its leg where it
+  runs in legs, so no two jobs or legs of a run upload under one name. The name carries no run
+  attempt and the upload overwrites, so a re-run of one leg replaces what its earlier attempt
+  uploaded. Use it as the step right before the job's last, the ci-ok report, with `if: always()`,
+  so a failed step's reports reach ci-ok too.
 inputs:
   name:
     description: The job's id, with `-<leg>` where the job runs in legs.

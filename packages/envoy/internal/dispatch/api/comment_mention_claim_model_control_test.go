@@ -18,8 +18,8 @@ import (
 // They are a test of their own, apart from TestTheMentionSenderClaimModel, so the two run on two
 // runners at once: the search of the sender as built takes envoy-go-claim-model's runner for about
 // 11 minutes, and CI's control, 1.5 minutes of search at three periods (job 140032939278), runs in
-// envoy-go-race-impossible, beside the API package's other tests the race build cannot run
-// (dispatch://INFRA-5794/spec#b-r5).
+// envoy-go-race-impossible, beside internal/bus's and internal/dispatch/docs' tests the race build
+// cannot run (dispatch://INFRA-5794/spec#b-r5).
 func TestTheClaimModelCatchesEachBrokenSender(t *testing.T) {
 	// Not parallel: it swaps the default logger (cmModelRuns, slog.SetDefault).
 	runs := []cmModelRun{{v: cmBlindRepair, periods: 3, breaks: []string{"stale"}}}

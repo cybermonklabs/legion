@@ -421,8 +421,7 @@ packages/envoy:
       - internal/clock
       - internal/clock/clocktest
       - internal/shapetest
-      # Main's five packages that no place named, which `unlisted` ran here with a warning; each
-      # under 1 s (run 45919416826, job 140246566580).
+      # These five, each under 1 s (run 45919416826, job 140246566580).
       - fileerr
       - httpoutage
       - natsconn

@@ -731,7 +731,7 @@ echo "case: the rebalancer reads a run whose -json a wrapper printed as lines"
 # -json stream's Output fields as the step's log lines, and the document service's lane writes
 # race_memory.py's lines between them.
 cat > "$work/verbose.txt" <<'LOG'
-race memory: the limit is 8388608 kB (RACE_MEM_LIMIT_KB)
+race memory: the limit is 8388608 kB (RACE_MEM_LIMIT_KB); the tests running are read from /home/runner/work/_temp/go-test-reports/envoy-go-race-docs-legs-1.json
 === RUN   TestTwo
 === RUN   TestOne
 === PAUSE TestOne

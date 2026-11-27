@@ -374,7 +374,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # Both go tests below run under .github/scripts/go-test.sh.
+      # The three go tests below run under .github/scripts/go-test.sh.
       - uses: ./.github/actions/install-gotestsum
       # go-envoy-test: the envoy module's test binaries, which the jobs of this file build between
       # them, each its share, and no other job builds, so they keep a family of their own.
@@ -412,7 +412,7 @@ jobs:
       # since it is the one package that registers a cleanup (ci_job_reads.py's CLEANUP_DETECTOR,
       # which says why the detector is not GODEBUG on the go command), and under
       # .github/scripts/go-test.sh, whose gotestsum log prints its TestMain's count of services
-      # left alive, as -v did. The rows of
+      # left alive. The rows of
       # that run that measure time (the xid window tests, the xid rig, the API's issue-list bound
       # and the auth service's restart storm) run alone in envoy-go-alone. The search of the API's
       # mention sender as built is out of the race build too, and runs in a job of its own,

@@ -164,12 +164,16 @@ def pinned_step(job, step, workdir, script, runs, workflow=""):
                                          for where, pkgs, what, options in runs])
 
 
+def up_to_root(workdir):
+    """The relative path from `workdir`, a directory of the repository, up to its root."""
+    return "/".join([".."] * len(Path(workdir).parts))
+
+
 def darwin_vet_script(workdir):
     """The run of a darwin vet step in `workdir`: the tag sets BUILD_TAGS prints for the module,
     each as a whole `-tags=` flag so no line is empty, taken into a variable first so a failure
     of the script fails the step before go runs, then one vet of every package per set."""
-    up = "/".join([".."] * len(Path(workdir).parts))
-    return (f"flags=$(python3 {up}/{BUILD_TAGS} . darwin arm64)\n"
+    return (f"flags=$(python3 {up_to_root(workdir)}/{BUILD_TAGS} . darwin arm64)\n"
             "while IFS= read -r flag; do\n"
             '  echo "Vetting for darwin with $flag"\n'
             '  GOOS=darwin GOARCH=arm64 go vet "$flag" ./...\n'
@@ -647,10 +651,10 @@ def go_notices_runs():
 
 
 def under_runner(workdir, command):
-    """`command`, a go test, as a step in `workdir` runs it under .github/scripts/go-test.sh: the
-    script's path from that directory, then the command's own words."""
-    up = "/".join([".."] * len(Path(workdir).parts))
-    return f"{up}/.github/scripts/go-test.sh {command}"
+    """`command`, a go test, or go-test.sh's --race-memory and a go test, as a step in `workdir`
+    runs it under .github/scripts/go-test.sh: the script's path from that directory, then the
+    command's own words."""
+    return f"{up_to_root(workdir)}/.github/scripts/go-test.sh {command}"
 
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
@@ -758,10 +762,6 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # test (go-test.test.sh's case "a line on go test's own standard error blocks the retry").
 CLEANUP_DETECTOR = "-exec 'env GODEBUG=checkfinalizers=1'"
 CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
-# The document service's race step runs under .github/scripts/go-test.sh --race-memory, whose
-# race_memory.py fails it with a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is a pipe
-# into xargs and `env`, not a go command the simple form reduces, and the step is pinned whole.
 # ---------------------------------------------------------------- a job whose steps run in legs
 # .github/go-legs.yaml lists the packages each leg of a Go job runs, and, for a package too long
 # for one leg, the group of its tests each leg runs; .github/scripts/go_legs.py prints them for
@@ -788,22 +788,24 @@ def legs_script(module, job, command):
     build = "".join(" -race" if word in ("-race", "--race") else f" {word}"
                     for word in words if word in ("-race", "--race") or word.startswith("-tags="))
     build += "".join(f" -tags={words[i + 1]}" for i, word in enumerate(words[:-1]) if word == "-tags")
-    up = "/".join([".."] * len(Path(module).parts))
     return ("set -o pipefail\n"
-            f"python3 {up}/{GO_LEGS_SCRIPT} {module} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
+            f"python3 {up_to_root(module)}/{GO_LEGS_SCRIPT} {module} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
             f"| xargs -r {command}")
 
 
 RACE_DOCS_STEP = "Race-test the document service"
 # The document service's legs: as the API's, with the memory sampler and the cleanup detector the
-# one job carried. xargs runs a program and not a shell, so `env` is what carries RACE_MEM_LIMIT_KB
+# one job carried. The step runs under .github/scripts/go-test.sh --race-memory, whose
+# race_memory.py fails it with a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the
+# step's comment in ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so
+# its line is a pipe into xargs and `env`, not a go command the simple form reduces, and the step
+# is pinned whole. xargs runs a program and not a shell, so `env` is what carries RACE_MEM_LIMIT_KB
 # to the runner and its sampler; the detector is not an `env` of the go command but go test's
 # -exec, which hands it to the test binary alone (CLEANUP_DETECTOR says why).
 RACE_DOCS_LEGS_JOB = "envoy-go-race-docs-legs"
 RACE_DOCS_SCRIPT = legs_script(ENVOY, "envoy-go-race-docs",
                                "env RACE_MEM_LIMIT_KB=8388608 "
-                               "../../.github/scripts/go-test.sh --race-memory "
-                               f"go test -race -count=1 {CLEANUP_DETECTOR} -timeout 60m")
+                               + under_runner(ENVOY, f"--race-memory go test -race -count=1 {CLEANUP_DETECTOR} -timeout 60m"))
 # Every lane whose tests start a Dispatch process checks its Postgres service's max_connections in
 # its CEILING_STEP, which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's
 # run: line, not what the script runs, so each such gate declares the script, and the go run on the

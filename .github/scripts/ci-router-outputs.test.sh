@@ -12,14 +12,14 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
-# It fixes the terms of the outputs the sibling children of dispatch://INFRA-3411 add, each with
-# the job it gates (dispatch://INFRA-5794/spec#b-r8): daemon_live and agent_harness held, lifted on
-# a pull request by full-ci or lane:<own name> alone, and named as that label names them, with an
+# It fixes the terms of three outputs the changes job does not have yet, each with the job it
+# gates (dispatch://INFRA-5794/spec#b-r8): daemon_live and agent_harness held, lifted on a pull
+# request by full-ci or lane:<own name> alone, and named as that label names them, with an
 # underscore; kind on no pull request whatever the labels, and on a merge group or a dispatch its
 # filter selects, or on every-job. A copy of ci.yaml with the three written so passes; a kind
 # written as a held output, an agent_harness lifted by lane:agent-harness, a daemon_live lifted by
-# lane:agent_harness and an agent_harness written agent-harness, as 97c620377c names it, each fail,
-# naming the output; and this ci.yaml is held to the same terms for each of the three it has.
+# lane:agent_harness and an agent_harness written agent-harness, with a dash, each fail, naming
+# the output; and this ci.yaml is held to the same terms for each of the three it has.
 #
 # It holds a dispatched run's selection and the workflow's cancel key the same way, through the
 # changes job's own steps and the workflow's own `concurrency:`
@@ -206,21 +206,21 @@ PY
   echo "$dir/.github/workflows/ci.yaml"
 }
 
-# sibling_terms <workflow> <filters file>: what keeps the outputs the sibling children of
-# dispatch://INFRA-3411 add from the terms dispatch://INFRA-5794/spec#b-r8 fixes, one line each;
-# and `absent: <name>` for each of them the workflow's changes job does not have yet, since each
-# sibling adds its own output with the job it gates. daemon_live and agent_harness are held: on a
-# pull request each is true only where its filter says yes and the pull request carries full-ci or
-# lane:<its own name>, so the other's label alone leaves it off. That label names each with an
-# underscore, so an output the changes job writes daemon-live or agent-harness, as 97c620377c wrote
-# them, is a fault, not an absent output. kind runs on no pull request whatever the labels, and in
-# a merge group and a dispatch of a branch where its filter says yes, or on every-job.
+# sibling_terms <workflow> <filters file>: what keeps the outputs daemon_live, agent_harness and
+# kind from the terms dispatch://INFRA-5794/spec#b-r8 fixes, one line each; and `absent: <name>`
+# for each of them the workflow's changes job does not have yet, since each comes with the job it
+# gates. daemon_live and agent_harness are held: on a pull request each is true only where its
+# filter says yes and the pull request carries full-ci or lane:<its own name>, so the other's
+# label alone leaves it off. That label names each with an underscore, so an output the changes
+# job writes daemon-live or agent-harness, with a dash, is a fault, not an absent output. kind runs
+# on no pull request whatever the labels, and in a merge group and a dispatch of a branch where
+# its filter says yes, or on every-job.
 sibling_terms() {
-  local workflow=$1 file=$2 name dashed listed other verdicts
-  verdict_of() { value "$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$file" "$@" | sort)" "$name"; }
+  local workflow=$1 filters=$2 name dashed listed other verdicts
+  verdict_of() { value "$(outputs_of "$workflow" "$@")" "$name"; }
   # Every output of the changes job, under the name it writes it, in one evaluation; a workflow the
   # reader refuses is a line naming it, so no case reads a refusal as nothing to report.
-  listed=$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$file" --event pull_request --verdicts false) \
+  listed=$(outputs_of "$workflow" --event pull_request --verdicts false) \
     || { echo "ci_router_outputs.py refuses $workflow"; return 0; }
   for name in daemon_live agent_harness kind; do
     dashed=${name//_/-}
@@ -260,8 +260,8 @@ sibling_terms() {
   done
 }
 
-# The three outputs as dispatch://INFRA-5794/spec#b-r8 has the siblings write them, in main's form,
-# each on a filter of its own name added to a copy of the computed filters.
+# The three outputs as dispatch://INFRA-5794/spec#b-r8 has them written, in main's form, each on
+# a filter of its own name added to a copy of the computed filters.
 sibling_filters=$work/sibling-filters.yaml
 cp "$filters" "$sibling_filters"
 printf 'daemon_live:\n  - packages/daemon/**\nagent_harness:\n  - packages/daemon/**\nkind:\n  - packages/envoy/infra/**\n' >> "$sibling_filters"

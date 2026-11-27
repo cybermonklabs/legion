@@ -9,8 +9,8 @@
 #
 # The words after the options are the go test command the step ran before this script, as they
 # stand, so every reader of a step's go command (check-ci-filters.sh's reducer, go_test_steps.py,
-# go-test-step-expansion.py) reads it with this script's path and options taken off the front, as
-# it reads `race_memory.py go test …`. They run as
+# go-test-step-expansion.py) reads it with this script's path and options taken off the front.
+# They run as
 #
 #   gotestsum --format standard-verbose --jsonfile JSONFILE [RETRY] --packages "PACKAGES" -- FLAGS
 #
@@ -39,11 +39,15 @@
 # GO_TEST_RETRY=off turns the retry off on any event. It is the switch for a run whose expected
 # result is a failure (each run of packages/envoy/scripts/airlock-mutants.sh against a mutant) or
 # whose -run a rerun of the root test would drop (kind's runtime legs), where a job runs such a run
-# under this script. No job does today, and no workflow sets GO_TEST_RETRY: CI runs
-# airlock-mutants.sh only in its harness, over a fixture tree and a stand-in go, and kind's runtime
-# legs are no job of ci.yaml. GO_TEST_RETRY=on turns the retry on on any event, for a
-# workflow_dispatch run that proves the retry as a merge group would. These are the cases the
-# paragraph "The Go retry follows R22" of dispatch://INFRA-3411/artifact/decisions-md lists.
+# under this script. No workflow sets GO_TEST_RETRY: CI runs airlock-mutants.sh only in its
+# harness, over a fixture tree and a stand-in go, and kind's runtime legs are no job of ci.yaml.
+# Beside this script's own harness, which sets the event and GO_TEST_RETRY each case needs, the
+# only runs CI makes under it whose expected result is a failure are the planted failures of
+# packages/envoy/scripts/database-skips.test.sh (envoy-go-skips), through database-skips.sh: each
+# fails on every attempt or panics on its -timeout, so a merge group's rerun changes no verdict.
+# GO_TEST_RETRY=on turns the retry on on any event, for a workflow_dispatch run that proves the
+# retry as a merge group would. These are the cases the paragraph "The Go retry follows R22" of
+# dispatch://INFRA-3411/artifact/decisions-md lists.
 #
 # --race-memory runs gotestsum under .github/scripts/race_memory.py, which samples the memory of
 # the process tree every 5 s, names the tests running at each sample from the jsonfile as it
@@ -53,9 +57,10 @@
 # ending in .json goes under REPORTS, a path stays where it says - else REPORTS/<GITHUB_JOB>-<n>.json,
 # n the next number free there, so the steps of one job never share a file. REPORTS is
 # GO_TEST_REPORTS, else $RUNNER_TEMP/go-test-reports on a runner, else
-# ${TMPDIR:-/tmp}/go-test-reports. The jsonfile and the rerun report stay there for the job's last
-# step, .github/actions/go-test-upload, which uploads them for ci-ok. `go-test.sh --path NAME`
-# prints where the bare name NAME goes, for a script that reads the jsonfile after the run.
+# ${TMPDIR:-/tmp}/go-test-reports. The jsonfile and the rerun report stay there for the job's step
+# .github/actions/go-test-upload, the one before its ci-ok report, which uploads them for ci-ok.
+# `go-test.sh --path NAME` prints where the bare name NAME goes, for a script that reads the
+# jsonfile after the run.
 #
 # After gotestsum ends it reads the jsonfile (.github/scripts/go-test.jq, no_test_failures) and
 # fails the step on a package that failed in an attempt with no test failing, none left running
@@ -63,8 +68,11 @@
 # reruns such a package with -test.run=^$, which runs no test, so a check that needs the tests to
 # have run passes there and gotestsum exits 0.
 #
-# It exits with gotestsum's status, or 1 where that is 0 and the jsonfile shows such a package
-# or is missing, and 2 on a usage error.
+# It exits with the status of what it ran - gotestsum's, or under --race-memory race_memory.py's,
+# which is gotestsum's where that failed, 2 where RACE_MEM_LIMIT_KB is no number of kB, else 1
+# where the peak passed it - or with 1 where that is 0 and the jsonfile shows such a package, is
+# missing or is no stream jq can read; with 1 where gotestsum is not on PATH, and 2 on a usage
+# error.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -170,13 +178,13 @@ rerun_report="${jsonfile%.json}.rerun-fails.txt"
 rm -f "$jsonfile" "$rerun_report"
 
 retry_flags=()
+state=off
 if [ "$retry" = true ]; then
   retry_flags=(--rerun-fails=1 --rerun-fails-run-root-test --rerun-fails-abort-on-data-race --rerun-fails-report "$rerun_report")
   [ -z "$max_failures" ] || retry_flags+=("--rerun-fails-max-failures=$max_failures")
-  why="the retry is on (GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-}, GO_TEST_RETRY=${GO_TEST_RETRY:-})"
-else
-  why="the retry is off (GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-}, GO_TEST_RETRY=${GO_TEST_RETRY:-})"
+  state=on
 fi
+why="the retry is $state (GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-}, GO_TEST_RETRY=${GO_TEST_RETRY:-})"
 command=(gotestsum --format standard-verbose --jsonfile "$jsonfile" "${retry_flags[@]}" --packages "${packages[*]}" -- "${flags[@]}")
 [ "$race_memory" = false ] || command=("$here/race_memory.py" "${command[@]}")
 echo "go-test.sh: $why${dir:+, from $dir}: ${command[*]}"

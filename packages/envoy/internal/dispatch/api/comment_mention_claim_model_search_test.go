@@ -324,9 +324,8 @@ type cmModelRun struct {
 
 // cmModelRuns searches each run's variant and holds the result to what the run must find, logging
 // the table of states and checks, a row per run. After a claim lapses the delivery sweep keeps no
-// order between two comments, which the spec puts outside this change: an A-2 the sweep sends
-// first, or one the lane sends after the sweep took A-1, is counted in its own column of the table,
-// and fails nothing.
+// order between two comments: an A-2 the sweep sends first, or one the lane sends after the sweep
+// took A-1, is counted in its own column of the table, and fails nothing.
 func cmModelRuns(t *testing.T, runs []cmModelRun) {
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",

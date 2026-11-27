@@ -164,10 +164,9 @@ def summarize(statuses: list[str], seconds: float, tests: str) -> Sample | None:
 
 class RunningTests:
     """The tests the jsonfile's `go test -json` events say are running, folded in by Jsonfile
-    before each sample and read by that sample."""
+    before each sample and read by that sample, both on the main thread, so it takes no lock."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
         self._running: set[str] = set()
 
     def record(self, event: dict) -> None:
@@ -176,16 +175,14 @@ class RunningTests:
         if not name:
             return
         action = event.get("Action")
-        with self._lock:
-            if action == "run":
-                self._running.add(name)
-            elif action in DONE_ACTIONS:
-                self._running.discard(name)
+        if action == "run":
+            self._running.add(name)
+        elif action in DONE_ACTIONS:
+            self._running.discard(name)
 
     def names(self) -> str:
         """The running tests, sorted, or `none`."""
-        with self._lock:
-            running = sorted(self._running)
+        running = sorted(self._running)
         return ", ".join(running) if running else "none"
 
 

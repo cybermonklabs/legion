@@ -5,11 +5,10 @@
 // CI job is set up to give each test it runs what that test needs, so a skip there passes the job
 // with the test's proof gone from it, and nobody reads the skip line.
 //
-// It is a public package of the envoy module, outside internal/, so packages/daemon takes the same
-// rule rather than a copy of it: Go's internal rule reads a path prefix, and the daemon module
-// imports this one through its replace of packages/envoy, as it imports brokertest and clitest.
-// It imports the standard library alone, so every package of either module can take it, among
-// them the daemon's internal/testpg/testdb, which imports nothing of its own module.
+// It is a public package of the envoy module, outside internal/, so a package of packages/daemon
+// can import it: Go's internal rule reads a path prefix, and the daemon module imports this one
+// through its replace of packages/envoy, as it imports ciphertest and clitest. It imports the
+// standard library alone, so any package of either module can import it.
 package testprereq
 
 import (

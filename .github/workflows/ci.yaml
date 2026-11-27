@@ -325,7 +325,6 @@ jobs:
         if: always()
         uses: ./.github/actions/ci-ok-report
         with:
-          job: test-reach
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
@@ -1106,7 +1105,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
-    # hold does not), with three over for the checkout and the two refusals.
+    # hold does not), with three over for the checkout, the two refusals and the step that names
+    # each Go test that passed only on its retry, which has no timeout-minutes of its own.
     timeout-minutes: 188
     env:
       JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)

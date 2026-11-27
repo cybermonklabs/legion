@@ -224,10 +224,12 @@ itself, whose tests import its sources by relative path.
   either module: each fails the test in CI and skips it elsewhere, naming the prerequisite. A
   suite that needs a service gates on the variable that names it, and makes a database of its own
   rather than reading the one it finds (`LEGION_TEST_PG_DSN`,
-  `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs both builds the two
-  halves into a single list and prints one line, rather than calling `skipWithout` beside a
-  warning of its own, so a host that has neither reads one line naming both (`hostTool` with the
-  variable, in that file and in `harness-stacks.test.ts`).
+  `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs several such things, or
+  a program beside them, builds one list of what it lacks and hands it to `requireOrSkip` joined,
+  rather than calling `skipWithout` beside a gate of its own, so a host that lacks them all reads
+  one line naming each. `psql-session.test.ts` and `harness-stacks.test.ts` build that list,
+  `hostTool` beside the variable, but print the line themselves and so skip in CI, until their
+  entries in `.github/test-reach-unhomed.yaml` close.
 
 - A test under `scripts/e2e/lib` gates on a host program with `hostGate` from the same module
   instead, declaring its gated rows with the gate's own `test` and `describe`: outside CI each

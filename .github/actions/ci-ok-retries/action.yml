@@ -25,4 +25,4 @@ runs:
       shell: bash
       run: |
         mkdir -p "$RUNNER_TEMP/go-test-reports"
-        .github/scripts/ci-ok-retries.sh "$RUNNER_TEMP/go-test-reports"
+        "$GITHUB_ACTION_PATH/../../scripts/ci-ok-retries.sh" "$RUNNER_TEMP/go-test-reports"
