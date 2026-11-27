@@ -168,9 +168,9 @@ func leavingCIEngine() *Engine {
 // starting no second writer of the branch.
 //
 // The control, kept: a fix that opens with no owed merge holds none. Its reds are the rule that
-// withheld the fix while a merge is owed (openFix), under which no fix opens, and the merge left
-// outside the fix (takeOwedMerge, fixFacts), under which the ask is not taken, its queued ask is
-// still delivered, and the fix's start facts hold no merge.
+// withheld the fix while a merge is owed (openFix), under which no fix opens; the owed merge left
+// out of the fix's start facts (fixFacts), under which those facts hold no merge; and the ask left
+// untaken by the fix (takeOwedMerge), under which the record's ask names no fix.
 func TestAFixTakesTheMergeItsAgentOwes(t *testing.T) {
 	t.Run("the takeover, in reviewing", func(t *testing.T) {
 		r := askedOfImplementer(t, returnEngine(), TriggerImplementationReady, TriggerTesterPassed)

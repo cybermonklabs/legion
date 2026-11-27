@@ -497,8 +497,8 @@ func TestATestingMoveAtAHeadOfNoPullRequestSaysWhy(t *testing.T) {
 // fix 2 for k-ci2. The tester's start kept B1 to its end, and no deletion of fix 1's branches is
 // queued. Its red is openFix's wait taken out: fix 2 then opens while fix 1's way is pending.
 func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
-	pending := func(t *testing.T, engine *Engine) *fixRig {
-		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	pending := func(t *testing.T) *fixRig {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
 		r.fails(fixHead, "k-ci")
 		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
 		r.fixEnds(fixHead)
@@ -509,7 +509,7 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 		return r
 	}
 	t.Run("fix 2 opens only after the tester's end takes fix 1's way", func(t *testing.T) {
-		r := pending(t, returnEngine())
+		r := pending(t)
 		assertStrings(t, "the fixes while fix 1's way is pending", r.fixes(), []string{fixOf(1, "ended", "k-ci")})
 		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 			row, err := r.engine.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, "a", "k-ci2", fixHead)
@@ -556,8 +556,8 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 // queued at every way 2 or 3 (afterFix): the way 2 then queues the deletion of fix 1's branches.
 func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
 	const pushed = "4444444444444444444444444444444444444444"
-	pendingWay2 := func(t *testing.T, engine *Engine) *fixRig {
-		r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	pendingWay2 := func(t *testing.T) *fixRig {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
 		r.fails(fixHead, "k-ci")
 		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
 		r.fixEnds(headTwo)
@@ -570,7 +570,7 @@ func TestAWay2KeepsTheBranchesAndTheRerunTakesItsOwn(t *testing.T) {
 		return r
 	}
 	t.Run("the way keeps B1 and the rerun tester holds it", func(t *testing.T) {
-		r := pendingWay2(t, returnEngine())
+		r := pendingWay2(t)
 		assertStrings(t, "the deletions", r.deletions(), nil)
 		facts := r.startFactsIn(phase.Testing)
 		if !facts.Kept || facts.Fix != 1 || facts.Branch != besideFix1(t, claim.RoleTester) || facts.Pushed != pushed {

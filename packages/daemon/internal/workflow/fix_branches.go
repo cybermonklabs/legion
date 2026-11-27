@@ -173,8 +173,8 @@ func (e *Engine) bindBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issu
 // already: it named fix (record.StepStart.BesideFix, written in the transaction that counted the
 // start), so the fix's start sends that step no fix-started row. A start before the fix opened, in
 // an earlier fact or earlier in the fact that opened it, named none; the fix's start marks it beside
-// the fix only after this has read it (tellStepsOfFix). It reads no clock, which a fixed clock or
-// one shared microsecond confuses.
+// the fix only after this has read it (tellStepsOfFix). It reads no clock: under a fixed clock, or
+// with the start and the fix's opening in one microsecond, a start before the fix reads as one after.
 func (e *Engine) toldByStart(start record.StepStart, fix record.TaskFix) bool {
 	return start.BesideFix == fix.Fix
 }
