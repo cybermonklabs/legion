@@ -5,7 +5,7 @@ import { answerAsk, createAsk, createComment, createIssue, createProject, resolv
 import { recordClipboard } from "./clipboard";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxRow, readingView } from "./inbox-pane";
-import { type KeyedWrite, watchWrites } from "./keyed-writes";
+import { type KeyedWrite, keptWrites, watchWrites } from "./keyed-writes";
 import { hasReadingPane } from "./reading-pane";
 import { openRefPicker, pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
@@ -63,6 +63,18 @@ async function pickPlanner(field: Locator, prefix: string): Promise<void> {
 /** The comments the page posts on `issueKey` from here on, as the bodies it sent. */
 function postedComments(page: Page, issueKey: string): KeyedWrite<unknown>[] {
   return watchWrites(page, "POST", `/api/v1/issues/${issueKey}/comments`);
+}
+
+/** Opens `path` once every write the page shows has landed. While one is still out the page asks
+ *  the browser to confirm leaving (`features/writes/write-storage.ts`), which Playwright answers
+ *  by staying, so the navigation ends `net::ERR_ABORTED`; an answer's response reaches the network
+ *  a few milliseconds before the page takes it (CI run 46036933044, this file's Inbox row on the
+ *  iPhone: the answer's 200 at 410134 ms, the goto at 410136 ms, `beforeunload` at 410143 ms).
+ *  The page lets go of a write's kept copy as it takes the answer, so none kept is the page
+ *  ready to leave. */
+async function gotoOnceWritesLand(page: Page, path: string): Promise<void> {
+  await expect.poll(() => keptWrites(page), { message: "a write the page shows is out" }).toBe(0);
+  await page.goto(path);
 }
 
 /** One ask's whole turn in the Conversation: an answered ask's card is the record alone, and the
@@ -290,7 +302,7 @@ test("a session picked in an Inbox ask's answer area goes out on Ask back, and a
       .toEqual([{ expected_edited_at: null, selected: [], text: `Over to ${PLANNER_MENTION}` }]);
 
     // The recorded answer reads the session as a link to it.
-    await page.goto(`/issues/${issue.key}/conversation`);
+    await gotoOnceWritesLand(page, `/issues/${issue.key}/conversation`);
     const answered = page.locator("#issue-conversation-panel").getByTestId(`ask-${ask.id}`);
     const link = answered.locator(`a[data-dispatch-ref="dispatch://agent/${planner.session_id}"]`);
     await expect(link).toHaveText("@Planner");
@@ -442,10 +454,16 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
       await expect(button).toBeDisabled();
       await expect(button).toHaveAttribute("title", reason);
       await expect(button).toHaveAccessibleDescription(reason);
-      await expect(card.getByText(reason, { exact: true })).toBeVisible();
+      // Before the press the reason is the button's description alone, drawn by nothing on the
+      // screen; the press is what the line under the box answers
+      // (dispatch://INFRA-341/comment/203d516b-9d0b-4f0e-9a10-e429fbf00a40).
+      await expect(card.getByText(reason, { exact: true })).toHaveClass(/\bsr-only\b/);
       await button.scrollIntoViewIfNeeded();
       await button.click({ force: true });
       await expect(button).toBeFocused();
+      await expect(card.getByText(reason, { exact: true })).toBeVisible();
+      await expect(card.getByText(reason, { exact: true })).not.toHaveClass(/\bsr-only\b/);
+      await expect(button).toHaveAccessibleDescription(reason);
     }
     // Nothing being sent cannot be awaited: half a second is the window either press would have
     // reached the server in, and every write this row makes lands well inside it.
@@ -471,7 +489,7 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
       .toEqual([{ expected_edited_at: null, selected: [], text: "Ship it." }]);
     await landed;
 
-    await page.goto(`/issues/${issue.key}/conversation`);
+    await gotoOnceWritesLand(page, `/issues/${issue.key}/conversation`);
     const turn = conversationTurn(page, decided.id);
     await turn.getByRole("button", { name: "Write a reply" }).click();
     const reply = turn.getByRole("button", { exact: true, name: "Reply" });
@@ -480,7 +498,7 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
     await expect(reply).toBeDisabled();
     await expect(reply).toHaveAttribute("title", EMPTY_DRAFT_REFUSAL);
     await expect(reply).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
-    await expect(turn.getByText(EMPTY_DRAFT_REFUSAL, { exact: true })).toBeVisible();
+    await expect(turn.getByText(EMPTY_DRAFT_REFUSAL, { exact: true })).toHaveClass(/\bsr-only\b/);
     // The press is made where the button is the thing under it. On a phone the conversation's
     // own composer is pinned to the bottom of the screen, and the turn's Reply button lies
     // under it where the page leaves it: a forced press at that point reaches the composer's
@@ -496,6 +514,11 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
     // reader keeps it with its reason, and a focus read only before the press says nothing
     // about what the press did with it.
     await expect(reply).toBeFocused();
+    await expect(turn.getByText(EMPTY_DRAFT_REFUSAL, { exact: true })).toBeVisible();
+    await expect(turn.getByText(EMPTY_DRAFT_REFUSAL, { exact: true })).not.toHaveClass(
+      /\bsr-only\b/
+    );
+    await expect(reply).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
     await turn.getByLabel("Reply").press("ControlOrMeta+Enter");
     // Nothing being sent cannot be awaited: half a second is the window a press that was going
     // to post this reply would have posted it in.
@@ -539,7 +562,7 @@ test("a file pasted into an ask's answer box and into its reply box adds its lin
       .poll(() => answers.map((write) => write.input))
       .toEqual([{ expected_edited_at: null, selected: [], text: `See ${line}` }]);
 
-    await page.goto(`/issues/${issue.key}/conversation`);
+    await gotoOnceWritesLand(page, `/issues/${issue.key}/conversation`);
     const turn = conversationTurn(page, decided.id);
     await turn.getByRole("button", { name: "Write a reply" }).click();
     const replyField = turn.getByLabel("Reply");

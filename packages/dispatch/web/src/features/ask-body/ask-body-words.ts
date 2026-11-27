@@ -112,10 +112,12 @@ export const ASK_FORM_WORDS = Object.freeze({
    *  changes". */
   reason_hint: "Add a reason to send",
   question_shaped: "Your answer reads as a question",
-  /** Why a send refuses the draft as it stands, on a line under the box and as the button's
-   *  description (dispatch://INFRA-341 R3): Answer's where no option is picked and no words are
-   *  written, and Ask back's where the box is empty, which every box that sends a draft refuses
-   *  with (`inbox/draft-store.ts`'s `EMPTY_DRAFT_REFUSAL`). */
+  /** Why a send refuses the draft as it stands, as the button's description from the start and,
+   *  after the reader presses it or its Ctrl/Cmd+Enter, on a line under the box
+   *  (dispatch://INFRA-341 R3): Answer's where no option is picked and no words are written, and
+   *  Ask back's where the box is empty, which every box that sends a draft refuses with
+   *  (`inbox/draft-store.ts`'s `EMPTY_DRAFT_REFUSAL`). Being answers to a press, they are
+   *  `ASK_BODY_ANSWERS`' (`issue-page/page-words-dashboard.ts`). */
   refused: Object.freeze({
     answer: "Pick an option or write an answer.",
     empty: EMPTY_DRAFT_REFUSAL,

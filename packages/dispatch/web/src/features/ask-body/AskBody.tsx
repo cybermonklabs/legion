@@ -350,11 +350,15 @@ export function AskBody({
     : uploading
       ? answerLabel
       : undefined;
-  // Each send refuses the draft as it stands with its reason, on a line under the box and as its
-  // accessible description, and keeps the focus (dispatch://INFRA-341 R3): only its own send, or
-  // an upload the draft is waiting on, disables it. Inside `NoTooltips` its own send, and the read
-  // after it, refuse it holding the focus (`sendRefusedWhileOut`).
-  const answerActions = ({ reasonId }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
+  // Each send refuses the draft as it stands with its reason, as its accessible description and,
+  // once the reader presses it or its Ctrl/Cmd+Enter, on a line under the box, and keeps the focus
+  // (dispatch://INFRA-341 R3, dispatch://INFRA-341/comment/203d516b-9d0b-4f0e-9a10-e429fbf00a40):
+  // only its own send, or an upload the draft is waiting on, disables it. Inside `NoTooltips` its
+  // own send, and the read after it, refuse it holding the focus (`sendRefusedWhileOut`).
+  const answerActions = ({
+    reasonId,
+    refusedPress,
+  }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
     choiceShown ? (
       // The pair a question-shaped answer offers is two more sends of this body, so a picture the
       // draft is still taking holds them both, in the shape their siblings keep: the label stands
@@ -383,6 +387,7 @@ export function AskBody({
           }
           look="secondary"
           onPress={() => sendAnswer(answerText)}
+          onRefusedPress={refusedPress.anyway}
           refusal={answerRefusal}
           refusalShownBy={reasonId.anyway}
           refusedWhileOut={sendRefusedWhileOut}
@@ -396,6 +401,7 @@ export function AskBody({
         <RefusableButton
           busy={answerBusy}
           className="min-h-11"
+          onRefusedPress={refusedPress.answer}
           refusal={answerRefusal}
           refusalShownBy={reasonId.answer}
           refusedWhileOut={sendRefusedWhileOut}
@@ -432,6 +438,7 @@ export function AskBody({
             }
             look="secondary"
             onPress={sendClarification}
+            onRefusedPress={refusedPress.askBack}
             refusal={clarificationRefusal}
             refusalShownBy={reasonId.askBack}
             refusedWhileOut={sendRefusedWhileOut}
@@ -479,6 +486,8 @@ export function AskBody({
           writing={dispatchWritingBox("ask-answer", "ask-answer")}
         />
       )}
+      // Ctrl/Cmd+Enter submits the form, which is Answer's (Save answer's) send.
+      keySends="answer"
       onDraftChange={(text) => {
         setAnswerText(text);
         setQuestionChoice(false);
@@ -496,6 +505,8 @@ export function AskBody({
               askBack: changing ? null : clarificationRefusal,
             }
       }
+      // An approval's reason, which its pick asked for, stands under the box while it holds.
+      shownAtOnce={reasonRequired ? ["answer"] : []}
       upload={upload}
       uploadDraft={ask.id}
       uploadOwner={uploadOwner}

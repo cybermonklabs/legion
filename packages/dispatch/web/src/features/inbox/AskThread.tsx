@@ -308,11 +308,12 @@ export function AskReplyComposer({
     >
       {question.reads}
       <AskAnswerArea
-        actions={({ reasonId }) => (
+        actions={({ reasonId, refusedPress }) => (
           <RefusableButton
             busy={sending ? "Replying…" : uploading ? "Reply" : undefined}
             className="self-start"
             look="secondary-compact"
+            onRefusedPress={refusedPress.reply}
             refusal={refusal}
             refusalShownBy={reasonId.reply}
             type="submit"
@@ -333,6 +334,7 @@ export function AskReplyComposer({
             writing={dispatchWritingBox("ask-thread-reply", "comment")}
           />
         )}
+        keySends="reply"
         onDraftChange={setDraft}
         refusals={{ reply: refusal }}
         upload={upload}

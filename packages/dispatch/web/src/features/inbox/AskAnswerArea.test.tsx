@@ -161,10 +161,12 @@ async function pickPlanner(view: RenderResult, field: HTMLTextAreaElement, prefi
   await waitFor(() => expect(field.value).toBe(`${prefix}${PLANNER_MENTION}`));
 }
 
-/** The line on screen that a refused button is described by. */
+/** The line on screen that a refused button is described by, or null where its description is
+ *  drawn by nothing (the hidden one of the button's own, `RefusableButton`). */
 function shownReason(button: HTMLElement): string | null {
   const id = (button.getAttribute("aria-describedby") ?? "").split(" ")[0];
-  return id === undefined || id === "" ? null : (document.getElementById(id)?.textContent ?? null);
+  const line = id === undefined || id === "" ? null : document.getElementById(id);
+  return line === null || line.classList.contains("sr-only") ? null : line.textContent;
 }
 
 test("Ask back posts the picked session as a mention, and Answer sends a draft that names one", async () => {
@@ -291,15 +293,21 @@ test("the reply box under an answered ask posts the picked session as a mention"
   try {
     const field = view.getByLabelText("Reply") as HTMLTextAreaElement;
     const send = view.getByRole("button", { name: "Reply" });
-    // An empty box refuses, keeps its place in the tab order, and says why on screen.
+    // An empty box refuses, keeps its place in the tab order, and carries why as its description
+    // from the start. The line under the box says it only once the reader presses Reply, or its
+    // Ctrl/Cmd+Enter (dispatch://INFRA-341/comment/203d516b-9d0b-4f0e-9a10-e429fbf00a40).
     expect(send.getAttribute("aria-disabled")).toBe("true");
     expect(send.hasAttribute("disabled")).toBe(false);
     expect(send.getAttribute("title")).toBe(EMPTY_DRAFT_REFUSAL);
-    expect(shownReason(send)).toBe(EMPTY_DRAFT_REFUSAL);
+    expect(send).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
+    expect(shownReason(send)).toBe(null);
     // A press on a refused Send and the Ctrl+Enter that bypasses the button, both of which
     // user-event will not perform on a control it reads as unpressable.
-    fireEvent.click(send);
     fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
+    await waitFor(() => expect(shownReason(send)).toBe(EMPTY_DRAFT_REFUSAL));
+    expect(send).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
+    fireEvent.click(send);
+    expect(shownReason(send)).toBe(EMPTY_DRAFT_REFUSAL);
     expect(posted).toEqual([]);
 
     await pickPlanner(view, field, "Over to ");
@@ -336,18 +344,41 @@ test("an empty answer area refuses Answer and Ask back, sends nothing, and keeps
     await view.findByLabelText("Your answer");
     const answer = view.getByRole("button", { name: "Answer" });
     const askBack = view.getByRole("button", { name: "Ask back" });
+    // Each carries its reason as its description from the start, and the line under the box
+    // says it once its own button is pressed, and for Answer once its Ctrl/Cmd+Enter is.
     expect(answer.getAttribute("title")).toBe(ASK_FORM_WORDS.refused.answer);
-    expect(shownReason(answer)).toBe(ASK_FORM_WORDS.refused.answer);
+    expect(answer).toHaveAccessibleDescription(ASK_FORM_WORDS.refused.answer);
     expect(askBack.getAttribute("title")).toBe(EMPTY_DRAFT_REFUSAL);
-    expect(shownReason(askBack)).toBe(EMPTY_DRAFT_REFUSAL);
-    for (const button of [answer, askBack]) {
+    expect(askBack).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
+    expect(view.queryByText(ASK_FORM_WORDS.refused.answer, { ignore: ".sr-only" })).toBe(null);
+    expect(view.queryByText(EMPTY_DRAFT_REFUSAL, { ignore: ".sr-only" })).toBe(null);
+    const field = view.getByLabelText("Your answer") as HTMLTextAreaElement;
+    fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
+    await waitFor(() => expect(shownReason(answer)).toBe(ASK_FORM_WORDS.refused.answer));
+    expect(shownReason(askBack)).toBe(null);
+    for (const [button, reason] of [
+      [answer, ASK_FORM_WORDS.refused.answer],
+      [askBack, EMPTY_DRAFT_REFUSAL],
+    ] as const) {
       button.focus();
       // A press on a control the refusal already holds, with the focus the loop just set.
       fireEvent.click(button);
       expect(document.activeElement).toBe(button);
+      expect(shownReason(button)).toBe(reason);
+      expect(button).toHaveAccessibleDescription(reason);
     }
     expect(answered).toEqual([]);
     expect(posted).toEqual([]);
+    // A change of the draft takes the lines away: emptied again, the box carries each reason as
+    // its description, and the line waits for a press of its own.
+    fireEvent.change(field, { target: { value: "Ship" } });
+    await waitFor(() => expect(answer.hasAttribute("aria-disabled")).toBe(false));
+    fireEvent.change(field, { target: { value: "" } });
+    await waitFor(() => expect(answer.getAttribute("aria-disabled")).toBe("true"));
+    expect(shownReason(answer)).toBe(null);
+    expect(shownReason(askBack)).toBe(null);
+    expect(answer).toHaveAccessibleDescription(ASK_FORM_WORDS.refused.answer);
+    expect(askBack).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
   } finally {
     view.unmount();
   }

@@ -9,7 +9,12 @@ import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { documentSurfaceHandlers } from "../../__tests__/proof-document";
 import { issueQuery } from "../../api/queries";
-import type { IssueCheckResults, IssueCoverage, ReferenceTargets } from "../../api/types";
+import type {
+  HandoffSummary,
+  IssueCheckResults,
+  IssueCoverage,
+  ReferenceTargets,
+} from "../../api/types";
 import { afterTheFirstBatch, theFirstBatchIsAwaited } from "../doc/first-batch";
 import { issue } from "../margin/margin-fixture";
 import { IssueOutlinePage } from "./IssueOutlinePage";
@@ -39,6 +44,8 @@ function answerThePageReads(): void {
     ),
     http.get("/api/v1/issues/:key/comments", () => Response.json([])),
     http.get("/api/v1/issues/:key/messages", () => Response.json([])),
+    // The issue's phase handoffs, newest first, which the Dashboard reads.
+    http.get("/api/v1/issues/:key/handoffs", () => Response.json([] satisfies HandoffSummary[])),
     // The issue's head, which the end of the outline reads to mark the issue read
     // (`IssueReadMark.tsx`).
     http.get("/api/v1/issues/:key/events", () => Response.json([])),

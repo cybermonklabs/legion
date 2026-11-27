@@ -108,15 +108,17 @@ export const ROLE_STATE_WORDS = freeze({
 
 // The words of the two lists that answer the reader's own act, as `ANSWER_LINES` of
 // `page-words.ts` holds the page's own: a write of theirs still out, versions they asked to compare
-// still being read, a write or a read that failed, a write that stopped on its way, and a question
-// that changed or closed under their answer. The rest of each table is what its part draws
-// wherever it is drawn.
+// still being read, a write or a read that failed, a write that stopped on its way, a question
+// that changed or closed under their answer, and why a send refused their press (the line under
+// the box shows it only after the press, `inbox/AskAnswerArea.tsx`). The rest of each table is
+// what its part draws wherever it is drawn.
 const { unsent_answer, ...cardWords } = ASK_CARD_WORDS;
 const { diff_failed, diff_loading, ...approvalWords } = ASK_APPROVAL_WORDS;
 const {
   answering,
   changed,
   clarification_failed,
+  refused,
   saving,
   sending,
   stopped: answerStopped,
@@ -157,7 +159,15 @@ export const ASK_BODY_ANSWERS = freeze({
   approval: { diff_failed, diff_loading },
   card: { unsent_answer },
   decline: { again: declineAgain, declining, failed: declineFailed, stopped: declineStopped },
-  form: { answering, changed, clarification_failed, saving, sending, stopped: answerStopped },
+  form: {
+    answering,
+    changed,
+    clarification_failed,
+    refused,
+    saving,
+    sending,
+    stopped: answerStopped,
+  },
   hand_on: { failed: handOnFailed, handing_on },
 } as const);
 

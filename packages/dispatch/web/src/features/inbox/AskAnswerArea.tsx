@@ -1,4 +1,4 @@
-import { type ComponentProps, type ReactNode, useId } from "react";
+import { type ComponentProps, type ReactNode, useId, useState } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
 import { useTooltips } from "../../components/tooltips";
@@ -7,13 +7,24 @@ import { pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { type DraftUpload, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import type { MentionField } from "../conversation/MentionField";
 
-/** What the buttons under the area are given: the id of the line already showing each refusal the
- *  host named, by the name the host knows it by. Generic over those names, so a host that reads
- *  `reasonId.askBack` where it named `askback` is a type error rather than a button that
- *  silently loses its description. Whether a picture is still out is the host's own, since the
- *  upload is (`upload`): a host draws sends this area never sees. */
+/** What the buttons under the area are given, by the name the host knows each refusal by: the id
+ *  of the line showing it, or undefined while none does, and what the button calls when the
+ *  refusal swallows its press. Generic over those names, so a host that reads `reasonId.askBack`
+ *  where it named `askback` is a type error rather than a button that silently loses its
+ *  description. Whether a picture is still out is the host's own, since the upload is (`upload`):
+ *  a host draws sends this area never sees. */
 export interface AskAnswerActions<Name extends string = string> {
-  readonly reasonId: Readonly<Record<Name, string>>;
+  /** For `RefusableButton`'s `refusalShownBy`: while no line shows the reason the button
+   *  describes itself with a hidden one of its own, so its description is there from the start. */
+  readonly reasonId: Readonly<Record<Name, string | undefined>>;
+  /** For `RefusableButton`'s `onRefusedPress`. */
+  readonly refusedPress: Readonly<Record<Name, () => void>>;
+}
+
+/** The refusals whose line a press has drawn, and the draft's text they were pressed over. */
+interface Answered<Name extends string> {
+  readonly draft: string;
+  readonly names: ReadonlySet<Name>;
 }
 
 /** What the area hands the field its host mounts (`field`): the draft and each edit of it, and the
@@ -23,7 +34,7 @@ type AskAnswerFieldProps = Required<
 > &
   Pick<ComponentProps<typeof MentionField>, "onDrop" | "onPaste">;
 
-/** The line that says why a send refuses, inside `NoTooltips` (`components/tooltips.tsx`): the
+/** The line that says why a send refused, inside `NoTooltips` (`components/tooltips.tsx`): the
  *  new issue page's quiet words, which qualify the field above them. It stands in this table, as
  *  `AskCard`'s colours do, so `theme/text-on-background.test.ts` pairs none of `main`'s words
  *  with the page's ground. */
@@ -34,15 +45,25 @@ const ON_PAGE = {
 /**
  * The one answer area of an ask: the box every writing box mounts, with its reference picker
  * (`features/conversation/MentionField.tsx`), the draft behind it, the line that says why a send
- * refuses, and the host's uploads, which a file pasted or dropped into the box starts. Its two
- * hosts differ only in the box's row of the writing list and in what they send it with, which
- * they pass as `field` and `actions`: the open ask's Answer and Ask back (`ask-body/AskBody.tsx`,
- * which answers through `useAskAnswerForm`), and the reply box under an answered ask
- * (`AskThread.tsx`). The host mounts the field itself, since the field's row is the host's
- * (`writing`), and the area hands it everything else it holds (`AskAnswerFieldProps`). The draft
- * is the host's - the ask's answer draft or its reply draft (`answer-drafts.ts`,
+ * refused the reader's press, and the host's uploads, which a file pasted or dropped into the box
+ * starts. Its two hosts differ only in the box's row of the writing list and in what they send it
+ * with, which they pass as `field` and `actions`: the open ask's Answer and Ask back
+ * (`ask-body/AskBody.tsx`, which answers through `useAskAnswerForm`), and the reply box under an
+ * answered ask (`AskThread.tsx`). The host mounts the field itself, since the field's row is the
+ * host's (`writing`), and the area hands it everything else it holds (`AskAnswerFieldProps`). The
+ * draft is the host's - the ask's answer draft or its reply draft (`answer-drafts.ts`,
  * `reply-drafts.ts`) - and so is the upload behind it, because the host is what sends them: the
  * ask's form holds its upload (`useAskAnswerForm`), which outlives a body drawn again for it.
+ *
+ * A send that refuses the draft carries its reason as its accessible description from the start,
+ * which draws nothing, and the line under the box says it only in answer to the reader's act: a
+ * press of the refused button, or the Ctrl/Cmd+Enter that sends what it sends (`keySends`). The
+ * line goes as the draft's text changes, or as the host's own state takes the refusal away (an
+ * option picked), so a refusal back again waits for a press of its own. A reason that answers
+ * the reader's pick rather than a press - an approval's "Add a reason to send Request changes" -
+ * the host names in `shownAtOnce`, and its line stands as long as it holds
+ * (dispatch://INFRA-341/comment/203d516b-9d0b-4f0e-9a10-e429fbf00a40, dispatch://INFRA-1196's
+ * rule for the page's own words).
  *
  * A picked session is a reference written in the draft's text. The comment that Ask back and
  * Reply post carries it to the server, and the server delivers the comment to that session. An
@@ -53,10 +74,12 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   actions,
   draft,
   field,
+  keySends,
   onDraftChange,
   readOnly = false,
   reasonMark,
   refusals,
+  shownAtOnce = [],
   upload,
   uploadDraft,
   uploadOwner,
@@ -66,6 +89,8 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   /** The box, which the host mounts with its own row of the writing list and its own label,
    *  handed what the area holds of it. */
   readonly field: (props: AskAnswerFieldProps) => ReactNode;
+  /** The refusal whose line the field's Ctrl/Cmd+Enter answers: the send the form submits. */
+  readonly keySends?: Name;
   readonly onDraftChange: (text: string) => void;
   /** Inside `NoTooltips`, the host refuses the draft while its own write is out: the field keeps
    *  the focus, `readOnly` in place of `disabled`, and takes no paste, drop or Ctrl/Cmd+Enter. */
@@ -74,9 +99,13 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
    *  an author's (the ask body's `marks.pageChrome`, `features/ask-body/ask-text.tsx`). */
   readonly reasonMark?: Readonly<Record<string, string>>;
   /** Why each of the host's buttons refuses the draft as it stands, by the name the host knows it
-   *  by: each reason is shown on one line under the field, and `actions` is handed that line's id
-   *  for the button's `refusalShownBy`. */
+   *  by: each reason is the button's description, and once it answers the reader's act it is shown
+   *  on one line under the field, whose id `actions` is handed for the button's
+   *  `refusalShownBy`. */
   readonly refusals: Readonly<Record<Name, string | null>>;
+  /** The refusals whose line stands while they hold, with no press: a reason that answers the
+   *  reader's own pick. */
+  readonly shownAtOnce?: readonly Name[];
   /** The uploads behind this draft, which the host holds (`useDraftUpload`): a file pasted or
    *  dropped into the field starts one, the line under the field says one is still out, and the
    *  host holds its own sends while `upload.pending > 0` - including the ones it draws where
@@ -95,8 +124,27 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   // One area can be on the page twice (a decision block and the margin sheet, a card and its
   // drawer), so the line each button names is this instance's.
   const reasonBase = useId();
-  const reasonId = {} as Record<Name, string>;
-  for (const name of Object.keys(refusals) as Name[]) reasonId[name] = `${reasonBase}-${name}`;
+  const names = Object.keys(refusals) as Name[];
+  const [answered, setAnswered] = useState<Answered<Name>>(() => ({ draft, names: new Set() }));
+  // A press's line goes with the draft's text it was pressed over, and with its refusal: the
+  // state lets go of both here, as the render that finds them gone draws.
+  const held =
+    answered.draft === draft ? [...answered.names].filter((name) => refusals[name] !== null) : [];
+  if (held.length !== answered.names.size) setAnswered({ draft, names: new Set(held) });
+  const shown = new Set([...held, ...shownAtOnce.filter((name) => refusals[name] !== null)]);
+  const answer = (name: Name) => {
+    if (refusals[name] === null) return;
+    setAnswered((current) => ({
+      draft,
+      names: new Set([...(current.draft === draft ? current.names : []), name]),
+    }));
+  };
+  const reasonId = {} as Record<Name, string | undefined>;
+  const refusedPress = {} as Record<Name, () => void>;
+  for (const name of names) {
+    reasonId[name] = shown.has(name) ? `${reasonBase}-${name}` : undefined;
+    refusedPress[name] = () => answer(name);
+  }
 
   return (
     <div className="space-y-2">
@@ -111,7 +159,10 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
               },
         // A draft sent before its upload lands would go without the picture; the buttons say the
         // upload is what holds them (`busy`), and this key says nothing at all.
-        onKeyDown: (event) => submitOnModifiedEnter(event, { disabled: uploading || readOnly }),
+        onKeyDown: (event) => {
+          const sent = submitOnModifiedEnter(event, { disabled: uploading || readOnly });
+          if (sent && keySends !== undefined) answer(keySends);
+        },
         onPaste:
           uploadOwner === undefined
             ? undefined
@@ -124,10 +175,12 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
         rows: 2,
       })}
       <DraftUploadStatus upload={upload} />
-      {/* The reason a send refuses, on screen beside the draft it was refused over, and the
-          description its button carries (`RefusableButton`'s `refusalShownBy`). */}
-      {(Object.entries(refusals) as [Name, string | null][]).map(([name, reason]) =>
-        reason === null ? null : (
+      {/* The reason a send refused, on screen beside the draft it was refused over once the
+          reader's act asked for it, and then the description its button carries
+          (`RefusableButton`'s `refusalShownBy`). */}
+      {names.map((name) => {
+        const reason = refusals[name];
+        return reason === null || !shown.has(name) ? null : (
           <p
             className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.reason}`}
             id={reasonId[name]}
@@ -136,9 +189,9 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
           >
             {reason}
           </p>
-        )
-      )}
-      {actions({ reasonId })}
+        );
+      })}
+      {actions({ reasonId, refusedPress })}
     </div>
   );
 }
