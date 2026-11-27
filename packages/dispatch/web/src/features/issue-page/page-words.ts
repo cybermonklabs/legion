@@ -715,6 +715,7 @@ export const ANSWER_LINES = joinWords("ANSWER_LINES", {
   saving_components: "Saving components…",
   saving_field: "Saving…",
   saving_labels: "Saving labels…",
+  saving_priorities: "Saving priorities…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
 } as const);
@@ -886,7 +887,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   children: "Children",
   /** The word between the words a shared control draws and the issue's key, in the name the
    *  control answers to inside `NoTooltips`: "Set components of CORE-1", "Saving components of
-   *  CORE-1" (`componentsControlName`) and "Saving labels of CORE-1" (`labelsControlName`). */
+   *  CORE-1" (`componentsControlName`), "Saving labels of CORE-1" (`labelsControlName`) and
+   *  "Saving priorities of CORE-1" (`priorityTriggerName`). */
   control_name_of: "of",
   /** The word between the labels control's `add_label` and the issue's key, in the name it
    *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"

@@ -3848,7 +3848,10 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await user.click(await evalsOption());
     await user.keyboard("{Escape}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    // While its write is out the control says so, and is named for it (`priorityTriggerName`).
+    const control = await screen.findByRole("button", {
+      name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
+    });
     // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
     // `aria-disabled` where the shared control stays focusable while it is busy.
     await waitFor(() =>
@@ -4076,7 +4079,12 @@ test.each(
       expect(
         document.activeElement,
         "the add landed, and the line gave the focus back to no add control beside Add"
-      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+      ).toBe(
+        // Held until the read after its write is drawn, the control is named for its save.
+        screen.queryByRole("button", {
+          name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
+        })
+      )
     );
     await act(async () => reread.resolve(readBack));
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
@@ -4481,7 +4489,12 @@ test("a refused first priority whose read draws another session's priority leave
       expect(
         document.activeElement,
         "the line gave the focus back to no add control beside Add"
-      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+      ).toBe(
+        // Held until the read after its write is drawn, the control is named for its save.
+        screen.queryByRole("button", {
+          name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
+        })
+      )
     );
     await act(async () =>
       reread.resolve({ ...advancesOnly, advances: [{ id: "PRI-9", inherited: false }] })
@@ -4514,7 +4527,10 @@ test("an event's read of another session's first priority while the reader's is 
   try {
     await addFirstPriority(user);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
+    // Held while the write is out, the control is named for its save (`priorityTriggerName`).
+    const control = await screen.findByRole("button", {
+      name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
+    });
     await waitFor(() => expect(document.activeElement).toBe(control));
     expect(
       control,
@@ -4552,7 +4568,9 @@ test("a refused first priority whose set an event's read draws after the write e
   try {
     await addFirstPriority(user);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
+    // Named for its save until the write and the reads after it have ended
+    // (`priorityTriggerName`), so it is found by its own name once they have.
+    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     await waitFor(() =>
       expect(
         control,
