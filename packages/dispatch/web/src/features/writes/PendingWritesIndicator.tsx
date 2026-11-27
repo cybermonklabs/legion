@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { apiErrorMessage, NETWORK_ERROR_MESSAGE } from "../../api/client";
+import { armOnPress, causedByReader, inSightNow, outOfSight } from "../../components/focus-place";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
@@ -109,36 +110,43 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
 }
 
 /**
- * Hands on the focus a press in the panel takes away. A press here can take the control it was
- * made on off the page - Stop trying once its write is refused, Retry or Discard once their row
- * goes, any of them as the panel goes once nothing is pending - and the browser then leaves the
- * focus on the page's body, which loses a keyboard reader's place. So the panel notes the row the
- * focus is in and where the focus came from as it entered the panel, and once the element that
- * held the focus in the panel has left the page while the focus is on the body, the focus goes to
- * the first control that takes it: while the panel is still drawn, one in that element's row (the
- * Retry a stopped write's row offers once Stop trying has gone), else the panel's first; only once
- * the panel is gone or holds none, the element the focus came from, else the page's main region
- * (`app.tsx`'s `main-content`), which the shell focuses on a page change too. A focus the reader
- * takes out of the panel, by a Tab or by a press that leaves the focus outside it, is forgotten,
- * so nothing moves a focus the reader put somewhere else; a press elsewhere that leaves the focus
- * in the panel, as on a control whose `mousedown` is prevented or on a scrollbar, forgets nothing.
- * A focus a pointer press puts in the panel is forgotten too, never noted: Chromium focuses a
- * pressed button and draws it no focus ring, so a hand-off would move that focus, unseen, onto
- * another row's control, and the next Space or Enter would press it - Discard, first in a row
- * waiting to send. A press lasts from its `pointerdown` until its `click` has been dispatched, or
- * it is cancelled: on a touch screen the browser moves the focus only once the finger lifts, on
- * the `mousedown` it sends after the `pointerup`, which can come well after the press began; and a
- * touch that scrolls the panel's list ends in a `pointercancel` and no `click`, after which a press
- * still under way would forget every focus that enters the panel, the hand-off's own too. A key
- * pressed in between ends it as well, so the focus the keyboard moves is noted even after a press
- * no `click` ended.
+ * Hands on the focus a press of the reader's in the panel takes away. A press here can take the
+ * control it was made on off the page - Stop trying once its write is refused, Retry or Discard
+ * once their row goes, any of them as the panel goes once nothing is pending - and the browser
+ * then leaves the focus on the page's body, which loses a keyboard reader's place. So the panel
+ * arms the hand-off at its root for each press made in it (`armOnPress`), notes the row the focus
+ * is in and where the focus came from as it entered the panel, and once the element that held the
+ * focus in the panel has left the page while the focus is on the body, it reads who caused the
+ * loss. A loss the reader caused (`causedByReader`), of a control they had not scrolled out of
+ * their sight (`outOfSight`), moves the focus, with no scroll, to the first control the reader can
+ * see now (`inSightNow`): while the panel is still drawn, one in that element's row (the Retry a
+ * stopped write's row offers once Stop trying has gone), else one of the panel's, passing over a
+ * row scrolled out of the panel's list; only once none of the panel's is in sight, the element the
+ * focus came from, where it is in sight, else the page's main region (`app.tsx`'s
+ * `main-content`), which the shell focuses on a page change too. A loss the reader did not cause -
+ * a write that lands by itself, a refusal that comes in, with nothing armed - leaves the focus
+ * where the browser puts it, on the body, and scrolls nothing: a control they did not choose, and
+ * may not see, never takes it.
+ * A focus the reader takes out of the panel, by a Tab or by a press that leaves the focus outside
+ * it, is forgotten, so nothing moves a focus the reader put somewhere else; a press elsewhere that
+ * leaves the focus in the panel, as on a control whose `mousedown` is prevented or on a scrollbar,
+ * forgets nothing. A focus a pointer press puts in the panel is forgotten too, never noted:
+ * Chromium focuses a pressed button and draws it no focus ring, so a hand-off would move that
+ * focus, unseen, onto another row's control, and the next Space or Enter would press it - Discard,
+ * first in a row waiting to send. A press lasts from its `pointerdown` until its `click` has been
+ * dispatched, or it is cancelled: on a touch screen the browser moves the focus only once the
+ * finger lifts, on the `mousedown` it sends after the `pointerup`, which can come well after the
+ * press began; and a touch that scrolls the panel's list ends in a `pointercancel` and no `click`,
+ * after which a press still under way would forget every focus that enters the panel, the
+ * hand-off's own too. A key pressed in between ends it as well, so the focus the keyboard moves is
+ * noted even after a press no `click` ended.
  * Returns the panel's ref.
  */
 function usePanelFocusReturn(): RefObject<HTMLElement | null> {
   const panel = useRef<HTMLElement>(null);
   // The element that holds the focus in the panel, the write whose row it is in, and the element
   // that held the focus before it came in.
-  const held = useRef<Node | null>(null);
+  const held = useRef<Element | null>(null);
   const heldRow = useRef<string | null>(null);
   const from = useRef<HTMLElement | null>(null);
   // Forgets all three at once: a focus the reader takes out of the panel, and the hand-off below
@@ -149,8 +157,8 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     from.current = null;
   }, []);
   useEffect(() => {
-    const inPanel = (target: EventTarget | null): target is Node =>
-      target instanceof Node && panel.current?.contains(target) === true;
+    const inPanel = (target: EventTarget | null): target is Element =>
+      target instanceof Element && panel.current?.contains(target) === true;
     // Where the pointer press under way began - in the panel or elsewhere - from its
     // `pointerdown` until its `click` has been dispatched, until it is cancelled, or until a key
     // is pressed; null between presses.
@@ -166,9 +174,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
       }
       held.current = target;
       heldRow.current =
-        target instanceof Element
-          ? (target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null)
-          : null;
+        target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null;
     };
     const pressed = (event: PointerEvent) => {
       press = inPanel(event.target) ? "panel" : "elsewhere";
@@ -212,18 +218,23 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     const row = rowSelector === null ? null : box?.querySelector(rowSelector);
     const back = from.current;
     forget();
-    if (!focusOnDocument()) return;
+    if (!focusOnDocument() || outOfSight(left) || !causedByReader(left)) return;
+    // One read of each box's style for the whole hand-off (`inSightNow`).
+    const clips = new Map<Element, boolean>();
     const controls = [
       ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
       ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
-    ];
+    ].filter((control) => inSightNow(control, clips));
     if (focusFirst(controls)) {
       // The focus listener took that move for the focus entering the panel afresh; it came in
       // from where it did before.
       from.current = back;
       return;
     }
-    focusFirst([back, document.getElementById("main-content")]);
+    focusFirst([
+      back !== null && inSightNow(back, clips) ? back : null,
+      document.getElementById("main-content"),
+    ]);
   });
   return panel;
 }
@@ -271,6 +282,9 @@ export function PendingWritesIndicator(): ReactNode {
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
+      onChangeCapture={armOnPress}
+      onClickCapture={armOnPress}
+      onKeyDownCapture={armOnPress}
       ref={panel}
     >
       {out.length === 0 ? null : (
