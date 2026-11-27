@@ -198,27 +198,74 @@ function recordedPassText(check: CheckBlock): string {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: \x1c to \x1e are line breaks to str.splitlines
 const LINE_BREAKS = /\r\n|[\n\v\f\r\x1c-\x1e\u0085\u2028\u2029]/g;
 
-/** Every other control a terminal acts on: C0 but a tab and a line feed, DEL, and C1. */
+/** The controls a terminal acts on that a quoted text keeps out of its lines: C0 but a tab and a
+ *  line feed, DEL, and C1. The class also holds seven of LINE_BREAKS' characters (`\v`, `\f`,
+ *  `\r`, `\x1c` to `\x1e` and U+0085), so `quoted` runs it after LINE_BREAKS has turned each of
+ *  those into `\n`: the order of its two replaces matters. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the controls a terminal acts on, shown as text
 const TERMINAL_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+
+/** Every control and line break a field printed inside one line can hold: C0 (a tab and a line
+ *  feed among them), DEL, C1 (U+0085 among them), U+2028 and U+2029. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the controls a one-line field is shown without
+const ONE_LINE_CONTROLS = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+
+/** One control as text: `\xNN`, or `\uNNNN` past U+00FF (U+2028 and U+2029). */
+function escapedControl(control: string): string {
+  const code = control.charCodeAt(0);
+  return code > 0xff
+    ? `\\u${code.toString(16).padStart(4, "0")}`
+    : `\\x${code.toString(16).padStart(2, "0")}`;
+}
+
+/** A field the server sent that prints inside one line, as text: every control and line break in
+ *  it is written as `\xNN` or `\uNNNN` (escapedControl), so it cannot end its line and start a
+ *  forged check line, or move the cursor over the line's start. */
+function oneLine(text: string): string {
+  return text.replace(ONE_LINE_CONTROLS, escapedControl);
+}
+
+/** The texts `quoted` prints on lines of their own, and keeps the controls out of itself, by their
+ *  place in the answer (oneLineStrings): each check's words, each result's reading and each
+ *  retraction's reason. */
+const QUOTED_TEXTS: Readonly<Record<string, true>> = {
+  "checks.text": true,
+  "checks.results.observed": true,
+  "checks.results.retracted.reason": true,
+};
+
+/** `value`, a part of the server's answer at `place` (its keys from the answer's root, an array's
+ *  index left out), with every string in it written on one line (oneLine), but each text at a
+ *  place QUOTED_TEXTS names. A person writes a check's block id and its `ci_check` name, the server
+ *  decodes a character reference in either (`&#xA;`), and it writes that name into a CI check's
+ *  `run`, `detail` and `line`; a role, an actor, a branch and a link come from outside this command
+ *  too. So every string is escaped here, once, before any line is built, and a field the server
+ *  adds later is escaped with the rest. */
+function oneLineStrings(value: unknown, place: string): unknown {
+  if (typeof value === "string") return Object.hasOwn(QUOTED_TEXTS, place) ? value : oneLine(value);
+  if (Array.isArray(value)) return value.map((item) => oneLineStrings(item, place));
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      oneLineStrings(item, place === "" ? key : `${place}.${key}`),
+    ])
+  );
+}
 
 /** Text a role or a person wrote (a reading, a retraction's reason, a check's words) on a line that
  *  starts at `indent`. Each of its lines after the first starts two spaces further in, and four
  *  spaces in at least. A check line starts `- ` and a result line `  - `, and such a text can hold
  *  either, as an e2e run's log quoted whole does: indented, none of its lines reads as one, and a
  *  blank line of it does not end the check's block, which a blank line does. A line ends at every
- *  break a line splitter uses (LINE_BREAKS), not `\n` alone, each written as `\n`. Every other
- *  control but a tab (TERMINAL_CONTROLS: a backspace, ESC and the sequences it starts, a bell, DEL,
- *  a C1 control) is written as `\xNN`, so a terminal draws each as text and none of them moves the
- *  cursor back over the indent. */
+ *  break a line splitter uses (LINE_BREAKS), not `\n` alone, each written as `\n`. Then every
+ *  other control but a tab (TERMINAL_CONTROLS: a backspace, a bell, DEL, a C1 control, and ESC)
+ *  is written as `\xNN` (escapedControl). ESC is one code point: it is written as `\x1b`, and the
+ *  sequence it starts prints as the text it is (`\x1b[1G`), so a terminal draws each control as
+ *  text and none of them moves the cursor back over the indent. */
 function quoted(text: string, indent: string): string {
   const continued = `${indent}  `.length < 4 ? "    " : `${indent}  `;
-  return text
-    .replace(LINE_BREAKS, `\n${continued}`)
-    .replace(
-      TERMINAL_CONTROLS,
-      (control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`
-    );
+  return text.replace(LINE_BREAKS, `\n${continued}`).replace(TERMINAL_CONTROLS, escapedControl);
 }
 
 /** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
@@ -335,8 +382,10 @@ function unreadableLinkLines(results: IssueCheckResults): string[] {
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
  *  null, so that is what is compared. The links Dispatch reads no more end the text, whatever the
- *  checks are (`unreadableLinkLines`). */
-export function formatCheckResults(results: IssueCheckResults, brief = false): string {
+ *  checks are (`unreadableLinkLines`). Every string of the answer but the texts `quoted` prints is
+ *  written on one line first (oneLineStrings). */
+export function formatCheckResults(answer: IssueCheckResults, brief = false): string {
+  const results = oneLineStrings(answer, "") as IssueCheckResults;
   const unreadable = unreadableLinkLines(results);
   const withLinks = (text: string): string =>
     unreadable.length === 0 ? text : [text, unreadable.join("\n")].join("\n\n");

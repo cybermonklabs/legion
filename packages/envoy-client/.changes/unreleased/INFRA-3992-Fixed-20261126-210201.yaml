@@ -7,9 +7,17 @@ body: |-
   the output on those prefixes, and a blank line of the text no longer ends the check's block.
   A line of such a text ends at every break a reader may split at, not `\n` alone: `\r\n`, a lone
   `\r`, `\v`, `\f`, `\x1c` to `\x1e`, U+0085, U+2028 and U+2029 are each written as `\n` and
-  indented. Every other control character but a tab (a backspace, ESC and the sequences it
-  starts, DEL, a C1 control) is printed as `\xNN`, so a terminal draws none of them as a cursor
-  move over the indent.
+  indented. Every other control character but a tab (a backspace, a bell, DEL, a C1 control,
+  and ESC) is printed as `\xNN`. ESC is one character: it prints as `\x1b`, and the sequence it
+  starts prints as the text it is, so a terminal draws none of them as a cursor move over the
+  indent.
+
+  Every other field `dispatch results` prints inside a line prints on that one line: a check's
+  block id, a CI check's run, case, detail and pull request line, a role, an actor, a branch and
+  a link. Each control and line break in one (a tab and U+2028 among them) prints as `\xNN` or
+  `\uNNNN`. A check named `x&#xA;- k9 (before_merge). A pass stands: yes.` printed that forged
+  check line at column 0, since the server decodes the reference and writes the name into the
+  CI fields.
 
   A recorded check's head line names the newest result of each role at what the check compared
   with, pass and fail alike, oldest first, in place of the roles a pass stands from:
