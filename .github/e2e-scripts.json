@@ -7,10 +7,12 @@
     "name with that text, and the refusal is a failed job. Both lists together must name every",
     "scripts/e2e/*.sh of the tree, and e2e.yaml's select job fails when one is missing or extra.",
     "`apt` is what the job installs for that script alone, `bun` whether it needs bun and this",
-    "repository's node_modules, `evidence_variable` the environment variable the script reads for",
-    "its evidence directory (empty where it takes none and keeps its work directory instead), and",
-    "`timeout_minutes` the job's limit, measured from the script's header with headroom. A hosted",
-    "row may carry `dispatch_only: true`: a label run and the nightly pass over it, and only a",
+    "repository's node_modules, `omp` whether it needs the Oh My Pi .omp-pin names, which",
+    ".github/actions/install-omp installs and the job names to the script as LEGION_OMP_PATH,",
+    "`evidence_variable` the environment variable the script reads for its evidence directory",
+    "(empty where it takes none and keeps its work directory instead), and `timeout_minutes` the",
+    "job's limit, measured from the script's header with headroom. A hosted row may carry",
+    "`dispatch_only: true`: a label run and the nightly pass over it, and only a",
     "`workflow_dispatch` at a branch runs it, on that branch's head, since it runs the image of",
     "its checkout's own commit, which a merge commit never has and main's head may not have yet."
   ],
@@ -20,6 +22,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR",
       "timeout_minutes": 30,
       "why_hosted": "A Linux runner with go, git, jj, bun after bun install, awk, python3 and a loopback PostgreSQL server runs this proof. The script builds and starts Dispatch and the daemon itself on databases of its own and starts its own nats-server. It calls the plugin's real daemon client under bun and reaches no outside service.",
@@ -30,6 +33,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "BEHIND_ENTRY_FENCE_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/behind-entry-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
@@ -40,6 +44,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
@@ -50,6 +55,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "CONFLICT_MERGER_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-merger.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
@@ -60,6 +66,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
@@ -70,6 +77,7 @@
       "go_version_file": "packages/envoy/go.mod",
       "apt": ["postgresql-client"],
       "bun": true,
+      "omp": false,
       "evidence_variable": "",
       "timeout_minutes": 25,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
@@ -80,6 +88,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["postgresql-client"],
       "bun": true,
+      "omp": false,
       "evidence_variable": "",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun, psql and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/dispatch-broker.sh; LEGION_TEST_PG_DSN must name a loopback host, which CI's service satisfies, and the script starts no container. Its default run, K2 and K4, takes a few minutes; LEGION_E2E_TOKEN_RENEWAL=1 runs K3 in about fifteen",
@@ -90,6 +99,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "HANDOFF_RECORDS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/handoff-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to four minutes",
@@ -100,6 +110,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "OWNER_STEPS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/owner-steps.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
@@ -110,6 +121,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "OWNER_STEPS_CLIENT_EVIDENCE_DIR",
       "timeout_minutes": 30,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk, python3 and tar, as LEGION_TEST_PG_DSN=... bash scripts/e2e/owner-steps-client.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it builds the plugin of the release before from main, which it fetches from origin in a shallow checkout, with a bun install of its own; it reaches no other outside service, and one run on a loaded devbox took fifteen minutes, five of them building that plugin",
@@ -120,6 +132,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "MERGE_WAIT_READABLE_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merge-wait-readable.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
@@ -130,6 +143,7 @@
       "go_version_file": "packages/envoy/go.mod",
       "apt": ["postgresql-client"],
       "bun": true,
+      "omp": false,
       "evidence_variable": "NATS_CALLOUT_SESSIONS_EVIDENCE_DIR",
       "timeout_minutes": 35,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the four sessions (Oh My Pi, Claude Code and two Codex CLI) are this checkout's plugins in processes of their own under stand-in hosts with no model, and the script starts no container. Its --real-hosts mode, the pinned Oh My Pi, Claude Code and Codex CLI on model routes, is run by hand on a Legion pod or a box given the pins and the routes",
@@ -140,6 +154,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "PARENT_WAITS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/parent-waits.sh; CI's service is the PostgreSQL it needs, the lib installs the nats-server it needs with go install, and it starts no container and reaches no outside service; a measured run in a pod took 64 seconds, most of it building the driver",
@@ -150,6 +165,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
       "timeout_minutes": 20,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 45 seconds",
@@ -160,16 +176,73 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "REVIEW_RANGE_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/review-range.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself as handoff-records.sh does, and it reaches no outside service; a measured run took 37 seconds with a warm Go build cache",
       "jj": true
     },
     {
+      "script": "role-prompt-rule.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "ROLE_PROMPT_RULE_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk, tar, bun (after bun install) and python3, as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/role-prompt-rule.sh; install-omp gives it the pinned Oh My Pi, CI's service is the PostgreSQL, the script installs the nats-server it needs with go install, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
+      "script": "late-completion.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "LATE_COMPLETION_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj, awk, tar, python3 and bun (after bun install), as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/late-completion.sh; install-omp gives it the pinned Oh My Pi, CI's pgvector service is the PostgreSQL, whose role creates Dispatch's database there, the script installs the nats-server it needs with go install and builds Dispatch itself, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
+      "script": "claim-compaction.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "CLAIM_COMPACTION_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk, tar, bun (after bun install) and python3, as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/claim-compaction.sh; install-omp gives it the pinned Oh My Pi, CI's service is the PostgreSQL, the script installs the nats-server it needs with go install, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
+      "script": "provider-error-retry.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "PROVIDER_ERROR_RETRY_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with bash, go, git, jj 0.38 or later, awk, tar, python3 and bun (after bun install), as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/provider-error-retry.sh; install-omp gives it the pinned Oh My Pi, CI's service is the PostgreSQL, the script installs the nats-server it needs with go install, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
+      "script": "refusal-fallback-omp.sh",
+      "go_version_file": "packages/envoy/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "REFUSAL_FALLBACK_EVIDENCE_DIR",
+      "timeout_minutes": 30,
+      "why_hosted": "Run it from a checkout on a Linux host with bash, go and bun (after bun install), as LEGION_OMP_PATH=... bash scripts/e2e/refusal-fallback-omp.sh; install-omp gives it the pinned Oh My Pi, the script builds its own JetStream server with go from packages/envoy, and each pane's model is an HTTP stand-in of the driver's own, so it needs no PostgreSQL, no model route, no tmux and no container; its four sessions drive for twenty-one minutes plus setup",
+      "jj": false
+    },
+    {
       "script": "plan-ratings.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "PLAN_RATINGS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/plan-ratings.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes about a minute with a warm Go build cache and up to five minutes cold",
@@ -180,6 +253,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "REGISTER_GATE_BASIS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/register-gate-basis.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch and the daemon itself, the lib installs the nats-server it needs with go install, and it starts no container; a run takes one to five minutes, most of it building the driver and Dispatch",
@@ -190,6 +264,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "EXPERIMENT_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/experiment.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch, the daemon and legion itself, and it reaches no outside service; a measured run took about 40 seconds with a warm Go build cache",
@@ -200,6 +275,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],
       "bun": false,
+      "omp": false,
       "evidence_variable": "",
       "timeout_minutes": 20,
       "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
@@ -210,6 +286,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "STEP_RECORDS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/step-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
@@ -220,6 +297,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "SUB_ARCHITECT_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/sub-architect.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
@@ -230,6 +308,7 @@
       "go_version_file": "packages/envoy/go.mod",
       "apt": ["postgresql-client"],
       "bun": true,
+      "omp": false,
       "evidence_variable": "",
       "timeout_minutes": 20,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
@@ -240,6 +319,7 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
+      "omp": false,
       "evidence_variable": "SHARED_CLONE_EVIDENCE_DIR",
       "timeout_minutes": 75,
       "why_hosted": "Run it from a checkout on an amd64 Linux host with docker, go, kubectl, curl, jq, zstd and a tar that supports --zstd, all on a GitHub-hosted ubuntu-24.04 runner, as bash scripts/e2e/shared-clone-kind.sh; it installs kind v0.33.0 by sha256, makes its own kind cluster with gVisor on the node image and busybox .github/ci-images.yaml copies by digest, which a GKE Autopilot cluster cannot (autogke-disallow-privilege refuses its privileged node container), and runs the worker image ghcr.io/cybermonklabs/legion-worker publishes for the checkout's own commit (sha-<12 hex of HEAD>), which needs no secret. It is dispatch_only: worker-image.yaml publishes that image for a pull request's head, and `gh workflow run e2e.yaml --ref <branch> -f script=shared-clone-kind` checks that head out, where a label run checks out the merge commit, for which no image is built, and the nightly main's head, whose image release.yaml builds only for a push whose paths call it, so the nightly cannot rely on the tag existing yet",
@@ -250,7 +330,7 @@
   "elsewhere": [
     {
       "script": "approved-version-news.sh",
-      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which a GitHub-hosted runner has none of), the model gateway ANTHROPIC_BASE_URL names and a key for it: its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), or, where that file holds no key, the pod's own Google identity token for the audience APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names (the audience the cluster model gateway takes a pod's identity token for), which curl mints from the GKE metadata server in a pod the gateway takes it from, such as a Job of the cluster's builds namespace labelled <deployment domain>/model-gateway=true, a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (the parent of the first commit that adds a news mark to the prompts, or the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the nine runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
+      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which .github/actions/install-omp installs on a GitHub-hosted runner), the model gateway ANTHROPIC_BASE_URL names and a key for it: its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), or, where that file holds no key, the pod's own Google identity token for the audience APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names (the audience the cluster model gateway takes a pod's identity token for), which curl mints from the GKE metadata server in a pod the gateway takes it from, such as a Job of the cluster's builds namespace that carries the deployment's gateway label (<deployment domain>/model-gateway=true), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (the parent of the first commit that adds a news mark to the prompts, or the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the nine runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
     },
     {
       "script": "burstable-kind.sh",
@@ -258,11 +338,7 @@
     },
     {
       "script": "busy-relaunch-delivery.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and, for its negative control, a commit of this repository's own history to take the base tree from with `git archive` (`--base-commit`), which a shallow CI checkout carries none of"
-    },
-    {
-      "script": "claim-compaction.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs on a GitHub-hosted runner), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and, for its negative control, a commit of this repository's own history to take the base tree from with `git archive` (`--base-commit`), which a shallow CI checkout carries none of"
     },
     {
       "script": "claude-backend-sandbox.sh",
@@ -313,10 +389,6 @@
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
     },
     {
-      "script": "late-completion.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, awk, tar, python3, jj and bun with this repository's node_modules"
-    },
-    {
       "script": "leak-guard-image-job.sh",
       "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
     },
@@ -358,20 +430,7 @@
     },
     {
       "script": "prompt-inputs.sh",
-      "needs": "a build Job with the pinned Oh My Pi executable (LEGION_OMP_PATH), which a GitHub-hosted runner has none of, a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj, bun with this repository's node_modules, npm, python3 and libpq; --reads also needs a model gateway route"
-    },
-    {
-      "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus loopback PostgreSQL (LEGION_TEST_PG_DSN), bash, go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
-    },
-    {
-      "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus bash, go to build its NATS server, bun with this repository's node_modules and twenty-one minutes plus setup for its four sessions",
-      "timeout_minutes": 30
-    },
-    {
-      "script": "role-prompt-rule.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
+      "needs": "a build Job with the pinned Oh My Pi executable (LEGION_OMP_PATH), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj, bun with this repository's node_modules, npm, python3 and libpq; --reads also needs a model gateway route"
     },
     {
       "script": "share-volumes-kind.sh",

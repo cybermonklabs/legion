@@ -1,36 +1,34 @@
 #!/usr/bin/env bash
-# The live proof that a role process is launched with the rules its own system prompt carries: the
-# pod memory rule, which every phase worker is given, and the sub-architect's own prompt, which a
-# child's architect is given. The whole daemon is booted by the function `legion start` calls,
-# over a real PostgreSQL and a real nats-server, and three real `omp --mode rpc` panes run under
-# it — the real `legion worker-shim`, this checkout's `legion`, and this checkout's
-# @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of the run's own — each answered
-# by an HTTP model stand-in of the driver's own.
-# The three panes are three roles of one tree: its root architect, the planner of the same issue,
-# which stands in planning, and the architect of a child of the root, which stands in planning too.
+# The live proof that a role process is launched with the role prompt the daemon composed for its
+# role, so with every rule that prompt carries. The whole daemon is booted by the function
+# `legion start` calls, over a real PostgreSQL and a real nats-server, and three real
+# `omp --mode rpc` panes run under it — the real `legion worker-shim`, this checkout's `legion`,
+# and this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of the run's
+# own — each answered by an HTTP model stand-in of the driver's own. The three panes are three
+# roles of one tree: its root architect, the planner of the same issue, which stands in planning,
+# and the architect of a child of the root, which stands in planning too.
 #
 # Once every pane has registered and reported ready, the driver reads each pane's own Oh My Pi
 # command line from /proc/<pid>/cmdline, takes the word after `--append-system-prompt`, the path
 # of the prompt file, and reads that file. The pid the claim's locator carries is the
 # `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
-# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the phase worker's three
-# sentences of the pod memory rule in the planner's prompt; and, in the child's architect's, the
-# sub-architect's heading (`# Legion sub-architect`) and not the root's, and its addressing clause
-# naming the root's architect as the architect above it. It names the role, the pid and the text
-# for any it cannot find. That command line and the file it names are the
-# only places it reads: the composer, the role prompt files below the state directory and the
-# recorded launch specification all hold that text before a process took it, and the unit tests
-# already read it there (packages/daemon/internal/prompts/prompts_test.go and
-# packages/daemon/internal/prompts/roles_test.go). The driver is
+# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. Each role's prompt must be the bytes
+# of every part the composer gives that role, read from the composer's snapshot below the state
+# directory, in the composer's order, followed by a blank line and the addressing the launch
+# carried, and nothing after it; and the child's architect's addressing must name the root's
+# architect as the architect above it. The driver holds no word of any prompt, so a changed
+# sentence or heading of a part passes, and a part left out of a role's composition fails it,
+# naming the role, the pid, the part and where its bytes stand. The driver is
 # packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
 # `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
 # starts a pane with no tmux. Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
-# Two runs of this proof, with its three panes and the five steps it then had, took 76 s and 70 s
-# in a Legion worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were
-# ready 19 s and 16 s into step 1. A first run in such a pod took 179 s, with the Go build cache
-# cold and the pinned nats-server installed by the run itself. Each of these figures is from a
+# Two runs of this proof, with its three panes, took 76 s and 70 s in a Legion worker pod
+# (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s and 16 s
+# into step 1. A first run in such a pod took 179 s, with the Go build cache cold and the pinned
+# nats-server installed by the run itself. All three runs were made when the proof had a fifth
+# step, since removed, which read files and waited on nothing. Each of these figures is from a
 # Legion worker pod, which runs under gVisor. The proof waits on no clock of its own. Its one wait
 # is the panes starting Oh My Pi, loading the two plugins and reporting ready, and the command line
 # it reads is on each process from the moment that process began.
@@ -41,8 +39,9 @@
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/role-prompt-rule.sh
 # LEGION_OMP_PATH is required and names the Oh My Pi every pane runs, an absolute executable: this
-# proof launches real agents, and no pin is guessed for it. In a Legion worker pod that binary is
-# the fleet's build rather than the branch's fetch, and the driver prints which build it ran.
+# proof launches real agents, and no pin is guessed for it. In CI it is the build .omp-pin names
+# (.github/actions/install-omp); in a Legion worker pod it is the fleet's build. The driver prints
+# which build it ran.
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on — CI's
 # service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback
 # address, and this script starts none. That server must be this machine's: prerequisites reads
@@ -55,8 +54,9 @@
 # log, the daemon's own and the driver's output; the run's work directory, the driver binary among
 # it, is under TMPDIR too, since a pod's own disk is small and its TMPDIR names the issue's volume.
 # The driver builds `legion` and packs the two plugins from this checkout itself, so it needs bun
-# and the repository's node_modules. It needs no kube context, no Claude Code and no tmux — the
-# panes are child process groups of the driver — so it runs in a Legion pod and on a devbox alike.
+# and the repository's node_modules. It needs no kube context, no Claude Code, no tmux and no model
+# route — the panes are child process groups of the driver, each answered by its stand-in — so it
+# runs in a Legion pod, on a devbox and on a GitHub-hosted runner (.github/workflows/e2e.yaml).
 # The run around the driver is lib/live-daemon-proof.sh's, which provider-error-retry.sh and
 # claim-compaction.sh make too.
 set -euo pipefail
