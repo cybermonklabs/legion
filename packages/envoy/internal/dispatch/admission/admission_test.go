@@ -164,14 +164,14 @@ func TestAHeavyRequestAtTheHeadIsNotOvertaken(t *testing.T) {
 	}
 }
 
-// testClock is the clock the class queues' standing decision reads in a row on their order
-// (newWithClock), which a row moves by hand: it stands a queue by moving the clock a whole wait on,
-// never by waiting one out, and the timer a queue arms for that moment (Limiter.standIn) fires as
-// the clock passes it. A waiter's own wait, which refuses it, still runs on the real clock.
+// testClock is the clock a class queue stamps when it turns newest first (gate.standingAt) and
+// that the heavy read lanes read against it (Limiter.readsStand), which a row moves by hand
+// (newWithClock): once a real expiry has turned the read class newest first, a row moves the clock
+// past the lanes' waits rather than waiting them out. A waiter's own wait, which refuses it, still
+// runs on the real clock.
 type testClock struct {
-	mu     sync.Mutex
-	at     time.Time
-	timers []*testTimer
+	mu sync.Mutex
+	at time.Time
 }
 
 func newTestClock() *testClock { return &testClock{at: time.Unix(1_800_000_000, 0)} }
@@ -182,73 +182,30 @@ func (c *testClock) Now() time.Time {
 	return c.at
 }
 
-// AfterFunc arms a timer that calls f once the clock has moved d on from now (advance).
-func (c *testClock) AfterFunc(d time.Duration, f func()) timer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	armed := &testTimer{clock: c, at: c.at.Add(d), armed: true, fire: f}
-	c.timers = append(c.timers, armed)
-	return armed
-}
-
-// advance moves the clock on by, and calls every timer due by then in the caller's goroutine
-// before it returns, so a row reads what a timer did once advance has.
+// advance moves the clock on by.
 func (c *testClock) advance(by time.Duration) {
 	c.mu.Lock()
 	c.at = c.at.Add(by)
-	var due []func()
-	for _, armed := range c.timers {
-		if armed.armed && !armed.at.After(c.at) {
-			armed.armed = false
-			due = append(due, armed.fire)
-		}
-	}
 	c.mu.Unlock()
-	for _, fire := range due {
-		fire()
-	}
-}
-
-// testTimer is a testClock's timer, which fires at at while it is armed.
-type testTimer struct {
-	clock *testClock
-	at    time.Time
-	armed bool
-	fire  func()
-}
-
-func (t *testTimer) Stop() bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	armed := t.armed
-	t.armed = false
-	return armed
-}
-
-func (t *testTimer) Reset(d time.Duration) bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	armed := t.armed
-	t.at, t.armed = t.clock.at.Add(d), true
-	return armed
 }
 
 // orderedQueue is one of admission's queues as the rows on its order drive it: places is how many
 // requests it holds at once, take asks for one for a request arriving now and answers once the
 // request holds it, with the give-back, or why not, reason is the Reason a refusal of its refuses
-// for, queued reads how many wait in it now, and newestFirst how many it has granted newest first,
+// for, queued reads how many wait in it now, newestFirst how many it has granted newest first,
 // nil for the places outside admission, which serve first in, first out at all times and count no
-// such grants (fifoGate).
+// such grants (fifoGate), and waitExceeded how many it has refused at their wait.
 type orderedQueue struct {
-	places      int
-	take        func(ctx context.Context) (give func(), err error)
-	reason      func(err error) Reason
-	queued      func() int
-	newestFirst func() uint64
+	places       int
+	take         func(ctx context.Context) (give func(), err error)
+	reason       func(err error) Reason
+	queued       func() int
+	newestFirst  func() uint64
+	waitExceeded func() uint64
 }
 
-// queueKind is a queue the rows on their order drive, each built on a Limiter of its own whose
-// standing decision reads clock and whose waiters wait wait.
+// queueKind is a queue the rows on their order drive, each built on a Limiter of its own using
+// clock and whose waiters wait wait.
 type queueKind struct {
 	name  string
 	build func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue
@@ -264,11 +221,12 @@ var placeQueues = []queueKind{
 	{"a lane", func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
 		l := newWithClock(Limits{Read: 8, Write: 1, HeavyReadLane: 1, ReadWait: wait}, clock)
 		return orderedQueue{
-			places:      1,
-			take:        func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
-			reason:      refusalReason,
-			queued:      func() int { return laneStatsOf(t, l, Search).Queued },
-			newestFirst: func() uint64 { return laneStatsOf(t, l, Search).NewestFirst },
+			places:       1,
+			take:         func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
+			reason:       refusalReason,
+			queued:       func() int { return laneStatsOf(t, l, Search).Queued },
+			newestFirst:  func() uint64 { return laneStatsOf(t, l, Search).NewestFirst },
+			waitExceeded: func() uint64 { return laneStatsOf(t, l, Search).WaitExceeded },
 		}
 	}},
 	{"the outside places", func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
@@ -294,10 +252,26 @@ func classQueue(class Class) func(t *testing.T, clock *testClock, wait time.Dura
 				ticket, err := l.Admit(ctx, class, 1)
 				return func() { ticket.Release() }, err
 			},
-			reason:      refusalReason,
-			queued:      func() int { return classStats(l, class).Queued },
-			newestFirst: func() uint64 { return classStats(l, class).NewestFirst },
+			reason:       refusalReason,
+			queued:       func() int { return classStats(l, class).Queued },
+			newestFirst:  func() uint64 { return classStats(l, class).NewestFirst },
+			waitExceeded: func() uint64 { return classStats(l, class).WaitExceeded },
 		}
+	}
+}
+
+// failFIFO turns q newest first the way production does (fix N): a trigger waiter joins q with its
+// whole wait and runs it out while another waiter is already queued behind it (keepQueued, which
+// joins right after the trigger so the queue stays non-empty at the expiry). Every place of q is
+// held before this call.
+func failFIFO(t *testing.T, ctx context.Context, q orderedQueue, keepQueued func()) {
+	t.Helper()
+	trigger := make(chan served, 1)
+	join(t, ctx, q, trigger, -1)
+	keepQueued()
+	got := testwait.Receive(t, "the trigger waiter's expiry", trigger)
+	if q.reason(got.err) != WaitExceeded {
+		t.Fatalf("the trigger waiter was answered %v, want wait_exceeded to turn the queue newest first", got.err)
 	}
 }
 
@@ -368,12 +342,12 @@ func grantedNext(t *testing.T, answers <-chan served, want int, why string) serv
 	return got
 }
 
-// A burst that queues and drains within less than a wait keeps its order: four requests - the
-// write queue's whole cap at a limit of one (WriteBurstFactor) - line up behind every place held,
-// the queue has been non-empty for less than its wait when the places start coming back, and each
-// place goes to the request that asked first of those left - on each class's queue, a heavy read's
-// lane and the places outside admission alike - and no class's queue or lane grants one newest
-// first. A queue that emptied within its last wait is absorbing a burst (gate.next).
+// A burst that queues and drains within its wait keeps its order: four requests - the write
+// queue's whole cap at a limit of one (WriteBurstFactor) - line up behind every place held, no
+// waiter expires before the places start coming back, and each place goes to the request that
+// asked first of those left - on each class's queue, a heavy read's lane and the places outside
+// admission alike - and no class's queue or lane grants one newest first. A queue stays first
+// come, first served until first in, first out fails (gate.next).
 func TestABurstThatDrainsWithinAWaitIsServedInArrivalOrder(t *testing.T) {
 	t.Parallel()
 	const burst = WriteBurstFactor
@@ -388,7 +362,7 @@ func TestABurstThatDrainsWithinAWaitIsServedInArrivalOrder(t *testing.T) {
 			clock.advance(patient - time.Nanosecond)
 			held[0]()
 			for want := range burst {
-				got := grantedNext(t, answers, want, "a queue non-empty for less than its wait serves first come, first served")
+				got := grantedNext(t, answers, want, "a queue where first in, first out has not failed serves first come, first served")
 				got.give()
 			}
 			if queued := q.queued(); queued != 0 {
@@ -406,16 +380,17 @@ func TestABurstThatDrainsWithinAWaitIsServedInArrivalOrder(t *testing.T) {
 	}
 }
 
-// A class's queue that has stood non-empty for a whole wait serves its newest waiter first and
-// refuses its oldest at the oldest's wait: three requests line up behind every unit held and the
-// queue stands a wait (by the clock its decision reads), so the first unit back goes to the third,
-// which gives it back, and the next to the second, which keeps it; the first is refused
-// wait_exceeded once its own wait has run, not before, and the queue counts its two grants newest
-// first - on the read class's queue and the write class's alike. First come, first served there
-// gave every request it served the whole wait first (ReadBurstFactor).
+// A class's queue that has failed first in, first out (a refusable waiter joined with at least half
+// its wait left and ran out its wait while others still waited) serves its newest waiter first and
+// refuses its oldest at the oldest's wait: a trigger waiter expires while request 0 is queued
+// behind it, turning the queue newest first; requests 1 and 2 then join, the first unit back goes
+// to request 2, which gives it back, and the next to request 1, which keeps it; request 0 is
+// refused wait_exceeded once its own wait has run, not before, and the queue counts its two grants
+// newest first - on the read class's queue and the write class's alike. First come, first served
+// under real overload gave every request it served the whole wait first (ReadBurstFactor).
 func TestAStandingQueueServesTheNewestFirstAndRefusesTheOldestAtItsWait(t *testing.T) {
 	t.Parallel()
-	const wait = time.Second
+	const wait = 400 * time.Millisecond
 	for _, kind := range classQueues {
 		t.Run(kind.name, func(t *testing.T) {
 			t.Parallel()
@@ -423,10 +398,15 @@ func TestAStandingQueueServesTheNewestFirstAndRefusesTheOldestAtItsWait(t *testi
 			q := kind.build(t, clock, wait)
 			ctx := testwait.Context(t)
 			held := holdEveryPlace(t, ctx, q)
-			answers := lineUp(t, ctx, q, 3)
-			clock.advance(wait)
+			answers := make(chan served, 3)
+			failFIFO(t, ctx, q, func() {
+				time.Sleep(wait / 2)
+				join(t, ctx, q, answers, 0)
+			})
+			join(t, ctx, q, answers, 1)
+			join(t, ctx, q, answers, 2)
 			held[0]()
-			const why = "a queue that has stood non-empty for a whole wait serves the newest first"
+			const why = "a queue where first in, first out has failed serves the newest first"
 			grantedNext(t, answers, 2, why).give()
 			second := grantedNext(t, answers, 1, why)
 			oldest := testwait.Receive(t, "the oldest request's answer", answers)
@@ -447,33 +427,40 @@ func TestAStandingQueueServesTheNewestFirstAndRefusesTheOldestAtItsWait(t *testi
 	}
 }
 
-// A class's queue that empties serves first come, first served again: a line of three is served
-// newest first once the queue has stood a wait, and the queue empties with the last of them
-// granted; a second line of three then joins it, the clock where the first line had stood, and is
-// served in arrival order, since the queue went from empty to non-empty less than a wait ago - on
+// A class's queue that empties - whether by grants or by refusals - leaves newest first and serves
+// first come, first served again: after a real expiry turns the queue newest first, emptying it by
+// granting every remaining waiter (or by letting every remaining waiter expire) resets the queue,
+// so the next burst of three is served in arrival order with no further newest-first grants - on
 // the read class's queue and the write class's alike.
 func TestAQueueThatEmptiesServesFirstComeFirstServedAgain(t *testing.T) {
 	t.Parallel()
+	const wait = 400 * time.Millisecond
 	for _, kind := range classQueues {
-		t.Run(kind.name, func(t *testing.T) {
+		t.Run(kind.name+"/by grants", func(t *testing.T) {
 			t.Parallel()
 			clock := newTestClock()
-			q := kind.build(t, clock, patient)
+			q := kind.build(t, clock, wait)
 			ctx := testwait.Context(t)
 			held := holdEveryPlace(t, ctx, q)
-			first := lineUp(t, ctx, q, 3)
-			clock.advance(patient)
+			first := make(chan served, 3)
+			failFIFO(t, ctx, q, func() {
+				time.Sleep(wait / 2)
+				join(t, ctx, q, first, 0)
+			})
+			join(t, ctx, q, first, 1)
+			join(t, ctx, q, first, 2)
 			held[0]()
-			grantedNext(t, first, 2, "the queue stood a whole wait").give()
-			grantedNext(t, first, 1, "the queue stood a whole wait").give()
-			last := grantedNext(t, first, 0, "the queue stood a whole wait")
+			const why = "first in, first out failed on the first line"
+			grantedNext(t, first, 2, why).give()
+			grantedNext(t, first, 1, why).give()
+			last := grantedNext(t, first, 0, why)
 			if queued := q.queued(); queued != 0 {
 				t.Fatalf("%d queued once the first line was granted, want the queue empty", queued)
 			}
 			second := lineUp(t, ctx, q, 3)
 			last.give()
 			for want := range 3 {
-				grantedNext(t, second, want, "a queue that emptied serves first come, first served until it stands again").give()
+				grantedNext(t, second, want, "a queue that emptied by grants serves first come, first served again").give()
 			}
 			if newestFirst := q.newestFirst(); newestFirst != 3 {
 				t.Fatalf("%d granted newest first, want the first line's 3 alone", newestFirst)
@@ -482,6 +469,155 @@ func TestAQueueThatEmptiesServesFirstComeFirstServedAgain(t *testing.T) {
 				give()
 			}
 		})
+		t.Run(kind.name+"/by refusals", func(t *testing.T) {
+			t.Parallel()
+			clock := newTestClock()
+			q := kind.build(t, clock, wait)
+			ctx := testwait.Context(t)
+			held := holdEveryPlace(t, ctx, q)
+			straggler := make(chan served, 1)
+			failFIFO(t, ctx, q, func() {
+				time.Sleep(wait / 2)
+				join(t, ctx, q, straggler, 0)
+			})
+			if got := testwait.Receive(t, "the remaining waiter's refusal", straggler); q.reason(got.err) != WaitExceeded {
+				t.Fatalf("the remaining waiter was answered %v, want wait_exceeded so the queue empties by refusals", got.err)
+			}
+			if queued := q.queued(); queued != 0 {
+				t.Fatalf("%d queued once the remaining waiter was refused, want the queue empty", queued)
+			}
+			second := lineUp(t, ctx, q, 3)
+			held[0]()
+			for want := range 3 {
+				grantedNext(t, second, want, "a queue that emptied by refusals serves first come, first served again").give()
+			}
+			if newestFirst := q.newestFirst(); newestFirst != 0 {
+				t.Fatalf("%d granted newest first after emptying by refusals, want none", newestFirst)
+			}
+			for _, give := range held[1:] {
+				give()
+			}
+		})
+	}
+}
+
+// A class queue kept non-empty for more than two whole waits while it drains within its wait stays
+// first in, first out the whole time (fix N, INFRA-592, 2026-11-27): arrivals keep the queue
+// non-empty while a unit comes back every wait/4, so every waiter is served well inside its wait
+// in arrival order, NewestFirst stays 0, and WaitExceeded stays 0. Under the old rule (turning
+// newest first once non-empty for a whole wait), a draining queue flipped after one wait and
+// starved older waiters to WaitExceeded (c-scale at 872d7137, step head-t-10x-2: 43 reads refused
+// while 746 newer reads were served ahead of them).
+func TestADrainingQueueKeptNonEmptyPastTwoWaitsStaysFirstInFirstOut(t *testing.T) {
+	t.Parallel()
+	const (
+		// 800 ms leaves each waiter's 400 ms queueing delay (2*step) 400 ms short of its wait, so a
+		// race build's or a loaded runner's scheduling delay cannot refuse one.
+		wait = 800 * time.Millisecond
+		step = wait / 4
+		// 10 steps at wait/4 spans 2.5 waits, well past two whole waits while keeping each waiter's
+		// queueing delay at 2*step = wait/2.
+		steps = 10
+	)
+	for _, kind := range classQueues {
+		t.Run(kind.name, func(t *testing.T) {
+			t.Parallel()
+			clock := newTestClock()
+			q := kind.build(t, clock, wait)
+			ctx := testwait.Context(t)
+			held := holdEveryPlace(t, ctx, q)
+			answers := make(chan served, steps+2)
+			// Keep two waiters in the queue at all times: each step joins a newcomer before
+			// releasing the current holder, so the queue never empties for the whole run.
+			join(t, ctx, q, answers, 0)
+			join(t, ctx, q, answers, 1)
+			give := held[0]
+			for i := range steps {
+				time.Sleep(step)
+				clock.advance(step)
+				join(t, ctx, q, answers, i+2)
+				give()
+				give = grantedNext(t, answers, i, "a draining queue kept non-empty past two waits stays first in, first out").give
+			}
+			give()
+			grantedNext(t, answers, steps, "the remaining waiters drain in arrival order").give()
+			grantedNext(t, answers, steps+1, "the last waiter drains in arrival order").give()
+			if newestFirst, waitExceeded := q.newestFirst(), q.waitExceeded(); newestFirst != 0 || waitExceeded != 0 {
+				t.Fatalf("%d granted newest first and %d refused wait_exceeded on a draining queue kept non-empty for %.1f waits, want 0 and 0",
+					newestFirst, waitExceeded, float64(steps)*float64(step)/float64(wait))
+			}
+			for _, g := range held[1:] {
+				g()
+			}
+		})
+	}
+}
+
+// A waiter that joined a class queue with less than half of the class's wait left - a heavy read
+// held in its lane for more than half the read wait - and runs out its wait there does not turn
+// the class queue newest first (fix N, INFRA-592, 2026-11-27): NewestFirst stays 0 and the next
+// grant is first in, first out.
+func TestAWaiterWithLessThanHalfItsWaitLeftDoesNotTurnTheClassQueue(t *testing.T) {
+	t.Parallel()
+	const (
+		wait     = 400 * time.Millisecond
+		laneHeld = 260 * time.Millisecond // > wait/2, leaving ~140 ms (< 200 ms) on entry to the read class
+	)
+	clock := newTestClock()
+	l := newWithClock(Limits{Read: 1, Write: 1, HeavyReadLane: 1, ReadWait: wait}, clock)
+	ctx := testwait.Context(t)
+	readHolder := admit(t, l, Read, 1)
+	laneHolder, err := enterLane(ctx, l, Search)
+	if err != nil {
+		t.Fatalf("take the search lane's only place: %v", err)
+	}
+
+	// A heavy read waits in its lane for more than half the read wait, then enters the read class
+	// queue with less than half its wait left.
+	heavyDone := make(chan error, 1)
+	go func() {
+		arrival := l.Arrive(Read, 1)
+		leave, err := l.EnterLane(ctx, Search, arrival)
+		if err != nil {
+			heavyDone <- err
+			return
+		}
+		defer leave()
+		ticket, err := arrival.Admit(ctx)
+		ticket.Release()
+		heavyDone <- err
+	}()
+	waitForLane(t, l, Search, 1)
+	time.Sleep(laneHeld)
+	laneHolder()
+	waitForQueued(t, l, Read, 1)
+
+	// Two fresh reads join behind the heavy read, so the queue stays non-empty when the heavy read
+	// expires at what was left of its wait.
+	first := admitInBackground(t, l, ctx, Read, 1)
+	second := admitInBackground(t, l, ctx, Read, 1)
+
+	if err := testwait.Receive(t, "the heavy read's refusal in the class queue", heavyDone); refusalReason(err) != WaitExceeded {
+		t.Fatalf("the heavy read after waiting %v in its lane: %v, want wait_exceeded in the read class", laneHeld, err)
+	}
+	// The queue still holds first and second and must still be first in, first out.
+	readHolder.Release()
+	gotFirst := receive(t, first)
+	if gotFirst.err != nil {
+		t.Fatalf("the earlier fresh read once the unit came back: %v, want it granted first in, first out", gotFirst.err)
+	}
+	assertPending(t, second)
+	if stats := classStats(l, Read); stats.NewestFirst != 0 {
+		t.Fatalf("read stats %+v after a waiter with less than half its wait left expired, want NewestFirst == 0", stats)
+	}
+	gotFirst.ticket.Release()
+	gotSecond := receive(t, second)
+	if gotSecond.err != nil {
+		t.Fatalf("the later fresh read once the unit came back: %v, want it granted", gotSecond.err)
+	}
+	gotSecond.ticket.Release()
+	if stats := classStats(l, Read); stats.NewestFirst != 0 || stats.WaitExceeded != 1 {
+		t.Fatalf("read stats %+v, want NewestFirst == 0 and the one WaitExceeded", stats)
 	}
 }
 
@@ -541,16 +677,18 @@ func TestAQueueOfPlacesServesTheOldestFirstHoweverLongItStands(t *testing.T) {
 // served ahead of every waiter that may be refused, the oldest of such take-backs first: it has no
 // wait to run out, so newest first would pass it over for as long as the overload lasted, after its
 // request had changed another server's state. Two requests give their units back for a wait on the
-// network and take them back never refused, the later arrival asking first; two requests that may
-// be refused queue after them; and once the queue has stood a wait, the units that come back go to
-// the earlier take-back, then the later, and only then newest first to the other two.
+// network and take them back never refused, the later arrival asking first; a trigger waiter
+// expires behind them to turn the queue newest first; two requests that may be refused queue after
+// that; and the units that come back go to the earlier take-back, then the later, and only then
+// newest first to the other two.
 func TestATakeBackThatMustNotBeRefusedIsServedFirstInAStandingQueue(t *testing.T) {
 	t.Parallel()
+	const wait = 400 * time.Millisecond
 	for _, class := range []Class{Read, Write} {
 		t.Run(class.String(), func(t *testing.T) {
 			t.Parallel()
 			clock := newTestClock()
-			l := newWithClock(Limits{Read: 1, Write: 1, ReadWait: patient, WriteWait: patient}, clock)
+			l := newWithClock(Limits{Read: 1, Write: 1, ReadWait: wait, WriteWait: wait}, clock)
 			ctx := testwait.Context(t)
 			names := [...]string{"the take-back that arrived first", "the take-back that arrived second", "the older request", "the newer request"}
 			type granted struct {
@@ -571,6 +709,12 @@ func TestATakeBackThatMustNotBeRefusedIsServedFirstInAStandingQueue(t *testing.T
 				go func() { grants <- granted{names[i], kept[i], aways[i].TakeBackNeverRefused(ctx)} }()
 				waitForQueued(t, l, class, queuedBefore+1)
 			}
+			// A refusable trigger waiter expires while the two kept take-backs remain queued,
+			// turning the queue newest first.
+			trigger := admitInBackground(t, l, ctx, class, 1)
+			if got := receive(t, trigger); refusalReason(got.err) != WaitExceeded {
+				t.Fatalf("the trigger waiter: %v, want wait_exceeded to turn the queue newest first", got.err)
+			}
 			for _, who := range names[2:] {
 				queuedBefore := classStats(l, class).Queued
 				go func() {
@@ -579,7 +723,6 @@ func TestATakeBackThatMustNotBeRefusedIsServedFirstInAStandingQueue(t *testing.T
 				}()
 				waitForQueued(t, l, class, queuedBefore+1)
 			}
-			clock.advance(patient)
 			holder.Release()
 			for _, want := range []string{names[0], names[1], names[3], names[2]} {
 				got := testwait.Receive(t, "the next unit's holder", grants)
@@ -595,21 +738,26 @@ func TestATakeBackThatMustNotBeRefusedIsServedFirstInAStandingQueue(t *testing.T
 // A queue that stands keeps the two classes' guarantees with its candidate in place of its head
 // (grant, heldByTotal): a weight-2 write the standing write queue serves next, which the combined
 // cap alone holds up, is not overtaken by a read the cap has room for. With the cap of 4 full of
-// reads, a weight-1 write queues and the write queue stands a wait; a weight-2 write then joins it,
-// its newest waiter and so its candidate, and a read queues. The first read unit back is held for
-// the weight-2 write - neither the read nor the older weight-1 write, which would fit, takes it -
-// and the second unit back grants it, newest first.
+// reads, a trigger write expires while a weight-1 write stays queued so the write queue stands; a
+// weight-2 write then joins it, its newest waiter and so its candidate, and a read queues. The
+// first read unit back is held for the weight-2 write - neither the read nor the older weight-1
+// write, which would fit, takes it - and the second unit back grants it, newest first.
 func TestAStandingQueuesWeightTwoCandidateIsNotStarvedByTheOtherClass(t *testing.T) {
 	t.Parallel()
+	const wait = 400 * time.Millisecond
 	clock := newTestClock()
-	l := newWithClock(Limits{Read: 4, Write: 4, Total: 4, ReadWait: patient, WriteWait: patient}, clock)
+	l := newWithClock(Limits{Read: 4, Write: 4, Total: 4, ReadWait: wait, WriteWait: wait}, clock)
 	ctx := testwait.Context(t)
 	reads := make([]*Ticket, 4)
 	for i := range reads {
 		reads[i] = admit(t, l, Read, 1)
 	}
+	trigger := admitInBackground(t, l, ctx, Write, 1)
+	time.Sleep(wait / 2)
 	older := admitInBackground(t, l, ctx, Write, 1)
-	clock.advance(patient)
+	if got := receive(t, trigger); refusalReason(got.err) != WaitExceeded {
+		t.Fatalf("the trigger write: %v, want wait_exceeded to turn the write queue newest first", got.err)
+	}
 	heavy := admitInBackground(t, l, ctx, Write, 2)
 	read := admitInBackground(t, l, ctx, Read, 1)
 
@@ -646,14 +794,10 @@ func TestAStandingQueuesWeightTwoCandidateIsNotStarvedByTheOtherClass(t *testing
 
 // A weight-2 head refused at its wait leaves the light waiter behind it the room beside it: with the
 // write limit of 2 and one unit held, a weight-2 write that spent most of its wait at a document's
-// writer gate (Ticket.Waited) takes its units back first, a weight-1 write queues behind it, and
-// the queue stands a wait by the clock its decision reads, so it serves its newest waiter, the
-// light write, first. The heavy write is refused at what was left of its wait, and the light write
-// is admitted beside the unit held, long before its own wait ends: the moment the queue stands
-// grants it (Limiter.standIn), and so does the heavy write's leaving, whichever waiter the queue
-// serves next by then (Limiter.acquire). Before either, a waiter's leaving granted only where it was
-// the waiter served next, which the head of a queue that stands is not, and the light write sat
-// beside a free unit until a release, an arrival or its own refusal.
+// writer gate (Ticket.Waited) takes its units back first and a weight-1 write queues behind it. The
+// heavy write is refused at what was left of its wait, and its leaving hands the room beside the
+// held unit on to the light write at once, long before the light write's own wait ends
+// (Limiter.acquire).
 func TestAWaiterThatLeavesAQueueHandsTheRoomBesideItOn(t *testing.T) {
 	t.Parallel()
 	const short = 100 * time.Millisecond
@@ -669,7 +813,6 @@ func TestAWaiterThatLeavesAQueueHandsTheRoomBesideItOn(t *testing.T) {
 	go func() { resumed <- heavy.Resume(ctx) }()
 	waitForQueued(t, l, Write, 1)
 	light := admitInBackground(t, l, ctx, Write, 1)
-	clock.advance(patient)
 
 	if err := testwait.Receive(t, "the heavy write's take-back", resumed); refusalReason(err) != WaitExceeded {
 		t.Fatalf("the heavy write's take-back with the cap a unit short of it: %v, want it refused wait_exceeded at what was left of its wait", err)
@@ -678,57 +821,62 @@ func TestAWaiterThatLeavesAQueueHandsTheRoomBesideItOn(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("the light write once the heavy write ahead of it left: %v, want it admitted to the unit beside the one held", got.err)
 	}
-	if writes := classStats(l, Write); writes.InFlight != 2 || writes.Queued != 0 {
-		t.Fatalf("write stats %+v, want the holder's unit and the light write's in flight and nothing queued", writes)
+	if writes := classStats(l, Write); writes.InFlight != 2 || writes.Queued != 0 || writes.NewestFirst != 0 {
+		t.Fatalf("write stats %+v, want the holder's unit and the light write's in flight, nothing queued, and no newest-first grant", writes)
 	}
 	got.ticket.Release()
 }
 
-// The moment a queue stands is itself a grant: with the write limit of 2 and one unit held, a
-// weight-2 write queues first and waits on, and a weight-1 write that spent most of its wait at a
-// document's writer gate (Ticket.Waited) takes its unit back behind it, which the weight-2 write
-// keeps it from while the queue serves first come, first served. Once the queue has stood a wait
-// by the clock its decision reads it serves its newest waiter first, and the light write, which
-// fits beside the unit held, is admitted then and there, with the weight-2 write still queued and
-// no release, arrival or leaving waiter to prompt it. Nothing granted at that moment before: the
-// light write sat beside a free unit until the weight-2 write left or its own short wait ran out,
-// and was refused at it while the room was there.
+// The expiry that turns a queue newest first also runs grant then and there (fix N, INFRA-592,
+// 2026-11-27): with the write limit of 2 and one unit held, a weight-2 trigger write joins with
+// its whole wait; halfway through its wait, a weight-2 head write and a weight-1 light write queue
+// behind it. While the queue is first come, first served, the weight-2 waiters hold back the light
+// write despite the free unit. When the trigger write runs out its wait, the weight-2 head is
+// still queued and cannot fit, yet the expiry flips the queue newest first and grants the newest
+// weight-1 write to the free unit immediately - with the weight-2 head still queued and no
+// release, arrival or other event. Without the grant at the flip, the light write sits beside the
+// free unit until the weight-2 head itself leaves.
 func TestAQueueThatStandsGrantsItsNewestWaiterThere(t *testing.T) {
 	t.Parallel()
-	const short = time.Second
+	const wait = 500 * time.Millisecond
 	clock := newTestClock()
-	l := newWithClock(Limits{Read: 1, Write: 2, ReadWait: patient, WriteWait: patient}, clock)
+	l := newWithClock(Limits{Read: 1, Write: 2, ReadWait: wait, WriteWait: wait}, clock)
 	ctx := testwait.Context(t)
-	heavy := l.Arrive(Write, 2)
-	light := admit(t, l, Write, 1)
-	light.Park()
-	light.Waited(patient - short)
 	holder := admit(t, l, Write, 1)
-	heavyAnswer := make(chan admitted, 1)
-	go func() {
-		ticket, err := heavy.Admit(ctx)
-		heavyAnswer <- admitted{ticket, err}
-	}()
-	waitForQueued(t, l, Write, 1)
-	resumed := make(chan error, 1)
-	go func() { resumed <- light.Resume(ctx) }()
-	waitForQueued(t, l, Write, 2)
-	clock.advance(patient)
 
-	if err := testwait.Receive(t, "the light write's take-back", resumed); err != nil {
-		t.Fatalf("the light write's take-back once the queue stood: %v, want it granted the unit beside the one held, newest first", err)
+	// expirer joins with its whole wait (weight 2, so it does not fit beside holder).
+	expirer := admitInBackground(t, l, ctx, Write, 2)
+	time.Sleep(wait / 2)
+	// heavy (weight 2) becomes the FIFO head once expirer leaves; light (weight 1) sits behind it
+	// and would still be blocked by heavy under FIFO, yet fits beside holder once newest first.
+	heavy := admitInBackground(t, l, ctx, Write, 2)
+	light := admitInBackground(t, l, ctx, Write, 1)
+
+	if writes := classStats(l, Write); writes.InFlight != 1 || writes.Queued != 3 || writes.NewestFirst != 0 {
+		t.Fatalf("write stats %+v before expiry, want 1 in flight, 3 queued, 0 newest first", writes)
 	}
-	assertPending(t, heavyAnswer)
-	if writes := classStats(l, Write); writes.InFlight != 2 || writes.Queued != 1 || writes.NewestFirst != 1 {
-		t.Fatalf("write stats %+v, want the holder's unit and the light write's in flight, granted newest first, and the weight-2 write queued", writes)
+
+	if got := receive(t, expirer); refusalReason(got.err) != WaitExceeded {
+		t.Fatalf("the trigger weight-2 write: %v, want wait_exceeded to turn the write queue newest first", got.err)
 	}
-	light.Release()
+	// The expiry flipped the queue and called grant under l.mu before returning: light must
+	// already be granted with heavy still queued and no second refusal.
+	if writes := classStats(l, Write); writes.InFlight != 2 || writes.Queued != 1 || writes.NewestFirst != 1 || writes.WaitExceeded != 1 {
+		t.Fatalf("write stats %+v at the flip, want 2 in flight (holder + light), 1 queued (heavy), 1 newest first, 1 wait exceeded", writes)
+	}
+	gotLight := testwait.Receive(t, "the light write's grant at the flip", light)
+	if gotLight.err != nil {
+		t.Fatalf("the light write at the flip: %v, want it granted beside the held unit", gotLight.err)
+	}
+	assertPending(t, heavy)
+
+	gotLight.ticket.Release()
 	holder.Release()
-	granted := testwait.Receive(t, "the weight-2 write's answer", heavyAnswer)
-	if granted.err != nil {
-		t.Fatalf("the weight-2 write once both units came back: %v, want it admitted", granted.err)
+	gotHeavy := testwait.Receive(t, "the weight-2 write's grant once both units came back", heavy)
+	if gotHeavy.err != nil {
+		t.Fatalf("the weight-2 write once both units came back: %v, want it admitted", gotHeavy.err)
 	}
-	granted.ticket.Release()
+	gotHeavy.ticket.Release()
 }
 
 func TestAWeightAboveTheLimitRunsAlone(t *testing.T) {

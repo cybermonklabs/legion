@@ -255,7 +255,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
-	registry.NewCounterVecFunc(metricPrefix+"http_newest_first_total", "Requests admission's class queue granted newest first, by class. A queue serves first come, first served until it has stood non-empty for one whole wait of its class (1 s for a read, 2 s for a write); from then until it empties each unit that frees goes to the request that joined it last, a take-back that may not be refused first, and the oldest are refused at their wait.", func() []metrics.Sample {
+	registry.NewCounterVecFunc(metricPrefix+"http_newest_first_total", "Requests admission's class queue granted newest first, by class. A queue serves first come, first served until first in, first out fails: a refusable waiter that joined the class's queue with at least half of its wait left (0.5 s for a read, 1 s for a write) runs out its wait while others still wait; from then until it empties each unit that frees goes to the request that joined it last, a take-back that may not be refused first, and the oldest are refused at their wait.", func() []metrics.Sample {
 		return classSamples(func(c admission.ClassStats) float64 { return float64(c.NewestFirst) })
 	})
 	laneSamples := func(value func(admission.LaneStats) float64) []metrics.Sample {
@@ -286,7 +286,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
-	registry.NewCounterVecFunc(metricPrefix+"http_lane_newest_first_total", "Requests a heavy read lane gave a place newest first, by lane. A lane serves first come, first served while the read class's queue is empty or absorbing a burst; once that queue has stood non-empty for three whole read waits (3 s), each place that frees goes to the request that joined the lane last, and the lane's oldest are refused at their wait.", func() []metrics.Sample {
+	registry.NewCounterVecFunc(metricPrefix+"http_lane_newest_first_total", "Requests a heavy read lane gave a place newest first, by lane. A lane serves first come, first served while the read class's queue is empty, serving first in, first out, or has stood newest first for less than two whole read waits; once that queue has stood newest first for two whole read waits (2 s after it turned, 3 s into sustained overload), each place that frees goes to the request that joined the lane last, and the lane's oldest are refused at their wait.", func() []metrics.Sample {
 		return laneSamples(func(l admission.LaneStats) float64 { return float64(l.NewestFirst) })
 	})
 	registry.NewGaugeFunc(metricPrefix+"http_admitted_units", "Admission units the admitted requests of both classes hold now, under the combined cap.", func() int64 {

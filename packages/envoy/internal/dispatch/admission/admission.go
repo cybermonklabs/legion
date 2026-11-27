@@ -249,19 +249,25 @@ const DefaultWriteWait = 2 * time.Second
 //
 // What a class's queue serves first is its own state's (gate.next): adaptive LIFO, which the
 // architect ruled for every class queue (INFRA-592, 2026-11-25 10:10Z; Maurer, "Fail at Scale",
-// ACM Queue 13(8), 2015). A queue that has emptied within its last wait is absorbing a burst it can
-// serve, and serves it first come, first served, so the burst keeps its order. One that has stood
-// non-empty for a whole wait is sustained overload, where first come, first served makes every
-// request it serves wait out the queue first: with nothing below the cap refused (f51a56de), the
-// bed's standing ten times the load answered its 2xx at a p50 of 1,067-1,085 ms, against 252-277
-// ms before. So a queue that stands hands each freed place to its newest waiter until it empties,
-// and the waiters it leaves are its oldest, refused at their own wait as every waiter is and never
-// before it: it serves as many as it did, the ones that have waited least, and refuses the ones
-// that have waited longest. A heavy read's lane decides by the read class's queue rather than its
-// own: newest first only once that queue has stood for laneStandWaits whole waits, and first in,
-// first out while it absorbs a burst, stands for less, or is empty, since a lane's places turn over
-// many times within a wait (laneGate); the outside
-// places serve first in, first out at all times, for that reason (fifoGate, Outside).
+// ACM Queue 13(8), 2015), refined by fix N (INFRA-592, 2026-11-27). A queue starts first come,
+// first served and stays so until first in, first out fails: a refusable waiter runs out its wait
+// while other waiters still wait behind it, having joined this class's queue with at least half of
+// the class's wait left. A queue merely non-empty for a whole wait can still be draining within its
+// wait: on c-scale at 872d7137 (step head-t-10x-2) the read class's queue stayed non-empty for a
+// whole 1 s wait while its queueing delay was about 200 ms, and turning newest first on elapsed
+// non-empty time served 746 newer reads ahead of 43 older ones that then ran out their 1 s wait and
+// were refused 429 OVERLOADED, where first in, first out would have served each of them in about
+// 250-450 ms. Under real sustained overload, first come, first served makes every request it serves
+// wait out the queue first: with nothing below the cap refused (f51a56de), the bed's standing ten
+// times the load answered its 2xx at a p50 of 1,067-1,085 ms, against 252-277 ms before. Once first
+// in, first out has failed, the queue stands and hands each freed place to its newest waiter until
+// it empties, and the waiters it leaves are its oldest, refused at their own wait as every waiter
+// is and never before it: it serves as many as it did, the ones that have waited least, and refuses
+// the ones that have waited longest. A heavy read's lane decides by the read class's queue rather
+// than its own: newest first only once that queue has stood for laneWaitsAfterStanding whole waits
+// after it turned, and first in, first out while the read class is first come, first served, has
+// stood for less, or is empty, since a lane's places turn over many times within a wait (laneGate);
+// the outside places serve first in, first out at all times, for that reason (fifoGate, Outside).
 const (
 	ReadBurstFactor  = 22
 	WriteBurstFactor = 4
@@ -320,9 +326,10 @@ func DefaultLimits() Limits {
 // classes together are under their limits; a write while its class is and its units fit under
 // Limits.Total beside the read units Limits.ReservedReads still keeps for waiting reads. One
 // that finds no room waits in its class's queue - served in the order the requests arrived
-// (Arrive) while the queue absorbs a burst, and newest first once it has stood a whole wait
-// (gate.next) - for at most its class's wait over the whole request - Limits.ReadWait for a read,
-// Limits.WriteWait for a write - and is refused when that wait runs out, or at once where the
+// (Arrive) while first in, first out is serving in time, and newest first once first in, first out
+// has failed until the queue empties (gate.next) - for at most its class's wait over the whole
+// request - Limits.ReadWait for a read, Limits.WriteWait for a write - and is refused when that
+// wait runs out, or at once where the
 // queue already holds its burst cap, the bound on its memory (ReadBurstFactor says why). A Limiter
 // is safe for concurrent use.
 type Limiter struct {
@@ -330,10 +337,9 @@ type Limiter struct {
 	// the order a queue absorbing a burst serves in, and the one the two classes' candidates are
 	// granted in (grant). It is atomic rather than under mu, so an arrival takes no lock.
 	arrived atomic.Uint64
-	// clock is the time the class queues' standing decision reads (gate.next), and the heavy read
-	// lanes' reading of the read class's (readsStand), and the moment each class queue stands is
-	// armed by (standIn), and nothing else reads it: the wall clock, or a test's (newWithClock),
-	// which stands a queue without a real wait.
+	// clock is the time a class queue stamps when it turns newest first (gate.standingAt) and that
+	// the heavy read lanes read against it (readsStand), and nothing else reads it: the wall clock,
+	// or a test's (newWithClock), which moves the clock past the lanes' waits without waiting them out.
 	clock clock
 	// mu guards every count and queue below: the combined cap is one number over both
 	// classes, so granting reads and moves the two together.
@@ -362,8 +368,8 @@ func (l *Limiter) Outside() *Outside { return &l.outside }
 // the read limit and the total, which is all the reads could ever hold.
 func New(limits Limits) *Limiter { return newWithClock(limits, wallClock{}) }
 
-// newWithClock is New with clock as the time the class queues' standing decision reads, the heavy
-// read lanes' reading of it too, and the moment each stands is armed by (Limiter.clock).
+// newWithClock is New with clock as the time a class queue stamps when it turns newest first and
+// the heavy read lanes read against it (Limiter.clock).
 func newWithClock(limits Limits, clock clock) *Limiter {
 	l := &Limiter{clock: clock}
 	l.outside.limit = OutsideLimit
@@ -393,29 +399,19 @@ func newWithClock(limits Limits, clock clock) *Limiter {
 	return l
 }
 
-// clock is the time a Limiter's class queues decide what they serve by (gate.next), and its heavy
-// read lanes by the read class's (Limiter.readsStand), and arm the moment each class queue stands
-// by (Limiter.standIn): the wall clock in a server (New), a test's in a row (newWithClock), which
-// stands a queue by moving the clock a whole wait on rather than by waiting one out. A waiter's own
-// wait, which refuses it, runs on the wall clock either way (Arrival.await).
+// clock is the time a class queue stamps when it turns newest first (gate.standingAt) and its heavy
+// read lanes read against that stamp (Limiter.readsStand): the wall clock in a server (New), a
+// test's in a row (newWithClock), which advances past the lanes' waits after the read class turns
+// rather than waiting them out. A waiter's own wait, which refuses it, runs on the wall clock
+// either way (Arrival.await).
 type clock interface {
 	Now() time.Time
-	// AfterFunc calls f once d has passed from now, and answers the timer that will: its Stop
-	// disarms it, and its Reset arms it again for d from then.
-	AfterFunc(d time.Duration, f func()) timer
-}
-
-// timer is a clock's timer (clock.AfterFunc): a *time.Timer on the wall clock.
-type timer interface {
-	Stop() bool
-	Reset(d time.Duration) bool
 }
 
 // wallClock is the time as the machine keeps it, the clock of every Limiter New makes.
 type wallClock struct{}
 
-func (wallClock) Now() time.Time                            { return time.Now() }
-func (wallClock) AfterFunc(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
+func (wallClock) Now() time.Time { return time.Now() }
 
 // Arrive gives the request arriving now its place in the order requests reach the Limiter, with
 // the class and weight it will ask room for: a weight below one is one, and one above the
@@ -860,9 +856,10 @@ func (a Away) retakePlace(ctx context.Context) error {
 // a burst, its newest waiter once it stands (ReadBurstFactor says why) - so a heavy candidate is
 // not overtaken by lighter waiters of its class that would fit. Its wait is the class's own
 // (Limits.ReadWait, Limits.WriteWait), so each class is refused at the bound its own requests are
-// worth waiting out, and it is the wait the queue stands after. Its Limiter's mutex guards its
-// counts and its queue, since the combined cap ties the classes together; only the refusal
-// counters, which no decision reads, stand on their own.
+// worth waiting out, and a refusable waiter that joined with at least half of it left and ran it
+// out while others still wait turns the queue newest first (acquire, fix N). Its Limiter's mutex
+// guards its counts and its queue, since the combined cap ties the classes together; only
+// standingAt and the refusal counters are read without it.
 type gate struct {
 	class Class
 	limit int
@@ -877,16 +874,13 @@ type gate struct {
 	// elements of them (waiter.byArrival, waiter.byJoin), so one leaves the queue at no cost of
 	// its length.
 	waiters, joined, kept list.List // of *waiter
-	// nonEmptySince is when the queue last went from empty to non-empty, by the Limiter's clock
-	// (queue), and stands the timer that grants at the moment it has stood a whole wait since
-	// (Limiter.standIn): nil until the queue first goes non-empty, armed each time it does, and
-	// stopped each time it empties (remove). nonEmptyAt is nonEmptySince for a reader that holds
-	// none of the Limiter's locks, a heavy read's lane (stood): its Unix nanoseconds while the
-	// queue holds a waiter, and zero while it is empty, written with nonEmptySince and as the
-	// queue empties.
-	nonEmptySince time.Time
-	nonEmptyAt    atomic.Int64
-	stands        timer
+	// standing is true once first in, first out has failed - a refusable waiter that joined with at
+	// least half of wait left ran out its wait while other waiters remained (acquire, fix N) - and
+	// false again as soon as the queue empties (remove). standingAt is when standing turned true,
+	// in Unix nanoseconds by the Limiter's clock, or zero while standing is false, so a heavy read's
+	// lane reads it without taking the Limiter's mutex (Limiter.readsStand).
+	standing   bool
+	standingAt atomic.Int64
 	// newestFirst counts the waiters the queue granted newest first (grant).
 	newestFirst uint64
 
@@ -915,22 +909,14 @@ type waiter struct {
 // connection (Limiter.Arrive) - or where it gave its units back and asked for them again
 // (Ticket.Resume): a queue absorbing a burst serves it where it arrived, so the requests that
 // arrived while it was busy do not overtake it, and a queue that stands serves it as the newest
-// waiter it is (next). A queue it finds empty has been non-empty since now, the Limiter's clock,
-// and queue reports that it went non-empty, so its caller arms the moment it stands
-// (Limiter.standIn). l.mu is held.
-func (g *gate) queue(queued *waiter, now time.Time) (wentNonEmpty bool) {
-	wentNonEmpty = g.waiters.Len() == 0
-	if wentNonEmpty {
-		g.nonEmptySince = now
-		g.nonEmptyAt.Store(now.UnixNano())
-	}
+// waiter it is (next). l.mu is held.
+func (g *gate) queue(queued *waiter) {
 	queued.byArrival = insertByArrival(&g.waiters, queued)
 	if queued.refusable {
 		queued.byJoin = g.joined.PushBack(queued)
 	} else {
 		queued.byJoin = insertByArrival(&g.kept, queued)
 	}
-	return wentNonEmpty
 }
 
 // insertByArrival puts queued in waiters, a list of *waiter by seq, behind every waiter that
@@ -945,8 +931,8 @@ func insertByArrival(waiters *list.List, queued *waiter) *list.Element {
 	return waiters.PushFront(queued)
 }
 
-// remove takes w out of g's queue, and stops the timer of the moment the queue stands
-// (Limiter.standIn) where the queue is left empty. l.mu is held.
+// remove takes w out of g's queue, and leaves newest first once the queue is empty, whether w left
+// by grant, refusal or cancellation. l.mu is held.
 func (g *gate) remove(w *waiter) {
 	g.waiters.Remove(w.byArrival)
 	if w.refusable {
@@ -955,34 +941,34 @@ func (g *gate) remove(w *waiter) {
 		g.kept.Remove(w.byJoin)
 	}
 	if g.waiters.Len() == 0 {
-		g.nonEmptyAt.Store(0)
-		g.stands.Stop()
+		g.standing = false
+		g.standingAt.Store(0)
 	}
 }
 
 // next is the waiter g's queue serves next - its candidate - and whether it serves it newest
-// first, or nil for an empty queue. The queue decides at each grant from when it last went from
-// empty to non-empty (queue), by now, the Limiter's clock.
+// first, or nil for an empty queue. The queue reads standing alone, never the clock, so its order
+// changes only under l.mu when first in, first out fails (acquire) or the queue empties (remove).
 //
-// A queue that went from empty to non-empty less than a wait ago (g.wait) has emptied within its
-// last wait and is absorbing a burst: it serves first come, first served, its earliest arrival
-// first, so a burst keeps its order. One that has stood non-empty for a whole wait stands, and
-// serves the waiter that joined it last, until it empties: not the latest arrival, since a ticket
-// taking its units back (Ticket.Resume, Away.TakeBack) or a write that read its body first
-// (Limiter.Arrive) joins late with the place it arrived at, and is the newest waiter there. Every
-// waiter keeps its own wait and is refused only when that wait runs out, so the oldest waiters a
-// queue that stands passes over are refused at their wait, and none before it (ReadBurstFactor).
+// While standing is false, first in, first out has not failed since the queue was last empty: it
+// serves first come, first served, its earliest arrival first, so a burst or a draining queue keeps
+// its order. Once standing is true, it serves the waiter that joined it last until it empties: not
+// the latest arrival, since a ticket taking its units back (Ticket.Resume, Away.TakeBack) or a
+// write that read its body first (Limiter.Arrive) joins late with the place it arrived at, and is
+// the newest waiter there. Every waiter keeps its own wait and is refused only when that wait runs
+// out, so the oldest waiters a queue that stands passes over are refused at their wait, and none
+// before it (ReadBurstFactor).
 //
 // A waiter that may not be refused (Away.TakeBackNeverRefused, acquire with refusable false) has
 // no wait, so newest first could pass it over for as long as the overload lasts, after its request
 // changed another server's state or committed writes of its own. A queue that stands serves such
 // waiters ahead of every waiter that may be refused, the oldest of them first. l.mu is held.
-func (g *gate) next(now time.Time) (candidate *waiter, newestFirst bool) {
+func (g *gate) next() (candidate *waiter, newestFirst bool) {
 	front := g.waiters.Front()
 	if front == nil {
 		return nil, false
 	}
-	if now.Sub(g.nonEmptySince) < g.wait {
+	if !g.standing {
 		return front.Value.(*waiter), false
 	}
 	if kept := g.kept.Front(); kept != nil {
@@ -991,63 +977,30 @@ func (g *gate) next(now time.Time) (candidate *waiter, newestFirst bool) {
 	return g.joined.Back().Value.(*waiter), true
 }
 
-// stood reports whether g's queue has stood non-empty for a whole wait at now, the moment next
-// turns to its newest waiter, from nonEmptyAt: it takes no lock, so a heavy read's lane asks it
-// under its own mutex (Limiter.readsStand), and a queue that empties or goes non-empty while it
-// asks is read either side of that.
-func (g *gate) stood(now time.Time) bool { return g.stoodFor(now, 1) }
-
-// stoodFor reports whether g's queue has stood non-empty for waits whole waits at now, without a
-// break: a queue that emptied within them stands from the moment it went non-empty again.
-func (g *gate) stoodFor(now time.Time, waits int) bool {
-	since := g.nonEmptyAt.Load()
-	return since != 0 && now.Sub(time.Unix(0, since)) >= time.Duration(waits)*g.wait
-}
-
-// laneStandWaits is how many whole read waits the read class's queue stands before the heavy read
-// lanes serve newest first (readsStand): three, where the class's own queue turns at one. A
-// second or two of stalled answers - a checkpoint, a collection, a pause of the database - stands
-// the class's queue for a whole wait as sustained overload does, and a lane that turned newest
-// first at it gave its places to the waiters that had just come and left its oldest to run out
-// their wait while the stall ended: one references read of the 358,714 requests of a step at ten
-// times the load was refused so, where the step's other 358,713 were answered, with a read class
-// that stood no longer than about 1.8 s (INFRA-592, c-scale at 2ecfa550, head step 6). The bed's
+// laneWaitsAfterStanding is how many whole read waits the read class's queue must stay standing
+// after it turns newest first before the heavy read lanes serve newest first too (readsStand): two
+// waits after the class turns, which with the one wait that turned the class is three waits into
+// sustained overload (fix M, kept under fix N, INFRA-592, 2026-11-27). A second or two of stalled
+// answers - a checkpoint, a collection, a pause of the database - can still trigger one expiry and
+// turn the read class as sustained overload does, and a lane that turned newest first at that same
+// moment gave its places to the waiters that had just come and left its oldest to run out their
+// wait while the stall ended: one references read of the 358,714 requests of a step at ten times
+// the load was refused so, where the step's other 358,713 were answered, with a read class that
+// stood no longer than about 1.8 s (INFRA-592, c-scale at 2ecfa550, head step 6). The bed's
 // overload keeps the class's queue standing for the whole of a step, so its lanes turn newest
-// first three waits into it, and the lane's own refusals at a stall are the ones first in, first
-// out would make.
-const laneStandWaits = 3
+// first two waits after the class turns (three waits into overload), and the lane's own refusals
+// at a stall are the ones first in, first out would make.
+const laneWaitsAfterStanding = 2
 
-// readsStand reports whether the read class's queue has stood non-empty for laneStandWaits whole
-// read waits by the Limiter's clock, now: the heavy read lanes' answer to whether a place goes to
-// the waiter that joined last (fifoGate.servesNewest, laneGate). It takes none of the Limiter's
-// locks, so a lane asks it holding its own, and no lock is ever taken inside the other.
+// readsStand reports whether the read class's queue stands newest first and has stood for at least
+// laneWaitsAfterStanding whole read waits since it turned, by the Limiter's clock: the heavy read
+// lanes' answer to whether a place goes to the waiter that joined last (fifoGate.servesNewest,
+// laneGate). It takes none of the Limiter's locks, so a lane asks it holding its own, and no lock
+// is ever taken inside the other.
 func (l *Limiter) readsStand() bool {
-	return l.classes[Read].stoodFor(l.clock.Now(), laneStandWaits)
-}
-
-// standIn arms g's timer for the moment its queue, which went from empty to non-empty now (queue),
-// stands: one wait of its class from now, where gate.next turns from its earliest arrival to its
-// newest waiter. That turn hands the room round as a release does (grant): the newest waiter may
-// fit where the waiter served before it did not - a weight-1 write behind a weight-2 one with a
-// unit free - and nothing else need happen at that moment to grant it, no release, no arrival and
-// no waiter leaving, so without the timer it waited beside the free room until one did, or its own
-// wait ran out. A queue has the one timer, made the first time it goes non-empty and armed again
-// each time after, and stopped whenever it empties (gate.remove), so a queue that absorbs a burst
-// and empties within its wait never fires it; one that fired as its queue emptied and went
-// non-empty again makes one more grant, which hands out only what fits. l.mu is held.
-func (l *Limiter) standIn(g *gate) {
-	if g.stands == nil {
-		g.stands = l.clock.AfterFunc(g.wait, l.grantWhenStanding)
-		return
-	}
-	g.stands.Reset(g.wait)
-}
-
-// grantWhenStanding is the grant a queue's timer makes at the moment the queue stands (standIn).
-func (l *Limiter) grantWhenStanding() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.grant()
+	g := l.classes[Read]
+	since := g.standingAt.Load()
+	return since != 0 && l.clock.Now().Sub(time.Unix(0, since)) >= laneWaitsAfterStanding*g.wait
 }
 
 // acquireNow takes a's units if they fit with nobody queued for its class, and reports whether
@@ -1086,11 +1039,9 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival, refusable bool) error
 		return &Refusal{Class: a.class, Reason: QueueFull}
 	}
 	queued := &waiter{units: a.units, seq: a.seq, refusable: refusable, ready: make(chan struct{})}
-	now := l.clock.Now()
-	if g.queue(queued, now) {
-		l.standIn(g)
-	}
-	if next, _ := g.next(now); next == queued {
+	remainingOnEntry := g.wait - a.waited
+	g.queue(queued)
+	if next, _ := g.next(); next == queued {
 		// It is the waiter the queue serves next - it arrived before the waiters it found queued,
 		// or it joined a queue that stands - so the room the queues were last offered was offered
 		// to another.
@@ -1123,18 +1074,24 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival, refusable bool) error
 	default:
 	}
 	g.remove(queued)
+	_, refused := failure.(*Refusal)
+	// A refusable waiter that joined this class's queue with at least half of the class's wait
+	// left and ran out its wait while others still wait is the evidence that first in, first out
+	// has failed (fix N, INFRA-592, 2026-11-27): turn the queue newest first here, before grant,
+	// so a newest waiter that fits beside the held units is granted at the flip itself. A waiter
+	// that arrived with less than half its wait left - such as a heavy read held in its lane - did
+	// not fail in this queue and never turns it.
+	if refused && !g.standing && remainingOnEntry >= g.wait/2 && g.waiters.Len() > 0 {
+		g.standing = true
+		g.standingAt.Store(l.clock.Now().UnixNano())
+	}
 	// The room goes round again whichever waiter left (grant hands out nothing where nothing
 	// fits): the waiter may have been all that held back the waiters behind it - and, where the
-	// combined cap held it, the other class's waiters too - whether or not it is the one the queue
-	// serves next now. A queue that has stood a whole wait serves its newest waiter first
-	// (gate.next), so a head refused at its wait is not the one served next, though it may be a
-	// heavy waiter that kept a lighter one behind it from the room beside it: granted only where
-	// the waiter that left was the one served next, the lighter one waited beside a free unit until
-	// a release, an arrival or its own refusal. The moment the queue stands grants it too
-	// (standIn); this grant rests neither on that timer having run first nor on which waiter the
-	// queue serves next.
+	// combined cap held it, the other class's waiters too - or its refusal may have just turned
+	// the queue newest first above, changing which waiter is served next to a lighter one that
+	// fits beside the held units.
 	l.grant()
-	if _, refused := failure.(*Refusal); refused {
+	if refused {
 		g.waitExceeded.Add(1)
 		g.noteRefusedWait(a.waited)
 	}
@@ -1204,8 +1161,7 @@ func (l *Limiter) release(class Class, units int) {
 // fits reports whether units may start in g now: g's class and the combined cap, the reserved
 // read room counted, both have room, and no queue's candidate (gate.next) is held up by the
 // combined cap alone. Such a candidate waits for room of the whole Limiter, which this request
-// would take from it. The clock the candidates are decided by is read only where a queue has a
-// waiter. l.mu is held.
+// would take from it. l.mu is held.
 func (l *Limiter) fits(g *gate, units int) bool {
 	if !l.hasRoom(g, units) {
 		return false
@@ -1213,7 +1169,7 @@ func (l *Limiter) fits(g *gate, units int) bool {
 	if l.classes[Read].waiters.Len() == 0 && l.classes[Write].waiters.Len() == 0 {
 		return true
 	}
-	return l.heldByTotal(l.clock.Now()) == nil
+	return l.heldByTotal() == nil
 }
 
 // hasRoom reports whether g's class and the combined cap hold units on top of what they hold
@@ -1234,18 +1190,18 @@ func (l *Limiter) reservedFor(class Class) int {
 	return max(l.reservedReads-reads.used, 0)
 }
 
-// heldByTotal is the earliest of the two class queues' candidates at now (gate.next) that fits its
-// own class but not the combined cap itself, or nil when neither candidate is one. A write the
+// heldByTotal is the earliest of the two class queues' candidates (gate.next) that fits its own
+// class but not the combined cap itself, or nil when neither candidate is one. A write the
 // read reservation refuses as well is not one: the reads it waits for must be able to take that
 // room, so it holds back the writes queued beside it and nothing else. That covers the write the
 // reservation alone holds up and the one both it and the cap refuse - a weight-2 candidate with the
 // cap a unit short of it - whose room is the reads' until they have taken their reservation: a read
 // queued beside such a candidate, which the cap has room for, is granted rather than held. l.mu is
 // held.
-func (l *Limiter) heldByTotal(now time.Time) *waiter {
+func (l *Limiter) heldByTotal() *waiter {
 	var earliest *waiter
 	for _, g := range l.classes {
-		candidate, _ := g.next(now)
+		candidate, _ := g.next()
 		if candidate == nil {
 			continue
 		}
@@ -1267,20 +1223,18 @@ func (l *Limiter) heldByTotal(now time.Time) *waiter {
 // candidate the combined cap itself alone holds up stops the pass for both classes: the room it
 // waits for is the whole Limiter's, and the later arrivals of the other class would take it a unit
 // at a time, so a weight-2 candidate is never starved by weight-1 requests beside it. A candidate
-// its own class's limit, or the read reservation, holds up stops only its own queue. The pass reads
-// the clock once, and not at all where both queues are empty. l.mu is held.
+// its own class's limit, or the read reservation, holds up stops only its own queue. l.mu is held.
 func (l *Limiter) grant() {
 	if l.classes[Read].waiters.Len() == 0 && l.classes[Write].waiters.Len() == 0 {
 		return
 	}
-	now := l.clock.Now()
 	for {
-		held := l.heldByTotal(now)
+		held := l.heldByTotal()
 		var next *waiter
 		var from *gate
 		var newestFirst bool
 		for _, g := range l.classes {
-			candidate, newest := g.next(now)
+			candidate, newest := g.next()
 			if candidate == nil || !l.hasRoom(g, candidate.units) {
 				continue
 			}

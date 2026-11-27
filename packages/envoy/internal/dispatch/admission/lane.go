@@ -243,24 +243,25 @@ func (g *fifoGate) counts() (used, queued, maxQueued int) {
 // counts against the wait the request has already spent.
 //
 // What it serves first is the read class's state, not its own (the architect, INFRA-592,
-// 2026-11-26; the three waits, 2026-11-27): first in, first out while the read class's queue is
-// empty, absorbing a burst or has stood for less than laneStandWaits whole read waits, and newest
-// first once that queue has stood non-empty for that long (Limiter.readsStand); the class's own
-// queue turns to its newest waiter at one whole wait (gate.next), a lane three waits on, so a
-// second or two of stalled answers leaves a lane first in, first out (laneStandWaits). A lane full
-// while the read class has room is no overload but its places turning over, and newest first there, decided
-// by the lane's own queue standing, handed each place to the waiter that had just come and left
-// the oldest to be refused at their wait while the places turned over beside them: on the cluster
-// copy at ten times the load every refusal of the run - 26 searches, answered 429 at about 1,001
-// ms - was the search lane's at its wait, while the lane held its 7 with 4 or 5 queued and the read
-// class had room, and the refusals followed the lane's newest-first grants: 119 of them gave 23
-// refusals, 71 gave 3, and 15 or fewer none (INFRA-592, c-scale at 72e98685; the architect,
-// 2026-11-26 08:09Z). A read class that stands is the overload, and first in, first out there
-// handed each place to the waiter that had waited longest, which reached the read class with its
-// wait spent, was admitted all the same, and crowded the cheap reads out with its heavy statement:
-// on the two-processor bed at a standing ten times the load about 22,000 fewer other reads were
-// answered 2xx a 3-minute window, and the share of 2xx fell about 17 points (INFRA-592, a
-// bisection of d416a857).
+// 2026-11-26; the two waits after the class turns, fix M 2026-11-27, kept under fix N 2026-11-27):
+// first in, first out while the read class's queue is empty, serving first in, first out, or has
+// stood newest first for less than laneWaitsAfterStanding whole read waits, and newest first once
+// that queue has stood newest first for that long (Limiter.readsStand); the class's own queue turns
+// newest first when first in, first out fails (gate.next, Limiter.acquire), and a lane two waits
+// after that turn (three waits into sustained overload), so a second or two of stalled answers
+// leaves a lane first in, first out (laneWaitsAfterStanding). A lane full while the read class has
+// room is no overload but its places turning over, and newest first there, decided by the lane's
+// own queue standing, handed each place to the waiter that had just come and left the oldest to be
+// refused at their wait while the places turned over beside them: on the cluster copy at ten times
+// the load every refusal of the run - 26 searches, answered 429 at about 1,001 ms - was the search
+// lane's at its wait, while the lane held its 7 with 4 or 5 queued and the read class had room,
+// and the refusals followed the lane's newest-first grants: 119 of them gave 23 refusals, 71 gave
+// 3, and 15 or fewer none (INFRA-592, c-scale at 72e98685; the architect, 2026-11-26 08:09Z). A
+// read class that stands is the overload, and first in, first out there handed each place to the
+// waiter that had waited longest, which reached the read class with its wait spent, was admitted
+// all the same, and crowded the cheap reads out with its heavy statement: on the two-processor bed
+// at a standing ten times the load about 22,000 fewer other reads were answered 2xx a 3-minute
+// window, and the share of 2xx fell about 17 points (INFRA-592, a bisection of d416a857).
 type laneGate struct {
 	fifoGate
 	lane Lane

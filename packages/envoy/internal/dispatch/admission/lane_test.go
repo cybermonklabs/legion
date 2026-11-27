@@ -356,38 +356,50 @@ func TestALaneWaiterHoldsNoReadUnitWhileItWaits(t *testing.T) {
 	}
 }
 
-// A heavy read's lane serves newest first once the read class's queue has stood non-empty for
-// laneStandWaits (three) whole read waits, and first in, first out until then (laneGate): with the
-// read class's one unit held and a read queued for it, and the lane's one place held with six
-// heavy reads lined up behind it, the place that comes back goes to the heavy read that has waited
-// longest while the read class's queue has been non-empty for less than one wait, at exactly one,
-// at two and one nanosecond short of three; at three, by the clock its decision reads, each place
-// that comes back goes to the heavy read that joined the lane last, and the lane counts those two
-// grants newest first (LaneStats.NewestFirst).
+// A heavy read's lane serves newest first once the read class's queue has stood newest first for
+// laneWaitsAfterStanding (two) whole read waits after it turned, and first in, first out until
+// then (laneGate, fix N, INFRA-592, 2026-11-27). With the read class's one unit held and a
+// never-refused keeper queued in the read class, advancing the clock five waits before any expiry
+// keeps the lane first in, first out. Once a refusable read expires behind the keeper to turn the
+// read class newest first, the lane still serves first in, first out at the moment the class
+// turned, at one wait after, and one nanosecond short of two waits after; from two waits after on
+// (three waits into sustained overload), each place that comes back goes to the heavy read that
+// joined the lane last, and the lane counts those grants newest first (LaneStats.NewestFirst).
 //
-// The class's own queue turns to its newest waiter at one wait, and a lane following it there gave
-// its places to the requests that had just come when a stall of a second or two stood the class's
-// queue, and left its oldest to run out their wait: one references read of 358,714 in a step at ten
-// times the load (INFRA-592, c-scale at 2ecfa550, head step 6, a read class that stood about 1.8
-// s). First in, first out there under a read class that stays standing handed each place to the
-// heavy read that had waited longest, which reached the read class with its wait spent, was
-// admitted all the same and crowded out the cheap reads: about 22,000 fewer of them answered 2xx a
-// 3-minute window on the two-processor bed at a standing ten times the load (INFRA-592, a
-// bisection of d416a857), so a standing class of three waits still turns its lanes.
+// The class's own queue turns to its newest waiter on the first expiry, and a lane two waits after
+// that turn, because a stall of a second or two can still trigger an expiry and turn the class's
+// queue, and a lane following it immediately gave its places to the requests that had just come
+// and left its oldest to run out their wait: one references read of 358,714 in a step at ten times
+// the load (INFRA-592, c-scale at 2ecfa550, head step 6, a read class that stood about 1.8 s).
+// First in, first out there under a read class that stays standing handed each place to the heavy
+// read that had waited longest, which reached the read class with its wait spent, was admitted all
+// the same and crowded out the cheap reads: about 22,000 fewer of them answered 2xx a 3-minute
+// window on the two-processor bed at a standing ten times the load (INFRA-592, a bisection of
+// d416a857), so a standing class of two waits after its turn still turns its lanes.
 func TestALaneServesTheNewestFirstWhileTheReadClassStands(t *testing.T) {
 	t.Parallel()
+	const wait = 600 * time.Millisecond
 	clock := newTestClock()
-	l := newWithClock(Limits{Read: 1, Write: 1, HeavyReadLane: 1, ReadWait: patient}, clock)
+	l := newWithClock(Limits{Read: 1, Write: 1, HeavyReadLane: 1, ReadWait: wait}, clock)
 	ctx := testwait.Context(t)
+	// Keep a never-refused take-back in the read class queue so the queue stays non-empty across
+	// the trigger expiry and never empties until the end of the test.
+	parked := admit(t, l, Read, 1)
+	away := GiveBack(WithTicket(ctx, parked))
 	reader := admit(t, l, Read, 1)
-	queuedRead := admitInBackground(t, l, ctx, Read, 1)
+	kept := make(chan error, 1)
+	go func() {
+		err := away.TakeBackNeverRefused(ctx)
+		parked.Release()
+		kept <- err
+	}()
+	waitForQueued(t, l, Read, 1)
+
 	lane := orderedQueue{
 		places: 1,
 		take:   func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
 		queued: func() int { return laneStatsOf(t, l, Search).Queued },
 	}
-	held := holdEveryPlace(t, ctx, lane)
-	answers := lineUp(t, ctx, lane, 6)
 	notNewestFirst := func(when string) {
 		t.Helper()
 		if newestFirst := laneStatsOf(t, l, Search).NewestFirst; newestFirst != 0 {
@@ -395,18 +407,34 @@ func TestALaneServesTheNewestFirstWhileTheReadClassStands(t *testing.T) {
 		}
 	}
 
-	clock.advance(patient - time.Nanosecond)
+	// Before any expiry in the read class, even five waits on the clock do not turn the lane.
+	clock.advance(5 * wait)
+	held := holdEveryPlace(t, ctx, lane)
+	before := lineUp(t, ctx, lane, 2)
 	held[0]()
-	previous := grantedNext(t, answers, 0, "a lane serves first in, first out while the read class's queue has stood less than a wait")
-	notNewestFirst("while the read class's queue had stood less than a wait")
+	grantedNext(t, before, 0, "a lane serves first in, first out while the read class has not failed FIFO").give()
+	grantedNext(t, before, 1, "a lane serves first in, first out while the read class has not failed FIFO").give()
+	notNewestFirst("before any expiry turned the read class")
+
+	// Now fail FIFO in the read class with a real expiry while the keeper stays queued.
+	trigger := admitInBackground(t, l, ctx, Read, 1)
+	if got := receive(t, trigger); refusalReason(got.err) != WaitExceeded {
+		t.Fatalf("the trigger read: %v, want wait_exceeded to turn the read class newest first", got.err)
+	}
+
+	held = holdEveryPlace(t, ctx, lane)
+	answers := lineUp(t, ctx, lane, 6)
+
+	held[0]()
+	previous := grantedNext(t, answers, 0, "a lane serves first in, first out at the moment the read class turns newest first")
+	notNewestFirst("at the moment the read class turned newest first")
 
 	for next, when := range []struct {
 		step time.Duration
 		what string
 	}{
-		{time.Nanosecond, "at the read class's one whole wait, where its own queue turns to its newest waiter"},
-		{patient, "at two whole read waits"},
-		{patient - time.Nanosecond, "one nanosecond short of three whole read waits"},
+		{wait, "one whole read wait after the read class turned"},
+		{wait - time.Nanosecond, "one nanosecond short of two whole read waits after the read class turned"},
 	} {
 		clock.advance(when.step)
 		previous.give()
@@ -415,22 +443,22 @@ func TestALaneServesTheNewestFirstWhileTheReadClassStands(t *testing.T) {
 	}
 
 	clock.advance(time.Nanosecond)
-	const why = "a lane serves the newest first once the read class's queue has stood three whole read waits"
+	const why = "a lane serves the newest first once the read class's queue has stood newest first for two whole read waits"
 	previous.give()
 	newest := grantedNext(t, answers, 5, why)
 	newest.give()
-	last := grantedNext(t, answers, 4, why)
-	if stats := laneStatsOf(t, l, Search); stats.NewestFirst != 2 || stats.Queued != 0 || stats.QueueFull+stats.WaitExceeded != 0 {
-		t.Fatalf("the search lane's stats %+v, want the two grants since the read class stood three waits counted newest first, and nothing queued or refused", stats)
+	middle := grantedNext(t, answers, 4, why)
+	middle.give()
+	last := grantedNext(t, answers, 3, why)
+	if stats := laneStatsOf(t, l, Search); stats.NewestFirst != 3 || stats.Queued != 0 || stats.QueueFull+stats.WaitExceeded != 0 {
+		t.Fatalf("the search lane's stats %+v, want the three grants since the read class stood two waits after turning counted newest first, and nothing queued or refused", stats)
 	}
 	last.give()
 
 	reader.Release()
-	read := testwait.Receive(t, "the queued read's answer", queuedRead)
-	if read.err != nil {
-		t.Fatalf("the read queued in its class once the unit came back: %v, want it admitted", read.err)
+	if err := testwait.Receive(t, "the keeper's take-back", kept); err != nil {
+		t.Fatalf("the keeper's take-back once the unit came back: %v, want it granted", err)
 	}
-	read.ticket.Release()
 }
 
 // enterLane takes lane for a request arriving now, in the order api.admitted takes them: the
