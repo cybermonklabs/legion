@@ -86,16 +86,16 @@ type doneByChecksOptions struct {
 	// the configuration's default hour.
 	controllerWake time.Duration
 	// issues is each issue the run makes, in order, so Dispatch numbers the first ACME-1.
-	issues []doneByChecksIssue
+	issues []doneByChecksIssueSpec
 }
 
-// doneByChecksIssue is one issue a run makes, in Dispatch and in the daemon's store: its title,
+// doneByChecksIssueSpec is one issue a run makes, in Dispatch and in the daemon's store: its title,
 // its Verification document ("" for none), each other document it holds from its creation, by
 // name, its pull request's number and head, open on legion/<KEY> from the boot on, the 1-based
 // place among the run's issues of the issue it is a child of (0 for a root), and whether it stands
 // at its review when the daemon boots, as the release before left it there. A root that does not
 // stands at admitted with its gate approved, so its planning starts at the boot.
-type doneByChecksIssue struct {
+type doneByChecksIssueSpec struct {
 	title        string
 	verification string
 	documents    map[string]string
@@ -117,7 +117,7 @@ type doneByChecksRig struct {
 // acceptance.
 func newDoneByChecksRig(t *testing.T) *doneByChecksRig {
 	t.Helper()
-	return newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssue{
+	return newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssueSpec{
 		{title: doneByChecksTitle, verification: doneByChecksVerification, number: doneByChecksPull, head: stepRecordsHead},
 	}})
 }
@@ -196,7 +196,7 @@ func newDoneByChecksRigWith(t *testing.T, options doneByChecksOptions) *doneByCh
 // label. The documents are written before the status, so the sequence the daemon is seeded with
 // (createdIssue.LastSeq) is past their events. It adds the issue to the run's issues and answers
 // it as Dispatch made it.
-func (r *doneByChecksRig) makeIssue(issue doneByChecksIssue) createdIssue {
+func (r *doneByChecksRig) makeIssue(issue doneByChecksIssueSpec) createdIssue {
 	r.t.Helper()
 	create := map[string]string{"project": r.cfg.Project, "title": issue.title}
 	if issue.under > 0 {
@@ -231,7 +231,7 @@ func (r *doneByChecksRig) makeIssue(issue doneByChecksIssue) createdIssue {
 // its review stands in reviewing at generation 1 with every column of this release at its default,
 // as the migration leaves a row of the release before. A child stands in reviewing under its
 // parent, in its parent's tree, on a pull request of its own, as seedChildInReviewing seeds one.
-func (r *doneByChecksRig) seedIssue(issue doneByChecksIssue, created createdIssue) {
+func (r *doneByChecksRig) seedIssue(issue doneByChecksIssueSpec, created createdIssue) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
@@ -1080,12 +1080,14 @@ func (r *doneByChecksRig) lookOf(c *stepClaimant, look int, bound time.Duration)
 		t.Fatalf("%s's production check at its task is %+v, want look %d open of the check opened at %s", r.key, check, look, opened)
 	}
 	var starts int
-	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'supervise'
-		and (payload->>'checkLook')::int = $2`, r.key, look).Scan(&starts); err != nil {
-		t.Fatalf("count the start rows of look %d of %s: %v", look, r.key, err)
-	}
-	if starts != 0 {
-		t.Fatalf("%d start rows of look %d of %s stand in the outbox after its task reached %s, want none", starts, look, r.key, c.token)
+	if !testwait.Holds(stepRecordsWait, 50*time.Millisecond, func() bool {
+		if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'supervise'
+			and (payload->>'checkLook')::int = $2`, r.key, look).Scan(&starts); err != nil {
+			t.Fatalf("count the start rows of look %d of %s: %v", look, r.key, err)
+		}
+		return starts == 0
+	}) {
+		t.Fatalf("%d start rows of look %d of %s stand in the outbox %s after its task reached %s, want none", starts, look, r.key, stepRecordsWait, c.token)
 	}
 	t.Logf("look %d of %s's production check (generation %d, merge %s, opened %s) started: its start row done, its task delivered to %s",
 		look, r.key, check.Generation, check.MergeSHA, opened.UTC().Format(time.RFC3339Nano), c.token)

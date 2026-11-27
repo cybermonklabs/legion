@@ -116,7 +116,7 @@ func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 	t.Parallel()
 	t.Run("a project that runs a production check", func(t *testing.T) {
 		t.Parallel()
-		r := newDoneByChecksRigWith(t, doneByChecksOptions{production: claim.RoleTester, issues: []doneByChecksIssue{
+		r := newDoneByChecksRigWith(t, doneByChecksOptions{production: claim.RoleTester, issues: []doneByChecksIssueSpec{
 			{title: doneByChecksTitle, verification: doneByChecksBothChecks, number: doneByChecksPull, head: stepRecordsHead},
 			{title: "Gadgets publish a changelog", verification: doneByChecksBeforeOnly, number: doneByChecksGadgetsPull, head: doneByChecksGadgetsHead},
 			{title: "Sprockets rotate under load", verification: doneByChecksVerification, number: doneByChecksSprocketPull, head: doneByChecksSprocketHead, reviewing: true},
@@ -138,7 +138,7 @@ func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 	})
 	t.Run("a project that runs no production check", func(t *testing.T) {
 		t.Parallel()
-		r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssue{
+		r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssueSpec{
 			{title: "Levers report no checks", number: doneByChecksPull, head: stepRecordsHead},
 		}})
 		fourth := r.key
@@ -321,6 +321,7 @@ func fifthSetBack(r *doneByChecksRig, third, fifth string) {
 		}
 		return count
 	}
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the close-waits notice of "+fifth+"'s entry into verifying", func() bool { return told() > 0 })
 	before := told()
 	architect := r.worker(claim.RoleArchitect)
 	seq := r.sessionStatus(fifth, architect, record.DoneStatus)
@@ -523,7 +524,7 @@ func thirdStaysOpenAfterItsMerge(r *doneByChecksRig, third, fifth string) {
 // the subject whose basis is the second pull request's final head.
 func TestANextChangeNeedsAPassAtItsOwnHead(t *testing.T) {
 	t.Parallel()
-	r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssue{
+	r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssueSpec{
 		{title: doneByChecksTitle, verification: doneByChecksBothChecks, number: doneByChecksPull, head: stepRecordsHead},
 	}})
 	key, branch := r.key, claim.IssueBranch(r.key)
@@ -593,7 +594,7 @@ func TestANextChangeNeedsAPassAtItsOwnHead(t *testing.T) {
 // is what the release before met, since it closed the issue at its merge.
 func TestAWriteToItsOwnIssueIsTakenWhileTheIssueWaits(t *testing.T) {
 	t.Parallel()
-	r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssue{
+	r := newDoneByChecksRigWith(t, doneByChecksOptions{issues: []doneByChecksIssueSpec{
 		{title: doneByChecksTitle, verification: doneByChecksOpenItemsVerification, documents: map[string]string{doneByChecksOpenItems: doneByChecksOpenItemsBefore},
 			number: doneByChecksPull, head: stepRecordsHead},
 	}})
@@ -662,7 +663,7 @@ func openItemsRefused(r *doneByChecksRig, c *stepClaimant) {
 // root's children from Dispatch again, and the root closes at that read.
 func TestAChildFiledAfterTheBootHoldsItsRootsClose(t *testing.T) {
 	t.Parallel()
-	r := newDoneByChecksRigWith(t, doneByChecksOptions{controllerWake: 2 * time.Second, issues: []doneByChecksIssue{
+	r := newDoneByChecksRigWith(t, doneByChecksOptions{controllerWake: 2 * time.Second, issues: []doneByChecksIssueSpec{
 		{title: doneByChecksTitle, verification: doneByChecksVerification, number: doneByChecksPull, head: stepRecordsHead},
 	}})
 	root := r.key
