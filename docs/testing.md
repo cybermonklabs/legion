@@ -658,7 +658,8 @@ says on its first line, in a `// Not parallel:` comment, why it cannot:
 
 - in `packages/envoy`: `internal/dispatch/api`, `internal/dispatch/docs`, `cmd/listener`, the
   broker's `internal/cipher/requests`, `internal/cipher/api` and `cmd/cipherd`, and the 19 smaller
-  packages of "A test in Dispatch's smaller packages runs beside the others" below;
+  packages of "A test in Dispatch's smaller packages runs beside the others" below, with
+  `internal/dispatch/refs`;
 - in `packages/daemon`: `internal/intake`.
 
 The reason names the call or the bound that makes the test serial (`logtest.SetDefault`,
