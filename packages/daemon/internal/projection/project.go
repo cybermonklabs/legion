@@ -295,6 +295,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				view.HoldReason = string(issue.Hold.Reason)
 			}
 		}
+		if slot, ok := slotViews[issue.Key]; ok {
+			view.Slot = &slot
+		}
+		if issue.AwaitingPerson() {
+			view.WaitingOn = waitingOn(*issue.Awaiting)
+		}
 		// What the issue's close waits for, from its stored wait (closeWaitView): an issue in
 		// verifying, and one before its merge that holds a reported defect.
 		closeWait, err := closeWaitView(issue)
