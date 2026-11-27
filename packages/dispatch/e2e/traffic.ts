@@ -1,5 +1,19 @@
 import { expect, type Frame, type Page, type Request } from "@playwright/test";
 
+/** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
+ *  detail since the page opened, and whether any request is still in flight. The event feed rides
+ *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
+ *  request, so none of these counts it. */
+export interface Traffic {
+  /** Path and query of each GET under `/api/` since the last `reset`. */
+  readonly gets: string[];
+  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
+  issueReads(key: string): number;
+  /** Whether no request has been in flight for `ms`, as `watchInFlight` counts one. */
+  quietFor(ms: number): boolean;
+  reset(): void;
+}
+
 /** A URL as a navigation commits it: the fragment is never sent, so a frame's URL is compared with
  *  its navigation request's without one. */
 function withoutFragment(url: string): string {
@@ -68,6 +82,30 @@ function watchInFlight(page: Page): (ms: number) => boolean {
     }
   });
   return (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms;
+}
+
+export function watchTraffic(page: Page): Traffic {
+  const gets: string[] = [];
+  const issueReads = new Map<string, number>();
+  const quietFor = watchInFlight(page);
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
+    gets.push(`${url.pathname}${url.search}`);
+    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
+    if (issue !== undefined) {
+      const key = decodeURIComponent(issue);
+      issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
+    }
+  });
+  return {
+    gets,
+    issueReads: (key) => issueReads.get(key) ?? 0,
+    quietFor,
+    reset: () => {
+      gets.length = 0;
+    },
+  };
 }
 
 /** One request under `/api/`, as `watchApiRequests` counts it. */
