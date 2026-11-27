@@ -1347,7 +1347,7 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 // The step's summary is its own text, so it is quoted (quotedList): one value on one line, which
 // nothing in it can turn into the daemon's words.
 func reportSentence(step standing, handoff record.PhaseRow, branch string) string {
-	body := fmt.Sprintf("The %s of step %d reports: %q. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
+	body := fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.", step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)
 	if branch != "" {
 		body += fmt.Sprintf(" Its commits are on its own branch %s: take them before your end push, as your task says.", branch)
 	}
