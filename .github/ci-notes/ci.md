@@ -33,7 +33,8 @@ reads its one paths-filter step, and rule 19 of .github/scripts/check-ci-filters
 output naming a filter no gate declares. On pull_request
 dorny/paths-filter reads the file list from the API, a rename read as the delete of the old name
 and the add of the new one; on a merge group it diffs base_sha..head_sha with git. A dispatched run
-computes the file too: a dispatch of a branch diffs its commit with its merge base with main
+computes the file too: a dispatch of a branch diffs its commit with its merge base with main or
+with the migration-base it names
 (.github/ci-notes/ci.md#what-the-filter-step-diffs-on-a-dispatched-run), and a run that selects
 every job filters nothing.
 
@@ -43,7 +44,8 @@ them) - can make many filters select less while no filter selects the change: a 
 a helper every Bun gate shares narrows two dozen filters, and the committed file used to show that
 drop because every filter named the file. So when the run's base commit is known (the commit the
 change lands onto: a merge group's base, the first parent of a pull request's merge commit, a
-dispatched branch's merge base with main, #the-commit-a-change-is-measured-against, which the
+dispatched branch's merge base with main or the migration-base it names,
+#the-commit-a-change-is-measured-against, which the
 generation step hands the script as `CI_FILTERS_BASE`) and the change touches one of those files,
 the script computes the base tree's filters too, with the base tree's own engine, and each filter whose
 patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
@@ -1430,7 +1432,9 @@ and it reports under names of its own
 ## What a dispatched run of a branch selects, and when to ask for every job
 
 A dispatched run of any branch but exactly refs/heads/main selects the jobs its own commit's diff
-with its merge base with main touches: the filter step runs paths-filter over that diff with
+with its merge base with main touches, or its diff with the commit its `migration-base` input
+names (#what-the-filter-step-diffs-on-a-dispatched-run): the filter step runs paths-filter over
+that diff with
 the filters and the predicate a merge group reads, and every output takes the filter's verdict
 as a merge group's does, the slow suites' included, since their `full-ci` term holds a suite
 back on a pull request alone. So a branch that touched only a shell script runs that script's
@@ -1469,24 +1473,29 @@ dispatch and `every-job` select every job.
 The changes job's step "Find the commit this run's change is measured against"
 runs on such a dispatch, on a pull request (#the-commit-a-change-is-measured-against) and on no
 run that selects every job. It runs
-.github/scripts/edited-migrations-base.sh, which finds the same commit for envoy-go-build's
-migration check: it fetches main into refs/remotes/origin/main and both histories deep enough that
-no newer common commit hides past the fetch, and prints the merge base, or fails the step when
-the two histories share none. The filter generation is handed that commit as `CI_FILTERS_BASE`, as
+.github/scripts/edited-migrations-base.sh with the dispatch's `migration-base` input as
+`MIGRATION_BASE`, as envoy-go-build's migration check runs it, so the two find the same commit: a
+dispatch that names a migration-base is measured against that commit, which the script fetches
+alone, and one that names none against its merge base with main, for which the script fetches
+main into refs/remotes/origin/main and both histories deep enough that no newer common commit
+hides past the fetch, and prints the merge base, or fails the step when the two histories share
+none. The filter generation is handed that commit as `CI_FILTERS_BASE`, as
 a pull request's and a merge group's base are, so a branch whose diff changes how the filters are
-computed is held against the merge base's own filters, and each filter it moves selects every path
+computed is held against the base's own filters, and each filter it moves selects every path
 (.github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs). Handed none, a dispatch
 of a branch would be the one run selected by the branch's own engine alone: a read dropped from a
 helper every Bun gate shares would skip those jobs in the very dispatch meant to test the drop.
-The step stays off a dispatch of main, where the script exits 2 for want of a migration-base.
+The step stays off a dispatch of main, which selects every job and needs no base, and where the
+script exits 2 when the dispatch names no migration-base.
 The step must come before the generation step: the runner evaluates a step's `env:` when that
 step starts, so a generation step that ran first would read `steps.base.outputs.sha` unwritten and
 be handed no base. ci-router-outputs.test.sh holds the base the generation is handed on each
-event, reading the generation's `env:` where the step starts (.github/scripts/ci_router_outputs.py
-evaluates each step there), and five copies of ci.yaml fail it: one whose generation step reads
-no `steps.base.outputs.sha`, one whose generation step reads the pull request event's own
-`base.sha` first, one whose base step runs on no pull request, one whose base step runs on a
-dispatch of main, and one whose base step comes after the generation step.
+event, a dispatch that names a migration-base among them, reading the generation's `env:` where
+the step starts (.github/scripts/ci_router_outputs.py evaluates each step there), and six copies
+of ci.yaml fail it: one whose generation step reads no `steps.base.outputs.sha`, one whose
+generation step reads the pull request event's own `base.sha` first, one whose base step runs on
+no pull request, one whose base step runs on a dispatch of main, one whose base step hands the
+script no `MIGRATION_BASE`, and one whose base step comes after the generation step.
 
 .github/workflows/browser-image.yaml's header still says a workflow_dispatch run of ci.yaml forces
 the browser_image output; on a dispatch of a branch the filter decides it now. That file is an
@@ -1501,11 +1510,17 @@ The changes job hands the filter generation the commit the run's change lands on
 (`CI_FILTERS_BASE`), and the generation compares the base tree's filters with this tree's when the
 change touches a file the filters are computed with: a merge group's `base_sha`; on a pull
 request, the first parent of the merge commit the run checked out, which is main as GitHub merged
-the branch into it; on a dispatch of a branch, its merge base with main
+the branch into it; on a dispatch of a branch, the commit its `migration-base` input names, and
+when it names none, its merge base with main
 (#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job). The step "Find the
 commit this run's change is measured against" finds the last two with
 .github/scripts/edited-migrations-base.sh, which picks the base of envoy-go-build's migration
-check by the same rule.
+check by the same rule: the step hands it the input as `MIGRATION_BASE`, and the script fetches
+that one commit and prints it, or, handed none, fetches main's history and the branch's 64 commits
+deep, then four times as many each pass, until it finds their merge base. A dispatch that names
+its merge base with main (`gh workflow run ci.yaml --ref <branch> -f migration-base=<merge base>`)
+is thus handed its base as a merge group is handed `base_sha`, and fetches no history to find it;
+its filter step diffs with the same commit (#what-the-filter-step-diffs-on-a-dispatched-run).
 
 The pull_request event's own `base.sha` is not that commit. It is the commit the branch is based
 on, older than the merge commit's first parent whenever main has moved since: in 98 of the 149
@@ -1524,8 +1539,9 @@ own files.
 The commit main pointed at before the push the bypass check read: envoy-go-build compares
 every migration it holds with this run's tree, the range the push landed. A dispatch on
 main without it fails that check, which cannot tell what the run lands. A dispatch on
-another branch without it compares with the branch's merge
-base with main (.github/scripts/edited-migrations-base.sh).
+another branch compares with the commit it names, its merge base with main for one, which spares
+the fetch that finds it (#the-commit-a-change-is-measured-against), and without it with the
+branch's merge base with main (.github/scripts/edited-migrations-base.sh).
 
 ## What a newer push cancels, and what is never cancelled
 
@@ -2083,17 +2099,25 @@ that ran and passed ran all its steps. A run that held nothing back writes no su
 
 ## What the filter step diffs on a dispatched run
 
-On a dispatched run of a branch the step gets `base: main` and `ref: <the run's commit>`, and
-paths-filter diffs `main...<commit>`: it reads main as refs/remotes/origin/main, which the merge
-base step fetched with enough of both histories for git to find their merge base, so it fetches
-nothing more (with no merge base in reach it fetches main and the commit 100 commits deep and
-deepens both until git finds one), and lists what the commit changed since it
-(dorny/paths-filter v4.0.3, src/git.ts getLocalRef and getChangesSinceMergeBase). The filter step
-and the filter generation thus measure the branch from one commit
+On a dispatched run of a branch the step gets `ref: <the run's commit>` and, as `base`, the
+commit its `migration-base` input names, or `main` when it names none. Handed a full forty-digit
+sha as `base`, paths-filter diffs `<base>..<commit>`, the two trees, with the base the base step
+already fetched, and fetches no history (dorny/paths-filter v4.0.3, src/main.ts
+getChangedFilesFromGit's isBaseSha branch and src/git.ts getChanges), as a merge group's
+base_sha..head_sha is diffed: named as the branch's merge base with main, that is the diff
+`main...<commit>` gives, and any other commit also lists what main changed between it and the
+merge base. Handed `main`, paths-filter diffs `main...<commit>`: it reads main as
+refs/remotes/origin/main, which the merge base step fetched with enough of both histories for git
+to find their merge base, so it fetches nothing more (with no merge base in reach it fetches main
+and the commit 100 commits deep and deepens both until git finds one), and lists what the commit
+changed since it (src/git.ts getLocalRef and getChangesSinceMergeBase). The step takes a named
+commit over `main` because the base step, handed one, fetches that commit alone and leaves main
+unfetched, and paths-filter would then run that search itself. Either way the filter step and the
+filter generation measure the branch from one commit
 (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
-The commit, not the branch name, so a push to the branch after the dispatch does not change what
-this run selects. On a pull request and a merge group both inputs are empty, which paths-filter
-reads as unset: a pull
+`ref` is the commit, not the branch name, so a push to the branch after the dispatch does not
+change what this run selects. On a pull request and a merge group both inputs are empty, which
+paths-filter reads as unset: a pull
 request's files come from the API and a merge group's from its own base_sha..head_sha, and a
 non-empty `base` would override the merge group's. On a run that selects every job the step is
 skipped, since the outputs take 'true' without it, and a run of main has no merge base to diff

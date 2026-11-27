@@ -7,8 +7,9 @@ every slow suite, a `lane:<output>` label turns on that one output, and a label 
 output turns on nothing (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request);
 it holds a dispatched run's selection and the workflow's cancel key to what they promise: a
 dispatch of main selects every job, a dispatch of a branch selects what a merge group with the
-same verdicts selects and its filters are measured against its merge base with main as a merge
-group's are against its base, and a newer dispatch of a branch cancels that branch's older one
+same verdicts selects and its filters are measured against its merge base with main, or the
+migration-base it names, as a merge group's are against its base, and a newer dispatch of a
+branch cancels that branch's older one
 (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job);
 and it reads, with --steps, whether each step a called workflow gates on what the changes job
 hands it runs: the harness holds each test-job step gated on the one list of matched filters to
@@ -22,7 +23,9 @@ before it alone, a step whose `if:` is false is skipped and its outputs read as 
 step that carries an `id` runs in bash with its `env:` and GITHUB_EVENT_NAME, GITHUB_REF,
 GITHUB_SHA and GITHUB_OUTPUT set, and its outputs are what it wrote there. Three steps it models
 instead of running: the `filter` step's outputs are the verdicts given and the list below; the
-`base` step's `sha` is the --base given, since that step fetches main's history to find it; and
+`base` step's `sha` is, on a dispatch whose `env:` hands edited-migrations-base.sh a non-empty
+MIGRATION_BASE, that commit, which the script fetches and prints as it is, and else the --base
+given, since the step fetches main's history to find it; and
 the `generate` step writes nothing, as ci-filters-generate.sh writes to its outputs only when it
 falls open (--step-outputs gives what it wrote then). One reader, runs(), decides whether each
 job and step runs, here and under --steps. It evaluates the subset of GitHub's expression
@@ -57,9 +60,9 @@ verdict (default true); --verdict overrides one. --ref defaults to a pull reques
 queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
 the run is measured against, forty 3s by default: a merge group's base, or the commit the `base`
 step finds - the first parent of a pull request's merge commit, the merge base with main on a
-dispatch. --pull-base is the pull request event's own base.sha, --base by default, which is older
-than the first parent when main has moved since the branch's base (98 of 149 pull-request runs on
-2026-11-26). --step-outputs gives the outputs of
+dispatch that names no migration-base. --pull-base is the pull request event's own base.sha,
+--base by default, which is older than the first parent when main has moved since the branch's
+base (98 of 149 pull-request runs on 2026-11-26). --step-outputs gives the outputs of
 the changes job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>`
 lines, in place of running or modelling it (the generate step's, for one: ci-filters-generate.sh
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
@@ -281,6 +284,12 @@ def interpolate(text, evaluator):
     return EMBEDDED.sub(lambda m: text_of(evaluator.evaluate(m.group(1))), text)
 
 
+def env_of(step, evaluator):
+    """A step's `env:`, each value as the runner evaluates it when the step starts and writes it
+    into the variable."""
+    return {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
+
+
 def expression_of(text):
     """The expression a `${{ }}` value holds, or None for a literal."""
     text = str(text).strip()
@@ -352,12 +361,15 @@ def run_steps(job, context, filter_outputs, base, given):
         elif step_id == "filter":
             outputs = dict(filter_outputs)
         elif step_id == "base":
-            outputs = {"sha": base}
+            # edited-migrations-base.sh prints a dispatch's MIGRATION_BASE as it is, having fetched
+            # that one commit; else it finds the base, which --base stands for.
+            dispatch = context["github"]["event_name"] == "workflow_dispatch"
+            named = env_of(step, evaluator).get("MIGRATION_BASE", "") if dispatch else ""
+            outputs = {"sha": named or base}
         elif step_id == "generate":
             outputs = {}
         elif "run" in step:
-            env = {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
-            outputs = run_step(step, env, context)
+            outputs = run_step(step, env_of(step, evaluator), context)
         else:
             raise Refused(f"step {step_id} uses {step.get('uses')}, whose outputs this reader does not model")
         context["steps"][step_id] = {"outputs": outputs}
@@ -524,8 +536,7 @@ def main():
             if not ran:
                 raise Refused("the step that runs ci-filters-generate.sh is skipped, so it is handed no env")
             # Every value of the step's env, as the runner evaluates it when the step starts.
-            env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
-                   for name, value in (step.get("env") or {}).items()}
+            env = env_of(step, Evaluator(at_start))
             print(f"filters-base={env.get('CI_FILTERS_BASE', '')}")
             return 0
     except Refused as refusal:

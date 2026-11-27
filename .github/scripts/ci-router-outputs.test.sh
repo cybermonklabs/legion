@@ -28,10 +28,11 @@
 # what a merge group with the same verdicts selects and diffs its own commit with main, the filter
 # generation measures a branch's dispatch against its merge base with main as it measures a merge
 # group against its base, and is handed that base only because the base step runs before it (the
-# runner evaluates a step's env when the step starts), `every-job` selects every job on a branch,
-# and a newer dispatch of a branch cancels that branch's older one while a dispatch of main is
-# never cancelled. Copies of ci.yaml with one of those terms broken, or the two steps swapped, show
-# that each case fails without it.
+# runner evaluates a step's env when the step starts), a dispatch that names a migration-base is
+# measured from that commit by the filter step and the generation alike, `every-job` selects every
+# job on a branch, and a newer dispatch of a branch cancels that branch's older one while a
+# dispatch of main is never cancelled. Copies of ci.yaml with one of those terms broken, or the two
+# steps swapped, show that each case fails without it.
 #
 # The filter names the outputs read verdicts of are the changes job's filters, which no file of the
 # repository holds: the job computes them when it runs. The script reads them from the file
@@ -402,11 +403,21 @@ check "  and ref_is_main is false" "$(is "$(value "$got" ref_is_main)" false)"
 got=$(outputs --event workflow_dispatch --ref refs/tags/v1 --verdicts false)
 check "another tag: every one of them is true" "$(is "$(off_of "$got")" "")"
 
-# filter_step <argument>...: whether the filter step runs, and the base and ref it is handed.
-filter_step() { "$script_dir/ci_router_outputs.py" "$ci" --filters "$filters" --filter-step "$@" | tr '\n' ' '; }
-echo "case: the filter step diffs a dispatched branch's own commit with main, and reads a merge group's and a pull request's own event"
+# filter_step_of <workflow> <argument>...: whether the filter step runs, and the base and ref it is
+# handed; filter_step <argument>... reads this repository's own ci.yaml.
+filter_step_of() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --filter-step "$@" | tr '\n' ' '
+}
+filter_step() { filter_step_of "$ci" "$@"; }
+# The commit a dispatch names as its migration-base, its merge base with main for one.
+named=5555555555555555555555555555555555555555
+echo "case: the filter step diffs a dispatched branch's own commit with main, or with the migration-base it names, and reads a merge group's and a pull request's own event"
 check "a dispatch of a branch: base main, ref its commit" \
   "$(is "$(filter_step --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "runs=true base=main ref=$old ")"
+check "a dispatch of a branch that names a migration-base: base that commit, which paths-filter diffs with no history fetched" \
+  "$(is "$(filter_step --event workflow_dispatch --ref refs/heads/feature --sha "$old" --input migration-base="$named")" "runs=true base=$named ref=$old ")"
 check "a dispatch of main skips the step" "$(contains "$(filter_step --event workflow_dispatch --ref refs/heads/main)" '^runs=false ')"
 check "every-job skips the step" \
   "$(contains "$(filter_step --event workflow_dispatch --ref refs/heads/feature --input every-job=true)" '^runs=false ')"
@@ -432,6 +443,8 @@ echo "case: the filter generation measures a change against the commit it lands 
 # the event's base.sha (.github/ci-notes/ci.md#the-commit-a-change-is-measured-against).
 check "a dispatch of a branch: the merge base the base step finds" \
   "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=$merge_base")"
+check "  or the migration-base it names, which the filter step diffs with too" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --input migration-base="$named" --base "$merge_base")" "filters-base=$named")"
 check "a merge group: its base" "$(is "$(generate_step_of "$ci" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
 check "a pull request: the first parent the base step finds, not the event's own base" \
   "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
@@ -531,12 +544,25 @@ check "a pull request then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
 
 echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
-# edited-migrations-base.sh exits 2 on a dispatch of main that names no migration-base, which would
-# fail the changes job of every bypass check.
+# A dispatch of main selects every job and needs no base. edited-migrations-base.sh exits 2 on one
+# that names no migration-base, which would fail the changes job of such a dispatch.
 broken=$(copy_with "$work/base-every-dispatch" ci.yaml "github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job" \
   "github.event_name == 'workflow_dispatch'")
 check "a dispatch of main then runs the base step" \
   "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a base step that hands the script no MIGRATION_BASE fails the named-base case"
+broken=$(copy_with "$work/base-no-migration-base" ci.yaml \
+  $'        env:\n          MIGRATION_BASE: ${{ inputs.migration-base }}\n' '')
+check "a dispatch of a branch that names a migration-base then hands the generation the merge base instead" \
+  "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --input migration-base="$named" --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a filter step whose base is main on every dispatch fails the named-base case"
+broken=$(copy_with "$work/filter-base-main" ci.yaml \
+  "base: \${{ github.event_name == 'workflow_dispatch' && (inputs.migration-base || 'main') || '' }}" \
+  "base: \${{ github.event_name == 'workflow_dispatch' && 'main' || '' }}")
+check "a dispatch of a branch that names a migration-base then diffs with main, fetching history to find the merge base" \
+  "$(is "$(filter_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old" --input migration-base="$named")" "runs=true base=main ref=$old ")"
 
 echo "case: a generation step that starts before the base step is handed no merge base"
 # The runner evaluates a step's env: when that step starts, over the outputs of the steps before it
@@ -550,6 +576,8 @@ base_step=$(cat <<'YAML'
         id: base
         if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
+        env:
+          MIGRATION_BASE: ${{ inputs.migration-base }}
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
