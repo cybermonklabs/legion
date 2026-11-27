@@ -29,6 +29,7 @@ func TestADeployRecordNamesItsWriter(t *testing.T) {
 }
 
 func TestALiveCheckCountsOnlyTheDeployOfTheProgramItNames(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	restore := useTheNextReleasesManifest(t)
 	issue := rig.issue(t, "A named program", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"worker\"}\nThe worker answers.\n:::\n")
@@ -70,6 +71,7 @@ func TestALiveCheckCountsOnlyTheDeployOfTheProgramItNames(t *testing.T) {
 }
 
 func TestAnUnnamedLiveCheckReadsTheOnlyProgram(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	restore := useTheNextReleasesManifest(t)
 	issue := rig.issue(t, "One program", ":::check{#live when=\"after_merge\" subject=\"graph\"}\nThe graph answers.\n:::\n")
@@ -83,6 +85,7 @@ func TestAnUnnamedLiveCheckReadsTheOnlyProgram(t *testing.T) {
 }
 
 func TestARecordedDeployWakesEachOpenIssueThatHoldsALiveResult(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	restore := useTheNextReleasesManifest(t)
 	var issues []string
@@ -156,6 +159,7 @@ func TestADeployRouteRefusesACommitGitHubSaysTheRepositoryDoesNotHold(t *testing
 }
 
 func TestADeployedCommitBeforeTheMergeCannotDecideALiveCheck(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	restore := useTheNextReleasesManifest(t)
 	issue := rig.issue(t, "The deployed commit predates the merge", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"worker\"}\nThe worker answers.\n:::\n")

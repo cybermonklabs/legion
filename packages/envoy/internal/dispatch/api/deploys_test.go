@@ -43,6 +43,7 @@ func deployBody(program, commit string) map[string]any {
 }
 
 func TestTheDeployRoutesRecordAndReadEachProgram(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	first := postDeploy(t, rig.handler, deployBody("renderer", afterMergeC1), http.StatusCreated)
 	if first.ID == 0 || first.Repo != "acme/widgets" || first.Program != "renderer" || first.Commit != afterMergeC1 ||
@@ -81,6 +82,7 @@ func TestTheDeployRoutesRecordAndReadEachProgram(t *testing.T) {
 }
 
 func TestADeployRouteRefusesBadFieldsBeforeWriting(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	for _, test := range []struct {
 		field string
@@ -163,6 +165,7 @@ func requireNotCounted(t *testing.T, check liveCheckAnswer, id, reason string) {
 }
 
 func TestAGraphCheckReadsTheCurrentDeployAsProductionDoes(t *testing.T) {
+	t.Parallel()
 	for _, subject := range []string{"production", "graph"} {
 		t.Run(subject, func(t *testing.T) {
 			rig := newAfterMergeRig(t)

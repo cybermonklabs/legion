@@ -30,6 +30,7 @@ var createdWithoutJITExempt = map[string]string{
 // function that only returns the statement (a clone's cloneStatement) is a builder, and its
 // caller's database is read by storetest's TestEveryDatabaseRunsWithoutJIT.
 func TestEveryCreatedDatabaseRunsWithoutJIT(t *testing.T) {
+	t.Parallel()
 	if offences := creationsWithJIT(t, "../..", createdWithoutJITExempt); len(offences) > 0 {
 		t.Fatalf("%d functions create a database and leave JIT on:\n\t%s\n"+
 			"run testdb.WithoutJIT on each database the function creates (docs/testing.md, \"A database a Go test creates\")",

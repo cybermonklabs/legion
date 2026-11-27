@@ -312,6 +312,7 @@ func TestAgentsReportsListenerUnavailable(t *testing.T) {
 // caller reads, holds no part of the token, though net/http's error quotes the request URL with
 // only a password masked. Boot refuses such an ENVOY_URL; the answer names none of it all the same.
 func TestAgentsListenerUnavailableAnswerHoldsNoTokenOfTheListenersURL(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpEnvoyToken0123"
 	envoyURL := "http://" + token + "@" + testport.Refused(t)
 	response := dispatchRequest(t, agentsHandler(t, envoyURL), http.MethodGet, "/api/v1/agents", nil, "alice")

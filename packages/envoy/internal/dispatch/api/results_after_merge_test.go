@@ -76,6 +76,7 @@ func branchBasis(branch, merge string) afterMergeBasis {
 // counts any commit of the default branch. It is serial: its live case raises the block schema's
 // manifest, which parallel tests read.
 func TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	issue := rig.issue(t, "A merged change", afterMergeChecks)
 	rig.github.carry("main", afterMergeC0, afterMergeM, afterMergeC1)
