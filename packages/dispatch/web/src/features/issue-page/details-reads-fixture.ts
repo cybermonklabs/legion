@@ -35,10 +35,11 @@ export function emptyDetailsReads(): DetailsReads {
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
     // Details' People rows count the issue's subscribed agents on every load (`details-more.tsx`).
     spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
-    // Details' history reads the issue's log while Details is open (`IssueHistory.tsx`).
+    // Details' history reads the issue's log while Details is open (`IssueHistory.tsx`), its step
+    // records, each run an entry, and the list of its handoffs.
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
-    // Details' Steps reads the issue's step records while Details is open (`DetailsSteps.tsx`).
     spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] }),
+    spyOn(api, "listHandoffs").mockResolvedValue([]),
   ];
   const pinReads: PinReads = {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),

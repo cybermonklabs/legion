@@ -2193,6 +2193,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "action.text",
   },
   {
+    file: `${FEATURES}/issue-page/LegionBlock.tsx`,
+    holds:
+      "the Legion block's heading, the page's own word (`CONTROL_LABELS.legion.heading`), as its region's name and its heading",
+    written: "LEGION.heading",
+  },
+  {
     file: `${FEATURES}/issue-page/NodeRow.tsx`,
     holds: "whether the reader picked this option: a boolean, drawn nowhere",
     written: "picks.includes(option.label)",

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, HandoffSummary } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import {
   pageHairBg,
@@ -12,6 +12,8 @@ import {
   pageMutedText,
   pageQuietText,
   pageRowAct,
+  pageStateText,
+  pageStatusProgressText,
 } from "../../theme/classes";
 import { ActivityLine } from "../activity/ActivityLine";
 import { type SentencePart, SentenceParts } from "../activity/SentenceParts";
@@ -24,13 +26,16 @@ import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/route
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { HistoryHandoff } from "./HistoryHandoff";
-import type {
-  HistoryBlock,
-  HistoryDay,
-  HistoryEntry,
-  HistoryTurn,
-  NamedBlock,
+import { Identifier, Time } from "../steps/StepsTab";
+import type { StepRow } from "../steps/steps-model";
+import { type HandoffFold, HistoryHandoff } from "./HistoryHandoff";
+import {
+  type HistoryBlock,
+  type HistoryDay,
+  type HistoryEntry,
+  type HistoryTurn,
+  handoffLine,
+  type NamedBlock,
 } from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
@@ -100,6 +105,7 @@ export function runKeys(
 export function Entry({
   drawnId,
   entry,
+  fold,
   issueKey,
   item,
   onPin,
@@ -108,6 +114,8 @@ export function Entry({
   /** The id the entry is drawn under: its own, or a run's key (`runKeys`). */
   drawnId: string;
   entry: HistoryEntry;
+  /** The handoffs the reader folded on the issue's page (`useHandoffFold`). */
+  fold: HandoffFold;
   issueKey: string;
   item: string | undefined;
   onPin: (eventId: number) => void;
@@ -123,6 +131,47 @@ export function Entry({
         <span className={`h-px flex-1 ${pageHairBg}`} />
         {CONTROL_LABELS.history_unread}
         <span className={`h-px flex-1 ${pageHairBg}`} />
+      </li>
+    );
+  }
+  // A run is its task and its fields, and the handoff it reports, open as every handoff is.
+  if (entry.kind === "run") {
+    return (
+      <li
+        className={`${ENTRY} flex min-w-0 flex-col gap-1`}
+        data-event-seq={entry.seq}
+        data-step-run={entry.row.id}
+        {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
+      >
+        <RunFields row={entry.row} task={entry.task} />
+        {entry.handoff === undefined ? null : (
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+            <HandoffParts
+              fold={fold}
+              handoff={entry.handoff}
+              onPin={onPin}
+              pinned={pinned}
+              recorded={entry.recorded}
+            />
+          </div>
+        )}
+      </li>
+    );
+  }
+  if (entry.kind === "handoff") {
+    return (
+      <li
+        className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2`}
+        data-event-seq={entry.seq}
+        {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
+      >
+        <HandoffParts
+          fold={fold}
+          handoff={entry.handoff}
+          onPin={onPin}
+          pinned={pinned}
+          recorded={entry.recorded}
+        />
       </li>
     );
   }
@@ -165,9 +214,6 @@ export function Entry({
           pinned={isPinned}
           quiet
         />
-        {entry.event.type === "handoff.recorded" ? (
-          <HistoryHandoff handoffId={entry.event.payload.handoff_id} />
-        ) : null}
       </li>
     );
   }
@@ -239,6 +285,189 @@ export function Entry({
         </ol>
       )}
     </li>
+  );
+}
+
+/**
+ * A handoff of the issue as the list of its handoffs gives it, in its own entry or in the entry of
+ * the run that reports it: when it was written, who wrote it and its phase and version, as the
+ * line of its event reads (`handoffLine`), with the Pin of that event where the log holds it
+ * (`recorded`), then its fields, open until the reader folds them (`HistoryHandoff`), which stand
+ * on a row of their own in the flex line the caller draws them in.
+ */
+function HandoffParts({
+  fold,
+  handoff,
+  onPin,
+  pinned,
+  recorded,
+}: {
+  fold: HandoffFold;
+  handoff: HandoffSummary;
+  onPin: (eventId: number) => void;
+  pinned: (eventId: number) => boolean;
+  recorded: number | undefined;
+}): ReactNode {
+  const isPinned = recorded !== undefined && pinned(recorded);
+  return (
+    <>
+      <span className="min-w-40 flex-1 break-words" data-handoff-line={handoff.id}>
+        <Timestamp at={handoff.created_at} className={TIME} />
+        <span className={AUTHOR}>
+          <AgentName actor={handoff.author} inline />
+        </span>{" "}
+        <SentenceParts parts={handoffLine(handoff)} />
+      </span>
+      {recorded === undefined ? null : (
+        <PinButton
+          label={isPinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
+          onClick={() => onPin(recorded)}
+          pinned={isPinned}
+          quiet
+        />
+      )}
+      <HistoryHandoff
+        folded={fold.folded(handoff.id)}
+        handoffId={handoff.id}
+        onFold={(folded) => fold.setFolded(handoff.id, folded)}
+      />
+    </>
+  );
+}
+
+/** The label of each field of a run, and how a run ended, in the page's words. */
+const STEP_FIELDS = CONTROL_LABELS.step_fields;
+const STEP_RESULTS = CONTROL_LABELS.step_results;
+
+/** A field the record does not hold - a merge GitHub made names no agent, a run that has not
+ *  answered names no model, a run that has not ended no end - read as every row of Details reads
+ *  a property with no value. */
+function NoField(): ReactNode {
+  return (
+    <span className={pageQuietText} {...pageChrome}>
+      {CONTROL_LABELS.none}
+    </span>
+  );
+}
+
+/** The colour each result Details has a word for is drawn in, as Details' other states are
+ *  drawn: a run that runs in the in-progress blue, one that passed in the passed green, one that
+ *  failed in the failed red, and one that stopped in the ink every value of a run is drawn in
+ *  (`RunField`). Each is a state of `StepEnd` but `other`, so a state `StepEnd` adds fails to
+ *  compile until it has a colour here. */
+const RESULT_COLOURS: Record<Exclude<StepRow["state"], "other">, string> = {
+  failed: pageStateText.failed,
+  passed: pageStateText.passed,
+  running: pageStatusProgressText,
+  stopped: "",
+};
+
+/** One labelled value of a run: its label in the quiet grey, as Details labels its rows, and the
+ *  value in the ink beside it, given the width Details has left so it wraps rather than runs
+ *  past it. `field` names it for a reader of the page's markup. */
+function RunField({
+  children,
+  field,
+  label,
+}: {
+  children: ReactNode;
+  field: string;
+  label: string;
+}): ReactNode {
+  return (
+    <div className="grid min-w-0 grid-cols-[88px_minmax(0,1fr)] gap-2" data-step-field={field}>
+      <dt className={pageQuietText} {...pageChrome}>
+        {label}
+      </dt>
+      <dd className={`min-w-0 break-words ${pageInkText}`}>{children}</dd>
+    </div>
+  );
+}
+
+/** An agent token or a model id in the type every id of a run is drawn in, broken as the Steps
+ *  tab breaks it (`Identifier`), or None for one the record does not hold. */
+function IdentifierValue({ value }: { value: string }): ReactNode {
+  return value === "" ? (
+    <NoField />
+  ) : (
+    <span className="font-mono" {...authorText}>
+      <Identifier value={value} />
+    </span>
+  );
+}
+
+/** When a run started or ended, as the Steps tab writes it (`Time`), or None for a time the
+ *  record does not hold. */
+function TimeValue({ at }: { at: string | null }): ReactNode {
+  return at === null ? (
+    <NoField />
+  ) : (
+    <span {...authorText}>
+      <Time at={at} />
+    </span>
+  );
+}
+
+/**
+ * One run's task and the ten values the Steps section drew of it (the plan's D10), as a list of
+ * labelled values rather than a row of a table, so each value has the width of Details to wrap
+ * in: its step, role, type, agent, model, attempt, start, end and result, and where a failed or
+ * stopped run sent its task back, where it sent it (`StepEnd.returnedTo`), which wraps at any
+ * width. Its agent, model, start and end are drawn as the Steps tab draws them (`Identifier`,
+ * `Time`), as text the page did not author, and one the record does not hold reads None. A
+ * result this build has no word for shows the server's own.
+ */
+function RunFields({ row, task }: { row: StepRow; task: string }): ReactNode {
+  return (
+    <dl className="flex min-w-0 flex-col gap-0.5 text-xs leading-[18px]">
+      <RunField field="task" label={CONTROL_LABELS.steps_task}>
+        <span className="font-semibold" {...authorText}>
+          {task}
+        </span>
+      </RunField>
+      <RunField field="step" label={STEP_FIELDS.step}>
+        <span className="font-semibold" {...authorText}>
+          {row.label}
+        </span>
+      </RunField>
+      <RunField field="role" label={STEP_FIELDS.role}>
+        {row.role === "" ? <NoField /> : <span {...authorText}>{row.role}</span>}
+      </RunField>
+      <RunField field="type" label={STEP_FIELDS.type}>
+        {row.type === "" ? <NoField /> : <span {...authorText}>{row.type}</span>}
+      </RunField>
+      <RunField field="agent" label={STEP_FIELDS.agent}>
+        <IdentifierValue value={row.agent} />
+      </RunField>
+      <RunField field="model" label={STEP_FIELDS.model}>
+        <IdentifierValue value={row.model} />
+      </RunField>
+      <RunField field="attempt" label={STEP_FIELDS.attempt}>
+        <span className="tabular-nums" {...authorText}>
+          {row.attempt}
+        </span>
+      </RunField>
+      <RunField field="started" label={STEP_FIELDS.started}>
+        <TimeValue at={row.started} />
+      </RunField>
+      <RunField field="ended" label={STEP_FIELDS.ended}>
+        <TimeValue at={row.ended} />
+      </RunField>
+      <RunField field="result" label={STEP_FIELDS.result}>
+        {row.state === "other" ? (
+          <span {...authorText}>{row.result}</span>
+        ) : (
+          <span className={`font-medium ${RESULT_COLOURS[row.state]}`} {...pageChrome}>
+            {STEP_RESULTS[row.state]}
+          </span>
+        )}
+      </RunField>
+      {(row.state === "failed" || row.state === "stopped") && row.returnedTo !== null ? (
+        <RunField field="returned_to" label={STEP_FIELDS.returned_to}>
+          <span {...authorText}>{row.returnedTo}</span>
+        </RunField>
+      ) : null}
+    </dl>
   );
 }
 

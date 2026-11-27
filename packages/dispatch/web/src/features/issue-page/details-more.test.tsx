@@ -33,17 +33,22 @@ import {
   issueStepsQuery,
   userStateQuery,
 } from "../../api/queries";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   AskRead,
   AskThread,
   Comment,
   CommentDelivery,
   DispatchEvent,
+  HandoffSummary,
   IssueAskRow,
   IssueCoverage,
   IssueDetails,
+  IssueSteps,
+  LegionIssueResponse,
   MessageDelivery,
   MessageRead,
+  StepRecord,
   Subscriber,
   UserState,
 } from "../../api/types";
@@ -53,6 +58,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { stepRecord } from "../steps/step-record-fixture";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -88,14 +94,20 @@ const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
 
-// Details' Steps reads the issue's step records each time Details opens, whatever the cache
-// holds, through the Steps tab's catch-up (`DetailsSteps.tsx`): each case answers that read with
-// the same no runs `readsHeld` holds, so it reaches no network and draws nothing new.
-let stepsRead: { mockRestore(): void } | undefined;
+// Details' history reads the issue's step records, each run an entry, each time Details opens,
+// whatever the cache holds, through the Steps tab's catch-up (`IssueHistory.tsx`), and the list
+// of its handoffs: each case answers both with none, as `readsHeld` holds the runs, so it reaches
+// no network and draws nothing new, unless it answers them itself (`stepsReads`, `handoffsReads`).
+let timelineReads: { mockRestore(): void }[] = [];
 beforeEach(() => {
-  stepsRead = spyOn(api, "listSteps").mockResolvedValue({ issue: KEY, tasks: [] });
+  timelineReads = [
+    spyOn(api, "listSteps").mockResolvedValue({ issue: KEY, tasks: [] }),
+    spyOn(api, "listHandoffs").mockResolvedValue([]),
+  ];
 });
-afterEach(() => stepsRead?.mockRestore());
+afterEach(() => {
+  for (const read of timelineReads) read.mockRestore();
+});
 
 const issue = {
   artifacts: [],
@@ -1777,6 +1789,65 @@ function stepsReads(): Mock<typeof api.listSteps> {
   return api.listSteps as unknown as Mock<typeof api.listSteps>;
 }
 
+/** The list of the issue's handoffs, read through `api.listHandoffs`, which this file's
+ *  `beforeEach` answers with none. */
+function handoffsReads(): Mock<typeof api.listHandoffs> {
+  return api.listHandoffs as unknown as Mock<typeof api.listHandoffs>;
+}
+
+/** The runs of the issue, one task, in the server's order: each record `stepRecord` builds from
+ *  the id and the fields a case gives. */
+function stepsOf(...records: (Partial<StepRecord> & Pick<StepRecord, "id">)[]): IssueSteps {
+  return {
+    issue: KEY,
+    tasks: [{ steps: records.map((fields) => stepRecord(fields)), task: "default" }],
+  };
+}
+
+/** The ids of the runs the history draws, newest first. */
+function historyRuns(): string[] {
+  return [...document.querySelectorAll('[data-testid="issue-history"] [data-step-run]')].map(
+    (run) => run.getAttribute("data-step-run") ?? ""
+  );
+}
+
+/** The issue's Legion read as its live view answers it: a project that names a daemon, the issue
+ *  in `implementing`, its runs' revision `revision`. */
+function legionAnswer(revision: number): LegionIssueResponse {
+  return {
+    configured: true,
+    issue: KEY,
+    project: "CORE",
+    read: { at: "2026-11-19T11:00:00Z", error: null, ok: true },
+    runs_revision: revision,
+    state: {
+      blocked_by: [],
+      phase: "implementing",
+      phase_since: "2026-11-19T10:00:00Z",
+      phase_start_seen: true,
+      roles: [{ role: "implementer", state: "working" }],
+      slot: 0,
+      waiting_line: null,
+      waiting_on: null,
+    },
+  };
+}
+
+/** A delta of the issue's live view that sets its runs' revision to `revision`, the `seq`th. */
+function revisionDelta(sub: string, seq: number, revision: number) {
+  return {
+    changed_at: null,
+    counts: {},
+    items: {},
+    maps: {},
+    revs: { fields: { runs_revision: String(seq) } },
+    seq: String(seq),
+    set: { runs_revision: revision },
+    sub,
+    type: "delta" as const,
+  };
+}
+
 /** The `legion_issue` subscribe frames of the issue `socket` sent. */
 function legionSubscribes(socket: FakeLiveSocket) {
   return socket
@@ -1788,6 +1859,186 @@ function legionSubscribes(socket: FakeLiveSocket) {
 // Legion block and the runs' revision observe one live view, `legion_issue`, only while Details
 // is open (the plan's D16), and the runs are read again when that view's runs' revision moves.
 describe("the runs are read as their table says", () => {
+  // Opening Details sends one request for the runs, the catch-up's first read, and the next is
+  // the catch-up's own, 2 s on, then 5 s on: a run whose record reaches the server only after the
+  // opening's read is drawn in the history by the next, with no event and no reload. Shutting
+  // Details stops the catch-up, and nothing reads after; Details opened again reads on its own
+  // new catch-up alone.
+  test("D1: Details opening reads the runs at once and at each catch-up time", async () => {
+    await onFakeClock(async () => {
+      setSystemTime(NOON);
+      const sockets = installFakeLiveSockets();
+      const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+      // Ten minutes shut drop the outline's reads from the cache, which Details opened again
+      // reads anew.
+      const outlineReads = [
+        spyOn(api, "listComments").mockResolvedValue([OWN_COMMENT]),
+        spyOn(api, "listIssueMessages").mockResolvedValue([]),
+        spyOn(api, "listIssueAsks").mockResolvedValue([]),
+      ];
+      const readsAt: number[] = [];
+      let openedAt = Date.now();
+      let answer = stepsOf();
+      stepsReads().mockImplementation(async () => {
+        readsAt.push(Date.now() - openedAt);
+        return answer;
+      });
+      const client = readsHeld();
+      const hold: DrawerHold = {};
+      const view = render(
+        <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+          <QueryClientProvider client={client}>
+            <HistoryInDrawer hold={hold} />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await tick(0);
+        expect(readsAt, "the runs were read with Details shut").toEqual([]);
+        openedAt = Date.now();
+        act(() => hold.open?.(true));
+        await tick(1_900, 100);
+        expect(readsAt, "opening Details sent more than one request for the runs").toEqual([0]);
+
+        answer = stepsOf({ id: "late", started_at: new Date(Date.now()).toISOString() });
+        await tick(100, 100);
+        expect(readsAt).toEqual([0, 2_000]);
+        expect(historyRuns(), "the run the catch-up's next read brought is not drawn").toEqual([
+          "late",
+        ]);
+        await tick(3_000, 100);
+        expect(readsAt).toEqual([0, 2_000, 5_000]);
+
+        act(() => hold.open?.(false));
+        await tick(600_000, 1_000);
+        expect(readsAt, "the runs were read after Details shut").toHaveLength(3);
+
+        const againAt = Date.now() - openedAt;
+        act(() => hold.open?.(true));
+        await tick(2_000, 100);
+        expect(readsAt.slice(3)).toEqual([againAt, againAt + 2_000]);
+      } finally {
+        view.unmount();
+        liveSocketFor(client).close();
+        sockets.restore();
+        getIssueEvents.mockRestore();
+        for (const read of outlineReads) read.mockRestore();
+      }
+    });
+  });
+
+  /** Opens Details on the fake clock, answers its Legion view's subscription with the runs'
+   *  revision 4, and gives the case the socket, the subscription and the reads of the runs, each
+   *  as how long after the opening it was sent. */
+  async function openedWithRevision(): Promise<{
+    readsAt: number[];
+    restore: () => void;
+    sinceOpening: () => number;
+    socket: FakeLiveSocket;
+    sub: string;
+  }> {
+    setSystemTime(NOON);
+    const sockets = installFakeLiveSockets();
+    const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+    const readsAt: number[] = [];
+    const openedAt = Date.now();
+    const client = readsHeld();
+    const hold: DrawerHold = {};
+    const view = render(
+      <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+        <QueryClientProvider client={client}>
+          <HistoryInDrawer hold={hold} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const restore = () => {
+      view.unmount();
+      liveSocketFor(client).close();
+      sockets.restore();
+      getIssueEvents.mockRestore();
+    };
+    stepsReads().mockImplementation(async () => {
+      readsAt.push(Date.now() - openedAt);
+      return stepsOf();
+    });
+    act(() => hold.open?.(true));
+    await tick(0);
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const [subscription] = legionSubscribes(socket);
+    if (subscription === undefined) {
+      restore();
+      throw new Error("open Details subscribed no Legion state");
+    }
+    act(() => socket.receive(snapshotFrame(subscription.sub, legionAnswer(4))));
+    await tick(0);
+    return {
+      readsAt,
+      restore,
+      sinceOpening: () => Date.now() - openedAt,
+      socket,
+      sub: subscription.sub,
+    };
+  }
+
+  // The first runs' revision the view gives starts no read: the opening's catch-up read them.
+  test("D2: the first runs' revision starts no read", async () => {
+    await onFakeClock(async () => {
+      const opened = await openedWithRevision();
+      try {
+        expect(
+          screen.getByRole("region", { name: CONTROL_LABELS.legion.heading }),
+          "the block of an issue the daemon records is not drawn"
+        ).toBeDefined();
+        await tick(1_500, 100);
+        expect(opened.readsAt, "the first runs' revision read the runs").toEqual([0]);
+      } finally {
+        opened.restore();
+      }
+    });
+  });
+
+  // A new runs' revision reads the runs at once, a second and a half after the opening, before
+  // the catch-up's next read, and the run that read brings is drawn in the history.
+  test("D3: a new runs' revision reads the runs at once", async () => {
+    await onFakeClock(async () => {
+      const opened = await openedWithRevision();
+      try {
+        await tick(1_500, 100);
+        stepsReads().mockImplementation(async () => {
+          opened.readsAt.push(opened.sinceOpening());
+          return stepsOf({ id: "written", started_at: new Date(Date.now()).toISOString() });
+        });
+        const movedAt = opened.sinceOpening();
+        act(() => opened.socket.receive(revisionDelta(opened.sub, 2, 5)));
+        await tick(0);
+        expect(opened.readsAt, "a new runs' revision did not read the runs at once").toEqual([
+          0,
+          movedAt,
+        ]);
+        expect(historyRuns(), "the run the new revision brought is not drawn").toEqual(["written"]);
+      } finally {
+        opened.restore();
+      }
+    });
+  });
+
+  // A delta that gives the revision the page already saw reads nothing, until the catch-up's own
+  // next read.
+  test("D4: the same revision again starts no read", async () => {
+    await onFakeClock(async () => {
+      const opened = await openedWithRevision();
+      try {
+        await tick(1_000, 100);
+        act(() => opened.socket.receive(revisionDelta(opened.sub, 2, 4)));
+        await tick(800, 100);
+        expect(opened.readsAt, "the same runs' revision read the runs").toEqual([0]);
+      } finally {
+        opened.restore();
+      }
+    });
+  });
+
   // Shut, Details holds no subscription and reads no run; open, it holds one, which goes as it
   // shuts again, and nothing reads after.
   test("D5: with Details shut nothing subscribes to the Legion state and nothing reads the runs", async () => {
@@ -1802,10 +2053,14 @@ describe("the runs are read as their table says", () => {
         </QueryClientProvider>
       </MemoryRouter>
     );
+    // A run of the issue, which the history draws as its entry only once Details opens.
+    stepsReads().mockResolvedValue(stepsOf({ id: "drawn-once-open" }));
     try {
       await act(async () => {});
       expect(sockets.sockets, "Details shut opened the live socket").toHaveLength(0);
       expect(stepsReads(), "Details shut read the runs").not.toHaveBeenCalled();
+      expect(screen.queryByTestId("issue-history")).toBeNull();
+      expect(document.querySelector("[data-step-run]")).toBeNull();
 
       act(() => hold.open?.(true));
       await waitFor(() => expect(sockets.sockets).toHaveLength(1));
@@ -1816,6 +2071,7 @@ describe("the runs are read as their table says", () => {
         "open Details holds other than one subscription of the issue's Legion state"
       ).toEqual([{ issue: KEY, kind: "legion_issue" }]);
       await waitFor(() => expect(stepsReads()).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(historyRuns()).toEqual(["drawn-once-open"]));
 
       act(() => hold.open?.(false));
       const [held] = legionSubscribes(socket);
@@ -1826,6 +2082,7 @@ describe("the runs are read as their table says", () => {
       expect(legionSubscribes(socket), "Details shut subscribed again").toHaveLength(1);
       expect(sockets.sockets, "Details shut opened another live socket").toHaveLength(1);
       expect(stepsReads(), "Details shut read the runs").toHaveBeenCalledTimes(1);
+      expect(document.querySelector("[data-step-run]"), "Details shut draws a run").toBeNull();
     } finally {
       view.unmount();
       liveSocketFor(client).close();
@@ -1911,6 +2168,208 @@ describe("the runs are read as their table says", () => {
         getIssueEvents.mockRestore();
       }
     });
+  });
+});
+
+/** A handoff of the issue as its list gives it, written `ago` seconds before now. */
+function listedHandoff(id: string, ago: number): HandoffSummary {
+  return {
+    author: { id: "fedcba9876543210", kind: "session", origin: { session_title: "Implementer" } },
+    created_at: new Date(Date.now() - ago * 1000).toISOString(),
+    id,
+    issue_key: KEY,
+    phase: "implement",
+    version: 1,
+  };
+}
+
+/** The control that folds and opens handoff `id`'s fields. */
+function foldControl(id: string): HTMLElement {
+  const found = document
+    .querySelector(`[data-handoff-line="${id}"]`)
+    ?.parentElement?.querySelector<HTMLElement>("button[aria-expanded]");
+  if (found == null) throw new Error(`the history draws no handoff ${id}`);
+  return found;
+}
+
+/** Whether handoff `id` is drawn folded. */
+function folded(id: string): boolean {
+  return foldControl(id).getAttribute("aria-expanded") === "false";
+}
+
+// The handoffs the reader folds on an issue's page (the plan's table C): `DetailsHistory` holds
+// the fold for the issue it draws, so it outlives the history it is drawn in.
+describe("a fold lasts while the reader stays on the issue", () => {
+  /** Details' history in its drawer, opened at `path`, over `events` of the log and with the
+   *  handoffs `handoffs` listed, each one's body naming it; it waits until handoff `shown` is
+   *  drawn with its fields. */
+  async function openWith(
+    handoffs: readonly HandoffSummary[],
+    shown: string,
+    events: readonly DispatchEvent[] = [claim(1)]
+  ) {
+    const sockets = installFakeLiveSockets();
+    const reads = [
+      spyOn(api, "getIssueEvents").mockResolvedValue([...events]),
+      spyOn(api, "getHandoff").mockImplementation(async (id) => ({
+        ...listedHandoff(id, 0),
+        body: JSON.stringify({ summary: `The body of ${id}` }),
+      })),
+      spyOn(api, "listComments").mockResolvedValue([]),
+      spyOn(api, "listIssueMessages").mockResolvedValue([]),
+      spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    ];
+    handoffsReads().mockResolvedValue([...handoffs]);
+    const client = readsHeld();
+    const hold: DrawerHold = {};
+    const drawIn = (of: IssueDetails) => (
+      <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+        <QueryClientProvider client={client}>
+          <HistoryInDrawer hold={hold} of={of} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const view = render(drawIn(issue));
+    act(() => hold.open?.(true));
+    await waitFor(() =>
+      expect(document.querySelector(`[data-handoff-line="${shown}"]`)).not.toBeNull()
+    );
+    await screen.findByText(`The body of ${shown}`);
+    return {
+      client,
+      hold,
+      redraw: (of: IssueDetails) => view.rerender(drawIn(of)),
+      restore: () => {
+        view.unmount();
+        liveSocketFor(client).close();
+        sockets.restore();
+        for (const read of reads) read.mockRestore();
+      },
+    };
+  }
+
+  test("C1: Hide fields folds the handoff, and Show fields opens it", async () => {
+    const opened = await openWith([listedHandoff("handoff-1", 2)], "handoff-1");
+    try {
+      await userEvent.click(foldControl("handoff-1"));
+      expect(folded("handoff-1")).toBe(true);
+      expect(foldControl("handoff-1")).toHaveTextContent(CONTROL_LABELS.show_fields);
+      expect(screen.queryByText("The body of handoff-1")).toBeNull();
+      await userEvent.click(foldControl("handoff-1"));
+      expect(folded("handoff-1")).toBe(false);
+      await screen.findByText("The body of handoff-1");
+    } finally {
+      opened.restore();
+    }
+  });
+
+  test("C2: the fold stays when Details shuts and opens", async () => {
+    const opened = await openWith([listedHandoff("handoff-1", 2)], "handoff-1");
+    try {
+      await userEvent.click(foldControl("handoff-1"));
+      act(() => opened.hold.open?.(false));
+      expect(screen.queryByTestId("issue-history")).toBeNull();
+      act(() => opened.hold.open?.(true));
+      await waitFor(() =>
+        expect(document.querySelector('[data-handoff-line="handoff-1"]')).not.toBeNull()
+      );
+      expect(folded("handoff-1"), "Details opened again drew the folded handoff open").toBe(true);
+    } finally {
+      opened.restore();
+    }
+  });
+
+  // A handoff the reader folded in an entry of its own stays folded when a run that reports it
+  // arrives, a second later, and takes it into the run's entry.
+  test("C3: the fold stays when a run arrives and takes the handoff into its entry", async () => {
+    const opened = await openWith([listedHandoff("handoff-1", 2)], "handoff-1");
+    try {
+      await userEvent.click(foldControl("handoff-1"));
+      expect(historyRuns()).toEqual([]);
+      stepsReads().mockResolvedValue(
+        stepsOf({ id: "reporter", report: "handoff-1", started_at: new Date().toISOString() })
+      );
+      // The run's revision moves a second on: the held `Date` never lets the refresh scheduler's
+      // second between two reads of one query pass on its own.
+      setSystemTime(new Date(NOON.getTime() + 2_000));
+      act(() =>
+        refreshQueries(opened.client, [{ exact: true, queryKey: issueStepsQuery(KEY).queryKey }])
+      );
+      await waitFor(() => expect(historyRuns()).toEqual(["reporter"]));
+      expect(
+        document.querySelector('[data-step-run="reporter"] [data-handoff-line="handoff-1"]'),
+        "the run's entry does not hold the handoff it reports"
+      ).not.toBeNull();
+      expect(folded("handoff-1"), "the run's arrival drew the folded handoff open").toBe(true);
+    } finally {
+      opened.restore();
+    }
+  });
+
+  test("C4: the fold stays when Show more draws the next entries", async () => {
+    const claims = Array.from({ length: 25 }, (_, index) => claim(index + 1));
+    const opened = await openWith([listedHandoff("handoff-1", -60)], "handoff-1", claims);
+    try {
+      await userEvent.click(foldControl("handoff-1"));
+      const more = screen.getByRole("button", { name: SHOW_MORE });
+      await userEvent.click(more);
+      await waitFor(() =>
+        expect(
+          document.querySelectorAll("[data-history-day] > ol > [data-history-entry]")
+        ).toHaveLength(26)
+      );
+      expect(folded("handoff-1"), "Show more drew the folded handoff open").toBe(true);
+    } finally {
+      opened.restore();
+    }
+  });
+
+  // The handoff's page address opens it, though the reader folded it, once for each following
+  // of the address: the reader's next fold there stays, and the address followed again opens it
+  // again.
+  test("C5: the handoff's address opens it once for each following, and the reader's next fold stays", async () => {
+    const opened = await openWith([listedHandoff("handoff-1", 2)], "handoff-1");
+    const address = `/issues/${KEY}/handoffs/handoff-1`;
+    try {
+      await userEvent.click(foldControl("handoff-1"));
+      act(() => opened.hold.navigate?.(address));
+      await waitFor(() =>
+        expect(folded("handoff-1"), "the handoff's address left it folded").toBe(false)
+      );
+      await userEvent.click(foldControl("handoff-1"));
+      await act(async () => {});
+      expect(folded("handoff-1"), "the address opened the handoff again at one following").toBe(
+        true
+      );
+      act(() => opened.hold.navigate?.(address));
+      await waitFor(() =>
+        expect(folded("handoff-1"), "the address followed again left it folded").toBe(false)
+      );
+    } finally {
+      opened.restore();
+    }
+  });
+
+  // A fold is the reader's on one issue's page: the page of another issue, and the first issue's
+  // page come back to, start with no handoff folded.
+  test("C6: another issue starts with no fold", async () => {
+    const opened = await openWith([listedHandoff("handoff-1", 2)], "handoff-1");
+    const other = { ...issue, key: "CORE-2" } as IssueDetails;
+    try {
+      await userEvent.click(foldControl("handoff-1"));
+      opened.redraw(other);
+      await waitFor(() =>
+        expect(document.querySelector('[data-handoff-line="handoff-1"]')).not.toBeNull()
+      );
+      expect(folded("handoff-1"), "another issue's page drew a handoff folded").toBe(false);
+      opened.redraw(issue);
+      await waitFor(() =>
+        expect(document.querySelector('[data-handoff-line="handoff-1"]')).not.toBeNull()
+      );
+      expect(folded("handoff-1"), "the issue's page come back to kept the fold").toBe(false);
+    } finally {
+      opened.restore();
+    }
   });
 });
 

@@ -9,7 +9,7 @@ import { useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
-import { issueResultsQuery } from "../../api/queries";
+import { handoffsQuery, issueResultsQuery, issueStepsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
@@ -19,8 +19,11 @@ import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
-import { DetailsErrorLine, retryRead } from "./details-error";
+import { useCatchUp } from "../steps/StepsTab";
+import { stepVariant } from "../steps/steps-model";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
+import type { HandoffFold } from "./HistoryHandoff";
 import { Entry, runKeys } from "./history-entries";
 import {
   buildHistory,
@@ -32,6 +35,7 @@ import {
   placeUnder,
   turnPlace,
 } from "./history-model";
+import { useMarginDrawer } from "./margin-slot";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
@@ -64,15 +68,19 @@ export interface AddressedTurn {
  * entries, and one control under the last entry drawn draws the next ones (Show more); each of
  * those draws first reads older pages of the log until more entries are read than it draws, or
  * the log has ended, so Show more says how many entries are left while any may be. An event
- * is one line with its pin, and a handoff's line holds its fields, open until the reader folds
- * them (`HistoryHandoff`); a run of uploads - one author's newest upload and their uploads made at
- * most a minute before it, with no other author's upload between them - is one entry that opens
- * each file, each with its own upload's pin, drawn under one key as the run grows or a newer
- * upload splits it (`runKeys`); a thread the history holds (`agents-only.ts`: a thread the Legion
- * daemon began, whoever wrote in it, or an agents' post tied to no text) is one entry drawn
- * whole, each turn's words whole at any length, with the marks of a post its author corrected
- * and with its Reply, which sets the line at the foot of the outline to reply to it. Once a person
- * has written in an agents' post, the outline draws it and this list no longer does.
+ * is one line with its pin; a run of the issue's steps is one entry with its task and its fields,
+ * and holds the handoff it reports; a handoff no run reports is an entry of its own; each handoff
+ * holds its fields, open until the reader folds them (`HistoryHandoff`), and that fold lasts as
+ * long as `DetailsHistory` holds it (`fold`); a run of uploads - one author's newest upload and
+ * their uploads made at most a minute before it, with no other author's upload between them - is
+ * one entry that opens each file, each with its own upload's pin, drawn under one key as the run
+ * grows or a newer upload splits it (`runKeys`); a thread the history holds (`agents-only.ts`: a
+ * thread the Legion daemon began, whoever wrote in it, or an agents' post tied to no text) is one
+ * entry drawn whole, each turn's words whole at any length, with the marks of a post its author
+ * corrected and with its Reply, which sets the line at the foot of the outline to reply to it.
+ * Once a person has written in an agents' post, the outline draws it and this list no longer
+ * does. The list waits for its first answer of the runs and of the handoffs, and says under its
+ * heading where either read failed, with a Retry, above the line of the newest run's experiment.
  *
  * `/activity`, `t v` and the address of a turn of such a thread open Details here:
  * at `/activity` the heading is brought into Details' view once for each following of that
@@ -92,6 +100,7 @@ export interface AddressedTurn {
  */
 export function IssueHistory({
   activityFollowing,
+  fold,
   issue,
   item,
   state,
@@ -101,6 +110,9 @@ export function IssueHistory({
    *  address: each following of `/activity` brings the history's heading into Details' view
    *  once. */
   activityFollowing: string | undefined;
+  /** The handoffs the reader folded on the issue's page, which `DetailsHistory` holds
+   *  (`useHandoffFold`), so a fold outlives this list. */
+  fold: HandoffFold;
   issue: IssueDetails;
   /** The turn the address names, which the list marks, draws and brings into view once for each
    *  following of that address. */
@@ -150,6 +162,18 @@ export function IssueHistory({
     queryKey: ["asks", issueKey],
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // The runs of the issue's steps, each one entry, read as the Steps tab reads them: through its
+  // catch-up while Details is open (`useCatchUp`), and through Retry, never on their own - the
+  // query is never enabled and has no retry policy, so the catch-up's read is the one request
+  // an opening sends, and nothing reads after Details shuts. Each refresh the event feed sends
+  // the read, and each move of the runs' revision (`LegionRunsFollower`), starts the catch-up
+  // again. A write of a run appends no event, so a run arrives by those reads alone.
+  const runs = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
+  const drawer = useMarginDrawer();
+  useCatchUp(issueKey, drawer === undefined || drawer.open);
+  // Every handoff of the issue, with no body: each is drawn from its entry here, never from its
+  // event, whose arrival reads the list again (`api/event-refresh.ts`).
+  const handoffs = useQuery(handoffsQuery(issueKey));
   const issueState = stateForIssue(state, issueKey);
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);
   // Whether the log holds a refused check's line, the one line that names a check's block.
@@ -194,22 +218,28 @@ export function IssueHistory({
       blocks: answered ? historyBlocks(issueKey, issueAsks, results.data?.checks ?? []) : undefined,
       comments: comments.data,
       events,
+      handoffs: handoffs.data,
+      issueCreatedAt: issue.created_at,
       lastReadSeq: visitMark,
       ...(loadedFrom === undefined ? {} : { loadedFrom }),
       messages: messages.data,
+      runs: runs.data,
       today,
     });
   }, [
     asks.data,
     comments.data,
     events,
+    handoffs.data,
     issue.artifacts,
+    issue.created_at,
     issue.open_asks,
     issueKey,
     loadedFrom,
     messages.data,
     refusesCheck,
     results.data,
+    runs.data,
     today,
     visitMark,
   ]);
@@ -227,11 +257,18 @@ export function IssueHistory({
   const [end, setEnd] = useState<HistoryPlace | undefined>(undefined);
   const firstEnd = useMemo(() => placeUnder(days, undefined, HISTORY_PAGE), [days]);
   const shownEnd = end ?? firstEnd;
+  // The runs and the list of handoffs have each answered: an answer, or a failure, which is an
+  // answer too (`standsFailed`). Until both have, the history draws its loading line and holds no
+  // place, so no entry moves on its first draw as a run takes a handoff into its entry.
+  const timelineAnswered =
+    (runs.data !== undefined || runs.errorUpdateCount > 0) &&
+    (handoffs.data !== undefined || handoffs.errorUpdateCount > 0);
   const settled =
     log.data !== undefined &&
     comments.status !== "pending" &&
     messages.status !== "pending" &&
-    asks.status !== "pending";
+    asks.status !== "pending" &&
+    timelineAnswered;
   // Whether a press of the control, or of the next page's Retry in its place, waits for the next
   // entries it asked for, which are drawn once the log holds enough of them (`short`).
   const [asked, setAsked] = useState(false);
@@ -256,7 +293,7 @@ export function IssueHistory({
   // The first entries wait under the loading line while the history reads on for them; a press
   // of Show more made before the threads' reads answer finds them drawn, and keeps them.
   const firstFill = end === undefined && !asked && short && !stopped;
-  const listDrawn = log.data !== undefined && !firstFill;
+  const listDrawn = log.data !== undefined && !firstFill && timelineAnswered;
   // Whether a press waits for the pages its next entries are read from.
   const pressWaits = asked && !stopped;
   // Each move of the place is drawn in the render that finds it, before React commits anything.
@@ -621,6 +658,15 @@ export function IssueHistory({
   ) : null;
   // Show more reads busy while the history reads older pages for the next entries it draws.
   const readsPage = short && !stopped;
+  // A failed read of the runs, or of the list of handoffs, is said under the heading while it
+  // holds no answer (`standsFailed`), and every entry the other reads give stays drawn: the
+  // runs' line is the one the Steps section drew, with its Retry, which reads them again, joins a
+  // read already out (`retryRead`), and hands the focus it held to the heading as its line goes.
+  const runsRetry = useRetryHandOff(() => heading.current);
+  const handoffsRetry = useRetryHandOff(() => heading.current);
+  // The experiment and the variant the newest run's records name, once, above the list: the
+  // steps model's own line (`stepVariant`), as today's Steps tab draws it.
+  const variant = runs.data === undefined ? null : stepVariant(runs.data);
 
   return (
     <section
@@ -638,7 +684,36 @@ export function IssueHistory({
         {CONTROL_LABELS.history}
       </h2>
       {log.isFetchNextPageError ? null : failed}
-      {(log.isPending && !logFailed) || firstFill ? (
+      {standsFailed(runs) ? (
+        <DetailsErrorLine
+          error={runs.error}
+          failure={runs.errorUpdateCount}
+          message={ANSWER_LINES.steps_unreadable}
+          onRetry={retryRead(runs)}
+          {...runsRetry}
+          retrying={runs.isFetching}
+        />
+      ) : null}
+      {standsFailed(handoffs) ? (
+        <DetailsErrorLine
+          error={handoffs.error}
+          failure={handoffs.errorUpdateCount}
+          message={ANSWER_LINES.handoffs_unreadable}
+          onRetry={retryRead(handoffs)}
+          {...handoffsRetry}
+          retrying={handoffs.isFetching}
+        />
+      ) : null}
+      {variant === null ? null : (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
+          data-step-variant=""
+          {...authorText}
+        >
+          {variant}
+        </p>
+      )}
+      {!listDrawn && !logFailed ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {ANSWER_LINES.loading_history}
         </p>
@@ -665,6 +740,7 @@ export function IssueHistory({
                     return (
                       <Entry
                         drawnId={drawnId}
+                        fold={fold}
                         entry={entry}
                         issueKey={issueKey}
                         item={item?.id}

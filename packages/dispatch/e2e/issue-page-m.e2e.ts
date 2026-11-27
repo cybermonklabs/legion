@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { type LegionRole, roleToken } from "@legion/contracts";
 
-import type { DispatchEvent, IssueAskThreadRow, IssueSteps } from "../web/src/api/types";
+import type { DispatchEvent, IssueAskThreadRow } from "../web/src/api/types";
 import { conversationItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
 import { KEY_REPORTS, PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
@@ -17,6 +17,7 @@ import {
   DELIVERY_STATE_WORDS,
   NODE_REFERENCES_WORDS,
   NODE_TYPE_NAMES,
+  PHASE_WORDS,
   sentenceCase,
 } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
@@ -117,14 +118,19 @@ import {
   askFacts,
   daemonOf,
   drawnInstant,
+  fieldsPastTheirEntry,
   focusedNodeFacts,
   focusedRowFacts,
+  handoffFieldsOf,
+  handoffFoldControl,
+  handoffLineOf,
   historyDayOf,
   historyEntries,
   historyHeading,
   historyItem,
   historyNextPage,
   historyPanel,
+  historyRuns,
   historyShowMore,
   historyShowMoreState,
   isOlderPageRead,
@@ -132,15 +138,16 @@ import {
   olderPageAnswered,
   putStepExperiment,
   rowFacts,
+  runValuesUnread,
+  type StepsReads,
   seededHistoryEntry,
   stepRun,
-  stepsSection,
-  stepsUnread,
   watchStepsReads,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { approvalChip, viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
+import { seedLegionState } from "./legion-state-seed";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { READING_PANE_WIDTH } from "./reading-pane";
@@ -1005,10 +1012,11 @@ async function handoffLinesDrawn(page: Page, key: string): Promise<void> {
   }
 }
 
-// The conversation's handoff cards are the history's lines (the
+// The conversation's handoff cards are the history's entries (the
 // Design's "Where each thing goes": "The conversation's handoff cards, and the Activity tab -
-// The history in the panel"), and each line keeps what the card opened: its fields and every
-// proof entry, drawn open, which the reader folds by the line and opens again by it.
+// The history in the panel"), each drawn from the list of the issue's handoffs, and each keeps
+// what the card opened: its fields and every proof entry, drawn open, which the reader folds by
+// its fold control and opens again by it; a list in them is one numbered entry for each item.
 test("the history lists each handoff version, and opening one shows its fields and every proof entry", async ({
   browser,
 }, testInfo) => {
@@ -1049,9 +1057,9 @@ test("the history lists each handoff version, and opening one shows its fields a
     await expect(field("issue")).toContainText(key);
     await expect(field("verified")).toContainText("true");
     await expect(field("summary")).toContainText("Second pass, review addressed");
-    // An array field is indented JSON.
-    await expect(field("files").locator("pre")).toContainText('"web/src/a.ts"');
-    await expect(field("files").locator("pre")).toContainText('"web/src/b.ts"');
+    // A list field is one numbered entry for each item.
+    await expect(field("files").locator("ol > li")).toHaveText(["web/src/a.ts", "web/src/b.ts"]);
+    await expect(field("files").locator("pre")).toHaveCount(0);
     // The proof list is one row per entry, each named by the page's word for it and counted.
     const proof = field("proof");
     await expect(proof).toHaveCount(2);
@@ -1074,8 +1082,8 @@ test("the history lists each handoff version, and opening one shows its fields a
 });
 
 // A handoff written while the history is open reaches it over the event stream: the write's
-// `handoff.recorded` is prepended to the issue's `["events", key]` log the history reads
-// (`prependEventToLog`), so the new version's line arrives with no reload.
+// `handoff.recorded` reads the list of the issue's handoffs again (`api/event-refresh.ts`), from
+// which the history draws each handoff, so the new version's entry arrives with no reload.
 test("a handoff written while the history is open arrives without a reload", async ({
   browser,
 }) => {
@@ -1118,7 +1126,8 @@ test("a handoff written while the history is open arrives without a reload", asy
   }
 });
 
-// One line per version, and no second drawing of either anywhere on the page.
+// One entry per version, drawn from the list of handoffs, and no second drawing of either
+// anywhere on the page: the event of a recorded handoff is no line of its own.
 test("the history has one line per recorded handoff version", async ({ browser }) => {
   const key = await seedHandoffs();
 
@@ -1133,6 +1142,8 @@ test("the history has one line per recorded handoff version", async ({ browser }
     for (const version of [1, 2]) {
       await expect(handoffLine(page, version)).toHaveCount(1);
     }
+    await expect(page.locator("[data-handoff-line]")).toHaveCount(2);
+    await expect(historyPanel(page).locator('[data-history-entry^="event:"]')).toHaveCount(1);
   } finally {
     await alice.close();
   }
@@ -2509,8 +2520,8 @@ test("a read mark moving in a narrow history keeps the lower entry fixed", async
 // ---------------------------------------------------------------------------------------------
 
 // Each handoff is drawn open, its fields and every proof entry under its line with no press, as
-// the conversation's handoff card showed them once opened; it folds only when the reader folds
-// it by its line, and folding one leaves the others open.
+// the conversation's handoff card showed them once opened; it folds only when the reader presses
+// its fold control, and folding one leaves the others open.
 // SLOW(>=2s): two handoff versions written, a sign-in and one load of the history.
 test("each handoff in the history is drawn open, and the reader folds it", async ({ browser }) => {
   const key = await seedHandoffs();
@@ -2541,12 +2552,12 @@ test("each handoff in the history is drawn open, and the reader folds it", async
       );
     }
 
-    // A press on version 2's line folds it, and version 1 stays open.
+    // A press on version 2's fold control folds it, and version 1 stays open.
     const v2 = handoffLine(page, 2);
     await v2.getByRole("button", { name: CONTROL_LABELS.hide_fields }).click();
     await expect(
       v2.locator("[data-handoff-field]"),
-      "a press on the handoff's line did not fold it"
+      "a press on the handoff's fold control did not fold it"
     ).toHaveCount(0);
     await expect(v2.getByRole("button", { name: CONTROL_LABELS.show_fields })).toHaveAttribute(
       "aria-expanded",
@@ -5996,7 +6007,7 @@ for (const [group, places] of READER_PLACE_GROUPS) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The runs of the issue's steps, under the history in Details: new rows.
+// The runs of the issue's steps and its handoffs, each run an entry of the history in Details.
 // ---------------------------------------------------------------------------------------------
 
 /** One run the seed writes: the record's id, what the daemon writes of it (`putStep`), each
@@ -6028,7 +6039,7 @@ async function seedSteps(): Promise<{ key: string; never: string; runs: readonly
   const { none, step_results: results } = CONTROL_LABELS;
   const run = (input: SeededRun["input"], fields: SeededRun["fields"]): SeededRun => ({
     ended: input.ended_at ?? null,
-    fields,
+    fields: { ...fields, task: input.task ?? "" },
     id: crypto.randomUUID(),
     input,
     started: input.started_at ?? null,
@@ -6150,96 +6161,135 @@ async function seedSteps(): Promise<{ key: string; never: string; runs: readonly
   return { key: issue.key, never: never.key, runs };
 }
 
-// Details lists every run of the issue's steps under the history, headed by how many it lists:
-// one group per task in the server's order, each run in the order of the server's read, and each
-// run's step, role, type, agent, model, attempt, start, end and result - and the step a failed
-// review sent the task back to - as the record holds them, None where it holds none, as labelled
-// values and never as a table. At 1440 px and at 390 px every value is whole: Details' box
-// scrolls no way but down, and no value is wider than its own box, stands out of Details or is
-// cut. It carries `@phone` for that width claim, a layout claim "Phone acceptance" in
-// `packages/dispatch/AGENTS.md` tags `@phone` for; the phone reads 390 px alone.
+/** The ids of `runs` in the order the history draws them, newest first: each at its start, and a
+ *  run with none at its end. */
+function newestFirst(runs: readonly SeededRun[]): string[] {
+  const placeOf = (run: SeededRun) => run.started ?? run.ended ?? "";
+  return [...runs]
+    .sort((one, other) => placeOf(other).localeCompare(placeOf(one)))
+    .map((run) => run.id);
+}
+
+// The history lists every run of the issue's steps as one entry, newest first, each at its
+// start: each run's task, step, role, type, agent, model, attempt, start, end and result - and the
+// step a failed review sent the task back to - as the record holds them, None where it holds
+// none, as labelled values and never as a table, and no Steps section beside it. At 1440 px and
+// at 390 px every value is whole: Details' box scrolls no way but down, and no value is wider
+// than its own box, stands out of Details or of its entry, or is cut. It carries `@phone` for
+// that width claim, a layout claim "Phone acceptance" in `packages/dispatch/AGENTS.md` tags
+// `@phone` for; the phone reads 390 px alone.
 // SLOW(>=2s): five step records written, and the issue loaded and Details opened at two widths.
-test("Steps in Details lists each run of each task as its record holds it, whole at every width @phone", async ({
+test("the history draws each run of each task as its record holds it, whole at every width @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedSteps, async (page, seeded) => {
-    // The server's own read, whose order of tasks and of runs the section keeps.
-    const read = await page.request.get(`/api/v1/issues/${seeded.key}/steps`);
-    expect(read.status()).toBe(200);
-    const answer = (await read.json()) as IssueSteps;
-    const tasks = (answer.tasks ?? []).map((task) => task.task);
-    const order = (answer.tasks ?? []).flatMap((task) => (task.steps ?? []).map((step) => step.id));
-    expect(
-      tasks,
-      "the server's read does not hold the seed's two tasks, the merge's first"
-    ).toEqual(["default", "docs"]);
-    expect(order, "the server's read holds another set of runs than the seed").toHaveLength(
-      seeded.runs.length
-    );
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
       await openDetails(page);
-      const section = stepsSection(page);
+      for (const run of seeded.runs) await expectRunDrawn(page, run, `at ${width} px`);
       for (const run of seeded.runs) {
-        const drawn = stepRun(page, run.id);
-        await expect(drawn, `Details draws no run ${run.id} at ${width} px`).toHaveCount(1);
-        for (const [field, value] of Object.entries(run.fields)) {
-          await expect(
-            drawn.locator(`[data-step-field="${field}"] > dd`),
-            `the ${field} of run ${run.id} at ${width} px`
-          ).toHaveText(value);
-        }
-        await expect(
-          drawn.locator('[data-step-field="returned_to"]'),
-          `run ${run.id} names a step it went back to that its record does not, at ${width} px`
-        ).toHaveCount(run.fields.returned_to === undefined ? 0 : 1);
-        for (const [field, at] of [
-          ["started", run.started],
-          ["ended", run.ended],
-        ] as const) {
-          const value = drawn.locator(`[data-step-field="${field}"] > dd`);
-          await expect(value, `the ${field} of run ${run.id} at ${width} px`).toHaveText(
-            at === null ? CONTROL_LABELS.none : await drawnInstant(page, at)
-          );
-          await expect(value.locator("time")).toHaveCount(at === null ? 0 : 1);
-          if (at !== null) await expect(value.locator("time")).toHaveAttribute("datetime", at);
-        }
+        const times = stepRun(page, run.id).locator("time");
+        await expect(times).toHaveCount(
+          [run.started, run.ended].filter((at) => at !== null).length
+        );
       }
-      await expect(section.getByRole("heading", { level: 2 })).toHaveText(
-        `${CONTROL_LABELS.steps} (${seeded.runs.length})`
-      );
-      await expect(section.getByRole("heading", { level: 3 })).toHaveText(
-        tasks.map((task) => `${CONTROL_LABELS.steps_task} ${task}`)
-      );
       expect(
-        await section
-          .locator("[data-step-run]")
-          .evaluateAll((runs) => runs.map((run) => run.getAttribute("data-step-run"))),
-        `the runs are not in the order of the server's read at ${width} px`
-      ).toEqual(order);
-      await expect(section.getByRole("table")).toHaveCount(0);
-      expect(await stepsUnread(page), `a value of the steps is not whole at ${width} px`).toEqual(
+        await historyRuns(page),
+        `the runs are not newest first, each at its start, at ${width} px`
+      ).toEqual(newestFirst(seeded.runs));
+      await expect(historyPanel(page).getByRole("table")).toHaveCount(0);
+      await expect(marginShell(page).getByTestId("issue-steps")).toHaveCount(0);
+      expect(await runValuesUnread(page), `a value of a run is not whole at ${width} px`).toEqual(
         []
       );
+      expect(
+        await fieldsPastTheirEntry(page),
+        `a field does not fit its entry at ${width} px`
+      ).toEqual([]);
       await assertPageFits(page);
     }
   });
 });
 
-// The steps are read only once Details opens. A read Dispatch refuses is not asked again on its
-// own: Details says so at once with its Retry under the heading, which has no count yet, and only
-// the catch-up's next reads, 2 and 5 s after the opening, ask again - refused here too - never
-// retries 500 ms apart. Retry, pressed after those two reads and long before the catch-up's next
-// at 15 s, reads the steps again and draws every run. An issue no step ran on reads None under
-// its heading.
-// SLOW(>=2s): five step records written, the catch-up's two refused reads, and two issues loaded.
-test("Steps in Details says a refused read with a Retry that reads it again, and None where no step ran", async ({
-  browser,
-}) => {
-  await phase(browser, seedSteps, async (page, seeded) => {
+/**
+ * An issue whose runs Legion's daemon wrote after the issue was made, so each stands above the
+ * issue's own creation in the history, with a handoff of the tester's that no run reports: an
+ * implementation that passed, a review that failed and sent the task back to step 2, and the
+ * implementation's second run, which runs.
+ */
+async function seedRecentRuns(): Promise<{
+  handoff: string;
+  key: string;
+  runs: readonly string[];
+}> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Runs whose read is refused" });
+  const handoff = await createHandoff(
+    issue.key,
+    "test",
+    { phase: "test", summary: "A test pass no run reports." },
+    implementer
+  );
+  const agent = (role: string) => `legion-core-${issue.key.toLowerCase()}-${role}`;
+  const later = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+  const inputs: Parameters<typeof putStep>[2][] = [
+    {
+      agent: agent("implementer"),
+      ended_at: later(2),
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      result: "passed",
+      role: "implementer",
+      started_at: later(1),
+      step: 2,
+      task: "default",
+      type: "implementation",
+    },
+    {
+      agent: agent("reviewer"),
+      ended_at: later(4),
+      kind: "step",
+      model: "openai/gpt-6.1-sol",
+      result: "failed",
+      returned_to: 2,
+      role: "reviewer",
+      started_at: later(3),
+      step: 4,
+      task: "default",
+      type: "review",
+    },
+    {
+      agent: agent("implementer"),
+      kind: "step",
+      role: "implementer",
+      started_at: later(5),
+      step: 2,
+      task: "default",
+      type: "implementation",
+    },
+  ];
+  const runs: string[] = [];
+  for (const input of inputs) {
+    const id = crypto.randomUUID();
+    await putStep(issue.key, id, input);
+    runs.push(id);
+  }
+  return { handoff: handoff.id, key: issue.key, runs };
+}
+
+// The runs are read only once Details opens. A read Dispatch refuses is not asked again on its
+// own: the history says so at once with its Retry under its heading, and every other entry it
+// reads stays drawn - the issue's creation and the handoff no run reports - with no run entry.
+// Only the catch-up's next reads, 2 and 5 s after the opening, ask again - refused here too -
+// never retries 500 ms apart. Retry, pressed after those two reads and long before the
+// catch-up's next at 15 s, reads the runs again, and each run's entry is drawn above the entries
+// drawn before, as each is newer than all of them (the check b-c-runs-failed, its runs half).
+// SLOW(>=2s): three step records and a handoff written, and the catch-up's two refused reads.
+test("the history says when the runs fail to read, with a Retry", async ({ browser }) => {
+  await phase(browser, seedRecentRuns, async (page, seeded) => {
     const reads: number[] = [];
     let refusing = true;
     await page.route(`**/api/v1/issues/${seeded.key}/steps`, (route) => {
@@ -6254,13 +6304,21 @@ test("Steps in Details says a refused read with a Retry that reads it again, and
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
-    expect(reads, "the steps were read on a load that left Details shut").toEqual([]);
+    expect(reads, "the runs were read on a load that left Details shut").toEqual([]);
 
     await openDetails(page);
-    const section = stepsSection(page);
-    await expect(section.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
-    await expect(section.getByRole("heading", { level: 2 })).toHaveText(CONTROL_LABELS.steps);
-    await expect(section.locator("[data-step-run]")).toHaveCount(0);
+    const history = historyPanel(page);
+    await expect(history.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
+    await expect(historyHeading(page)).toBeVisible();
+    await expect(
+      handoffLineOf(page, seeded.handoff),
+      "the handoff no run reports went with the runs' failed read"
+    ).toBeVisible();
+    await expect(
+      historyEntries(page).filter({ hasText: "created the issue" }),
+      "the issue's creation went with the runs' failed read"
+    ).toHaveCount(1);
+    await expect(history.locator("[data-step-run]")).toHaveCount(0);
     // The catch-up's reads 2 and 5 s after the opening, inside the default wait of 15 s.
     await expect
       .poll(() => reads.length, { message: "the catch-up did not read again after the refusal" })
@@ -6270,25 +6328,34 @@ test("Steps in Details says a refused read with a Retry that reads it again, and
       gaps.every((gap) => gap >= 1_500),
       `a refused read was asked again ${gaps.join(" ms and ")} ms after the one before`
     ).toBe(true);
-    await expect(section.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
-    await expect(section.locator("[data-step-run]")).toHaveCount(0);
+    await expect(history.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
+    await expect(history.locator("[data-step-run]")).toHaveCount(0);
 
     refusing = false;
-    await section.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
-    await expect(section.getByRole("heading", { level: 2 })).toHaveText(
-      `${CONTROL_LABELS.steps} (${seeded.runs.length})`
-    );
-    await expect(section.locator("[data-step-run]")).toHaveCount(seeded.runs.length);
-    await expect(section.getByRole("alert")).toHaveCount(0);
-    expect(reads, "Retry did not read the steps once more").toHaveLength(4);
+    await history.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
+    for (const run of seeded.runs) {
+      await expect(stepRun(page, run), `Retry did not draw run ${run}`).toHaveCount(1);
+    }
+    expect(await historyRuns(page)).toEqual([...seeded.runs].reverse());
+    await expect(history.getByRole("alert")).toHaveCount(0);
+    await expect(handoffLineOf(page, seeded.handoff)).toBeVisible();
+    expect(reads, "Retry did not read the runs once more").toHaveLength(4);
+  });
+});
 
+// An issue no step ran on draws no run entry and says no failure: its history holds its own
+// creation alone.
+// SLOW(>=2s): five step records written, and an issue loaded with Details opened.
+test("an issue with no run draws no run entry", async ({ browser }) => {
+  await phase(browser, seedSteps, async (page, seeded) => {
+    const reads = watchStepsReads(page, seeded.never);
     await gotoIssue(page, `/issues/${seeded.never}`);
     await openDetails(page);
-    await expect(section.getByRole("heading", { level: 2 })).toHaveText(
-      `${CONTROL_LABELS.steps} (0)`
-    );
-    await expect(section.getByText(CONTROL_LABELS.none, { exact: true })).toBeVisible();
-    await expect(section.locator("[data-step-run]")).toHaveCount(0);
+    await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
+    await expect.poll(() => reads.answered(0), { message: "the runs were never read" }).toBe(true);
+    await expect(historyPanel(page).locator("[data-step-run]")).toHaveCount(0);
+    await expect(historyPanel(page).getByRole("alert")).toHaveCount(0);
+    await expect(marginShell(page).getByTestId("issue-steps")).toHaveCount(0);
   });
 });
 
@@ -6299,19 +6366,19 @@ const STEPS_QUIET_MS = 3_500;
 
 // A step record leaves Legion's daemon on a lane of its own and sends no event, so the event of
 // the phase it ends can reach the page, and the read that event's refresh starts can answer,
-// before the record reaches the server. Details draws the run all the same, at a later read of
-// the catch-up that refresh started, with no other event and no reload: here the record is
-// written only once that read has answered, and the heading then counts one run more.
+// before the record reaches the server. The history draws the run all the same, at a later read
+// of the catch-up that refresh started, with no other event and no reload: here the record is
+// written only once that read has answered, and its entry is then drawn, above the entries drawn
+// before, as its start is newer than all of them.
 // SLOW(>=2s): five step records written, the opening's catch-up waited out, and an event's.
-test("Steps in Details draws a run whose record reaches the server after its event's refresh has read", async ({
+test("the history draws a run whose record reaches the server after its event's refresh has read", async ({
   browser,
 }) => {
   await phase(browser, seedSteps, async (page, seeded) => {
     const reads = watchStepsReads(page, seeded.key);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await openDetails(page);
-    const heading = stepsSection(page).getByRole("heading", { level: 2 });
-    await expect(heading).toHaveText(`${CONTROL_LABELS.steps} (${seeded.runs.length})`);
+    for (const run of seeded.runs) await expect(stepRun(page, run.id)).toHaveCount(1);
     // The opening's catch-up reads at once and 2 and 5 s on, then at 15 s: the quiet comes after
     // its 5 s read, and so no read of that catch-up's falls between the act below and its event's.
     await expect
@@ -6334,24 +6401,22 @@ test("Steps in Details draws a run whose record reaches the server after its eve
     const late = crypto.randomUUID();
     await putStep(seeded.key, late, {
       agent: `legion-core-${seeded.key.toLowerCase()}-reviewer`,
-      ended_at: stepAt("11:30"),
       generation: 1,
       kind: "step",
       model: "openai/gpt-6.1-sol",
-      result: "passed",
       role: "reviewer",
-      started_at: stepAt("11:05"),
+      started_at: new Date().toISOString(),
       step: 4,
       task: "default",
       type: "review",
     });
     // The catch-up the event started reads again 2 and 5 s after it: 10 s from here covers both
     // reads and the drawing of the second's answer, and ends before that catch-up's 15 s read.
-    await expect(heading, "the run written after its event's read was never drawn").toHaveText(
-      `${CONTROL_LABELS.steps} (${seeded.runs.length + 1})`,
-      { timeout: 10_000 }
-    );
-    await expect(stepRun(page, late)).toHaveCount(1);
+    await expect(
+      stepRun(page, late),
+      "the run written after its event's read was never drawn"
+    ).toHaveCount(1, { timeout: 10_000 });
+    expect(await historyRuns(page)).toHaveLength(seeded.runs.length + 1);
   });
 });
 
@@ -6398,14 +6463,14 @@ async function seedExperiment(): Promise<{ named: string; unnamed: string }> {
   return { named: named.key, unnamed: unnamed.key };
 }
 
-// Where the records of the issue's newest run, its highest generation, name an experiment,
-// Details' steps draw "Experiment <experiment>: variant <variant>" once, directly under their
-// heading and above their first task group, at 1440 px and at 390 px, and not the variant the
-// first generation drew. Where no record of the newest run names one, though the first
-// generation's does, they draw no such line. It carries no `@phone` tag: it reads the same markup
-// in the same order at both widths, which it sets itself, and the phone changes none of it.
+// Where the records of the issue's newest run, its highest generation, name an experiment, the
+// history draws "Experiment <experiment>: variant <variant>" once, directly under its heading and
+// above its entries, at 1440 px and at 390 px, and not the variant the first generation drew.
+// Where no record of the newest run names one, though the first generation's does, it draws no
+// such line. It carries no `@phone` tag: it reads the same markup in the same order at both
+// widths, which it sets itself, and the phone changes none of it.
 // SLOW(>=2s): nine step and experiment records written, and two issues loaded at two widths.
-test("Steps in Details names the experiment and the variant of the newest run once above its tasks, and none where none is named", async ({
+test("the history names the experiment and the variant of the newest run once under its heading, and none where none is named", async ({
   browser,
 }) => {
   await phase(browser, seedExperiment, async (page, seeded) => {
@@ -6413,43 +6478,512 @@ test("Steps in Details names the experiment and the variant of the newest run on
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.named}`);
       await openDetails(page);
-      const section = stepsSection(page);
+      const history = historyPanel(page);
       await expect(
-        section.getByRole("heading", { level: 2 }),
-        `the steps of ${seeded.named} do not count its three runs at ${width} px`
-      ).toHaveText(`${CONTROL_LABELS.steps} (3)`);
-      const line = section.locator("[data-step-variant]");
+        history.locator("[data-step-run]"),
+        `the history of ${seeded.named} does not draw its three runs at ${width} px`
+      ).toHaveCount(3);
+      const line = history.locator("[data-step-variant]");
       await expect(
         line,
-        `Details draws no experiment line for the newest run of ${seeded.named} at ${width} px`
+        `the history draws no experiment line for the newest run of ${seeded.named} at ${width} px`
       ).toHaveCount(1);
       await expect(line, `the experiment line at ${width} px`).toHaveText(
         "Experiment planning: variant b"
       );
       await expect(
-        section.getByText(/^Experiment /u),
-        `the steps draw more than one experiment line at ${width} px`
+        history.getByText(/^Experiment /u),
+        `the history draws more than one experiment line at ${width} px`
       ).toHaveCount(1);
-      await expect(section.locator("[data-step-task]")).toHaveCount(2);
       await expect(
-        section.locator("h2 + [data-step-variant] ~ [data-step-task]"),
-        `the experiment line is not directly under the heading and above both task groups at ${width} px`
-      ).toHaveCount(2);
+        history.locator("h2 + [data-step-variant]"),
+        `the experiment line is not directly under the heading at ${width} px`
+      ).toHaveCount(1);
+      const lineTop = (await line.boundingBox())?.y ?? Number.POSITIVE_INFINITY;
+      const firstRun = (await history.locator("[data-step-run]").first().boundingBox())?.y ?? 0;
+      expect(lineTop, `the experiment line is not above the runs at ${width} px`).toBeLessThan(
+        firstRun
+      );
 
       await gotoIssue(page, `/issues/${seeded.unnamed}`);
       await openDetails(page);
+      await expect(history.locator("[data-step-run]")).toHaveCount(2);
       await expect(
-        section.getByRole("heading", { level: 2 }),
-        `the steps of ${seeded.unnamed} do not count its two runs at ${width} px`
-      ).toHaveText(`${CONTROL_LABELS.steps} (2)`);
-      await expect(section.locator("[data-step-run]")).toHaveCount(2);
-      await expect(
-        section.getByText(/^Experiment /u),
-        `the steps of ${seeded.unnamed} draw an experiment its newest run does not name at ${width} px`
+        history.getByText(/^Experiment /u),
+        `the history of ${seeded.unnamed} draws an experiment its newest run does not name at ${width} px`
       ).toHaveCount(0);
-      await expect(section.locator("[data-step-variant]")).toHaveCount(0);
+      await expect(history.locator("[data-step-variant]")).toHaveCount(0);
     }
   });
+});
+
+/** The handoffs and the runs of the timeline's seed, by what each is. */
+interface TimelineSeed {
+  /** The run of an earlier day, which reports the plan's handoff. */
+  readonly earlier: SeededRun;
+  /** The handoffs, by their phase: three a run reports, and the tester's, which none reports. */
+  readonly handoffs: {
+    readonly implement: string;
+    readonly plan: string;
+    readonly review: string;
+    readonly unreported: string;
+  };
+  readonly key: string;
+  /** Today's runs, newest first, each with the labelled values the history draws of it. */
+  readonly runs: readonly SeededRun[];
+}
+
+/**
+ * The issue of the one timeline: 22 threads the project's daemon began three days ago, more than
+ * one page of the history and older than everything else; a run of the planner's on an earlier
+ * day that reports the plan's handoff; today, an implementation that passed and reports its
+ * handoff, whose body holds a list and an object; a review that failed, sent the task back to
+ * step 2 and reports its handoff, whose findings are a list of objects; and the implementation's
+ * second run, which runs and reports none; and the tester's handoff, which no run reports.
+ */
+async function seedTimeline(): Promise<TimelineSeed> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "One timeline of runs" });
+  const threeDaysAgo = Date.now() - 3 * 24 * 3_600_000;
+  for (let index = 0; index < 22; index += 1) {
+    const note = await createMessage(
+      issue.key,
+      { body: `An older note of the daemon's, ${index}.` },
+      asDaemon
+    );
+    await setCreatedAt("messages", note.id, new Date(threeDaysAgo + index * 60_000).toISOString());
+  }
+  const write = async (phase: string, body: object) =>
+    (await createHandoff(issue.key, phase, { phase, issue: issue.key, ...body }, implementer)).id;
+  const handoffs = {
+    plan: await write("plan", { summary: "The plan of the timeline." }),
+    implement: await write("implement", {
+      summary: "The first pass of the timeline.",
+      filesChanged: ["web/src/a.ts", "web/src/b.ts"],
+      implementerProof: { verdict: "verified", how: "Each check passed." },
+    }),
+    review: await write("review", {
+      decision: "changes_requested",
+      keyFindings: [{ severity: "minor", file: "web/src/a.ts" }],
+    }),
+    unreported: await write("test", { summary: "A test pass no run reports." }),
+  };
+  const agent = (role: string) => `legion-core-${issue.key.toLowerCase()}-${role}`;
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const { none, step_results: results } = CONTROL_LABELS;
+  const run = (input: SeededRun["input"], fields: SeededRun["fields"]): SeededRun => ({
+    ended: input.ended_at ?? null,
+    fields: { ...fields, task: input.task ?? "" },
+    id: crypto.randomUUID(),
+    input,
+    started: input.started_at ?? null,
+  });
+  const earlier = run(
+    {
+      agent: agent("planner"),
+      ended_at: ago(25 * 60),
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      report: handoffs.plan,
+      result: "passed",
+      role: "planner",
+      started_at: ago(26 * 60),
+      step: 1,
+      task: "default",
+      type: "planning",
+    },
+    { agent: agent("planner"), attempt: "1", result: results.passed, role: "planner", step: "1" }
+  );
+  const runs = [
+    run(
+      {
+        agent: agent("implementer"),
+        kind: "step",
+        role: "implementer",
+        started_at: ago(2),
+        step: 2,
+        task: "default",
+        type: "implementation",
+      },
+      {
+        agent: agent("implementer"),
+        attempt: "2",
+        model: none,
+        result: results.running,
+        role: "implementer",
+        step: "2",
+        type: "implementation",
+      }
+    ),
+    run(
+      {
+        agent: agent("reviewer"),
+        ended_at: ago(2),
+        kind: "step",
+        model: "openai/gpt-6.1-sol",
+        report: handoffs.review,
+        result: "failed",
+        returned_to: 2,
+        role: "reviewer",
+        started_at: ago(3),
+        step: 4,
+        task: "default",
+        type: "review",
+      },
+      {
+        agent: agent("reviewer"),
+        attempt: "1",
+        model: "openai/gpt-6.1-sol",
+        result: results.failed,
+        returned_to: "step 2",
+        role: "reviewer",
+        step: "4",
+        type: "review",
+      }
+    ),
+    run(
+      {
+        agent: agent("implementer"),
+        ended_at: ago(3),
+        kind: "step",
+        model: "anthropic/claude-opus-5",
+        report: handoffs.implement,
+        result: "passed",
+        role: "implementer",
+        started_at: ago(4),
+        step: 2,
+        task: "default",
+        type: "implementation",
+      },
+      {
+        agent: agent("implementer"),
+        attempt: "1",
+        model: "anthropic/claude-opus-5",
+        result: results.passed,
+        role: "implementer",
+        step: "2",
+        type: "implementation",
+      }
+    ),
+  ];
+  for (const seeded of [earlier, ...[...runs].reverse()]) {
+    await putStep(issue.key, seeded.id, seeded.input);
+  }
+  return { earlier, handoffs, key: issue.key, runs };
+}
+
+/** Checks that `run`'s entry draws every labelled value the seed holds of it, its two times
+ *  among them, and no step it went back to where its record names none. */
+async function expectRunDrawn(page: Page, run: SeededRun, what: string): Promise<void> {
+  const drawn = stepRun(page, run.id);
+  await expect(drawn, `${what}: the history draws no entry of run ${run.id}`).toHaveCount(1);
+  for (const [field, value] of Object.entries(run.fields)) {
+    await expect(
+      drawn.locator(`[data-step-field="${field}"] > dd`),
+      `${what}: the ${field} of run ${run.id}`
+    ).toHaveText(value);
+  }
+  await expect(
+    drawn.locator('[data-step-field="returned_to"]'),
+    `${what}: run ${run.id} names a step it went back to that its record does not`
+  ).toHaveCount(run.fields.returned_to === undefined ? 0 : 1);
+  for (const [field, at] of [
+    ["started", run.started],
+    ["ended", run.ended],
+  ] as const) {
+    const value = drawn.locator(`[data-step-field="${field}"] > dd`);
+    await expect(value, `${what}: the ${field} of run ${run.id}`).toHaveText(
+      at === null ? CONTROL_LABELS.none : await drawnInstant(page, at)
+    );
+    if (at !== null) await expect(value.locator("time")).toHaveAttribute("datetime", at);
+  }
+}
+
+// The history is the issue's one timeline (the check b-c-timeline): each run is one entry,
+// newest first, with its task, step, role, type, agent, model, attempt, start, end and result,
+// and the step it went back to where it sent the work back. The handoff each run reports is drawn
+// open in its entry, a list as numbered entries and an object as keys with values, and folds only
+// at its fold control; the handoff no run reports has an entry of its own, open too; and the run
+// of an earlier day draws its handoff open at `/activity`, with no day folded. A fold the reader
+// made stays through a run written live, Details shut and opened, and the history's next page.
+// No Steps section is drawn, and no other part of the page lists a run or a handoff. On the
+// phone each field fits its entry's box. Then the parts the later tasks of the plan finish: the
+// page read the bodies of the entries in view in one request and sent no read of one handoff
+// (t7), and the folded handoff's page address opens it again (t8).
+// SLOW(>=2s): 22 messages, four handoffs and four runs written, and the history read live.
+test("the history is the one timeline: each run holds the handoff it reported @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const seeded = await seedTimeline();
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const handoffReads: string[] = [];
+    const bodiesReads: string[] = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (/^\/api\/v1\/handoffs\/[0-9a-f-]{36}$/u.test(path)) handoffReads.push(path);
+      if (path === `/api/v1/issues/${seeded.key}/handoffs/bodies`) bodiesReads.push(path);
+    });
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    const history = historyPanel(page);
+    await expect(history).toBeVisible();
+    const { earlier, handoffs, runs } = seeded;
+
+    // The run of an earlier day, at `/activity` and with no press: its entry stands in its own
+    // day, and the handoff it reports is drawn open there, as no day of the history is folded.
+    const earlierRun = stepRun(page, earlier.id);
+    await expect(earlierRun, "the run of an earlier day is not drawn").toHaveCount(1);
+    await expect(
+      earlierRun.locator(
+        `[data-handoff-line="${handoffs.plan}"] ~ span [data-handoff-field="summary"]`
+      ),
+      "the handoff of an earlier day is not drawn open"
+    ).toHaveText(/The plan of the timeline\.$/u);
+    const { date } = await historyDayOf(page, earlier.started ?? "");
+    await expect(earlierRun.locator("xpath=ancestor::li[@data-history-day][1]")).toHaveAttribute(
+      "data-history-day",
+      date
+    );
+
+    for (const run of runs) await expectRunDrawn(page, run, "today's runs");
+    await expectRunDrawn(page, earlier, "the run of an earlier day");
+    expect(await historyRuns(page), "the runs are not one entry each, newest first").toEqual([
+      ...runs.map((run) => run.id),
+      earlier.id,
+    ]);
+
+    // Each handoff a run reports is drawn open in that run's entry, and in no other place.
+    const [running, reviewRun, implementRun] = runs;
+    if (running === undefined || reviewRun === undefined || implementRun === undefined) {
+      throw new Error("the seed wrote three runs today");
+    }
+    for (const [run, handoff] of [
+      [implementRun, handoffs.implement],
+      [reviewRun, handoffs.review],
+      [earlier, handoffs.plan],
+    ] as const) {
+      await expect(
+        stepRun(page, run.id).locator(`[data-handoff-line="${handoff}"]`),
+        `run ${run.id} does not hold the handoff it reports`
+      ).toHaveCount(1);
+      await expect(page.locator(`[data-handoff-line="${handoff}"]`)).toHaveCount(1);
+      await expect(handoffFoldControl(page, handoff)).toHaveAttribute("aria-expanded", "true");
+    }
+    await expect(stepRun(page, running.id).locator("[data-handoff-line]")).toHaveCount(0);
+    const implementFields = handoffFieldsOf(page, handoffs.implement);
+    await expect(
+      implementFields.filter({ hasText: "The first pass of the timeline." }),
+      "the implementation's handoff is not drawn open"
+    ).toHaveCount(1);
+    await expect(
+      history.locator(
+        `[data-handoff-line="${handoffs.implement}"] ~ span [data-handoff-field="filesChanged"] ol > li`
+      ),
+      "a list is not drawn as numbered entries"
+    ).toHaveText(["web/src/a.ts", "web/src/b.ts"]);
+    await expect(
+      history.locator(
+        `[data-handoff-line="${handoffs.implement}"] ~ span [data-handoff-field="implementerProof"] [data-handoff-key="verdict"] > dd`
+      ),
+      "an object is not drawn as its keys with their values"
+    ).toHaveText("verified");
+    await expect(
+      history.locator(
+        `[data-handoff-line="${handoffs.review}"] ~ span [data-handoff-field="keyFindings"] ol > li [data-handoff-key="severity"] > dd`
+      )
+    ).toHaveText(["minor"]);
+
+    // The handoff no run reports: an entry of its own, open too.
+    const unreported = history.locator(`[data-history-entry="handoff:${handoffs.unreported}"]`);
+    await expect(unreported).toHaveCount(1);
+    await expect(unreported.locator("[data-step-run]")).toHaveCount(0);
+    await expect(unreported.locator('[data-handoff-field="summary"]')).toHaveText(
+      /A test pass no run reports\.$/u
+    );
+
+    // No Steps section, and no other part of the page lists a run or a handoff.
+    await expect(page.getByTestId("issue-steps")).toHaveCount(0);
+    await expect(page.locator("[data-step-run]")).toHaveCount(
+      await history.locator("[data-step-run]").count()
+    );
+    await expect(page.locator("[data-handoff-line]")).toHaveCount(
+      await history.locator("[data-handoff-line]").count()
+    );
+
+    if (test.info().project.name === "iphone") {
+      expect(await fieldsPastTheirEntry(page), "a field does not fit its entry's box").toEqual([]);
+    }
+
+    // The fold control folds the handoff and opens it again; folded once more, it stays folded.
+    const fold = handoffFoldControl(page, handoffs.implement);
+    await fold.click();
+    await expect(fold).toHaveAttribute("aria-expanded", "false");
+    await expect(implementFields).toHaveCount(0);
+    await fold.click();
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    await expect(implementFields.first()).toBeVisible();
+    await fold.click();
+    await expect(fold).toHaveAttribute("aria-expanded", "false");
+
+    // A run written while the history is open, which it follows live.
+    const live = crypto.randomUUID();
+    await putStep(seeded.key, live, {
+      agent: `legion-core-${seeded.key.toLowerCase()}-tester`,
+      kind: "step",
+      role: "tester",
+      started_at: new Date().toISOString(),
+      step: 3,
+      task: "default",
+      type: "test",
+    });
+    await expect(stepRun(page, live), "the run written live is not drawn").toHaveCount(1, {
+      timeout: 20_000,
+    });
+    await expect(fold, "a live update opened the folded handoff").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    // Details shut and opened again.
+    await closeDetails(page);
+    await openDetails(page);
+    await expect(stepRun(page, implementRun.id)).toHaveCount(1);
+    await expect(fold, "Details opened again drew the folded handoff open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    // The history's next page, which the seed's older threads fill.
+    const entries = await historyEntries(page).count();
+    await historyShowMore(page).click();
+    await expect.poll(() => historyEntries(page).count()).toBeGreaterThan(entries);
+    await expect(fold, "the next page drew the folded handoff open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    // t7: the bodies of the entries in view are read in one request, and no handoff alone.
+    if (test.info().project.name !== "iphone") {
+      expect(
+        handoffReads,
+        "the page read a handoff's body by a read of that handoff alone"
+      ).toEqual([]);
+      expect(bodiesReads.length, "the page read no bodies in one request").toBeGreaterThan(0);
+    }
+
+    // t8: the folded handoff's page address opens it again.
+    await navigateInApp(page, `/issues/${seeded.key}/handoffs/${handoffs.implement}`);
+    await expect(fold, "the handoff's page address did not open it").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The index of the read of the runs that came 9 seconds or more after the one before it: the
+ *  catch-up's 15-second read, after its reads at once, at 2 s and at 5 s, of the newest start of
+ *  the history's catch-up; undefined until the page has sent it. */
+function fifteenSecondRead(reads: StepsReads): number | undefined {
+  for (let index = 1; index < reads.sent(); index += 1) {
+    const gap = (reads.sentAt(index) ?? 0) - (reads.sentAt(index - 1) ?? 0);
+    if (gap >= 9_000) return index;
+  }
+  return undefined;
+}
+
+// With the new page and Details open, the Legion block shows a change of the issue's stored state
+// within 5 seconds, and the history shows a new run within 5 seconds of its write, though the
+// write is the run's alone and appends no event: the history reads the runs again as the runs'
+// revision of the issue's live view moves. The run is written 6 seconds after the history's
+// 15-second catch-up read, so the catch-up's own next read, 30 seconds after that one, cannot
+// bring it in time. Then the run's handoff and its end, which reports it, as the daemon writes
+// them, and the handoff is in the run's entry within 5 seconds. The page makes no navigation (the
+// check b-c-live).
+// SLOW(>=2s): the catch-up's first 15 seconds waited out, then three writes each waited for.
+test("the Legion block and the history follow a change with no reload", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "The block and the history live" });
+  await seedLegionState(issue.key, { claims: { planner: "working" }, phase: "planning", slot: 0 });
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const reads = watchStepsReads(page, issue.key);
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const phaseLine = marginShell(page)
+      .getByRole("region", { name: CONTROL_LABELS.legion.heading })
+      .locator('[data-legion-line="phase"]');
+    await expect(phaseLine).toContainText(PHASE_WORDS.steps.planning);
+    // A mark on this document alone: a reload would load a new one, which carries no attribute of
+    // the row's, while a live update leaves the document as it is.
+    await page.evaluate(() => document.documentElement.setAttribute("data-loaded-once", "yes"));
+
+    await seedLegionState(issue.key, {
+      claims: { implementer: "working" },
+      phase: "implementing",
+      slot: 0,
+    });
+    await expect(
+      phaseLine,
+      "the block did not show the stored phase within 5 seconds"
+    ).toContainText(PHASE_WORDS.steps.implementing, { timeout: 5_000 });
+
+    // The catch-up's 15-second read, the first 9 seconds or more after the read before it.
+    await expect
+      .poll(
+        () => {
+          const read = fifteenSecondRead(reads);
+          return read !== undefined && reads.answered(read);
+        },
+        { message: "the history's catch-up never read the runs 15 seconds on", timeout: 30_000 }
+      )
+      .toBe(true);
+    const answeredAt = reads.answeredAt(fifteenSecondRead(reads) ?? 0) ?? Date.now();
+    // The row's claim is a span: the run is written 6 s after the 15 s read, so only its revision can bring it in 5 s.
+    await page.waitForTimeout(Math.max(0, answeredAt + 6_000 - Date.now()));
+    const sentBefore = reads.sent();
+
+    const run = crypto.randomUUID();
+    await putStep(issue.key, run, {
+      agent: `legion-core-${issue.key.toLowerCase()}-implementer`,
+      kind: "step",
+      role: "implementer",
+      started_at: new Date().toISOString(),
+      step: 2,
+      task: "default",
+      type: "implementation",
+    });
+    await expect(
+      stepRun(page, run),
+      "the history did not show the run within 5 seconds"
+    ).toHaveCount(1, { timeout: 5_000 });
+    expect(reads.sent(), "the run reached the history with no read of the runs").toBeGreaterThan(
+      sentBefore
+    );
+
+    const handoff = await createHandoff(
+      issue.key,
+      "implement",
+      { phase: "implement", issue: issue.key, summary: "Written as the run ends." },
+      implementer
+    );
+    await putStep(issue.key, run, {
+      ended_at: new Date().toISOString(),
+      report: handoff.id,
+      result: "passed",
+    });
+    await expect(
+      stepRun(page, run).locator(`[data-handoff-line="${handoff.id}"]`),
+      "the run's handoff was not in its entry within 5 seconds"
+    ).toHaveCount(1, { timeout: 5_000 });
+    await expect(page.locator("html")).toHaveAttribute("data-loaded-once", "yes");
+  } finally {
+    await alice.close();
+  }
 });
 
 // A person's comment cites a block of a document the issue never held, by an address as long as a

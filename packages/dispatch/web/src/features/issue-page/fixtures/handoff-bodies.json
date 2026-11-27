@@ -1,0 +1,110 @@
+[
+  {
+    "id": "0e9b6f1a-2c3d-4e5f-8a7b-000000000001",
+    "issue_key": "ACME-1",
+    "phase": "review",
+    "version": 11,
+    "author": {
+      "kind": "session",
+      "id": "0e9b6f1a-2c3d-4e5f-8a7b-0000000000a1",
+      "origin": {
+        "host": "omp",
+        "machine": "example-daemon",
+        "cwd": "/workspaces/example/acme-1",
+        "session_title": "Legion reviewer · ACME-1"
+      }
+    },
+    "created_at": "2026-11-26T10:47:01.904417Z",
+    "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\"}\n"
+  },
+  {
+    "id": "0e9b6f1a-2c3d-4e5f-8a7b-000000000002",
+    "issue_key": "ACME-1",
+    "phase": "implement",
+    "version": 33,
+    "author": {
+      "kind": "session",
+      "id": "0e9b6f1a-2c3d-4e5f-8a7b-0000000000a2",
+      "origin": {
+        "host": "omp",
+        "machine": "example-daemon",
+        "cwd": "/workspaces/example/acme-1",
+        "session_title": "Legion implementer · ACME-1"
+      }
+    },
+    "created_at": "2026-11-26T01:01:42.438779Z",
+    "body": "{\"head\":\"89abcdef0123456789abcdef0123456789abcdef\",\"note\":\"The round's checks are in dispatch://ACME-1/artifact/notes-md, and each of them passes at this head.\"}\n"
+  },
+  {
+    "id": "0e9b6f1a-2c3d-4e5f-8a7b-000000000003",
+    "issue_key": "ACME-1",
+    "phase": "test",
+    "version": 29,
+    "author": {
+      "kind": "session",
+      "id": "0e9b6f1a-2c3d-4e5f-8a7b-0000000000a3",
+      "origin": {
+        "host": "omp",
+        "machine": "example-daemon",
+        "cwd": "/workspaces/example/acme-1",
+        "session_title": "Legion tester · ACME-1"
+      }
+    },
+    "created_at": "2026-11-26T10:21:41.321579Z",
+    "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"implementerProof\":{\"verdict\":\"verified\",\"how\":\"Round 28 at 01234567: each check of the plan was run again by its command, and each passed.\"},\"failures\":[],\"failed\":0}\n"
+  },
+  {
+    "id": "0e9b6f1a-2c3d-4e5f-8a7b-000000000004",
+    "issue_key": "ACME-1",
+    "phase": "review",
+    "version": 7,
+    "author": {
+      "kind": "session",
+      "id": "0e9b6f1a-2c3d-4e5f-8a7b-0000000000a4",
+      "origin": {
+        "host": "omp",
+        "machine": "example-daemon",
+        "cwd": "/workspaces/example/acme-1",
+        "session_title": "Legion reviewer · ACME-1"
+      }
+    },
+    "created_at": "2026-11-25T13:33:07.1336Z",
+    "body": "{\"schemaVersion\":1,\"phase\":\"review\",\"issue\":\"ACME-1\",\"head\":\"fedcba9876543210fedcba9876543210fedcba98\",\"decision\":\"changes_requested\",\"critical\":0,\"important\":0,\"minor\":2,\"keyFindings\":[{\"severity\":\"minor\",\"file\":\"packages/example/store/read.go\",\"description\":\"The read's comment says it records nothing, and it records one line.\"},{\"severity\":\"minor\",\"file\":\"packages/example/.changes/unreleased/note.yaml\",\"description\":\"Two places name the old limit, and the code holds the new one.\"}]}\n"
+  },
+  {
+    "id": "0e9b6f1a-2c3d-4e5f-8a7b-000000000005",
+    "issue_key": "ACME-2",
+    "phase": "implement",
+    "version": 7,
+    "author": {
+      "kind": "session",
+      "id": "0e9b6f1a-2c3d-4e5f-8a7b-0000000000a5",
+      "origin": {
+        "host": "omp",
+        "machine": "example-daemon",
+        "cwd": "/workspaces/example/acme-2",
+        "session_title": "Legion implementer · ACME-2"
+      }
+    },
+    "created_at": "2026-11-24T08:12:30.5Z",
+    "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"ACME-2\",\"filesChanged\":[\"Head 0123456789ab: the store writes each row once.\",\"This round answers the review's two findings.\",\"Three forward merges of the base keep the branch current.\"],\"For the root to delete\":[\"Nothing of this child is the root's to delete.\"],\"For dispatch://ACME-3 to delete\":[\"The four arms of the old view.\",\"The join that the new table replaces.\"],\"trickyParts\":[\"Every check of the round was run at its head.\",\"The second pass over the store found one more caller.\"],\"deviations\":[\"The seed writes one more type than the plan names.\"],\"openQuestions\":[],\"discoveredComplexity\":[\"The base's newest change makes each package build again.\"],\"classSearch\":[{\"finding\":\"a column moved outside the store\",\"class\":\"a column moved outside the store\",\"command\":\"grep -rn 'into rows' packages/example\",\"result\":\"No write outside the store.\"},{\"finding\":\"a key that leaves out its project\",\"class\":\"a key that leaves out its project\",\"command\":\"grep -n 'unique' packages/example/schema.sql\",\"result\":\"Both keys name the project.\"}],\"head\":\"0123456789abcdef0123456789abcdef01234567\"}\n"
+  },
+  {
+    "id": "0e9b6f1a-2c3d-4e5f-8a7b-000000000006",
+    "issue_key": "ACME-1",
+    "phase": "plan",
+    "version": 1,
+    "author": {
+      "kind": "session",
+      "id": "0e9b6f1a-2c3d-4e5f-8a7b-0000000000a6",
+      "origin": {
+        "host": "omp",
+        "machine": "example-daemon",
+        "cwd": "/workspaces/example/acme-1",
+        "session_title": "Legion planner · ACME-1"
+      }
+    },
+    "created_at": "2026-11-20T09:00:00.25Z",
+    "body": "{\"schemaVersion\":1,\"phase\":\"plan\",\"issue\":\"ACME-1\",\"head\":\"13579bdf13579bdf13579bdf13579bdf13579bdf\",\"plan\":{\"document\":\"dispatch://ACME-1/artifact/plan-md\",\"version\":6},\"requiredSkills\":{\"implement\":[\"worker: the plan's tasks in order\",\"ci: a new job of its own\"],\"test\":[\"worker: the checks, each by its command\"],\"review\":[\"worker: the range of the change\"]},\"gapAnalysis\":{\"findings\":[{\"finding\":\"A whole read in one line\",\"answer\":\"D2 and D3: one read, one line.\"},{\"finding\":\"Order and repeats\",\"answer\":\"D1: a new order of its own.\"}]},\"planReview\":{\"verdict\":\"approved\",\"rounds\":5,\"notes\":[\"Rounds 1 to 4 approved with notes.\",\"Round 5's notes are taken in.\"]},\"specDepartures\":[{\"spec\":\"Each event goes on one lane.\",\"plan\":\"One lane for each project.\",\"evidence\":\"Lanes for each issue run out of room.\",\"outcome\":{\"kind\":\"unchanged\"}}]}\n"
+  }
+]

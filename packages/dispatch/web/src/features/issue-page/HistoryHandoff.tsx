@@ -17,9 +17,10 @@ import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
 
-/** How a handoff shows JSON: an array or object field, in the muted grey on the mark grey, as a
- *  node's body draws a check's command. */
-const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${pageMarkBg} ${pageMutedText}`;
+/** The box a list or an object at the top of a handoff's body is drawn in: at most 16 rem high,
+ *  scrolling inside itself, so an entry's open height stays bounded, in the muted grey on the mark
+ *  grey, as a node's body draws a check's command. */
+const handoffBox = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs ${pageMarkBg} ${pageMutedText}`;
 
 /** The page's names of the fields every Legion handoff record carries. */
 const KNOWN_FIELDS: Readonly<Record<string, string>> = CONTROL_LABELS.handoff_fields;
@@ -30,25 +31,72 @@ interface FieldRow extends HandoffField {
   readonly entry: number | undefined;
 }
 
+/** The handoffs the reader folded on one issue's page (the plan's D12): whether a handoff is
+ *  folded, and the fold or the open a press of its control makes. */
+export interface HandoffFold {
+  readonly folded: (handoffId: string) => boolean;
+  readonly setFolded: (handoffId: string, folded: boolean) => void;
+}
+
+/** No handoff folded. */
+const NONE_FOLDED: ReadonlySet<string> = new Set();
+
 /**
- * The fields of a handoff's line in the issue's history, which took over the conversation's
- * handoff cards: drawn open under the line - each top-level field of the version's body a
- * labelled row, the `proof` list one row per entry, as the old conversation's handoff card drew
- * it - with no press. Only the reader folds them, by Hide fields on the handoff's line, and Show
- * fields opens them again. The body is read as the handoff's line is drawn, and a version never
- * changes once written, so the read is kept for the page's life: it is never stale, and folding
- * the fields never lets it go.
+ * The handoffs the reader folded on the page of `issueKey` (`HandoffFold`), held by the one that
+ * calls it: `DetailsHistory`, which stays mounted for the life of the panel, so a fold lasts
+ * while Details shuts and opens, while a live update or the next page draws the history again,
+ * and while a run takes the handoff into its entry. It forgets every fold when the issue changes.
  */
-export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode {
-  const [expanded, setExpanded] = useState(true);
+export function useHandoffFold(issueKey: string): HandoffFold {
+  const [held, setHeld] = useState<{ readonly ids: ReadonlySet<string>; readonly issue: string }>(
+    () => ({ ids: NONE_FOLDED, issue: issueKey })
+  );
+  if (held.issue !== issueKey) setHeld({ ids: NONE_FOLDED, issue: issueKey });
+  const ids = held.issue === issueKey ? held.ids : NONE_FOLDED;
+  return useMemo(
+    () => ({
+      folded: (handoffId) => ids.has(handoffId),
+      setFolded: (handoffId, folded) =>
+        setHeld((current) => {
+          const next = new Set(current.issue === issueKey ? current.ids : NONE_FOLDED);
+          if (folded) next.add(handoffId);
+          else next.delete(handoffId);
+          return { ids: next, issue: issueKey };
+        }),
+    }),
+    [ids, issueKey]
+  );
+}
+
+/**
+ * The fields of a handoff of the issue's history, which took over the conversation's handoff
+ * cards: drawn open - each top-level field of the version's body a labelled row, the `proof`
+ * list one row per entry, as the old conversation's handoff card drew it, a list as one numbered
+ * entry for each item and an object as each key with its value - with no press. Only the reader
+ * folds them, by Hide fields, and Show fields opens them again; whether they are folded is
+ * `folded`, which the page holds for the issue (`useHandoffFold`), and a press says its fold
+ * through `onFold`. The body is read as the fields are drawn, and a version never changes once
+ * written, so the read is kept for the page's life: it is never stale, and folding the fields
+ * never lets it go.
+ */
+export function HistoryHandoff({
+  folded,
+  handoffId,
+  onFold,
+}: {
+  folded: boolean;
+  handoffId: string;
+  onFold: (folded: boolean) => void;
+}): ReactNode {
   const fieldsId = useId();
+  const expanded = !folded;
   return (
     <span className="basis-full">
       <button
         aria-controls={expanded ? fieldsId : undefined}
         aria-expanded={expanded}
         className={`dispatch-inline-link text-xs font-medium ${pageMutedText} ${pageRowAct}`}
-        onClick={() => setExpanded((open) => !open)}
+        onClick={() => onFold(expanded)}
         type="button"
         {...pageChrome}
       >
@@ -181,9 +229,9 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
                   />
                 </div>
               ) : shape === "json" ? (
-                // The session's data, as the JSON it is: the reading list's
-                // `issue-page-history-handoff-data`.
-                <pre className={handoffPre}>{text}</pre>
+                // The session's data: a list one numbered entry for each item, an object each key
+                // with its value, the reading list's `issue-page-history-handoff-data`.
+                <TopLevelData text={text} />
               ) : (
                 <span className="break-words whitespace-pre-wrap">
                   {/* A number, a boolean or null, as its JSON text: the reading list's
@@ -196,6 +244,75 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
         );
       })}
     </dl>
+  );
+}
+
+/** A list or an object at the top of a handoff's body, which `handoffFields` gives as its JSON
+ *  text: drawn by `HandoffData` in the box that bounds an entry's open height (`handoffBox`), and
+ *  an empty one as None, which needs no box. */
+function TopLevelData({ text }: { text: string }): ReactNode {
+  // `handoffFields` gives a list or an object alone as JSON text.
+  const value = JSON.parse(text) as object;
+  if (Object.keys(value).length === 0) return <NoValue />;
+  return (
+    <div className={handoffBox}>
+      <HandoffData value={value} />
+    </div>
+  );
+}
+
+/** A value that holds nothing, read as every row of Details reads a property with no value. */
+function NoValue(): ReactNode {
+  return (
+    <span className={pageQuietText} {...pageChrome}>
+      {CONTROL_LABELS.none}
+    </span>
+  );
+}
+
+/**
+ * A value inside a handoff's body, as the session wrote it (the plan's D11): a list as one
+ * numbered entry for each item, an object as each key, in the words it spells (`keyWords`), with
+ * its value, each value inside them by the same rule; a string as plain text; a number, a boolean
+ * or null as its JSON text; and an empty list or object as None. Every word of it is the
+ * session's but None.
+ */
+function HandoffData({ value }: { value: unknown }): ReactNode {
+  if (value !== null && typeof value === "object" && Object.keys(value).length === 0) {
+    return <NoValue />;
+  }
+  if (Array.isArray(value)) {
+    return (
+      <ol className="flex min-w-0 list-decimal flex-col gap-1 pl-5" data-handoff-list="">
+        {value.map((item, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a list can hold one value twice, so an item's place is its identity
+          <li className="min-w-0" key={index}>
+            <HandoffData value={item} />
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  if (value !== null && typeof value === "object") {
+    return (
+      <dl className="flex min-w-0 flex-col gap-1">
+        {Object.entries(value).map(([key, member]) => (
+          <div className="min-w-0" data-handoff-key={key} key={key}>
+            <dt className={`font-medium ${pageMutedText}`}>
+              <span {...authorText}>{keyWords(key)}</span>
+            </dt>
+            <dd className="min-w-0 pl-3">
+              <HandoffData value={member} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return (
+    <span className={`break-words whitespace-pre-wrap ${pageInkText}`}>
+      {typeof value === "string" ? value : JSON.stringify(value)}
+    </span>
   );
 }
 

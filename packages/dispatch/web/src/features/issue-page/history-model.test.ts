@@ -1,10 +1,22 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
-import type { Actor, Artifact, Comment, DispatchEvent, MessageRead } from "../../api/types";
+import type {
+  Actor,
+  Artifact,
+  Comment,
+  DispatchEvent,
+  HandoffSummary,
+  IssueSteps,
+  MessageRead,
+  StepRecord,
+} from "../../api/types";
 import { dayLabel } from "../activity/activity-model";
 import { buildIssuePath, parseNodeReference, referenceHref } from "../refs/routes";
+import { stepRecord } from "../steps/step-record-fixture";
+import { stepTasks } from "../steps/steps-model";
+import capturedRun from "./fixtures/step-with-report.json";
 import {
   buildHistory,
   type HistoryBlock,
@@ -148,7 +160,7 @@ test("the history leaves out every event of a row the outline draws, and a docum
       name: spec.name,
       version: { number: 2 },
     }),
-    event("handoff.recorded", "2026-11-15T09:10:00Z", {}),
+    event("issue.closed", "2026-11-15T09:10:00Z", {}),
   ];
   const kept = flat(
     buildHistory({
@@ -163,7 +175,7 @@ test("the history leaves out every event of a row the outline draws, and a docum
     })
   ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
 
-  expect(kept).toEqual(["handoff.recorded", "issue.claimed", "issue.updated"]);
+  expect(kept).toEqual(["issue.closed", "issue.claimed", "issue.updated"]);
 });
 
 // An approval request is no row of the outline: the identity block draws its step. So where the
@@ -522,7 +534,7 @@ test("no event that creates, edits, deletes or answers a post is a line, whichev
       ),
       event("message.accepted", at, { message_id: id }),
     ]),
-    event("handoff.recorded", at, {}),
+    event("issue.closed", at, {}),
   ];
 
   const lines = flat(
@@ -536,7 +548,7 @@ test("no event that creates, edits, deletes or answers a post is a line, whichev
       ]
     )
   ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
-  expect(lines).toEqual(["handoff.recorded"]);
+  expect(lines).toEqual(["issue.closed"]);
 });
 
 // What happened to a post after it was written is a line where the history holds its thread, and
@@ -582,9 +594,9 @@ function november(day: number, hour: number, minute = 0): string {
 test("each day is headed, newest first, and the read mark falls between read and unread", () => {
   seq = 0;
   const events = [
-    event("handoff.recorded", november(13, 9), {}),
-    event("handoff.recorded", november(14, 9), {}),
-    event("handoff.recorded", november(15, 9), {}),
+    event("issue.claimed", november(13, 9), {}),
+    event("issue.claimed", november(14, 9), {}),
+    event("issue.claimed", november(15, 9), {}),
   ];
   const days = buildHistory({
     artifacts: [],
@@ -618,8 +630,8 @@ test("each day is headed, newest first, and the read mark falls between read and
 test("the read mark falls inside a day where that day holds read and unread entries", () => {
   seq = 0;
   const events = [
-    event("handoff.recorded", "2026-11-15T08:00:00Z", {}),
-    event("handoff.recorded", "2026-11-15T09:00:00Z", {}),
+    event("issue.claimed", "2026-11-15T08:00:00Z", {}),
+    event("issue.claimed", "2026-11-15T09:00:00Z", {}),
   ];
   const days = buildHistory({
     artifacts: [],
@@ -641,7 +653,7 @@ test("a thread that began before the oldest event read so far waits for its page
   seq = 0;
   const old = comment("old", "2026-11-10T09:00:00Z", AGENT);
   const recent = comment("recent", "2026-11-15T09:00:00Z", AGENT);
-  const events = [event("handoff.recorded", "2026-11-14T09:00:00Z", {})];
+  const events = [event("issue.claimed", "2026-11-14T09:00:00Z", {})];
   const roots = (loadedFrom: string | undefined) =>
     flat(
       buildHistory({
@@ -1113,4 +1125,373 @@ test("while the blocks are not known, a repaired block's line names a block, nev
   expect(lines[0]?.text, "the repaired block's line says it is gone").not.toContain(
     CONTROL_LABELS.history_gone_block
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// The one timeline (the plan's D9, rows M1 to M12): each run of the issue's steps is one entry,
+// placed by its start, and holds the handoff it reports; every other handoff of the list is an
+// entry of its own; a handoff's event makes no entry.
+// ---------------------------------------------------------------------------------------------
+
+/** When the issue of these cases was made: where a run with nothing else to stand by stands. */
+const ISSUE_MADE = "2026-11-10T08:00:00Z";
+
+/** A handoff of `KEY` as the list of its handoffs answers it, with no body, made at `at`. */
+function handoffOf(id: string, at: string, over: Partial<HandoffSummary> = {}): HandoffSummary {
+  return {
+    author: AGENT,
+    created_at: at,
+    id,
+    issue_key: KEY,
+    phase: "implement",
+    version: 1,
+    ...over,
+  };
+}
+
+/** The runs of the issue, as its steps read answers them: one task for each list given, named by
+ *  its records' own task, in the order given, which is the server's. */
+function stepsOf(...tasks: (readonly StepRecord[])[]): IssueSteps {
+  return {
+    issue: KEY,
+    tasks: tasks.map((records) => ({ steps: [...records], task: records[0]?.task ?? "default" })),
+  };
+}
+
+/** A run of the task `task` of the issue, started and ended where it says. */
+function runOf(
+  id: string,
+  started: string | null,
+  over: Partial<StepRecord> = {},
+  task = "default"
+): StepRecord {
+  return stepRecord({ ended_at: null, id, issue: KEY, started_at: started, task, ...over });
+}
+
+/** The history of `events`, the runs `runs` and the handoffs `handoffs`, by day. */
+function timelineDays(input: {
+  addressed?: HistoryInput["addressed"];
+  events?: readonly DispatchEvent[];
+  handoffs?: readonly HandoffSummary[];
+  loadedFrom?: string;
+  runs?: IssueSteps;
+}): HistoryDay[] {
+  return buildHistory({
+    ...(input.addressed === undefined ? {} : { addressed: input.addressed }),
+    artifacts: [],
+    asks: [],
+    blocks: new Map(),
+    comments: [],
+    events: input.events ?? [],
+    handoffs: input.handoffs,
+    issueCreatedAt: ISSUE_MADE,
+    lastReadSeq: 0,
+    ...(input.loadedFrom === undefined ? {} : { loadedFrom: input.loadedFrom }),
+    messages: [],
+    runs: input.runs,
+    today: "2026-11-15",
+  });
+}
+
+/** Each entry of the history, newest first, by what it is: a run as `run:<id>` with
+ *  `+<handoff id>` where it holds a handoff, a handoff of its own as `handoff:<id>`, and every
+ *  other entry by its id. */
+function timeline(input: Parameters<typeof timelineDays>[0]): string[] {
+  return flat(timelineDays(input)).flatMap((entry) => {
+    if (entry.kind === "unread") return [];
+    if (entry.kind === "run") {
+      return [entry.handoff === undefined ? entry.id : `${entry.id}+${entry.handoff.id}`];
+    }
+    return [entry.id];
+  });
+}
+
+/** Where each run of the history stands, by its entry's id. */
+function runPlaces(input: Parameters<typeof timelineDays>[0]): Record<string, string> {
+  return Object.fromEntries(
+    flat(timelineDays(input)).flatMap((entry) =>
+      entry.kind === "run" ? [[entry.id, entry.at]] : []
+    )
+  );
+}
+
+describe("the timeline holds each run and the handoff it reports", () => {
+  // Placed by its start, never by its end: a run that started first and ended last stands under
+  // the run and the events that came after its start.
+  test("M1: a run stands at its start", () => {
+    seq = 0;
+    const events = [
+      event("issue.claimed", "2026-11-15T09:30:00Z", {}),
+      event("issue.closed", "2026-11-15T11:00:00Z", {}),
+    ];
+    const runs = stepsOf([
+      runOf("long", "2026-11-15T09:00:00Z", { ended_at: "2026-11-15T12:00:00Z" }),
+      runOf("short", "2026-11-15T10:00:00Z", { ended_at: "2026-11-15T10:30:00Z" }),
+    ]);
+    expect(timeline({ events, handoffs: [], runs })).toEqual([
+      `event:${events[1]?.id}`,
+      "run:short",
+      `event:${events[0]?.id}`,
+      "run:long",
+    ]);
+    expect(runPlaces({ events, handoffs: [], runs })).toEqual({
+      "run:long": "2026-11-15T09:00:00Z",
+      "run:short": "2026-11-15T10:00:00Z",
+    });
+  });
+
+  // A run whose record holds no start stands at its end; one with neither at the handoff it
+  // reports, where the list holds it; one with none of those at the place of the next run of its
+  // task in the server's order; and the last run of its task with none of them at the issue's
+  // own start. A report the list does not hold gives no place.
+  test("M2: a run with no start stands at its end, then at its handoff, then at the next run of its task, then at the issue's start", () => {
+    seq = 0;
+    const runs = stepsOf(
+      [
+        runOf("before-next", null),
+        runOf("next", "2026-11-15T10:00:00Z"),
+        runOf("ended-only", null, { ended_at: "2026-11-15T11:00:00Z" }),
+        runOf("reported", null, { report: "reported-handoff" }),
+        runOf("reports-unknown", null, { report: "no-such-handoff" }),
+        runOf("last-of-task", "2026-11-15T13:00:00Z"),
+      ],
+      [runOf("docs-before", null, {}, "docs"), runOf("docs-last", null, {}, "docs")]
+    );
+    const handoffs = [handoffOf("reported-handoff", "2026-11-15T12:00:00Z")];
+    expect(runPlaces({ handoffs, runs })).toEqual({
+      "run:before-next": "2026-11-15T10:00:00Z",
+      "run:docs-before": ISSUE_MADE,
+      "run:docs-last": ISSUE_MADE,
+      "run:ended-only": "2026-11-15T11:00:00Z",
+      "run:last-of-task": "2026-11-15T13:00:00Z",
+      "run:next": "2026-11-15T10:00:00Z",
+      "run:reported": "2026-11-15T12:00:00Z",
+      "run:reports-unknown": "2026-11-15T13:00:00Z",
+    });
+  });
+
+  // The record a running Dispatch answered with (`fixtures/step-with-report.json`): its entry
+  // holds the handoff its `report` names, with that handoff's own fields from the list, and no
+  // other entry holds it; the handoff no run reports has its own entry.
+  test("M3: the handoff a run reports is in that run's entry and in no other", () => {
+    seq = 0;
+    const record = stepRecord(capturedRun as Partial<StepRecord> & Pick<StepRecord, "id">);
+    const reported = handoffOf(record.report ?? "", "2026-11-21T23:12:47.459605Z", {
+      issue_key: record.issue,
+      version: 15,
+    });
+    const other = handoffOf("not-reported", "2026-11-22T08:00:00Z", { phase: "review" });
+    const events = [
+      event("handoff.recorded", reported.created_at, {
+        handoff_id: reported.id,
+        phase: reported.phase,
+        version: reported.version,
+      }),
+    ];
+    const entries = flat(
+      timelineDays({ events, handoffs: [reported, other], runs: stepsOf([record]) })
+    );
+    const holding = entries.filter(
+      (entry) =>
+        (entry.kind === "run" && entry.handoff?.id === reported.id) ||
+        (entry.kind === "handoff" && entry.handoff.id === reported.id)
+    );
+    expect(holding.map((entry) => entry.id)).toEqual([`run:${record.id}`]);
+    const run = holding[0];
+    if (run?.kind !== "run") throw new Error("the captured run has no entry of its own");
+    expect(run.handoff).toEqual(reported);
+    expect(run.at).toBe(record.started_at ?? "");
+    expect(run.task).toBe(record.task);
+    expect(run.row).toEqual(stepTasks(stepsOf([record]))[0]?.rows[0] ?? {});
+    expect(timeline({ events, handoffs: [reported, other], runs: stepsOf([record]) })).toEqual([
+      "handoff:not-reported",
+      `run:${record.id}+${reported.id}`,
+    ]);
+  });
+
+  // Where two runs report one handoff, the newer run, the one that stands higher, holds it, in
+  // whichever order the server lists them.
+  test("M4: two runs that report one handoff: the newer holds it", () => {
+    seq = 0;
+    const runs = stepsOf(
+      [runOf("newer", "2026-11-15T10:00:00Z", { report: "shared" }, "docs")],
+      [runOf("older", "2026-11-15T09:00:00Z", { report: "shared" })]
+    );
+    expect(timeline({ handoffs: [handoffOf("shared", "2026-11-15T09:30:00Z")], runs })).toEqual([
+      "run:newer+shared",
+      "run:older",
+    ]);
+  });
+
+  // A handoff no run reports is an entry of its own, at its own time, among the events; a run
+  // that reports none holds none.
+  test("M5: a handoff no run reports has an entry of its own", () => {
+    seq = 0;
+    const events = [
+      event("issue.claimed", "2026-11-15T09:00:00Z", {}),
+      event("issue.closed", "2026-11-15T11:00:00Z", {}),
+    ];
+    const runs = stepsOf([runOf("silent", "2026-11-15T08:00:00Z")]);
+    const entries = flat(
+      timelineDays({ events, handoffs: [handoffOf("alone", "2026-11-15T10:00:00Z")], runs })
+    );
+    expect(
+      timeline({ events, handoffs: [handoffOf("alone", "2026-11-15T10:00:00Z")], runs })
+    ).toEqual([`event:${events[1]?.id}`, "handoff:alone", `event:${events[0]?.id}`, "run:silent"]);
+    const alone = entries.find((entry) => entry.kind === "handoff");
+    expect(alone?.kind === "handoff" ? alone.at : undefined).toBe("2026-11-15T10:00:00Z");
+    expect(alone?.kind === "handoff" ? alone.author : undefined).toEqual(AGENT);
+  });
+
+  // The event of a recorded handoff is no line of the history: its handoff is drawn from the
+  // list. It gives the entry that holds the handoff its Pin, and an entry of the handoff alone its
+  // place in the log too; a run's entry keeps seq 0. A handoff whose event the log does not hold
+  // has no Pin.
+  test("M6: a recorded handoff's event makes no entry, and gives its pin", () => {
+    seq = 0;
+    const recorded = (id: string, at: string) =>
+      event("handoff.recorded", at, { handoff_id: id, phase: "implement", version: 1 });
+    const events = [
+      recorded("in-run", "2026-11-15T09:30:00Z"),
+      recorded("alone", "2026-11-15T10:00:00Z"),
+    ];
+    const handoffs = [
+      handoffOf("in-run", "2026-11-15T09:30:00Z"),
+      handoffOf("alone", "2026-11-15T10:00:00Z"),
+      handoffOf("unlogged", "2026-11-15T10:30:00Z"),
+    ];
+    const runs = stepsOf([runOf("reporter", "2026-11-15T09:00:00Z", { report: "in-run" })]);
+    const entries = flat(timelineDays({ events, handoffs, runs })).filter(
+      (entry) => entry.kind !== "unread"
+    );
+    expect(entries.filter((entry) => entry.kind === "event")).toEqual([]);
+    expect(
+      entries.map((entry) =>
+        entry.kind === "run" || entry.kind === "handoff"
+          ? { id: entry.id, recorded: entry.recorded, seq: entry.seq }
+          : { id: entry.id }
+      )
+    ).toEqual([
+      { id: "handoff:unlogged", recorded: undefined, seq: 0 },
+      { id: "handoff:alone", recorded: events[1]?.id, seq: events[1]?.seq },
+      { id: "run:reporter", recorded: events[0]?.id, seq: 0 },
+    ]);
+  });
+
+  // A run or a handoff older than the oldest event the log has read so far waits for its page,
+  // as a thread does; with the whole log in, nothing waits.
+  test("M7: a run older than the log read waits for its page", () => {
+    seq = 0;
+    const runs = stepsOf([
+      runOf("old", "2026-11-12T09:00:00Z"),
+      runOf("recent", "2026-11-15T09:00:00Z"),
+    ]);
+    const handoffs = [
+      handoffOf("old-handoff", "2026-11-12T10:00:00Z"),
+      handoffOf("recent-handoff", "2026-11-15T10:00:00Z"),
+    ];
+    expect(timeline({ handoffs, loadedFrom: "2026-11-14T00:00:00Z", runs })).toEqual([
+      "handoff:recent-handoff",
+      "run:recent",
+    ]);
+    expect(timeline({ handoffs, runs })).toEqual([
+      "handoff:recent-handoff",
+      "run:recent",
+      "handoff:old-handoff",
+      "run:old",
+    ]);
+  });
+
+  // The entry an address names stands in the history however old it is: the entry that holds the
+  // handoff a handoff's address names, a run's or its own, and at `/steps` the newest run.
+  test("M8: the entry an address names is not held back", () => {
+    seq = 0;
+    const runs = stepsOf([
+      runOf("oldest", "2026-11-11T09:00:00Z"),
+      runOf("old", "2026-11-12T09:00:00Z", { report: "in-run" }),
+    ]);
+    const handoffs = [
+      handoffOf("in-run", "2026-11-12T09:30:00Z"),
+      handoffOf("alone", "2026-11-12T10:00:00Z"),
+    ];
+    const loadedFrom = "2026-11-14T00:00:00Z";
+    expect(timeline({ handoffs, loadedFrom, runs })).toEqual([]);
+    expect(
+      timeline({ addressed: { id: "alone", kind: "handoff" }, handoffs, loadedFrom, runs })
+    ).toEqual(["handoff:alone"]);
+    expect(
+      timeline({ addressed: { id: "in-run", kind: "handoff" }, handoffs, loadedFrom, runs })
+    ).toEqual(["run:old+in-run"]);
+    expect(timeline({ addressed: { kind: "steps" }, handoffs, loadedFrom, runs })).toEqual([
+      "run:old+in-run",
+    ]);
+  });
+
+  // Runs go in in the server's order, so runs that stand at one instant keep that order.
+  test("M9: runs at one instant keep the server's order", () => {
+    seq = 0;
+    const at = "2026-11-15T09:00:00Z";
+    const runs = stepsOf(
+      [runOf("first", at), runOf("second", at)],
+      [runOf("third", at, {}, "docs")]
+    );
+    expect(timeline({ handoffs: [], runs })).toEqual(["run:first", "run:second", "run:third"]);
+  });
+
+  // Until the runs have answered, every handoff of the list is an entry of its own; once they
+  // have, the one a run reports is in that run's entry.
+  test("M10: with no runs read, every handoff has its own entry", () => {
+    seq = 0;
+    const handoffs = [
+      handoffOf("reported", "2026-11-15T09:30:00Z"),
+      handoffOf("alone", "2026-11-15T10:00:00Z"),
+    ];
+    expect(timeline({ handoffs })).toEqual(["handoff:alone", "handoff:reported"]);
+    expect(
+      timeline({
+        handoffs,
+        runs: stepsOf([runOf("reporter", "2026-11-15T09:00:00Z", { report: "reported" })]),
+      })
+    ).toEqual(["handoff:alone", "run:reporter+reported"]);
+  });
+
+  // No day is folded: a handoff of an earlier day, and a run, stand in the day they were made in.
+  test("M11: a handoff of an earlier day stands in that day", () => {
+    seq = 0;
+    const days = timelineDays({
+      handoffs: [handoffOf("earlier", november(13, 9)), handoffOf("today", november(15, 9))],
+      runs: stepsOf([runOf("yesterday", november(14, 9))]),
+    });
+    expect(
+      days.map((day) => ({
+        date: day.date,
+        entries: day.entries.map((entry) => entry.id),
+      }))
+    ).toEqual([
+      { date: "2026-11-15", entries: ["handoff:today"] },
+      { date: "2026-11-14", entries: ["run:yesterday"] },
+      { date: "2026-11-13", entries: ["handoff:earlier"] },
+    ]);
+  });
+
+  // The history draws 20 entries at a time, and a run with the handoff it reports is one of them.
+  test("M12: a run is one entry of a page of 20", () => {
+    seq = 0;
+    const records = Array.from({ length: 25 }, (_, index) =>
+      runOf(`run-${index}`, new Date(Date.UTC(2026, 10, 15, 9, index)).toISOString(), {
+        report: `handoff-${index}`,
+      })
+    );
+    const handoffs = records.map((record, index) =>
+      handoffOf(`handoff-${index}`, record.started_at ?? "")
+    );
+    const days = timelineDays({ handoffs, runs: stepsOf(records) });
+    expect(entriesIn(days)).toBe(25);
+    const first = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE));
+    expect(entriesIn(first.days)).toBe(PAGE_SIZE);
+    expect(first.left).toBe(5);
+    expect(
+      flat(first.days).every((entry) => entry.kind === "run" && entry.handoff !== undefined)
+    ).toBe(true);
+  });
 });

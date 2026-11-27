@@ -19,12 +19,12 @@ import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes"
 import { useKeymap } from "../shell/keymap";
 import { claimBox, overlaps, ownScrollMark, rewatch, watchedIn } from "../shell/ViewportAnchor";
 import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
-import { DetailsSteps } from "./DetailsSteps";
 import { DetailsErrorLine, useRetryHandOff, useSaidFailure } from "./details-error";
 import { useListPages } from "./details-leaves";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
+import { useHandoffFold } from "./HistoryHandoff";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
 import { type IssueAddress, issueAddress } from "./issue-address";
@@ -363,6 +363,10 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   if (state !== undefined && (held === undefined ? drawsHistory : lastReadSeq < held.seq)) {
     visitMark.current = { issue: issue.key, seq: lastReadSeq };
   }
+  // The handoffs the reader folded on this issue's page, held beside the visit's read mark for
+  // the same reason: the history is not drawn while Details is shut, so a fold held there would
+  // not outlive a close and an open (the plan's D12).
+  const fold = useHandoffFold(issue.key);
   useKeymap("issue", [
     {
       id: "tab-activity",
@@ -407,14 +411,12 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
           ) : null}
           <IssueHistory
             activityFollowing={route?.kind === "activity" ? following : undefined}
+            fold={fold}
             issue={issue}
             item={item}
             state={state}
             visitMark={visitMark.current?.issue === issue.key ? visitMark.current.seq : lastReadSeq}
           />
-          {/* The runs of the issue's steps, read only while Details is open: an address that
-              opens Details draws them a commit before the drawer opens, and they wait for it. */}
-          <DetailsSteps issueKey={issue.key} open={open} />
         </>
       ) : null}
     </>

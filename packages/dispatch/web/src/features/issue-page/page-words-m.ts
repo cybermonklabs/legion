@@ -37,9 +37,8 @@ export default {
       loading_history: "Loading activity…",
       history_unreadable: "Could not load the activity.",
       loading_older: "Loading…",
-      /** What Details' list of the runs of the issue's steps says while its read, which Details
-       *  opening asks for, is out, and when it could not be read (`DetailsSteps.tsx`). */
-      loading_steps: "Loading steps…",
+      /** What the history in Details says, with Retry, when the runs of the issue's steps, which
+       *  Details opening reads, could not be read (`IssueHistory.tsx`). */
       steps_unreadable: "Could not load the steps.",
       /** What the list of who worked the issue says while its read, which the reader opened, is
        *  out, and when it failed (`IssueCollaboratorList.tsx`): the Collaborators tab's words. */
@@ -96,13 +95,10 @@ export default {
        *  carries now, in place of that id and the word before it (`history-model.ts`): an id is no
        *  name, so the line says what the block is rather than which one. */
       history_gone_block: "a block that is gone",
-      /** Details' list of the runs Legion made of the issue's steps, under the history
-       *  (`DetailsSteps.tsx`), where today's page has a Steps tab: its heading, which its count of
-       *  runs follows, "Steps (4)"; the heading of each task's runs, before the task's own name,
-       *  "Task default"; the label of each field of a run, the tab's columns, and of the step a
-       *  failed or stopped run sent its task back to; and how a run ended, or that it runs, in the
-       *  tab's words. */
-      steps: "Steps",
+      /** What a run of the issue's steps, an entry of the history (`history-entries.tsx`), calls
+       *  its task, before the task's own name; the label of each field of a run, the Steps tab's
+       *  columns, and of the step a failed or stopped run sent its task back to; and how a run
+       *  ended, or that it runs, in the tab's words. */
       steps_task: "Task",
       step_fields: {
         agent: "Agent",

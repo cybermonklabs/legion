@@ -680,9 +680,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     cannotCarry: NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
     reach:
-      "/issues/<ISSUE>/activity with the new issue page on, a handoff's opened fields in Details' History",
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's opened fields in Details' History, in its own entry or in the entry of the run that reports it",
     reason:
-      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
+      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field at the top of its body, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
     record: false,
     rendered: true,
     surface: "issue-page-history-handoff-body",
@@ -690,9 +690,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   {
     files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
     reach:
-      "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of JSON in Details' History",
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of data in Details' History, in its own entry or in the entry of the run that reports it",
     reason:
-      "A handoff field that holds an array, an object, a number, a boolean or null is the data its session wrote, not words: it is shown as the JSON it is.",
+      "A handoff field that holds a list, an object, a number, a boolean or null is the data its session wrote, not words: a list is drawn as one numbered entry for each item and an object as each key with its value, each value inside them by the same rule, and a string inside them, a number, a boolean or null as its plain text.",
     record: false,
     rendered: false,
     surface: "issue-page-history-handoff-data",

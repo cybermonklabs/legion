@@ -1,34 +1,55 @@
-import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ComponentProps, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { installResizeObserver } from "../../__tests__/scroll-box";
-import { api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   DispatchEvent,
   DisplayTree,
   Handoff,
+  HandoffSummary,
   IssueAskRow,
   IssueDetails,
+  IssueSteps,
   MessageRead,
+  StepRecord,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
+import { pinnedItemMarker } from "../issue/pins";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { defaultRuns, stepRecord } from "../steps/step-record-fixture";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
-import { HistoryHandoff } from "./HistoryHandoff";
+import { DetailsHistory } from "./details-more";
+import { HistoryHandoff, useHandoffFold } from "./HistoryHandoff";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
+import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -45,6 +66,38 @@ const KEY = "CORE-1";
 const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
+
+// The history reads the issue's runs, each an entry, through the Steps tab's catch-up while
+// Details is open (here, with no drawer, always), and the list of its handoffs. Each case answers
+// both with none unless it answers them itself, through the spies `stepsRead` and `handoffsRead`
+// give, so no read reaches the network.
+let timelineReads: { mockRestore(): void }[] = [];
+beforeEach(() => {
+  timelineReads = [
+    spyOn(api, "listSteps").mockResolvedValue({ issue: KEY, tasks: [] }),
+    spyOn(api, "listHandoffs").mockResolvedValue([]),
+  ];
+});
+afterEach(() => {
+  for (const read of timelineReads) read.mockRestore();
+});
+
+/** The history's read of the issue's runs (`api.listSteps`), which `beforeEach` answers with none. */
+function stepsRead(): Mock<typeof api.listSteps> {
+  return api.listSteps as unknown as Mock<typeof api.listSteps>;
+}
+
+/** The history's read of the issue's handoffs (`api.listHandoffs`), which `beforeEach` answers with
+ *  none. */
+function handoffsRead(): Mock<typeof api.listHandoffs> {
+  return api.listHandoffs as unknown as Mock<typeof api.listHandoffs>;
+}
+
+/** The history with the fold the page holds for its issue (`useHandoffFold`), as
+ *  `DetailsHistory` draws it. */
+function HeldHistory(props: Omit<ComponentProps<typeof IssueHistory>, "fold">): ReactNode {
+  return <IssueHistory {...props} fold={useHandoffFold(props.issue.key)} />;
+}
 
 /** The entries of the history as it draws them, newest first: a line of an event, a run of
  *  uploads or a thread, and never the line that says what is new. */
@@ -156,7 +209,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <IssueHistory
+          <HeldHistory
             activityFollowing={undefined}
             issue={issue}
             item={undefined}
@@ -217,7 +270,7 @@ test("an event arriving just after midnight leaves the entry the reader reads wh
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <IssueHistory
+          <HeldHistory
             activityFollowing={undefined}
             issue={issue}
             item={undefined}
@@ -305,7 +358,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <IssueHistory
+          <HeldHistory
             activityFollowing={undefined}
             issue={issue}
             item={undefined}
@@ -361,7 +414,7 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
     return null;
   }
   const history = (
-    <IssueHistory
+    <HeldHistory
       activityFollowing={undefined}
       issue={issue}
       item={undefined}
@@ -551,7 +604,7 @@ function drawHistory(
   queryClient.setQueryData(["agents"], []);
   const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
   const history = (
-    <IssueHistory
+    <HeldHistory
       activityFollowing={undefined}
       issue={issue}
       item={item === undefined ? undefined : { following: FOLLOWING, id: item }}
@@ -2535,7 +2588,7 @@ test("a turn past the first 20 entries is drawn by its address, also when the ad
   const at = (item: AddressedTurn) => (
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <IssueHistory
+        <HeldHistory
           activityFollowing={undefined}
           issue={issue}
           item={item}
@@ -2610,7 +2663,7 @@ test("a turn its author edited reads edited after its author, and a turn its aut
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <OutlineWriterProvider issueKey={KEY}>
-            <IssueHistory
+            <HeldHistory
               activityFollowing={undefined}
               issue={issue}
               item={undefined}
@@ -2712,6 +2765,13 @@ function handoffRecord(summary: string): Handoff {
   };
 }
 
+/** A handoff's fields, open until a press of its control folds them, as the history holds its
+ *  fold (`HandoffFold`). */
+function HeldHandoff(): ReactNode {
+  const [folded, setFolded] = useState(false);
+  return <HistoryHandoff folded={folded} handoffId="handoff-1" onFold={setFolded} />;
+}
+
 /** A handoff's fields in the history, drawn open, with nothing above them but a router and
  *  `queryClient`, a query client that never retries where the case gives none. */
 function drawHandoff(
@@ -2720,16 +2780,16 @@ function drawHandoff(
   const { unmount } = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <HistoryHandoff handoffId="handoff-1" />
+        <HeldHandoff />
       </QueryClientProvider>
     </MemoryRouter>
   );
   return { queryClient, unmount };
 }
 
-// Each handoff of the history is drawn open as the history draws its line, its fields and each
-// proof entry read with no press. Only the reader folds it, by its line's Hide fields, and Show
-// fields opens it again from the body read once.
+// Each handoff of the history is drawn open as the history draws its entry, from the list of the
+// issue's handoffs, its fields and each proof entry read with no press. Only the reader folds
+// it, by its Hide fields, and Show fields opens it again from the body read once.
 test("a handoff is drawn open with its fields and each proof entry, and a press on its line folds it", async () => {
   const restoreReads = stubHistoryReads([
     {
@@ -2738,6 +2798,8 @@ test("a handoff is drawn open with its fields and each proof entry, and a press 
       type: "handoff.recorded",
     } as DispatchEvent,
   ]);
+  const { body: _body, ...listed } = handoffRecord("Second pass");
+  handoffsRead().mockResolvedValue([listed]);
   const getHandoff = spyOn(api, "getHandoff").mockResolvedValue({
     ...handoffRecord("Second pass"),
     body: JSON.stringify({
@@ -3198,9 +3260,12 @@ test("a handoff's prose field draws a reference as its target's name, not its ad
       document.querySelector(`[data-handoff-field="proof"] a[data-dispatch-ref="${reference}"]`)
         ?.textContent
     ).toBe("CORE-2 Warm the cache");
-    expect(document.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
-      '[\n  "a.ts"\n]'
-    );
+    // A list is one numbered entry for each item, its words plain text (the plan's D11).
+    expect(
+      [...document.querySelectorAll('[data-handoff-field="files"] ol > li')].map(
+        (item) => item.textContent
+      )
+    ).toEqual(["a.ts"]);
   } finally {
     unmount();
     queryClient.clear();
@@ -3264,4 +3329,580 @@ test("a block's line in the history reads a reference as its target's name", asy
     listIssueAsks.mockRestore();
     restoreReads();
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The one timeline (the plan's T1 to T6, T8 and D7): each run of the issue's steps is an entry
+// of the history, which holds the handoff it reports, and the Steps section is gone.
+// ---------------------------------------------------------------------------------------------
+
+/** The instant `seconds` seconds before now, as the server writes one. */
+function secondsAgo(seconds: number): string {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}
+
+/** What the history draws of the instant `iso`, as the Steps tab draws it: the date and the time
+ *  of day in the reader's locale. */
+function drawnAt(iso: string): string {
+  const date = new Date(iso);
+  const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+  const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${day.format(date)} ${time.format(date)}`;
+}
+
+/** The runs `records` of the issue, one task of each list given, in the server's order. */
+function stepsOf(...tasks: (readonly StepRecord[])[]): IssueSteps {
+  return {
+    issue: KEY,
+    tasks: tasks.map((records) => ({ steps: [...records], task: records[0]?.task ?? "default" })),
+  };
+}
+
+/** A handoff of the issue as its list gives it, written `ago` seconds ago by the implementer. */
+function listedHandoff(id: string, ago: number, version = 1): HandoffSummary {
+  return {
+    author: { id: "fedcba9876543210", kind: "session", origin: { session_title: "Implementer" } },
+    created_at: new Date(Date.now() - ago * 1000).toISOString(),
+    id,
+    issue_key: KEY,
+    phase: "implement",
+    version,
+  };
+}
+
+/** The entry of run `id`. */
+function runEntry(id: string): HTMLElement {
+  const found = document.querySelector<HTMLElement>(
+    `[data-testid="issue-history"] [data-step-run="${id}"]`
+  );
+  if (found === null) throw new Error(`the history draws no entry of run ${id}`);
+  return found;
+}
+
+/** Each field run `id`'s entry draws, by its field, with the value the reader reads; a field it
+ *  does not draw is not there. */
+function runFields(id: string): Record<string, string> {
+  return Object.fromEntries(
+    [...runEntry(id).querySelectorAll("[data-step-field]")].map((field) => [
+      field.getAttribute("data-step-field"),
+      field.querySelector("dd")?.textContent ?? "",
+    ])
+  );
+}
+
+/** The ids of the runs the history draws, newest first. */
+function drawnRuns(): string[] {
+  return [...document.querySelectorAll('[data-testid="issue-history"] [data-step-run]')].map(
+    (run) => run.getAttribute("data-step-run") ?? ""
+  );
+}
+
+/** The ids the history's entries are drawn under, newest first. */
+function drawnIds(): (string | null)[] {
+  return drawnEntries().map((entry) => entry.getAttribute("data-history-entry"));
+}
+
+describe("the history is the issue's one timeline", () => {
+  // I3: the eleven fields of a run over four runs - a passed step, a failed step that sent the
+  // task back to step 2, a running step with no model and no end, and a merge with no start, no
+  // type and no agent - each the value the Steps section drew for it, None where the record holds
+  // none, and "Returned to" only where a run sent its task back.
+  test("T1: each run's entry draws its task and every field of its Steps row", async () => {
+    const { implement1, implement2, merge1, review1 } = defaultRuns;
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(stepsOf([implement1, review1, implement2, merge1]));
+    const none = CONTROL_LABELS.none;
+    const results = CONTROL_LABELS.step_results;
+    const table: Record<string, Record<string, string | undefined>> = {
+      [implement1.id]: {
+        agent: "legion-core-core-1-implementer",
+        attempt: "1",
+        ended: drawnAt("2026-11-16T09:40:00Z"),
+        model: "anthropic/claude-opus-5",
+        result: results.passed,
+        returned_to: undefined,
+        role: "implementer",
+        started: drawnAt("2026-11-16T09:00:00Z"),
+        step: "2",
+        task: "default",
+        type: "implementation",
+      },
+      [review1.id]: {
+        agent: "legion-core-core-1-reviewer",
+        attempt: "1",
+        ended: drawnAt("2026-11-16T10:30:00Z"),
+        model: "openai/gpt-6.1-sol",
+        result: results.failed,
+        returned_to: "step 2",
+        role: "reviewer",
+        started: drawnAt("2026-11-16T10:00:00Z"),
+        step: "4",
+        task: "default",
+        type: "review",
+      },
+      [implement2.id]: {
+        agent: "legion-core-core-1-implementer",
+        attempt: "2",
+        ended: none,
+        model: none,
+        result: results.running,
+        returned_to: undefined,
+        role: "implementer",
+        started: drawnAt("2026-11-16T10:31:00Z"),
+        step: "2",
+        task: "default",
+        type: "implementation",
+      },
+      [merge1.id]: {
+        agent: none,
+        attempt: "1",
+        ended: drawnAt("2026-11-16T09:40:00Z"),
+        model: none,
+        result: results.passed,
+        returned_to: undefined,
+        role: "merger",
+        started: none,
+        step: "Merge",
+        task: "default",
+        type: none,
+      },
+    };
+    let unmount: (() => void) | undefined;
+    try {
+      unmount = drawHistory(undefined).unmount;
+      await waitFor(() => expect(drawnRuns()).toHaveLength(4));
+      // Newest first, each at its start; the merge, which has none, at its end.
+      expect(drawnRuns()).toEqual([implement2.id, review1.id, merge1.id, implement1.id]);
+      expect(screen.queryByRole("table"), "the runs are drawn as a table").toBeNull();
+      const labels = CONTROL_LABELS.step_fields;
+      expect(
+        [...runEntry(review1.id).querySelectorAll("dt")].map((label) => label.textContent),
+        "the failed review's fields are not labelled in the page's words"
+      ).toEqual([
+        CONTROL_LABELS.steps_task,
+        labels.step,
+        labels.role,
+        labels.type,
+        labels.agent,
+        labels.model,
+        labels.attempt,
+        labels.started,
+        labels.ended,
+        labels.result,
+        labels.returned_to,
+      ]);
+      for (const [id, fields] of Object.entries(table)) {
+        const drawn: Record<string, string | undefined> = runFields(id);
+        for (const [field, value] of Object.entries(fields)) {
+          expect(drawn[field], `the ${field} of run ${id}`).toBe(value);
+        }
+      }
+      // Each time is the record's own instant, in a `<time>` that names it.
+      expect(
+        [...runEntry(review1.id).querySelectorAll("time")].map((time) =>
+          time.getAttribute("datetime")
+        )
+      ).toEqual(["2026-11-16T10:00:00Z", "2026-11-16T10:30:00Z"]);
+      // The step a run went back to wraps: no part of its value keeps it on one line.
+      expect(
+        runEntry(review1.id).querySelector('[data-step-field="returned_to"] .whitespace-nowrap')
+      ).toBeNull();
+    } finally {
+      unmount?.();
+      restoreReads();
+    }
+  });
+
+  // The handoff a run reports is drawn in that run's entry, open, from the list of handoffs, and
+  // nowhere else in the history.
+  test("T2: the handoff a run reports is drawn open in its entry", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(
+      stepsOf([stepRecord({ id: "implement-1", report: "handoff-1", started_at: secondsAgo(5) })])
+    );
+    handoffsRead().mockResolvedValue([
+      listedHandoff("handoff-1", 60),
+      listedHandoff("alone", 30, 2),
+    ]);
+    const getHandoff = spyOn(api, "getHandoff").mockImplementation(async (id) => ({
+      ...handoffRecord(id === "handoff-1" ? "First pass" : "Second pass"),
+      id,
+    }));
+    let unmount: (() => void) | undefined;
+    try {
+      unmount = drawHistory(undefined).unmount;
+      await waitFor(() =>
+        expect(
+          runEntry("implement-1").querySelector('[data-handoff-field="summary"] dd')?.textContent
+        ).toBe("First pass")
+      );
+      const run = runEntry("implement-1");
+      expect(run.textContent).toContain("recorded the implement handoff, version 1");
+      expect(within(run).getByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+      expect(
+        document.querySelectorAll('[data-handoff-line="handoff-1"]'),
+        "the handoff the run reports is drawn in more than one place"
+      ).toHaveLength(1);
+      // The handoff no run reports is an entry of its own, open too.
+      const alone = document.querySelector<HTMLElement>('[data-history-entry="handoff:alone"]');
+      expect(alone?.querySelector("[data-step-run]")).toBeNull();
+      await waitFor(() =>
+        expect(alone?.querySelector('[data-handoff-field="summary"] dd')?.textContent).toBe(
+          "Second pass"
+        )
+      );
+    } finally {
+      unmount?.();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // A read of the runs Dispatch refused says so at once under the heading, with its Retry, and
+  // every other entry stays drawn. The read has no retry policy of its own, so nothing asks again
+  // before Retry or the catch-up's next read, though the client's policy would ask twice within
+  // the second. Retry reads again and draws the runs, and the focus it held goes to the heading
+  // once its line goes, never to the page. The catch-up's next read, 2 s after the first, is
+  // refused too, and the runs the read before it drew stay drawn with no failure said over them.
+  test("T3: runs that did not read: the failure line with Retry, and every other entry stays", async () => {
+    await onFakeClock(async () => {
+      setSystemTime(NOON);
+      const user = userOnFakeClock();
+      const restoreReads = stubHistoryReads([claim(2), claim(1)]);
+      let refusing = true;
+      // Four runs newer than the log's entries, so the history draws them above the place it
+      // holds once they read.
+      const recent = ["first", "second", "third", "fourth"].map((id, index) =>
+        stepRecord({ id, started_at: secondsAgo(4 - index) })
+      );
+      stepsRead().mockImplementation(async () => {
+        if (refusing) throw new ApiError(500, { code: "INTERNAL", error: "refused" });
+        return stepsOf(recent);
+      });
+      const queryClient = new DispatchQueryClient({
+        defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+      });
+      queryClient.setQueryData(["agents"], []);
+      const { unmount } = render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <HeldHistory
+              activityFollowing={undefined}
+              issue={{ artifacts: [], key: KEY } as unknown as IssueDetails}
+              item={undefined}
+              state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+              visitMark={99}
+            />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      const history = () => screen.getByTestId("issue-history");
+      const heading = () => within(history()).getByRole("heading", { level: 2 });
+      try {
+        await tick(0);
+        expect(within(history()).getByRole("alert").textContent).toBe(
+          ANSWER_LINES.steps_unreadable
+        );
+        expect(drawnEntries().map((entry) => entry.getAttribute("data-event-seq"))).toEqual([
+          "2",
+          "1",
+        ]);
+        await tick(1_000, 100);
+        expect(
+          stepsRead(),
+          "the refused read was asked again before Retry or the catch-up's next read"
+        ).toHaveBeenCalledTimes(1);
+
+        refusing = false;
+        const retry = within(history()).getByRole("button", { name: CONTROL_LABELS.retry });
+        act(() => retry.focus());
+        await user.keyboard("{Enter}");
+        await tick(0);
+        expect(drawnRuns()).toHaveLength(4);
+        expect(stepsRead()).toHaveBeenCalledTimes(2);
+        expect(within(history()).queryByRole("alert")).toBeNull();
+        expect(document.activeElement, "the Retry that went left the focus on the page").toBe(
+          heading()
+        );
+
+        refusing = true;
+        await tick(1_000, 100);
+        expect(stepsRead()).toHaveBeenCalledTimes(3);
+        expect(
+          within(history()).queryByRole("alert"),
+          "a later failure said a failure over the runs the read holds"
+        ).toBeNull();
+        expect(drawnRuns(), "a later failure took away the runs the read holds").toHaveLength(4);
+      } finally {
+        act(() => unmount());
+        queryClient.clear();
+        restoreReads();
+      }
+    });
+  });
+
+  // The Pin and Unpin of a recorded handoff's event are on the entry that holds the handoff: the
+  // run's that reports it, or the handoff's own, never on a line of the event.
+  test("T4: the pin of a recorded handoff is on the entry that holds it", async () => {
+    const recorded = (seq: number, id: string) =>
+      ({
+        ...claim(seq),
+        payload: { handoff_id: id, phase: "implement", version: 1 },
+        type: "handoff.recorded",
+      }) as DispatchEvent;
+    const restoreReads = stubHistoryReads([recorded(3, "alone"), recorded(2, "in-run"), claim(1)]);
+    stepsRead().mockResolvedValue(
+      stepsOf([stepRecord({ id: "reporter", report: "in-run", started_at: secondsAgo(12) })])
+    );
+    handoffsRead().mockResolvedValue([listedHandoff("in-run", 15), listedHandoff("alone", 10)]);
+    const getHandoff = spyOn(api, "getHandoff").mockImplementation(async (id) => ({
+      ...handoffRecord("Pass"),
+      id,
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    queryClient.setQueryData(["agents"], []);
+    const { unmount } = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <HeldHistory
+            activityFollowing={undefined}
+            issue={{ artifacts: [], key: KEY } as unknown as IssueDetails}
+            item={undefined}
+            state={{
+              [KEY]: {
+                dismissed: [pinnedItemMarker("event:2")],
+                last_read_seq: 99,
+                pinned: false,
+                seq: 0,
+              },
+            }}
+            visitMark={99}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() => expect(drawnRuns()).toEqual(["reporter"]));
+      expect(
+        [...runEntry("reporter").querySelectorAll("button")].filter(
+          (button) => button.getAttribute("aria-label") === CONTROL_LABELS.unpin
+        ),
+        "the run that holds the pinned handoff draws no Unpin"
+      ).toHaveLength(1);
+      const alone = document.querySelector<HTMLElement>('[data-history-entry="handoff:alone"]');
+      if (alone === null) throw new Error("the handoff no run reports has no entry");
+      expect(
+        [...alone.querySelectorAll("button")].filter(
+          (button) => button.getAttribute("aria-label") === CONTROL_LABELS.pin
+        )
+      ).toHaveLength(1);
+      expect(alone.getAttribute("data-event-seq")).toBe("3");
+      // No event of a recorded handoff is a line of its own.
+      expect(drawnIds()).toEqual(["handoff:alone", "run:reporter", "event:1"]);
+    } finally {
+      unmount();
+      queryClient.clear();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // Where the records of the newest run, the highest generation, name an experiment, the history
+  // draws its experiment and variant once, under its heading and above its list; the older
+  // generation's, which names another variant, is not drawn. Where no record of the newest run
+  // names one, though the older generation's does, it draws no such line.
+  test("T5: the experiment and the variant are named once under the heading", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(
+      stepsOf([
+        stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
+        stepRecord({ experiment: "planning", generation: 2, id: "newest-1", variant: "b" }),
+        stepRecord({
+          experiment: "planning",
+          generation: 2,
+          id: "newest-2",
+          role: "reviewer",
+          step: 4,
+          type: "review",
+          variant: "b",
+        }),
+      ])
+    );
+    let drawn = drawHistory(undefined);
+    try {
+      const history = screen.getByTestId("issue-history");
+      const line = await within(history).findByText("Experiment planning: variant b");
+      expect(within(history).getAllByText(/^Experiment /u)).toHaveLength(1);
+      expect(line.hasAttribute("data-step-variant")).toBe(true);
+      const heading = within(history).getByRole("heading", { level: 2 });
+      const list = await within(history).findByRole("list", {
+        name: CONTROL_LABELS.history_list,
+      });
+      expect(heading.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(line.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      drawn.unmount();
+      drawn.queryClient.clear();
+
+      stepsRead().mockResolvedValue(
+        stepsOf([
+          stepRecord({ experiment: "planning", generation: 1, id: "older-1", variant: "a" }),
+          stepRecord({ generation: 2, id: "newest-1" }),
+        ])
+      );
+      drawn = drawHistory(undefined);
+      await waitFor(() => expect(drawnRuns()).toHaveLength(2));
+      expect(screen.queryByText(/^Experiment /u)).toBeNull();
+      expect(document.querySelector("[data-step-variant]")).toBeNull();
+    } finally {
+      drawn.unmount();
+      restoreReads();
+    }
+  });
+
+  // Details draws no Steps section: the runs are the history's entries, and nothing else on it
+  // lists them.
+  test("T6: no Steps section is drawn", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    stepsRead().mockResolvedValue(stepsOf([...Object.values(defaultRuns)]));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    queryClient.setQueryData(["agents"], []);
+    const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+    const issue = {
+      artifacts: [],
+      key: KEY,
+      status: "in_progress",
+      title: "Review the spec",
+    } as unknown as IssueDetails;
+    const { unmount } = render(
+      <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+        <QueryClientProvider client={queryClient}>
+          <MarginSlotProvider drawer={drawer}>
+            <DetailsHistory issue={issue} state={undefined} />
+          </MarginSlotProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() => expect(drawnRuns()).toHaveLength(4));
+      expect(screen.queryByTestId("issue-steps")).toBeNull();
+      expect(screen.queryByRole("region", { name: "Steps" })).toBeNull();
+      expect(
+        document.querySelectorAll("[data-step-run]"),
+        "a run is drawn outside the history"
+      ).toHaveLength(4);
+    } finally {
+      unmount();
+      queryClient.clear();
+      restoreReads();
+    }
+  });
+
+  // The history draws its loading line, and no entry, until the runs and the list of handoffs
+  // have each answered, so the handoff a run reports is drawn in that run's entry from the first
+  // draw and never moves into it; a read that failed is an answer, after which the history draws.
+  test("T8: the history holds its first place only after the runs and the list of handoffs answered, and a failed read is an answer", async () => {
+    const restoreReads = stubHistoryReads([claim(2), claim(1)]);
+    const runs = Promise.withResolvers<IssueSteps>();
+    const handoffs = Promise.withResolvers<HandoffSummary[]>();
+    stepsRead().mockImplementation(() => runs.promise);
+    handoffsRead().mockImplementation(() => handoffs.promise);
+    const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Pass"));
+    let drawn: { queryClient: QueryClient; unmount: () => void } | undefined;
+    try {
+      drawn = drawHistory(undefined);
+      const history = screen.getByTestId("issue-history");
+      await waitFor(() => expect(stepsRead()).toHaveBeenCalled());
+      await act(async () => {});
+      expect(within(history).getByText(ANSWER_LINES.loading_history)).toBeDefined();
+      expect(drawnEntries(), "the history drew before the runs answered").toHaveLength(0);
+
+      await act(async () =>
+        runs.resolve(
+          stepsOf([stepRecord({ id: "reporter", report: "handoff-1", started_at: secondsAgo(5) })])
+        )
+      );
+      expect(within(history).getByText(ANSWER_LINES.loading_history)).toBeDefined();
+      expect(drawnEntries(), "the history drew before the handoffs answered").toHaveLength(0);
+
+      await act(async () => handoffs.resolve([listedHandoff("handoff-1", 30)]));
+      await waitFor(() => expect(drawnIds()).toEqual(["run:reporter", "event:2", "event:1"]));
+      expect(within(history).queryByText(ANSWER_LINES.loading_history)).toBeNull();
+      drawn.unmount();
+      drawn.queryClient.clear();
+
+      // A failed read of the runs is an answer: the history draws, and says so.
+      stepsRead().mockRejectedValue(new Error("the runs are down"));
+      handoffsRead().mockResolvedValue([listedHandoff("handoff-1", 5)]);
+      drawn = drawHistory(undefined);
+      await waitFor(() => expect(drawnIds()).toEqual(["handoff:handoff-1", "event:2", "event:1"]));
+      expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.steps_unreadable);
+      drawn.unmount();
+      drawn.queryClient.clear();
+
+      // So is a failed read of the list of handoffs.
+      stepsRead().mockResolvedValue(stepsOf([]));
+      handoffsRead().mockRejectedValue(new Error("the handoffs are down"));
+      drawn = drawHistory(undefined);
+      await waitFor(() => expect(drawnEntries()).toHaveLength(2));
+      expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.handoffs_unreadable);
+    } finally {
+      drawn?.unmount();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
+
+  // D7: a handoff recorded while the history is drawn reaches it over the event feed: the event
+  // reads the list of handoffs again, and the new handoff's entry is drawn, though the event is
+  // no line of its own.
+  test("D7: a recorded handoff reads the list of handoffs again, and its entry is drawn", async () => {
+    const restoreReads = stubHistoryReads([claim(1)]);
+    handoffsRead().mockResolvedValue([listedHandoff("first", 5)]);
+    const getHandoff = spyOn(api, "getHandoff").mockImplementation(async (id) => ({
+      ...handoffRecord("Pass"),
+      id,
+    }));
+    let unmount: (() => void) | undefined;
+    try {
+      const drawn = drawHistory(undefined);
+      unmount = drawn.unmount;
+      await waitFor(() => expect(drawnIds()).toEqual(["handoff:first", "event:1"]));
+      expect(handoffsRead()).toHaveBeenCalledTimes(1);
+
+      // The handoff is recorded two seconds on: the held `Date` never lets the refresh
+      // scheduler's second between two reads of one query pass on its own.
+      setSystemTime(new Date(NOON.getTime() + 2_000));
+      handoffsRead().mockResolvedValue([listedHandoff("first", 7), listedHandoff("second", 0, 2)]);
+      const event = {
+        ...claim(2),
+        created_at: new Date().toISOString(),
+        payload: { handoff_id: "second", phase: "implement", version: 2 },
+        type: "handoff.recorded",
+      } as DispatchEvent;
+      act(() => {
+        prependEventToLog(drawn.queryClient, event);
+        refreshQueries(drawn.queryClient, eventRefreshTargets(event, "alice"));
+      });
+      await waitFor(() =>
+        expect(drawnIds()).toEqual(["handoff:second", "handoff:first", "event:1"])
+      );
+      expect(handoffsRead()).toHaveBeenCalledTimes(2);
+      expect(
+        document
+          .querySelector('[data-history-entry="handoff:second"]')
+          ?.getAttribute("data-event-seq")
+      ).toBe("2");
+    } finally {
+      unmount?.();
+      getHandoff.mockRestore();
+      restoreReads();
+    }
+  });
 });

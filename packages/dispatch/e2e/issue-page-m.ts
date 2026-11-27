@@ -13,7 +13,7 @@ import { settledState } from "./settled";
 
 /**
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
- * history, the steps under it, the facts of the focused row, and the way to them;
+ * history, the runs and the handoffs it holds, the facts of the focused row, and the way to them;
  * `putStepExperiment`, the one write of their seed that `e2e/api.ts` has no wrapper for; and
  * `daemonOf`, the Legion daemon of a project as their seed's writes name it.
  *
@@ -41,11 +41,14 @@ import { settledState } from "./settled";
  *   references the row is `[data-node-references]` (`node-references/NodeReferences.tsx`).
  * - **The people** in the People section: "Subscribers" and the row
  *   `[data-details-row="collaborators"]` (`details-more.tsx`).
- * - **The steps** `[data-testid="issue-steps"]`, a `section` named "Steps" under the history
- *   (`DetailsSteps.tsx`): its heading "Steps (<runs>)", under it the line `[data-step-variant]`
- *   where the newest run names an experiment, each task a `section` "Task <task>" with its `h3`,
- *   each run `[data-step-run="<record id>"]`, and each of a run's labelled values
- *   `[data-step-field="<field>"]`, its label the `dt` and its value the `dd`.
+ * - **The runs and the handoffs**, entries of the history (`history-entries.tsx`): under the
+ *   history's heading the line `[data-step-variant]` where the newest run names an experiment;
+ *   each run `[data-step-run="<record id>"]`, each of its labelled values
+ *   `[data-step-field="<field>"]`, its label the `dt` and its value the `dd`; each handoff, in
+ *   its own entry or in its run's, its line `[data-handoff-line="<id>"]`, then a `span` holding
+ *   its fold control (a button carrying `aria-expanded`) and its fields
+ *   `[data-handoff-field="<key>"]`, a list in them an `ol`, an object a `dl` of
+ *   `[data-handoff-key="<key>"]`.
  */
 
 /** The issue's history, in Details. */
@@ -256,14 +259,32 @@ export function askFacts(page: Page, issueKey: string, askId: string): Promise<L
   return rowFacts(page, issueKey, askId);
 }
 
-/** The runs of the issue's steps, under the history in Details. */
-export function stepsSection(page: Page): Locator {
-  return marginShell(page).getByTestId("issue-steps");
+/** One run of the issue's steps, by its record's id: its entry in the history. */
+export function stepRun(page: Page, id: string): Locator {
+  return historyPanel(page).locator(`[data-step-run="${id}"]`);
 }
 
-/** One run of the steps, by its record's id. */
-export function stepRun(page: Page, id: string): Locator {
-  return stepsSection(page).locator(`[data-step-run="${id}"]`);
+/** The ids of the runs the history draws, newest first. */
+export function historyRuns(page: Page): Promise<string[]> {
+  return historyPanel(page)
+    .locator("[data-step-run]")
+    .evaluateAll((runs) => runs.map((run) => run.getAttribute("data-step-run") ?? ""));
+}
+
+/** The line of handoff `id` in the history, in its own entry or in its run's: when, who, its
+ *  phase and its version. */
+export function handoffLineOf(page: Page, id: string): Locator {
+  return historyPanel(page).locator(`[data-handoff-line="${id}"]`);
+}
+
+/** The control that folds handoff `id`'s fields and opens them again. */
+export function handoffFoldControl(page: Page, id: string): Locator {
+  return historyPanel(page).locator(`[data-handoff-line="${id}"] ~ span > button[aria-expanded]`);
+}
+
+/** Handoff `id`'s fields, as the history draws them open. */
+export function handoffFieldsOf(page: Page, id: string): Locator {
+  return historyPanel(page).locator(`[data-handoff-line="${id}"] ~ span [data-handoff-field]`);
 }
 
 /** The page's reads of one issue's steps, as `watchStepsReads` sees them, counted from 0 in the
@@ -271,10 +292,14 @@ export function stepRun(page: Page, id: string): Locator {
 export interface StepsReads {
   /** Whether read `index` has its answer. */
   answered(index: number): boolean;
+  /** When read `index` was answered, by the row's clock, or undefined while it is out. */
+  answeredAt(index: number): number | undefined;
   /** Whether no read is out and none has been sent or answered for the last `ms`. */
   quietFor(ms: number): boolean;
   /** How many reads the page has sent. */
   sent(): number;
+  /** When read `index` was sent, by the row's clock. */
+  sentAt(index: number): number | undefined;
 }
 
 /** Watches the page's reads of issue `key`'s steps (`GET /api/v1/issues/<key>/steps`) from the
@@ -282,10 +307,14 @@ export interface StepsReads {
  *  as answered, as one with a status does: either way it is no longer out. */
 export function watchStepsReads(page: Page, key: string): StepsReads {
   const path = `/api/v1/issues/${key}/steps`;
-  const reads: { answeredAt: number | undefined; readonly request: Request }[] = [];
+  const reads: {
+    answeredAt: number | undefined;
+    readonly request: Request;
+    readonly sentAt: number;
+  }[] = [];
   page.on("request", (request) => {
     if (request.method() === "GET" && new URL(request.url()).pathname === path) {
-      reads.push({ answeredAt: undefined, request });
+      reads.push({ answeredAt: undefined, request, sentAt: Date.now() });
     }
   });
   const answer = (request: Request) => {
@@ -296,15 +325,17 @@ export function watchStepsReads(page: Page, key: string): StepsReads {
   page.on("requestfailed", answer);
   return {
     answered: (index) => reads[index]?.answeredAt !== undefined,
+    answeredAt: (index) => reads[index]?.answeredAt,
     quietFor: (ms) =>
       reads.every((read) => read.answeredAt !== undefined && Date.now() - read.answeredAt >= ms),
     sent: () => reads.length,
+    sentAt: (index) => reads[index]?.sentAt,
   };
 }
 
-/** What the steps draw of the instant `at`, worked out in the page from the browser's own locale,
- *  zone and clock, as the Steps tab draws a run's start and end: the date, with its year where it
- *  is not this one, and the time of day. */
+/** What the history draws of the instant `at` in a run's start or end, worked out in the page
+ *  from the browser's own locale, zone and clock, as the Steps tab draws a run's start and end:
+ *  the date, with its year where it is not this one, and the time of day. */
 export function drawnInstant(page: Page, at: string): Promise<string> {
   return page.evaluate((iso) => {
     const date = new Date(iso);
@@ -319,24 +350,24 @@ export function drawnInstant(page: Page, at: string): Promise<string> {
 }
 
 /**
- * What keeps a value of the steps from being read whole, one line each, or none: Details' box,
- * the nearest box above the section that scrolls it, scrolling sideways; and each run's value
- * wider than its own box, standing out past a side of Details' box, or cut by an ellipsis or a
- * line clamp on it or inside it.
+ * What keeps a value of a run from being read whole, one line each, or none: Details' box, the
+ * nearest box above the history that scrolls it, scrolling sideways; and each run's value wider
+ * than its own box, standing out past a side of Details' box, or cut by an ellipsis or a line
+ * clamp on it or inside it.
  */
-export function stepsUnread(page: Page): Promise<string[]> {
-  return stepsSection(page).evaluate((section) => {
-    let box: HTMLElement | null = section.parentElement;
+export function runValuesUnread(page: Page): Promise<string[]> {
+  return historyPanel(page).evaluate((history) => {
+    let box: HTMLElement | null = history.parentElement;
     while (box !== null && !["auto", "scroll"].includes(getComputedStyle(box).overflowY)) {
       box = box.parentElement;
     }
-    if (box === null) return ["the steps are in no box that scrolls"];
+    if (box === null) return ["the history is in no box that scrolls"];
     const found: string[] = [];
     if (box.scrollWidth > box.clientWidth) {
       found.push(`Details scrolls sideways: ${box.scrollWidth} px in ${box.clientWidth} px`);
     }
     const sides = box.getBoundingClientRect();
-    for (const value of section.querySelectorAll<HTMLElement>("[data-step-field] > dd")) {
+    for (const value of history.querySelectorAll<HTMLElement>("[data-step-field] > dd")) {
       const field = value.parentElement?.getAttribute("data-step-field");
       const run = value.closest("[data-step-run]")?.getAttribute("data-step-run");
       const what = `${field} of ${run} ("${value.textContent}")`;
@@ -354,6 +385,52 @@ export function stepsUnread(page: Page): Promise<string[]> {
         if (style.textOverflow === "ellipsis" || style.webkitLineClamp !== "none") {
           found.push(`${what} is cut by ${part.tagName}'s ellipsis or line clamp`);
         }
+      }
+    }
+    return found;
+  });
+}
+
+/**
+ * Each field of each entry of the history that does not fit its entry's box (the plan's D17, in
+ * place of an `assertFitsItsBox` no file declares): a run's labelled value
+ * (`[data-step-field]`), a handoff's field (`[data-handoff-field]`) and each key of an object in
+ * it (`[data-handoff-key]`), measured against the box of the entry it stands in
+ * (`[data-history-entry]`): one whose box stands past a side of its entry's, or whose content is
+ * wider than its own box, is named with its sizes. A field inside the box a list or an object of
+ * a handoff scrolls in (`overflow: auto`) is measured against that box, which bounds it.
+ */
+export function fieldsPastTheirEntry(page: Page): Promise<string[]> {
+  return historyPanel(page).evaluate((history) => {
+    const found: string[] = [];
+    const fields = history.querySelectorAll<HTMLElement>(
+      "[data-step-field], [data-handoff-field], [data-handoff-key]"
+    );
+    for (const field of fields) {
+      const entry = field.closest<HTMLElement>("[data-history-entry]");
+      const name =
+        field.getAttribute("data-step-field") ??
+        field.getAttribute("data-handoff-field") ??
+        field.getAttribute("data-handoff-key");
+      const what = `${name} of ${entry?.getAttribute("data-history-entry")}`;
+      if (entry === null) {
+        found.push(`${what} stands in no entry`);
+        continue;
+      }
+      let scroller: HTMLElement | null = field.parentElement;
+      while (scroller !== null && scroller !== entry) {
+        if (["auto", "scroll"].includes(getComputedStyle(scroller).overflowX)) break;
+        scroller = scroller.parentElement;
+      }
+      const bound = (scroller ?? entry).getBoundingClientRect();
+      const at = field.getBoundingClientRect();
+      if (at.left < bound.left - 1 || at.right > bound.right + 1) {
+        found.push(
+          `${what} stands past its box, ${at.left}-${at.right} in ${bound.left}-${bound.right}`
+        );
+      }
+      if (field.scrollWidth > field.clientWidth + 1) {
+        found.push(`${what} is ${field.scrollWidth} px in ${field.clientWidth} px`);
       }
     }
     return found;
