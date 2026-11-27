@@ -256,8 +256,12 @@ func (h *History) admit(k uint8, w *World) {
 // recordDue writes down, at the commit of the event that set it, each
 // deadline the oracle later measures a timer against: the deadline a
 // suspension request named (S1-S5), the wait an acknowledgement owes its own
-// prompt, and the recovery bound a restart opened. A request a decision
-// refused commits nothing and names no deadline.
+// prompt, and the recovery bound a restart opened. A request names its
+// deadline at the claim write it makes itself. A request a decision refused
+// makes none and names no deadline, even where the same step's intent or
+// stop for an earlier hold carries that request as its cause (Job
+// legion-holdmodel-depth3-jkw5q at cfdae0c4: a refused never-hold request
+// of the operator's).
 func (h *History) recordDue(c *Written) {
 	if c.Prev.Hold.By != 0 && c.Row.Hold.By == 0 {
 		// The hold this deadline bounded is gone, even where the same
@@ -265,7 +269,7 @@ func (h *History) recordDue(c *Written) {
 		h.HoldDue = 0
 	}
 	switch {
-	case c.Cause.K == KSuspend && c.Row.Hold.By != 0:
+	case c.Cause.K == KSuspend && c.Kind == ClaimWrite && c.Row.Hold.By != 0:
 		due := requestDue(c.Cause.A, c.Now)
 		if c.Prev.Hold.By == 0 {
 			// A request that starts a hold where the store held none

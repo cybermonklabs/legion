@@ -146,6 +146,12 @@ func xSeeds() []seed {
 	// write loses its reply. Both earlier commits got theirs, so the old
 	// hold's deadline does not bound the new hold's timer.
 	cs = append(cs, seed{"read/X/W5/fresh-hold-in-a-step-whose-last-reply-is-lost", legacy, "boot daemonDL!1.1 stale bound!1.1 st!1.2 daemon!2.3 :pending :daemon bound :H4"})
+	// Depth 3 at cfdae0c4 (Job legion-holdmodel-depth3-jkw5q): behind a
+	// pending served retirement, the operator's never-hold request is
+	// refused, and the same step's intent to stop the released hold carries
+	// it as its cause. The refused request names no deadline, so the hold's
+	// own watch bound is not late.
+	add("W9/refused-never-hold-request-names-no-deadline", waiting+"ok!1.1 :pending never!1.2 clean!2.2 :pending bound :H4")
 	// W6, W7: a pending write that retires the task (claim end, replacement)
 	// is retried before a fatal report applies, so the report closes no open
 	// attempt and resurrects no retired task.
