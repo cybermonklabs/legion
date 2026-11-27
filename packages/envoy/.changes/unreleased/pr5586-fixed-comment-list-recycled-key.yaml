@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An issue's comment list hashes the issue's `created_at` into its ETag, as the activity feed
+  already does, so a new issue under a key an earlier issue held is never answered `304` or the
+  earlier issue's kept comments. That happened where a database was emptied or restored under a
+  running server. Each comment list's ETag changes once at the deploy, so a client that holds an
+  old one gets one full answer.
+time: 2026-11-24T00:43:27Z
+custom:
+    Issue: INFRA-5573

@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    `dispatch comment --mention-role <name>`, repeatable, mentions a role by its name alone: it
+    sends `role:<name>` in the comment's mentions, in the order given among the `--mention` values,
+    and Dispatch delivers the comment to the session that holds the role. An empty name, or one that
+    already starts with `role:`, exits 2 before anything is sent.
+time: 2026-11-21T22:50:56.15067327Z
+custom:
+    Issue: pr4909

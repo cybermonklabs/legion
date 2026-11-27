@@ -204,13 +204,25 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // HoldsTask is whether pending, the delivery a claim holds (Claim.Pending, or the pending task a
 // role run reads, record.RoleClaim.Pending), is a task of the claim's: a delivery, and not the
 // daemon's own delivery of a relaunch's record (Delivery.Relaunch), which is no work of the
-// claim's. It is the one statement of that rule, and every reader that asks whether a claim still
-// owes work it was given asks it: a death's charge (chargeDeath), the workflow's owed and
-// readyWorkerTask, and api's freshSession and heldTaskNotCurrent, which then tells a nil from a
-// relaunch's delivery only to choose its reason text. It takes the pointer the claim holds, nil
-// for none, because those readers hold two types of claim and the delivery is the one field they
-// share.
+// claim's. It is the one statement of that rule, and every reader that asks whether a claim holds
+// a task to send or to take asks it: a death's charge (chargeDeath), the machine's refusal of a
+// task of news alone behind another task (queue), the daemon's reconcile, which queues no news
+// behind a task not yet taken, and api's heldTaskNotCurrent, which then tells a nil from a
+// relaunch's delivery only to choose its reason text. A reader that asks whether the claim holds
+// the work of its phase asks HoldsWork. It takes the pointer the claim holds, nil for none,
+// because those readers hold two types of claim and the delivery is the one field they share.
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
+
+// HoldsWork is whether pending is a task that hands the claim work: a task (HoldsTask) other than
+// one of news alone (Delivery.NewsOnly), which hands the worker only the news of the approved
+// design. Every reader that asks whether a claim still owes the work it was given asks it: the
+// workflow's owed and readyWorkerTask, and so the admission sweep's reading of a root architect's
+// start on its way (workflow.ArchitectStartPending), and api's freshSession. A claim that holds a
+// task of news alone is read as owing no work, so the phase's task is sent to it as well, and is
+// lost to neither: a task of an entry takes the news task's place while no turn has taken it,
+// carrying that news itself (supervise's queue, Machine.supersedes), and any other task waits
+// behind the news task until a turn has taken it.
+func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.NewsOnly }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
 // that carries the sentence of its untold record alone (RelaunchSentence), so the next prompted
@@ -222,16 +234,17 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // The delivery has no phase, no run, no entry and no look, so nothing holds it back
 // (phaseHolds, asksRoot), no working copy is adopted for it (adopts), and its confirmation and
 // retirement leave what the claim is serving alone and end no phase (serving, settle). Its id is
-// relaunchTaskID's. The record is told when a turn confirms a prompt of it (confirm), as a task's
-// would be, and its text is the record as it stands when the prompt goes (Delivery.message).
+// relaunchTaskID's. The record is told when a turn confirms a prompt of it (confirmCarrying), as a
+// task's would be, and its text is the record as it stands when the prompt goes (Delivery.message).
 //
 // It is queued by finishReady after the ready's durable write and report, which the workflow reads
 // synchronously (Machine.OnDurableState, the daemon's applyTerminal): the workflow's ready reads
 // the claim holding nothing, so a phase worker is still queued its resume task
 // (workflow's readyWorkerTask), and that task takes this delivery's place while no prompt of it is
 // waiting on a result, or waits for its turn to end (queue, replaceable). It is queued again where
-// sendPending drops the task a claim held and leaves it holding nothing (relaunchAfterDrop), since
-// the task that would have carried the sentence is gone.
+// sendPending drops the task a claim held and leaves it holding nothing, and where the workflow's
+// stop of a phase retires that phase's task (RetireStoppedTask), both through relaunchAfterDrop,
+// since the task that would have carried the sentence is gone.
 //
 // One claim is given none: the daemon-launched controller. Its keeper sends its start message at
 // every ready and only logs a refusal of it (the daemon's controllerKeeper.ready), so a delivery

@@ -24,6 +24,7 @@ import (
 // for some other reason that matches one of these names has to be read against R2 and either
 // renamed or argued for, which is exactly the conversation the decision is owed.
 func TestTheBarAddsNoReplicaRoute(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 

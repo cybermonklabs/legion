@@ -67,6 +67,7 @@ func commentWatermark(t *testing.T, database *store.Store, key string) int64 {
 // feed's validator for this list: a reader holding an ETag over last_seq would be answered 304
 // while the list now shows an attempt it has never seen.
 func TestADeliveryClaimMovesTheCommentListsValidator(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CLAIMW", "A delivery claim", "A spec")
 	comment := createReferenceAPIComment(t, handler, issue.Key, "A comment a session is to be told about.")
@@ -102,6 +103,7 @@ func TestADeliveryClaimMovesTheCommentListsValidator(t *testing.T) {
 // onto the pending row in a transaction of its own and appends no event, and the list shows that
 // session.
 func TestADeliveryResolutionMovesTheCommentListsValidator(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESOLVEW", "A delivery resolution", "A spec")
 	comment := createReferenceAPIComment(t, handler, issue.Key, "A comment whose delivery is about to be resolved.")
@@ -144,6 +146,7 @@ func TestADeliveryResolutionMovesTheCommentListsValidator(t *testing.T) {
 // through SQL. The triggers carry no column list for exactly this reason - whatever a write
 // writes, the list that shows it moves.
 func TestEveryCommentWriteMovesTheCommentListsValidator(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "WRITEW", "Every comment write", "A spec")
 	target := commentListOf(issue.Key)
@@ -174,6 +177,7 @@ func TestEveryCommentWriteMovesTheCommentListsValidator(t *testing.T) {
 // (hydrateCommentSideTables), so a reader answered 304 across either would hold a list that is no
 // longer the one Dispatch would answer.
 func TestAMentionWrittenAndRemovedEachMoveTheCommentListsValidator(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "MENTIONW", "A mention row", "A spec")
 	comment := createReferenceAPIComment(t, handler, issue.Key, "A comment a mention is about to be written on.")
@@ -206,6 +210,7 @@ func TestAMentionWrittenAndRemovedEachMoveTheCommentListsValidator(t *testing.T)
 // the validator over the answer's own bytes could only be known by building the answer - and the
 // count below is the number that says the build is gone.
 func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -246,6 +251,7 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 // owner and the ?artifact= scope are hashed in beside the watermark for this, and a validator
 // crossed between them is answered the whole list rather than a 304.
 func TestNoTwoCommentListsShareAValidator(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	first := createInteractionIssue(t, handler, "SCOPEW", "The first issue", "A spec")
 	// The second issue is of the same project and carries one comment too, so both lists stand at
@@ -288,6 +294,7 @@ func TestNoTwoCommentListsShareAValidator(t *testing.T) {
 // written on that document, and answers its own 304 with the two Vary lines every list carries:
 // it is the same list as an issue's, through the same handler (answerCommentList).
 func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "DOCW", "name": "Documents",
@@ -318,6 +325,7 @@ func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
 // serialise every comment write of its issue for its whole life. The second writer sets a lock
 // timeout, so an immediate trigger fails this test in seconds instead of hanging the suite.
 func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "HELDW", "A write held open", "A spec")
 	ctx := context.Background()
@@ -366,6 +374,7 @@ func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 // either commits, and the list's validator is read after each commit, so a lost bump shows as a
 // validator that did not move.
 func TestTwoWritersCommittingAtOnceEachKeepTheirBump(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "BOTHW", "Two writers at once", "A spec")
 	comment := createReferenceAPIComment(t, handler, issue.Key, "The comment a delivery is claimed on.")
@@ -416,6 +425,7 @@ func TestTwoWritersCommittingAtOnceEachKeepTheirBump(t *testing.T) {
 // watch and both are committed from goroutines of their own, so the second commit's bump waits on
 // the first's row lock and is applied to what that commit left, never to what it read before it.
 func TestOverlappingCommitsEachAddToTheWatermark(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "RACEW", "Overlapping commits", "A spec")
 	ctx := context.Background()

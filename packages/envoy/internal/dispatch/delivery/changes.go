@@ -17,13 +17,24 @@ import (
 type Change struct {
 	Seq     int64
 	At      time.Time
-	Kind    string // "pull_request" | "run" | "run_job" | "session_group" | "settings"
+	Kind    string // one of the ChangeKind constants
 	RunKind string // "deploy" | "pr_checks" | "" for the rest
 	Repo    string
 	Ref     string
 	TOld    *time.Time
 	TNew    *time.Time
 }
+
+// The kinds of delivery change (Change.Kind), each the kind a table's trigger logs, so a reader of
+// the log compares with these rather than spell one again. The delivery intake's five are written
+// into delivery_changes by their triggers (delivery_change_log, migration 0100).
+const (
+	ChangeKindPullRequest  = "pull_request"
+	ChangeKindRun          = "run"
+	ChangeKindRunJob       = "run_job"
+	ChangeKindSessionGroup = "session_group"
+	ChangeKindSettings     = "settings"
+)
 
 // ChangeRetention is how long delivery_changes keeps a row: a page away longer reads its window once.
 const ChangeRetention = 24 * time.Hour

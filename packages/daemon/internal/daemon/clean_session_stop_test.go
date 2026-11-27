@@ -169,6 +169,7 @@ func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 // margin wider than that gap would read this heartbeat as a registration written since and
 // leave it standing, which is the whole of the defect (dispatch://INFRA-2064).
 func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-500 * time.Millisecond)},
 		settled: make(chan struct{}),
@@ -195,6 +196,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 // of its conditions: the client instance the registry answered for that session, and the moment
 // the probe judged the process gone. One read, one delete, and nothing sent twice.
 func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -230,6 +232,7 @@ func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) 
 // the listener can tell what is stored when it lands — and what it reports is that the
 // registration stayed, with the listener's own reason, not that the session was stopped.
 func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
 		relaunched: &storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now()},
@@ -261,6 +264,7 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 // after it. So the listener keeps the registration and the stop reports it kept, with the
 // listener's own reason, and the woken session stays reachable.
 func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T) {
+	t.Parallel()
 	goneAt := time.Now()
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: goneAt.Add(2 * time.Second)}}
 	server := listener.server(t)
@@ -297,6 +301,7 @@ func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T)
 // listener's own words for why, in the reason field, rather than asserting one of the three.
 // Here it is kept because the entry belongs to another client instance.
 func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:       storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
 		relaunched: &storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: time.Now().Add(-time.Second)},
@@ -321,6 +326,7 @@ func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 // for an absent one (session.InstanceMatches), so the query states only the condition the stop
 // really holds.
 func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{held: storedRegistration{lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -348,6 +354,7 @@ func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *t
 // A registry that holds no record of the session has already reached what the stop asked for, so
 // no delete is sent at all: there is nothing to name and nothing to remove.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{held: storedRegistration{absent: true}}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -368,6 +375,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 // says why that is not sent). So nothing is deleted and nothing is tried again, and the
 // registration lapses when its record expires, which is the wait the session already had.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -390,6 +398,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T
 // that budget. A read that runs the budget out sends no delete, and it is the listener's failure
 // to answer, logged at WARN.
 func TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers(t *testing.T) {
+	t.Parallel()
 	const budget = 300 * time.Millisecond
 	listener := &listenerRecorder{heldRead: make(chan struct{}), arrived: make(chan struct{})}
 	server := listener.server(t)
@@ -426,6 +435,7 @@ func TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers(t *testin
 // delete to a goroutine, here while the listener still holds the read. That goroutine is counted
 // in flight until its delete has been answered (sessionStopsInFlight).
 func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:     storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
 		heldRead: make(chan struct{}),
@@ -464,6 +474,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
+	t.Parallel()
 	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
@@ -475,6 +486,7 @@ func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
 // its record expires, and a message to a released role would be stored for a session nothing
 // reads, with no wake.
 func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t *testing.T) {
+	t.Parallel()
 	listener := &listenerRecorder{
 		held:     storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
 		heldRead: make(chan struct{}),
@@ -508,6 +520,7 @@ func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t
 // Each stop sessionStopsInFlight counts before its final wait began holds that wait until the stop
 // ends.
 func TestSessionStopsInFlightWaitsForEveryStopStartedBeforeTheFinalWait(t *testing.T) {
+	t.Parallel()
 	var stops sessionStopsInFlight
 	if !stops.start() || !stops.start() {
 		t.Fatal("a stop started before the final wait was not counted")
@@ -536,6 +549,7 @@ func TestSessionStopsInFlightWaitsForEveryStopStartedBeforeTheFinalWait(t *testi
 // A stop started once the daemon's stop has begun its final wait is not counted, so the wait ends
 // when the stops it did count end (sessionStopsInFlight).
 func TestSessionStopsInFlightDoesNotWaitForAStopStartedAfterTheFinalWaitBegan(t *testing.T) {
+	t.Parallel()
 	var stops sessionStopsInFlight
 	if !stops.start() {
 		t.Fatal("a stop started before the final wait was not counted")
@@ -567,6 +581,7 @@ func TestSessionStopsInFlightDoesNotWaitForAStopStartedAfterTheFinalWaitBegan(t 
 // a data race. This type takes both under one mutex, so the run is clean whichever comes first,
 // and the wait returns once the stop it counted has ended.
 func TestSessionStopsInFlightTakesAStopStartedFromZeroBesideTheFinalWait(t *testing.T) {
+	t.Parallel()
 	var stops sessionStopsInFlight
 	returned := make(chan struct{})
 	go func() {
@@ -596,6 +611,7 @@ func TestSessionStopsInFlightTakesAStopStartedFromZeroBesideTheFinalWait(t *test
 // halt or in the first half of the stop's budget ends inside that budget: only one sent later in
 // the drain can still be in flight when run stops waiting at the budget (awaitStop).
 func TestCleanSessionStopFitsTwiceInTheStopBudget(t *testing.T) {
+	t.Parallel()
 	if 2*cleanSessionStopBudget > stopBudget {
 		t.Fatalf("cleanSessionStopBudget is %s, more than half of stopBudget's %s: a clean stop sent in the first half of the daemon's stop budget could still be in flight when that budget runs out",
 			cleanSessionStopBudget, stopBudget)

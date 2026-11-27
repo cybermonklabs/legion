@@ -33,6 +33,7 @@ type Request struct {
 	Secrets         []string `json:"secrets,omitempty"`          // sign-request: the requested agent_secret names
 	Reason          string   `json:"reason,omitempty"`           // sign-request: why they're needed
 	LifetimeSeconds *int     `json:"lifetime_seconds,omitempty"` // sign-request: how many seconds the grant lasts; nil for until the session ends
+	Locations       []string `json:"locations,omitempty"`        // sign-request: the target that narrows its one secret, as the one detail's locations; nil for none
 	WaitSeconds     int      `json:"wait_seconds,omitempty"`     // register: wait up to this long for the enrollment, unless the helper holds no launcher credential
 	RuntimeID       string   `json:"runtime_id,omitempty"`       // enroll-session-key: the session's runtime id on this machine
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
@@ -70,6 +71,7 @@ type Response struct {
 	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled | refused (the broker refused the session for good, 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, named in Error; the helper asks no more)
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
 	LoginState          string        `json:"login_state,omitempty"`           // login/login-status: the most recent login's pending|issued|denied|expired; expired whenever LoginRefused and that login is not pending
+	LoginReason         string        `json:"login_reason,omitempty"`          // login-status: beside an expired LoginState that is no dropped credential, how many polls in a row before the code lapsed the broker did not answer or answered with an outage; empty otherwise, and from a helper before this field
 	CredentialHeld      bool          `json:"credential_held,omitempty"`       // login-status: the helper holds a launcher credential, whatever the most recent login's state
 	CredentialExpiresAt string        `json:"credential_expires_at,omitempty"` // login-status: RFC3339, when the held credential lapses without a refresh; empty while none is held
 	LoginRefused        bool          `json:"login_refused,omitempty"`         // login-status: the helper dropped the credential it held (the broker refused it or its refresh, or it reached its expiry), and no login has started or settled since
@@ -100,13 +102,15 @@ const (
 )
 
 // NoCredentialReason says why a helper holds no launcher credential, from login-status's fields:
-// the most recent login's state, login_refused and credential_dropped. The helper logs it on every
-// enrollment it cannot attempt, and `agent-secrets machine login-status` prints it, so the journal
-// and the client say the same thing. It names no confirmation code: a pending login's code is for
-// the approver's screen, never the journal. A login still pending outranks a dropped credential,
-// since its approval is what replaces it. A helper from before credential_dropped sets
-// login_refused only when the broker refused the credential, so login_refused alone reads as that.
-func NoCredentialReason(loginState string, refused bool, dropped string) string {
+// the most recent login's state and its reason, login_refused and credential_dropped. The helper
+// logs it on every enrollment it cannot attempt, and `agent-secrets machine login-status` prints
+// it, so the journal and the client say the same thing. It names no confirmation code: a pending
+// login's code is for the approver's screen, never the journal. A login still pending outranks a
+// dropped credential, since its approval is what replaces it. A helper from before
+// credential_dropped sets login_refused only when the broker refused the credential, so
+// login_refused alone reads as that. A login that expired names the polls the broker did not
+// answer just before (loginReason), where there were any.
+func NoCredentialReason(loginState, loginReason string, refused bool, dropped string) string {
 	switch {
 	case loginState == "pending":
 		return "a machine login is waiting for a human to approve it"
@@ -116,6 +120,8 @@ func NoCredentialReason(loginState string, refused bool, dropped string) string 
 		return dropRefused
 	case loginState == "denied":
 		return "the most recent machine login was denied"
+	case loginState == "expired" && loginReason != "":
+		return "the most recent machine login expired before anyone approved it; " + loginReason
 	case loginState == "expired":
 		return "the most recent machine login expired before anyone approved it"
 	case loginState == "":
@@ -356,24 +362,29 @@ const BrokerCallWait = 30 * time.Second
 // inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
 // the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
 // for its read and its write: the op's requests end with its context at the bound, and the helper
-// answers at the bound plus 1 s whatever the op is doing. 2 s + 20 s + 5 s is 27 s, under 30 s.
-// A released agent-secrets that asks enroll-session-key and unenroll-session-key (every release
-// from legion-envoy-v10.0.0) also waits 30 s for them (BrokerCallWait), so it gets this helper's
-// answer and not an empty reply. Its machine login waits 10 s, so a broker slower than about 8 s
-// can still outlast it. A healthy broker answers in a fraction of a second
-// (DefaultFirstConfirmBound); the slow answers that were measured took 5 s and 8 s.
+// answers at the bound plus DefaultBrokerCallSlack (1 s) whatever the op is doing. 2 s + 20 s + 5 s
+// is 27 s, under 30 s. A released agent-secrets that asks enroll-session-key and
+// unenroll-session-key (every release from legion-envoy-v10.0.0) also waits 30 s for them
+// (BrokerCallWait), so it gets this helper's answer and not an empty reply. Its machine login
+// waits 10 s, so a broker slower than about 8 s can still outlast it. A healthy broker answers in
+// a fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
+// and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+
+// DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it, when the
+// Server names no other (Server.brokerCallSlack, which only tests set).
+const DefaultBrokerCallSlack = time.Second
 
 // InstallRestartTimeout bounds the `systemctl --user restart` of the helper that
 // `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
 // SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
-// DefaultBrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
-// (Server.Serve): 21 s at the most. The start is done once systemd has forked the helper, since
-// the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to queue and fork on
-// a loaded machine. A restart still running at the bound is one install stops waiting for, and
-// systemd keeps its job: install reads the unit's main process, and sends undrain when the helper
-// it drained is still that process and no job for the unit is queued. While one is, the drain
-// ends with that restart or at DefaultDrainBound.
+// DefaultBrokerCallBound plus DefaultBrokerCallSlack, or a connection still being read reaches its
+// 5 s read deadline (Server.Serve): 21 s at the most. The start is done once systemd has forked
+// the helper, since the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to
+// queue and fork on a loaded machine. A restart still running at the bound is one install stops
+// waiting for, and systemd keeps its job: install reads the unit's main process, and sends
+// undrain when the helper it drained is still that process and no job for the unit is queued.
+// While one is, the drain ends with that restart or at DefaultDrainBound.
 const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
 
 // DefaultDrainBound is how long a drain holds before the helper ends it by itself

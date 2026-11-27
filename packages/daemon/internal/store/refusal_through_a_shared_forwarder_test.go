@@ -10,11 +10,13 @@ import (
 
 // beginThrough is a forwarder the compiler keeps as one function, as it keeps intake.ApplyFact
 // and the daemon's other forwarders that are too large to inline: every caller's refusal passes
-// through the same program counters here and in pgx.BeginFunc beneath it.
+// through the same program counters here and in the guarded BeginTx beneath it. It asks the pool
+// straight, since a TransactWith on a context whose transaction is open joins it.
 //
 //go:noinline
 func beginThrough(ctx context.Context, pool *Pool) error {
-	return pgx.BeginFunc(ctx, pool, func(pgx.Tx) error { return nil })
+	_, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	return err
 }
 
 //go:noinline
@@ -24,17 +26,18 @@ func askThroughFromA(ctx context.Context, pool *Pool) error { return beginThroug
 func askThroughFromB(ctx context.Context, pool *Pool) error { return beginThrough(ctx, pool) }
 
 // Two callers refused through one forwarder that is not inlined each log a line of their own. The
-// frames nearest the guard — the guarded method, pgx.BeginFunc, the forwarder — are the same
+// frames nearest the guard — the guarded method and the forwarder — are the same
 // program counters on both paths, so only the frames beyond them tell the callers apart, and a log
 // keyed on the few frames nearest the pool would let the first caller's refusal silence the
 // second's. A caller that asks again logs nothing more.
 func TestRefusalsThroughAForwarderTheCompilerKeepsWholeLogOneLineEach(t *testing.T) {
+	t.Parallel()
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
-	logged := captureLog(t)
+	logged := captureLog(t, pool)
 
 	ctx := WithTransactionTracking(context.Background())
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "select 1"); err != nil {
 			return err
 		}

@@ -26,25 +26,34 @@ import (
 // GetSecretValue is refused AccessDeniedException), so it writes the tags and says on stderr that
 // the value was not checked. The broker (ciphertest's, over the same secrets.Local, reading with
 // its own access) reads and decodes the value at the reread the retag asks for, before any mint,
-// and refuses the secret as value-malformed: one RefusedMessage line, one
-// broker_unservable_secrets series, and the retag exits 1 on the broker's refusal. A reload
-// writes no further line and reads no value. Once `secret set` stores a value the decoder reads,
-// the reread it asks for writes one ServableMessage line, the series is gone, and a release of
-// the secret mints.
+// and refuses the secret as value-malformed: one RefusedMessage line and one
+// broker_unservable_secrets series for the secret. The broker serves a github-app secret only
+// through a profile, so APP_KEY is served by the profile of its own name, on the one account the
+// retag names, and a reread of that name answers the profile (policy.Current.RefreshOne): the
+// retag exits 1 on its refusal, profile-source-missing, whose source the broker refuses, and the
+// profile has a series of its own. A reload writes no further line and reads no value. Once
+// `secret set` stores a value the decoder reads, the reread it asks for writes one
+// ServableMessage line, both series are gone, and a release of the secret mints.
 func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_value_refused_test.go:76); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	var tokensAsked atomic.Int32
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}, "permissions": map[string]string{"contents": "write", "metadata": "read"}}})
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
 			tokensAsked.Add(1)
+			// The token holds what its request asked, as GitHub's does.
+			var asked struct {
+				Permissions map[string]string `json:"permissions"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&asked)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token": "ghs-value-7", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-				"permissions": map[string]string{"contents": "write", "metadata": "read"}, "repository_selection": "all",
+				"permissions": asked.Permissions, "repository_selection": "all",
 			})
 		default:
 			t.Errorf("unexpected request to GitHub: %s %s", r.Method, r.URL.Path)
@@ -52,7 +61,8 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	}))
 	t.Cleanup(github.Close)
 
-	rig := ciphertest.NewRig(t, ciphertest.WithMinters(map[string]requests.Minter{
+	profile := `{"name": "APP_KEY", "github": {"accounts": ["acme-org"], "permissions": {"metadata": "read"}}}`
+	rig := ciphertest.NewRig(t, ciphertest.WithProfiles(policytest.ProfilesFile(profile)), ciphertest.WithMinters(map[string]requests.Minter{
 		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
 	local := rig.Secrets
@@ -104,9 +114,13 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 		}
 		return "0"
 	}
-	refusedSeries := `broker_unservable_secrets{secret="` + id + `",reason="` + policy.ReasonValueMalformed + `",owner="` + rig.Operator + `"} 1` + "\n"
+	// The secret's own refusal and its profile's, keyed as the profile's RefusedMessage line names
+	// it (profile:APP_KEY), each under the secret's owner.
+	refusedSeries := `broker_unservable_secrets{secret="` + id + `",reason="` + policy.ReasonValueMalformed + `",owner="` + rig.Operator + `"} 1` + "\n" +
+		`broker_unservable_secrets{secret="profile:APP_KEY",reason="` + policy.ReasonProfileSourceMissing + `",owner="` + rig.Operator + `"} 1` + "\n"
 
-	// The retag: tags written, the value unchecked, and the broker's refusal from its reread.
+	// The retag: tags written, the value unchecked, and the broker's refusal of the profile its
+	// reread answers.
 	stdout, stderr, code := runSecret("retag", "APP_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org")
 	if code != 1 {
 		t.Fatalf("retag: exit %d, stdout %q, stderr %q; want 1, the broker refusing the secret it reread", code, stdout, stderr)
@@ -117,8 +131,8 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	if !strings.Contains(stderr, "the tags are written, but APP_KEY's value was not checked as a github-app secret's") || !strings.Contains(stderr, "secretsmanager:GetSecretValue") {
 		t.Fatalf("retag stderr %q; want its line saying the value was not checked and naming the read it needs", stderr)
 	}
-	if !strings.Contains(stdout, "(reason="+policy.ReasonValueMalformed+")") || !strings.Contains(stderr, "(reason="+policy.ReasonValueMalformed+")") {
-		t.Fatalf("retag stdout %q, stderr %q; want the broker's refusal naming %s", stdout, stderr, policy.ReasonValueMalformed)
+	if !strings.Contains(stdout, "(reason="+policy.ReasonProfileSourceMissing+")") || !strings.Contains(stderr, "(reason="+policy.ReasonProfileSourceMissing+")") {
+		t.Fatalf("retag stdout %q, stderr %q; want the broker's refusal of the profile naming %s", stdout, stderr, policy.ReasonProfileSourceMissing)
 	}
 	if signedIn.reads != 1 {
 		t.Fatalf("the retag made %d value reads with the person's sign-in; want the one it was refused", signedIn.reads)

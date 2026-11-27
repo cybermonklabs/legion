@@ -7,8 +7,11 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
@@ -67,7 +70,7 @@ func TestAnOperatorsRevokeWithholdsFromEveryLiveBoxOfTheSession(t *testing.T) {
 			if got := withheldCount(t, m, second); got != c.wantWithheld {
 				t.Errorf("names withheld on the second box = %d; want %d", got, c.wantWithheld)
 			}
-			again, err := m.Create(t.Context(), second, signRequest(t, m, secondKey, "deploy again", "AUTO_TOKEN"), "", nil)
+			again, err := m.Create(t.Context(), second, signRequest(t, m, secondKey, "deploy again", "AUTO_TOKEN"), "")
 			if err != nil {
 				t.Fatalf("the second box's AUTO_TOKEN request: %v", err)
 			}
@@ -123,7 +126,7 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 	if got := withheldCount(t, m, n); got != 1 {
 		t.Errorf("names withheld on box N, whose adoption the revoke waited for = %d; want 1", got)
 	}
-	again, err := m.Create(t.Context(), n, signRequest(t, m, nKey, "deploy again", "AUTO_TOKEN"), "", nil)
+	again, err := m.Create(t.Context(), n, signRequest(t, m, nKey, "deploy again", "AUTO_TOKEN"), "")
 	if err != nil || again.GrantID != nil {
 		t.Errorf("box N's AUTO_TOKEN request = %+v, %v; want it waiting for a person", again, err)
 	}
@@ -258,5 +261,73 @@ func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) 
 	}
 	if g2Live {
 		t.Errorf("the dormant box's automatic AUTO_TOKEN grant %s is live after the operator withheld AUTO_TOKEN from the session; want it ended", g2)
+	}
+}
+
+// siblingProfiles is a profiles file of two profiles of the github-app source APP_KEY, neither
+// holding the source's own name: GITHUB_READ, a read profile, and GITHUB_WRITE, its write sibling.
+var siblingProfiles = policytest.ProfilesFile(
+	`{"name": "GITHUB_READ", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+	`{"name": "GITHUB_WRITE", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "write", "metadata": "read"}}}`,
+)
+
+// TestWithholdingAReadProfileEndsItsWriteSiblingsAutomaticGrantOnEveryBoxOfTheSession: a withhold
+// decides by source (policy.Set.Withholds) on every box of the session (withholdOnSession). Box A
+// of a session holds a GITHUB_READ grant the session got without asking; box B of the same session
+// and principal holds an automatic grant of GITHUB_WRITE, GITHUB_READ's write sibling of the same
+// source. The operator revokes the GITHUB_READ grant on box A, which withholds GITHUB_READ on box B
+// too and ends B's GITHUB_WRITE grant there, with a grant.revoked row by the operator naming
+// GITHUB_WRITE. Rows: box B live, where the grant releases before the revoke and answers
+// ErrGrantNotLive after it, and box B dormant, whose grant the session's next adoption would
+// otherwise carry live to the box it runs on. The row fails when the withhold is written on box A
+// alone: B withholds nothing and its GITHUB_WRITE grant stays live.
+func TestWithholdingAReadProfileEndsItsWriteSiblingsAutomaticGrantOnEveryBoxOfTheSession(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		dormant bool
+	}{
+		{name: "box B live"},
+		{name: "box B dormant", dormant: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, a, keyA := targetFixture(t, policy.TierAgent, siblingProfiles)
+			m.Minters = map[string]Minter{policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				return secrets.Minted{Value: "minted-not-a-secret"}, nil
+			}}
+			ctx := t.Context()
+			principal := exchange.PersonPrincipal(fixtureOperator)
+			nameTheSession(t, m, a, "sess-siblings", principal)
+			_, read := grantOf(t, m, a, keyA, "read the repository", "GITHUB_READ")
+			b, keyB := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+			nameTheSession(t, m, b, "sess-siblings", principal)
+			_, write := grantOf(t, m, b, keyB, "push the proof", "GITHUB_WRITE")
+			if c.dormant {
+				endDormant(t, m, b)
+			} else if release, err := m.Values(ctx, write, b, ReleaseCall{}); err != nil || release.Values["GITHUB_WRITE"] == "" {
+				t.Fatalf("Values(GITHUB_WRITE's grant on box B) before the revoke = %v, %v; want GITHUB_WRITE released", release.Values, err)
+			}
+
+			if err := m.RevokeByApprover(ctx, read, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+				t.Fatalf("the operator's revoke of box A's GITHUB_READ grant: %v", err)
+			}
+			if got := withheldFrom(t, m, b); !slices.Equal(got, []string{"GITHUB_READ"}) {
+				t.Errorf("withheld on box B = %v; want [GITHUB_READ], the revoked grant's name", got)
+			}
+			var live bool
+			if err := m.Store.Pool.QueryRow(ctx, `select revoked_at is null from grants where id=$1`, write).Scan(&live); err != nil {
+				t.Fatal(err)
+			}
+			if live {
+				t.Errorf("box B's automatic GITHUB_WRITE grant %s is live after the operator withheld its read sibling; want it ended", write)
+			}
+			if !c.dormant {
+				if release, err := m.Values(ctx, write, b, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+					t.Errorf("Values(GITHUB_WRITE's grant on box B) once its read sibling is withheld = %v, %v; want ErrGrantNotLive", release.Values, err)
+				}
+			}
+			if actor, withheld := revokedAudit(t, m, write); actor != record.HumanActor(fixtureOperator) || !slices.Equal(withheld, []string{"GITHUB_WRITE"}) {
+				t.Errorf("GITHUB_WRITE's grant.revoked audit = %s withheld %v; want human:%s withheld [GITHUB_WRITE]", actor, withheld, fixtureOperator)
+			}
+		})
 	}
 }

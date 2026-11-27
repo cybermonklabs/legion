@@ -22,6 +22,7 @@ import (
 // body is what it reads. A broker from before the id sends neither, and the error reads as it
 // always did.
 func TestARefusalNamesTheBrokersAnswerID(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/requests/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

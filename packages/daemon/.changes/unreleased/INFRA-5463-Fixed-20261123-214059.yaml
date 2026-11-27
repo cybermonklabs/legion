@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The daemon's boot writes back every claim its restore normalized, a death charge it cleared on
+    a claim that records no process included. Before, it wrote back only a change to the
+    capability, the suspension or the enrollment, so the row kept a death charge the restored claim
+    no longer held until another write of the claim carried the cleared value.
+time: 2026-11-23T21:40:59Z
+custom:
+    Issue: INFRA-5463

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { procRootOf } from "./proc-root";
 import { rowWaits, untilGone, untilTrue } from "./row-waits";
-import { scriptFunctions } from "./script-functions";
+import { scriptAssignments, scriptFunctions } from "./script-functions";
 
 // Stage 4b's `kill` end of one role: role_kill_sh signals the worker-shim of one role-init, and
 // role_generation_ended watches the kill land on that role alone. role_kill_sh runs here on real
@@ -14,6 +14,7 @@ import { scriptFunctions } from "./script-functions";
 const lib = join(import.meta.dir, "role-namespaces.sh");
 const stage4b = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(stage4b);
+const snippet = scriptAssignments(stage4b);
 const dir = temporaryDirectory("stage4b-role-kill-test");
 // The home every bash this file starts runs under, so none of them reads the caller's. The
 // children below take PATH, this home and the case's own names, and nothing else of the caller's.
@@ -265,9 +266,6 @@ function fakeProc(name: string, procs: FakeProc[]): string {
   }
   return root;
 }
-function snippet(file: string, name: string) {
-  return new RegExp(`^${name}='[\\s\\S]*?'$`, "m").exec(readFileSync(file, "utf8"))?.[0] ?? "";
-}
 function runSnippet(definition: string, call: string, root: string) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
     env: { PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
@@ -278,7 +276,7 @@ function runSnippet(definition: string, call: string, root: string) {
 // agent_pid_sh finds a role's Oh My Pi by the same rule: the process whose argv[0] is omp under a
 // parent whose argv[1] is worker-shim.
 describe("agent_pid_sh", () => {
-  const def = snippet(stage4b, "agent_pid_sh");
+  const def = snippet("agent_pid_sh");
   const probe = (root: string) =>
     runSnippet(def, `sh -c "$agent_pid_sh"'\n    echo "$pid $proc"'`, root);
 
@@ -324,7 +322,7 @@ describe("role_shims_sh", () => {
       { pid: 8, ppid: 1, argv: ["bash", "-c", "x", "worker-shim"] },
       { pid: 17, ppid: 1, argv: ["legion", "worker-shim"] },
     ]);
-    const run = runSnippet(snippet(stage4b, "role_shims_sh"), 'sh -c "$role_shims_sh"', root);
+    const run = runSnippet(snippet("role_shims_sh"), 'sh -c "$role_shims_sh"', root);
     expect(run.out.split("\n").sort()).toEqual(["17", "7"]);
     expect(run.code).toBe(0);
   });
@@ -355,7 +353,7 @@ describe("role_inits_sh", () => {
         argv: ["legion", "launcher", "role-init", "--generation", "1", "--", "--role", "tester"],
       },
     ]);
-    const run = runSnippet(snippet(stage4b, "role_inits_sh"), 'sh -c "$role_inits_sh"', root);
+    const run = runSnippet(snippet("role_inits_sh"), 'sh -c "$role_inits_sh"', root);
     expect(run).toEqual({ out: "planner 3 20", err: "", code: 0 });
   });
 });

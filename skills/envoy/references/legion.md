@@ -14,4 +14,4 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
   - `delivery_failed`: the stream stored no forward for the holder. It releases no claim.
 - A role message to a released Legion role is kept for one hour and wakes the role. The woken session gets it as an Envoy card with `kept_at`, which can come before the daemon's task.
 - A role send the listener refuses `404` also raises an exception on `notifications.envoy.exceptions.notifications.role.<role>`, naming `unclaimed` or `holder_lapsed`.
-  No consumer acts on it, and the daemon's own refused message retries by itself: never re-send a refused message by hand because of one.
+  No consumer acts on it, and the daemon decides by itself whether to send its own refused message again: never re-send a refused message by hand because of one.

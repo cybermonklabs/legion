@@ -1,11 +1,16 @@
 package testlimits
 
+//ci:reads packages/daemon/docker/legion-testpg TestLegionTestPGAllowsServerConnections os.ReadFile (legionTestPG, ../../../../daemon/docker/legion-testpg): its max_connections literal must equal testlimits.ServerConnections plus Postgres's default superuser reserve, and TestTheDocumentsStateTheTestServersListenQueue holds the listen queue its comment states (twice that max_connections) to the same sum through docnumbers.Check under ../../../../..
+
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/docnumbers"
 )
 
 // legionTestPG is the pod's test-server script, from this package's directory.
@@ -55,4 +60,17 @@ func TestLegionTestPGAllowsServerConnections(t *testing.T) {
 			"Postgres's default of %d: remove the setting, or size max_connections from it",
 			legionTestPG, postgresSuperuserReserve)
 	}
+}
+
+// The listen queue Postgres asks for is twice the max_connections it starts with, and
+// legion-testpg's own comment states it as a number. It is held to the size the test above holds
+// the script to, so a change to ServerConnections or to the reserve fails here until that comment
+// is changed with it. docs/kubernetes.md names the queue as twice max_connections and states no
+// number, so this job's filter need not run on that page's every change.
+func TestTheDocumentsStateTheTestServersListenQueue(t *testing.T) {
+	docnumbers.Check(t, filepath.Join("..", "..", "..", "..", ".."), []docnumbers.Stated{
+		{File: "packages/daemon/docker/legion-testpg", Pattern: `2 x max_connections = ` + docnumbers.Number,
+			Number: 2 * (ServerConnections + postgresSuperuserReserve),
+			Says:   "the listen queue Postgres asks for, twice legion-testpg's max_connections"},
+	})
 }

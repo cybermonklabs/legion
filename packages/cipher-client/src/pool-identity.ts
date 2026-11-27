@@ -7,6 +7,7 @@
 
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText, urlForText } from "@legion/contracts/log-text";
+import { answerText } from "./answer-text";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -37,10 +38,6 @@ const SUBJECT_TOKEN_TYPE_JWT = "urn:ietf:params:oauth:token-type:jwt";
 
 /** Bounds each of the two calls a mint makes (Go's `poolTimeout`). */
 const POOL_TIMEOUT_MS = 20_000;
-
-/** The most of an answer that is read, as Go's `io.LimitReader` bounds it, so a server in
- *  Google's place cannot grow this process without bound. */
-const MAX_ANSWER_BYTES = 1 << 20;
 
 /** What names each service in a text where its URL is not a plain http(s) URL (`urlForText`,
  *  `requestForText`): the option of `PoolIdentityOptions` that holds it. */
@@ -89,23 +86,6 @@ function pathEscape(segment: string): string {
   return encodeURIComponent(segment)
     .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/%(?:24|26|2B|3A|3D|40)/g, decodeURIComponent);
-}
-
-/** The first {@link MAX_ANSWER_BYTES} of `answer`'s body, as text. */
-async function answerText(answer: Response): Promise<string> {
-  const reader = answer.body?.getReader();
-  if (reader === undefined) return "";
-  const chunks: Uint8Array[] = [];
-  let read = 0;
-  while (read < MAX_ANSWER_BYTES) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const kept = value.subarray(0, MAX_ANSWER_BYTES - read);
-    chunks.push(kept);
-    read += kept.length;
-  }
-  await reader.cancel().catch(() => undefined);
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** A word as Google's services write their error codes: STS's OAuth `error` (`invalid_grant`)

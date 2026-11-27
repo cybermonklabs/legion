@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -29,18 +30,19 @@ const unansweredBucket = "envoy_unanswered_test"
 func openSubject(bucket string) string { return "$JS.API.STREAM.INFO.KV_" + bucket }
 
 // createSubject is the request a create of a bucket sends: the STREAM.CREATE of the bucket's
-// stream, which nats.go builds from the bucket's name for js.CreateKeyValue (nats.go@v1.55.0
-// kv.go:422-548, js.go:193-199).
+// stream, which a start's create sends through the start's JetStream context (createBucketStream's
+// AddStream), as nats.go's js.CreateKeyValue does (nats.go@v1.55.0 kv.go:525, jsm.go:923).
 func createSubject(bucket string) string { return "$JS.API.STREAM.CREATE.KV_" + bucket }
 
 // updateSubject is the request an update of a bucket's stream sends, a raise or a new age: the
 // STREAM.UPDATE of the bucket's stream (nats.go@v1.55.0 jsm.go's UpdateStream).
 func updateSubject(bucket string) string { return "$JS.API.STREAM.UPDATE.KV_" + bucket }
 
-// accountInfoSubject is the request js.CreateKeyValue sends before its STREAM.CREATE: the
-// account's JetStream info, which nats.go asks for first (nats.go@v1.55.0 kv.go:422-434,
-// jsm.go:409). It names no bucket, so a row that drops it drops the account info of whatever
-// this connection asks the server for next, and only a row that makes one call may use it.
+// accountInfoSubject is the request a start's create sends before its STREAM.CREATE: the account's
+// JetStream info, which createBucketStream asks for first through the start's JetStream context
+// (AccountInfo), as nats.go's js.CreateKeyValue does (nats.go@v1.55.0 kv.go:432, jsm.go:409). It
+// names no bucket, so a row that drops it drops the account info of whatever this connection asks
+// the server for next, and only a row that makes one call may use it.
 func accountInfoSubject() string { return "$JS.API.INFO" }
 
 // unansweredRelay is a TCP relay between a client and a real NATS server that counts the requests
@@ -51,15 +53,20 @@ func accountInfoSubject() string { return "$JS.API.INFO" }
 // relayed untouched, so the connection is a real one on a real server and every other request is
 // answered as it always is.
 //
-// The requests a start makes of a bucket are nats.go's own: the lookup and the create are sent
-// inside js.KeyValue and js.CreateKeyValue, and the jetstream handle wrapKeyValue opens is built
-// from the connection inside that function (jetstream.New(conn)), which takes the concrete
-// *nats.Conn. So no JetStream context a test passes in can reach any of those sends: the seam a
-// test has for them is the connection's own wire, which is this relay. The bucket's own name is
-// in openSubject and in createSubject, so a row dropping one of those touches only the requests
-// about its own bucket; accountInfoSubject holds no bucket name, so only a row that makes one
-// call may drop it. The sends a row's setup makes are counted apart from the sends of the call
-// it is about (arm).
+// The requests a start makes of a bucket go out from nats.go on the connection: the lookup inside
+// js.KeyValue, the create's requests one at a time through the start's JetStream context
+// (createBucketStream: AccountInfo, AddStream, and on "stream name already in use" StreamInfo and
+// UpdateStream), and the open of the jetstream handle, which wrapKeyValue builds from the
+// connection itself (jetstream.New(conn), which takes the concrete *nats.Conn). A JetStream
+// context a test passes in could answer the lookup and the create's requests in place of the
+// server, but no context reaches the handle open, and an answer made up in the test is not a
+// request the server never saw: it skips nats.go's own wait. So the seam a row uses for all of
+// them is the connection's own wire, which is this relay, where a dropped request is sent by
+// nats.go, waited for by nats.go and never seen by the server. The bucket's own name is in
+// openSubject and in createSubject, so a row dropping one of those touches only the requests about
+// its own bucket; accountInfoSubject holds no bucket name, so only a row that makes one call may
+// drop it. The sends a row's setup makes are counted apart from the sends of the call it is about
+// (arm).
 type unansweredRelay struct {
 	subject  string
 	url      string
@@ -68,6 +75,11 @@ type unansweredRelay struct {
 	pass     int
 	drops    int
 	sends    int
+	// release, when not nil, holds the next send of the subject until it is closed (holdNext).
+	release <-chan struct{}
+	// writes orders what the relay writes to the server: a held send is written from a goroutine
+	// of its own once released, beside the lines relayed after it.
+	writes sync.Mutex
 }
 
 // startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
@@ -122,6 +134,18 @@ func (r *unansweredRelay) passThenDrop(pass, drops int) {
 	r.sends = 0
 }
 
+// holdNext has the relay hold the next send of its subject, relaying every line after it, and
+// write the held send to the server once release is closed, counting the sends from now: a request
+// that is answered, but only once the row has done what it does while the request waits.
+func (r *unansweredRelay) holdNext(release <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = 0
+	r.drops = 0
+	r.sends = 0
+	r.release = release
+}
+
 // sent is how many sends of its subject the client has made since the relay was armed.
 func (r *unansweredRelay) sent() int {
 	r.mu.Lock()
@@ -129,24 +153,37 @@ func (r *unansweredRelay) sent() int {
 	return r.sends
 }
 
-// send records one send of subject and reports whether it is dropped: it is while drops are left,
-// and each such send spends one.
-func (r *unansweredRelay) send(subject string) bool {
+// send records one send of subject and reports whether it is dropped, while drops are left, each
+// such send spending one, and the release a held send waits for (holdNext), nil for a send relayed
+// now.
+func (r *unansweredRelay) send(subject string) (dropped bool, release <-chan struct{}) {
 	if subject != r.subject {
-		return false
+		return false, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
 	if r.pass > 0 {
 		r.pass--
-		return false
+		return false, nil
 	}
 	if r.drops > 0 {
 		r.drops--
-		return true
+		return true, nil
 	}
-	return false
+	release, r.release = r.release, nil
+	return false, release
+}
+
+// write relays line and payload, which may be empty, to server, under writes.
+func (r *unansweredRelay) write(server net.Conn, line string, payload []byte) error {
+	r.writes.Lock()
+	defer r.writes.Unlock()
+	if _, err := io.WriteString(server, line); err != nil {
+		return err
+	}
+	_, err := server.Write(payload)
+	return err
 }
 
 // serve joins each connection the relay accepts to the server until the listener closes.
@@ -190,7 +227,7 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		// each followed by that many bytes and a CRLF. A line with fewer than three fields is
 		// neither, whatever its first word says.
 		if len(fields) < 3 || (!strings.EqualFold(fields[0], "PUB") && !strings.EqualFold(fields[0], "HPUB")) {
-			if _, err := io.WriteString(server, line); err != nil {
+			if err := r.write(server, line, nil); err != nil {
 				return
 			}
 			continue
@@ -203,13 +240,18 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return
 		}
-		if r.send(fields[1]) {
+		dropped, release := r.send(fields[1])
+		if dropped {
 			continue
 		}
-		if _, err := io.WriteString(server, line); err != nil {
-			return
+		if release != nil {
+			go func() {
+				<-release
+				_ = r.write(server, line, payload)
+			}()
+			continue
 		}
-		if _, err := server.Write(payload); err != nil {
+		if err := r.write(server, line, payload); err != nil {
 			return
 		}
 	}
@@ -245,6 +287,7 @@ func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.Je
 // reaches the server, so the bucket the start is given is the one the second lookup answered, and
 // the handle on it reads and writes keys.
 func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_lookup"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
@@ -293,7 +336,7 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	conn, js := relayedJetStream(t, relay)
 	relay.arm(1 << 30)
 
-	_, err := ensureKeyValue(context.Background(), 2*time.Second, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), 2*time.Second, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose lookup the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -312,6 +355,7 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 // context deadline exceeded", which is what it does today. The first create never reaches the
 // server, so the bucket is the second create's, and the handle on it is usable.
 func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_create"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), createSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
@@ -346,6 +390,7 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // never reaches the server, so the stream, read again, still has one copy, and the raise is sent
 // again from that read and lands.
 func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_raise"
 	cluster := testnats.StartCluster(t, 3)
 	relay := startUnansweredRelayOn(t, cluster.Servers[0].URL(), updateSubject(bucket))
@@ -390,7 +435,7 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 
 	relay.arm(1 << 30)
 	guard := RequestTimeout + 2*time.Second
-	_, err := ensureKeyValue(context.Background(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose raise the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -409,6 +454,7 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 // rather than failing the session registry's start at the update's own ten second wait with "set
 // KV_envoy_unanswered_age max age: context deadline exceeded", which is what it did.
 func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_age"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
 	conn, js := relayedJetStream(t, relay)
@@ -436,12 +482,14 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 
 // A start whose account info draws no answer sends the create step again and goes on, rather than
 // ending the program with "open envoy_unanswered_info KV bucket: KV_envoy_unanswered_info create:
-// context deadline exceeded" with no bucket made. That request is nats.go's own, sent inside
-// js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.55.0 kv.go:422-434), and a member that is
-// not the metadata leader leaves it unanswered behind the same gate it leaves the create behind
+// context deadline exceeded" with no bucket made. That request is the first of the create step,
+// which createBucketStream sends through the start's JetStream context before the STREAM.CREATE,
+// as nats.go's js.CreateKeyValue does (nats.go@v1.55.0 kv.go:432), and a member that is not the
+// metadata leader leaves it unanswered behind the same gate it leaves the create behind
 // (sentAgain). The first account info never reaches the server, so the bucket is the second
 // send's, and the handle on it is usable.
 func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	const bucket = "envoy_unanswered_info"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), accountInfoSubject())
 	conn, js := relayedJetStream(t, relay)
@@ -465,7 +513,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// Two account infos ride this subject: the one whose send was lost and the one of the send
 	// that made the bucket. One rides each send of the create step and nothing else does: the
 	// lookup is a STREAM.INFO, the handle open is another, and the STREAM.CREATE of the first
-	// send was never reached, since js.CreateKeyValue returns the moment the account info draws
+	// send was never reached, since createBucketStream returns the moment the account info draws
 	// no answer. Each of those rides a subject of its own, which this relay passes on.
 	if sends := relay.sent(); sends != 2 {
 		t.Fatalf("account infos sent = %d, want 2: the lost one and the one of the send that made the bucket", sends)
@@ -494,6 +542,7 @@ func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.
 // is the second one's, and it reads the bucket's stream. This is the start that created the
 // bucket.
 func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -519,6 +568,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // the resend missed while the create and not the caller chose it: EnsureKeyValue leaves created
 // false on that path, so one lost answer still ended the program.
 func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -539,6 +589,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 // An answer the server gives ends the sending: a start sends the open once and is done, so
 // nothing a server answers is ever asked twice.
 func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
+	t.Parallel()
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -557,6 +608,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 // seconds for it, so an open that kept sending would leave that read and every one after it
 // unanswered instead of saving a start.
 func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
+	t.Parallel()
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -586,6 +638,7 @@ func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 // follows it, so the drop is placed behind what a clean start sends, and a step added to the
 // found-bucket path moves it along rather than landing it on another request.
 func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *testing.T) {
+	t.Parallel()
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
 	conn, js, _ := unansweredKeyValue(t, relay)
 	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}

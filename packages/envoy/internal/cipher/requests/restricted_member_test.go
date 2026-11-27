@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -66,7 +65,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 	outsiderSession, outsiderKey := newEnrollment(t, m.Store, "session", "outsider-laptop-"+t.Name(), new(outsider), nil)
 	granted := func(t *testing.T, session string, key *ecdsa.PrivateKey, name string) Request {
 		t.Helper()
-		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs "+name, name), "", nil)
+		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs "+name, name), "")
 		if err != nil || req.State != "granted" || req.GrantID == nil {
 			t.Fatalf("Create(%s) = %+v, %v; want it granted at once", name, req, err)
 		}
@@ -81,7 +80,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 
 	t.Run("an agent-tier shared secret asked for under a restricted operator is denied", func(t *testing.T) {
-		req, err := m.Create(ctx, outsiderSession, signRequest(t, m, outsiderKey, "needs it", "SHARED_FRESH"), "", nil)
+		req, err := m.Create(ctx, outsiderSession, signRequest(t, m, outsiderKey, "needs it", "SHARED_FRESH"), "")
 		if err != nil || req.State != "denied" || req.GrantID != nil || req.Detail == nil ||
 			!strings.Contains(*req.Detail, "SHARED_FRESH: "+policy.ReasonRestrictedMember) {
 			t.Fatalf("Create(SHARED_FRESH) = %+v, %v; want it denied naming %s", req, err, policy.ReasonRestrictedMember)
@@ -89,7 +88,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 	})
 
 	t.Run("an ask for a name it holds a grant of is denied and the grant ended", func(t *testing.T) {
-		req, err := m.Create(ctx, outsiderSession, signRequest(t, m, outsiderKey, "needs it again", "SHARED_TOKEN"), "", nil)
+		req, err := m.Create(ctx, outsiderSession, signRequest(t, m, outsiderKey, "needs it again", "SHARED_TOKEN"), "")
 		if err != nil || req.State != "denied" || req.GrantID != nil || req.Detail == nil ||
 			!strings.Contains(*req.Detail, "SHARED_TOKEN: "+policy.ReasonRestrictedMember) {
 			t.Fatalf("Create(SHARED_TOKEN) = %+v, %v; want it denied naming %s", req, err, policy.ReasonRestrictedMember)
@@ -98,14 +97,14 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 	})
 
 	t.Run("a human-tier ask is denied, not put to anyone", func(t *testing.T) {
-		req, err := m.Create(ctx, outsiderSession, signRequest(t, m, outsiderKey, "needs it", "SHARED_KEY"), "", nil)
+		req, err := m.Create(ctx, outsiderSession, signRequest(t, m, outsiderKey, "needs it", "SHARED_KEY"), "")
 		if err != nil || req.State != "denied" || req.RecordID != nil {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it denied with no approval record", req, err)
 		}
 	})
 
 	t.Run("the release of a grant it holds is refused and the grant ended", func(t *testing.T) {
-		if release, err := m.Values(ctx, *heldOther.GrantID, outsiderSession, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || len(release.Values) != 0 {
+		if release, err := m.Values(ctx, *heldOther.GrantID, outsiderSession, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || len(release.Values) != 0 {
 			t.Fatalf("Values(SHARED_OTHER) = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
 		}
 		requireGrantEnded(t, m, *heldOther.GrantID)
@@ -115,7 +114,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 		session, key := newEnrollment(t, m.Store, "session", "ines-box-"+t.Name(), new(fixtureOperator), nil)
 		for name, value := range map[string]string{"SHARED_TOKEN": "shared-token-v1", "AUTO_TOKEN": "auto-v1"} {
 			req := granted(t, session, key, name)
-			if release, err := m.Values(ctx, *req.GrantID, session, nil, ReleaseCall{}); err != nil || release.Values[name] != value {
+			if release, err := m.Values(ctx, *req.GrantID, session, ReleaseCall{}); err != nil || release.Values[name] != value {
 				t.Fatalf("Values(%s) = %v, %v; want %q", name, release.Values, err, value)
 			}
 		}
@@ -139,12 +138,12 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 		before := requests()
 		dispatch.SetDown(true)
 		t.Cleanup(func() { dispatch.SetDown(false) })
-		release, err := m.Values(ctx, *heldUnasked.GrantID, unaskedSession, nil, ReleaseCall{})
+		release, err := m.Values(ctx, *heldUnasked.GrantID, unaskedSession, ReleaseCall{})
 		uncheckable("Values(SHARED_TOKEN)", err)
 		if len(release.Values) != 0 {
 			t.Fatalf("Values(SHARED_TOKEN) while Dispatch is down released %v; want nothing", release.Values)
 		}
-		_, err = m.Create(ctx, unaskedSession, signRequest(t, m, unaskedKey, "needs it while Dispatch is down", "SHARED_OTHER"), "", nil)
+		_, err = m.Create(ctx, unaskedSession, signRequest(t, m, unaskedKey, "needs it while Dispatch is down", "SHARED_OTHER"), "")
 		uncheckable("Create(SHARED_OTHER)", err)
 		if n := requests(); n != before {
 			t.Fatalf("the refused ask left %d requests for the session, want %d", n, before)
@@ -155,7 +154,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 		// proves that on a fake clock); a fresh client stands in for that wait.
 		dispatch.SetDown(false)
 		m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
-		if release, err := m.Values(ctx, *heldUnasked.GrantID, unaskedSession, nil, ReleaseCall{}); err != nil || release.Values["SHARED_TOKEN"] != "shared-token-v1" {
+		if release, err := m.Values(ctx, *heldUnasked.GrantID, unaskedSession, ReleaseCall{}); err != nil || release.Values["SHARED_TOKEN"] != "shared-token-v1" {
 			t.Fatalf("Values(SHARED_TOKEN) once Dispatch answers = %v, %v; want it released", release.Values, err)
 		}
 		granted(t, unaskedSession, unaskedKey, "SHARED_OTHER")
@@ -192,7 +191,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 			t.Fatalf("AirlockConnection once %s is restricted = %v; want ErrGrantNotLive for a restricted member", fixtureOperator, err)
 		}
 		requireGrantEnded(t, airlocked, grantID)
-		if _, err := airlocked.Values(ctx, grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		if _, err := airlocked.Values(ctx, grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values of the ended grant = %v; want ErrGrantNotLive", err)
 		}
 	})
@@ -251,7 +250,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 				})
 
 				t.Run("the release of its grant of a secret the group lists", func(t *testing.T) {
-					released, err := f.m.Values(ctx, *heldListed.GrantID, session, nil, ReleaseCall{})
+					released, err := f.m.Values(ctx, *heldListed.GrantID, session, ReleaseCall{})
 					if !who.restricted {
 						if err != nil || released.Values["LISTED_TOKEN"] != "listed-v1" {
 							t.Fatalf("Values(LISTED_TOKEN) = %v, %v; want listed-v1", released.Values, err)
@@ -333,7 +332,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 					t.Helper()
 					// A federation secret's max-grant is an hour (policytest.FixtureMaxGrant), so
 					// the request names that lifetime.
-					req, err := f.m.Create(ctx, session, signRequestFor(t, f.m, key, 60*60, name), "", nil)
+					req, err := f.m.Create(ctx, session, signRequestFor(t, f.m, key, 60*60, name), "")
 					if err != nil {
 						t.Fatalf("Create(%s): %v", name, err)
 					}
@@ -362,7 +361,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 
 				t.Run("the release of its grant of the federation secret", func(t *testing.T) {
 					before := mints.Load()
-					released, err := f.m.Values(ctx, approvedA.GrantID, session, nil, ReleaseCall{})
+					released, err := f.m.Values(ctx, approvedA.GrantID, session, ReleaseCall{})
 					minted := mints.Load() - before
 					if !who.restricted {
 						if err != nil || released.Values["FED_A"] != "minted-federation-token" || minted != 1 {
@@ -429,7 +428,7 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	twoNames := func(t *testing.T, person string) (string, string) {
 		t.Helper()
 		session, key := newEnrollment(t, m.Store, "session", person+"-box-"+t.Name(), new(person), nil)
-		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs both", "GONE_SECRET", "KEPT_SECRET"), "", nil)
+		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs both", "GONE_SECRET", "KEPT_SECRET"), "")
 		if err != nil || req.State != "granted" || req.GrantID == nil {
 			t.Fatalf("Create(GONE_SECRET, KEPT_SECRET) for %s = %+v, %v; want it granted at once", person, req, err)
 		}
@@ -441,7 +440,7 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	pendingGoneKey := func(t *testing.T, person string) Request {
 		t.Helper()
 		session, key := newEnrollment(t, m.Store, "session", person+"-asks-"+t.Name(), new(person), nil)
-		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs the key", "GONE_KEY"), "", nil)
+		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs the key", "GONE_KEY"), "")
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(GONE_KEY) for %s = %+v, %v; want pending with a record", person, req, err)
 		}
@@ -462,7 +461,7 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{outsider: projectaccess.MemberRestricted, fixtureOperator: projectaccess.MemberFull})
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 
-	release, err := m.Values(ctx, outsiderGrant, outsiderSession, nil, ReleaseCall{})
+	release, err := m.Values(ctx, outsiderGrant, outsiderSession, ReleaseCall{})
 	if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, errRestrictedMember) || len(release.Values) != 0 {
 		t.Fatalf("Values of %s's grant whose first name is gone = %v, %v; want ErrGrantNotLive for a restricted member and no value", outsider, release.Values, err)
 	}
@@ -470,7 +469,7 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 
 	// The control: a full member's grant of the same names is refused for the name that is gone,
 	// a pause, and stays live.
-	if _, err := m.Values(ctx, fullGrant, fullSession, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || errors.Is(err, errRestrictedMember) {
+	if _, err := m.Values(ctx, fullGrant, fullSession, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || errors.Is(err, errRestrictedMember) {
 		t.Fatalf("Values of %s's grant whose first name is gone = %v; want ErrGrantNotLive for the name, not a restricted member's end", fixtureOperator, err)
 	}
 	var revoked bool
@@ -508,7 +507,7 @@ func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
 	pending := func(t *testing.T, person string) (string, Request) {
 		t.Helper()
 		session, key := newEnrollment(t, m.Store, "session", person+"-box-"+t.Name(), new(person), nil)
-		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "")
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(SHARED_KEY) for %s = %+v, %v; want pending with a record", person, req, err)
 		}
@@ -618,7 +617,7 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 		} {
 			t.Run(change.name+", "+pod.name, func(t *testing.T) {
 				ctx := t.Context()
-				m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AWS_KEY", "aws")}})
+				m, _, _, _ := newPlaceholderFixture(t, bound(rule("AWS_KEY", "aws")))
 				retag(t, m,
 					policytest.Secret("AWS_KEY", policy.OwnerShared, policy.TierAgent, `{"acc`+`ess_key_id":"AKI`+`AONE","sec`+`ret_acc`+`ess_key":"real-secret"}`),
 					policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"),
@@ -633,12 +632,12 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 				_, heldToken := grantOf(t, m, enr, key, "needs the token", "SHARED_TOKEN")
 				_, heldOther := grantOf(t, m, enr, key, "needs the other", "SHARED_OTHER")
 				_, airlocked := grantOf(t, m, enr, key, "carried by the airlock", "AWS_KEY")
-				release, err := m.Values(ctx, airlocked, enr, nil, ReleaseCall{})
+				release, err := m.Values(ctx, airlocked, enr, ReleaseCall{})
 				if err != nil || release.Airlock == nil || release.Airlock.ProxyPassword == "" {
 					t.Fatalf("Values(AWS_KEY) = %+v, %v; want a placeholder release", release, err)
 				}
 				placeholder := release.Airlock.ProxyPassword
-				pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "", nil)
+				pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "")
 				if err != nil || pending.State != "pending" || pending.RecordID == nil {
 					t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending with a record", pending, err)
 				}
@@ -662,7 +661,7 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 					dispatch.SetDown(true)
 					asking()
 					defer func() { dispatch.SetDown(false); asking() }()
-					released, err := m.Values(ctx, heldOther, enr, nil, ReleaseCall{})
+					released, err := m.Values(ctx, heldOther, enr, ReleaseCall{})
 					var uncheckable *projectaccess.MemberKindUncheckable
 					if !errors.As(err, &uncheckable) || uncheckable.Person != pod.of.person || len(released.Values) != 0 {
 						t.Fatalf("Values(SHARED_OTHER) while Dispatch is down = %v, %v; want *projectaccess.MemberKindUncheckable naming %s and no value", released.Values, err, pod.of.person)
@@ -674,7 +673,7 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 				})
 
 				t.Run("an ask for a shared agent-tier secret", func(t *testing.T) {
-					req, err := m.Create(ctx, enr, signRequest(t, m, key, "needs it", "SHARED_FRESH"), "", nil)
+					req, err := m.Create(ctx, enr, signRequest(t, m, key, "needs it", "SHARED_FRESH"), "")
 					switch {
 					case pod.restricted && (err != nil || req.State != "denied" || req.GrantID != nil || req.Detail == nil || !strings.Contains(*req.Detail, "SHARED_FRESH: "+policy.ReasonRestrictedMember)):
 						t.Fatalf("Create(SHARED_FRESH) = %+v, %v; want it denied naming %s", req, err, policy.ReasonRestrictedMember)
@@ -684,7 +683,7 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 				})
 
 				t.Run("an ask for a name it holds a grant of", func(t *testing.T) {
-					req, err := m.Create(ctx, enr, signRequest(t, m, key, "needs the token again", "SHARED_TOKEN"), "", nil)
+					req, err := m.Create(ctx, enr, signRequest(t, m, key, "needs the token again", "SHARED_TOKEN"), "")
 					if !pod.restricted {
 						if err != nil || req.GrantID == nil || *req.GrantID != heldToken {
 							t.Fatalf("Create(SHARED_TOKEN) = %+v, %v; want grant %s reused", req, err, heldToken)
@@ -698,7 +697,7 @@ func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
 				})
 
 				t.Run("the release of a grant it holds", func(t *testing.T) {
-					released, err := m.Values(ctx, heldOther, enr, nil, ReleaseCall{})
+					released, err := m.Values(ctx, heldOther, enr, ReleaseCall{})
 					if !pod.restricted {
 						if err != nil || released.Values["SHARED_OTHER"] != "shared-other-v1" {
 							t.Fatalf("Values(SHARED_OTHER) = %v, %v; want shared-other-v1", released.Values, err)

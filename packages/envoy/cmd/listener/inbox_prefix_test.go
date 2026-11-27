@@ -112,6 +112,7 @@ func packageInboxCallsIn(t *testing.T, path string) []int {
 // one its grant subscribes. The match finds a call however the file names nats.go, and a call of a
 // connection's NewInbox is no finding.
 func TestTheListenerNamesEveryInboxByItsConnection(t *testing.T) {
+	t.Parallel()
 	t.Run("the match", func(t *testing.T) {
 		dir := t.TempDir()
 		for source, want := range map[string]int{

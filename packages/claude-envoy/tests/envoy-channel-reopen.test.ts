@@ -163,10 +163,7 @@ test(
       )
       expect(notices("Envoy inbound restored")).toHaveLength(1)
       expect(
-        count(
-          stderr(),
-          "envoy-channel: this session receives again: its registration was accepted",
-        ),
+        count(stderr(), "envoy-channel: this session receives again: a registration was accepted"),
       ).toBe(1)
       expect(notices("Envoy inbound unavailable")).toHaveLength(1)
     } finally {
@@ -235,6 +232,24 @@ test(
   ROW_TIMEOUT_MS,
 )
 
+// The owner of a CONNECT appears only in a CONNECT check's failure (`checkConnects`), so no other
+// row reads it: a lookup that finds no connection, such as one given 127.0.0.1 for a gate on its
+// hub's own loopback address (fakeHost), would pass them all. It reads this machine's /proc, which
+// only Linux has (./socket-owner).
+test.skipIf(process.platform !== "linux")(
+  "the CONNECT through the gate names the server as its owner, read from /proc at the gate's own address",
+  async () => {
+    const run = await startServer()
+    try {
+      // The server is `bun`, by the name it was started with.
+      expect(await run.describeConnects()).toContain(`owner=bun pid=${run.server.pid}`)
+    } finally {
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
 test(
   "a reopen refused for good under an nkey seed is dialed again at the next heartbeat, and the relay reopens once the hub admits",
   async () => {
@@ -294,10 +309,7 @@ test(
       )
       expect(notices("Envoy inbound restored")).toHaveLength(1)
       expect(
-        count(
-          stderr(),
-          "envoy-channel: this session receives again: its registration was accepted",
-        ),
+        count(stderr(), "envoy-channel: this session receives again: a registration was accepted"),
       ).toBe(1)
       expect(notices("Envoy inbound unavailable")).toHaveLength(1)
     } finally {

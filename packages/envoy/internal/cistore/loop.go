@@ -120,12 +120,13 @@ func (b *backlogHeld) observe(held int, logger *logging.Logger) {
 	}
 }
 
-// claimFresh reports whether st carries a claim of its own generation made within 2*debounce of
-// now, which no pass reclaims. A claim of an older generation is never fresh.
+// claimFresh reports whether st carries a claim of its own generation made within its window of
+// now (claimWindow: 2*debounce, longer for a claim waiting for a GitHub read), which no pass
+// reclaims. A claim of an older generation is never fresh.
 func claimFresh(st State, now int64, debounce time.Duration) bool {
 	return st.Claim != nil &&
 		st.Claim.Generation == st.Generation &&
-		st.Claim.ClaimedAt >= now-(2*debounce).Milliseconds()
+		st.Claim.ClaimedAt >= now-claimWindow(st.Claim, debounce).Milliseconds()
 }
 
 // heldAfter is how long after its last event a record the loop does not settle waits before the
@@ -164,10 +165,19 @@ const (
 // first millisecond at which the verdict changes. A record is attempted exactly when it is due
 // and carries no fresh claim, held exactly when it is unsettled, ready and legacyBacklog holds
 // it, and stuck exactly when it is unsettled, not ready and quiet for heldAfter (heldLineAt); an
-// unsettled record that is not ready waits until then.
+// unsettled record that is not ready waits until then, and so does one given up (verifyStopped)
+// until its backoff runs out.
 func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
 	if st.SettledEmitted {
 		return verdictIdle, 0
+	}
+	if verifyStopped(st, now) {
+		// The settlement episode was given up unanswered (giveUp): the next starts once its
+		// backoff runs out, and after a give-up for good only a change of the record starts one.
+		if st.VerifyRetryAt == 0 {
+			return verdictIdle, 0
+		}
+		return verdictWait, st.VerifyRetryAt
 	}
 	if !settlementReady(st) {
 		if at := heldLineAt(st); now < at {
@@ -182,7 +192,7 @@ func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
 		return verdictHeld, 0
 	}
 	if claimFresh(st, now, debounce) {
-		at := st.Claim.ClaimedAt + (2 * debounce).Milliseconds() + 1
+		at := st.Claim.ClaimedAt + claimWindow(st.Claim, debounce).Milliseconds() + 1
 		if g := st.LastEventAt + (debounce + handoverGrace).Milliseconds(); st.Schema == 0 && g < at {
 			at = g
 		}
@@ -267,6 +277,16 @@ type summarizer struct {
 	// key's entry is dropped when its record settles or leaves the cache, and every entry when the
 	// cache is emptied for a recreated bucket (takeChanges).
 	heldLogged map[string]heldMark
+	// verifying holds the settlements this loop has claimed and asked Dispatch to verify, by key
+	// (verify.go): each waits for the record's VerifiedRev to reach its request. A wait is looked
+	// at when its record changes and when it falls due (verifyWait.due), and is dropped once it
+	// publishes or its claim is gone. Every wait goes when the cache is emptied for a recreated
+	// bucket, whose records hold none of the claims.
+	verifying map[string]verifyWait
+	// verifyTimeout and verifyMaxAsks are verify.go's verifyTimeout and verifyMaxAsks, which a
+	// test shortens.
+	verifyTimeout time.Duration
+	verifyMaxAsks int
 }
 
 // heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
@@ -279,19 +299,24 @@ type heldMark struct {
 
 func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 	return &summarizer{
-		store:      store,
-		debounce:   debounce,
-		queue:      deadlineQueue{index: map[string]int{}},
-		held:       map[string]struct{}{},
-		heldLogged: map[string]heldMark{},
+		store:         store,
+		debounce:      debounce,
+		queue:         deadlineQueue{index: map[string]int{}},
+		held:          map[string]struct{}{},
+		heldLogged:    map[string]heldMark{},
+		verifying:     map[string]verifyWait{},
+		verifyTimeout: verifyTimeout,
+		verifyMaxAsks: verifyMaxAsks,
 	}
 }
 
-// pass runs one pass at now (wall-clock milliseconds). It files each record the change feed names
-// by its verdict, takes every queued record due by now, and attempts the due ones in key order,
-// queueing each attempted record at now so the next pass looks at it again. Filing a record it
-// holds past heldAfter logs what holds it, once (logHeldLocked). It returns how many records it
-// holds back (verdictHeld) and, when the queue is not empty, the earliest queued millisecond.
+// pass runs one pass at now (wall-clock milliseconds). It looks at each verify wait whose record
+// changed or that is due (checkVerify), files each record the change feed names by its verdict,
+// takes every queued record due by now, and attempts the due ones in key order, queueing each
+// attempted record at now so the next pass looks at it again. Filing a record it holds past
+// heldAfter logs what holds it, once (logHeldLocked). It returns how many records it holds back
+// (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
+// to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
@@ -299,6 +324,13 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 		z.queue = deadlineQueue{index: map[string]int{}}
 		z.held = map[string]struct{}{}
 		z.heldLogged = map[string]heldMark{}
+		z.verifying = map[string]verifyWait{}
+	}
+	var waits []string
+	for key, wait := range z.verifying {
+		if _, changed := keys[key]; changed || wait.due(now, z.verifyTimeout) {
+			waits = append(waits, key)
+		}
 	}
 	var batch []string
 	for key := range keys {
@@ -310,6 +342,16 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 		batch = append(batch, heap.Pop(&z.queue).(queueEntry).key)
 	}
 	z.mu.Unlock()
+
+	sort.Strings(waits)
+	for _, key := range waits {
+		z.mu.Lock()
+		wait, waiting := z.verifying[key]
+		z.mu.Unlock()
+		if waiting {
+			z.checkVerify(pub, logger, key, wait, now)
+		}
+	}
 
 	sort.Strings(batch)
 	for _, key := range batch {
@@ -330,6 +372,11 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	defer z.mu.Unlock()
 	if z.queue.Len() > 0 {
 		next, ok = z.queue.entries[0].at, true
+	}
+	for _, wait := range z.verifying {
+		if at := wait.dueAt(z.verifyTimeout); !ok || at < next {
+			next, ok = at, true
+		}
 	}
 	return len(z.held), next, ok
 }
@@ -442,15 +489,13 @@ func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State)
 }
 
 // settle tries to settle the record cached under key at now: it reclaims a stale claim, claims the
-// record, and publishes and marks its settlement, releasing the claim when the publication fails.
-// A publication that succeeded logs `checks settlement published`, one INFO line naming the head,
-// the generation and snapshot it settled, and whether it superseded an earlier settlement of the
-// record, so a settlement that never became a role message is shown to have left the listener; a
-// publication refused or failed logs no such line.
+// record, and publishes and marks its settlement (publish). With verify on it publishes nothing
+// yet: it writes the claim's verify request and leaves the claim waiting for Dispatch's answer
+// (ask, checkVerify), which publishes it.
 func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, cached State, now int64) {
 	store, debounce := z.store, z.debounce
-	staleBefore := now - (2 * debounce).Milliseconds()
 	if cached.Claim != nil {
+		staleBefore := now - claimWindow(cached.Claim, debounce).Milliseconds()
 		claimGeneration := cached.Claim.Generation
 		reclaimed, err := store.ReclaimSettlement(key, claimGeneration, staleBefore)
 		if err != nil {
@@ -470,26 +515,58 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 	if !claimed {
 		return
 	}
+	if store.verify {
+		z.ask(logger, key, state, now, verifyWait{generation: state.Generation, hash: state.Hash(), since: now})
+		return
+	}
+	z.publish(pub, logger, key, state, 0, now)
+}
+
+// publishOutcome is how a publication ended (publish): it ended for good -- published, or refused
+// or failed in a way that lets the claim go or never settles the head (publishEnded); the
+// authorization point could not read the record, and the claim is still held (publishUnread); or
+// the authorization point refused it on a fresh read of the record (publishRefused).
+type publishOutcome int
+
+const (
+	publishEnded publishOutcome = iota
+	publishUnread
+	publishRefused
+)
+
+// publish publishes the settlement of state, whose claim this loop holds, and marks it, releasing
+// the claim when the publication fails, and answers how it ended. requested is the revision of
+// the claim's verify request, zero where verify is off; the authorization point (ClaimStillHeld)
+// reads the record fresh and refuses unless it still holds the claim and, for a request, its
+// answer. A publication that succeeded logs `checks settlement published`, one INFO line naming
+// the head, the generation and snapshot it settled, whether it superseded an earlier settlement of
+// the record, and the verify request it was published on, so a settlement that never became a role
+// message is shown to have left the listener; a publication refused or failed logs no such line.
+// A mark that did not apply (MarkSettled, whose decline the stream leader's read confirmed) logs
+// `checks settlement not marked` at WARN: the claim it marks is gone, so another pass may publish
+// the head again.
+func (z *summarizer) publish(pub Publisher, logger *logging.Logger, key string, state State, requested uint64, now int64) publishOutcome {
+	store := z.store
 	env, err := settlementEnvelope(state, contracts.NowMillis())
 	if err != nil {
 		logger.Error("checks payload failed", slog.String("error", err.Error()))
-		return
+		return publishEnded
 	}
 	if err := env.Validate(); err != nil {
 		logger.Error("checks invalid envelope", slog.String("error", err.Error()))
 		if _, releaseErr := store.ReleaseClaim(key, state.Generation); releaseErr != nil {
 			logger.Warn("checks release failed", slog.String("error", releaseErr.Error()), slog.String("sha", state.SHA))
 		}
-		return
+		return publishEnded
 	}
 	snapshot := state.Hash()
-	held, err := store.ClaimStillHeld(key, state.Generation, snapshot)
+	held, err := store.ClaimStillHeld(key, state.Generation, snapshot, requested, now, z.debounce)
 	if err != nil {
 		logger.Warn("checks claim verification failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
-		return
+		return publishUnread
 	}
 	if !held {
-		return
+		return publishRefused
 	}
 	if err := pub.Publish(env); err != nil {
 		if errors.Is(err, bus.ErrRefused) {
@@ -503,7 +580,7 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 			if err := store.markOverflowed(key); err != nil {
 				logger.Warn("checks overflow not recorded", slog.String("error", err.Error()), slog.String("sha", state.SHA))
 			}
-			return
+			return publishEnded
 		}
 		logger.Warn("checks publish failed",
 			slog.String("error", err.Error()),
@@ -513,7 +590,7 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		if _, releaseErr := store.ReleaseClaim(key, state.Generation); releaseErr != nil {
 			logger.Warn("checks release failed", slog.String("error", releaseErr.Error()), slog.String("sha", state.SHA))
 		}
-		return
+		return publishEnded
 	}
 	logger.Info("checks settlement published",
 		slog.String("owner", state.Owner),
@@ -523,10 +600,23 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		slog.Uint64("generation", state.Generation),
 		slog.String("snapshot", snapshot),
 		slog.Bool("superseded", state.EmittedCount > 0),
+		slog.Uint64("verify_request", requested),
 	)
-	if _, err := store.MarkSettled(key, state.Generation); err != nil {
-		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()))
+	marked, err := store.MarkSettled(key, state.Generation)
+	if err != nil {
+		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
+		return publishEnded
 	}
+	if !marked {
+		logger.Warn("checks settlement not marked",
+			slog.String("owner", state.Owner),
+			slog.String("repo", state.Repo),
+			slog.String("number", state.Number),
+			slog.String("sha", state.SHA),
+			slog.Uint64("generation", state.Generation),
+		)
+	}
+	return publishEnded
 }
 
 // settlementEnvelope is the checks envelope that settles state, issued at issuedAt.

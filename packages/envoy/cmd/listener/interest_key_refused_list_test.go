@@ -43,6 +43,7 @@ import (
 // answers the refused key as the caller's own input: 413 for the too-long id and 400 for the
 // invalid one, with no Retry-After, since a retry sends the same key.
 func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T) {
+	t.Parallel()
 	const (
 		ordinary   = "ses_refused_list_ordinary"
 		invalidKey = "ses:bad"
@@ -100,7 +101,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		t.Fatalf("store session %s by a direct bucket write: %v", invalidKey, err)
 	}
 	listed := []string{ordinary, readableLegacy, unreadableLegacy, invalidKey}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for _, id := range listed {
 		for {
 			if _, err := sessions.Get(id); err == nil {
@@ -123,7 +124,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	}
 
 	before := len(logs.String())
-	recorder := get(sessionsHandler(registry, sessions), "/v1/sessions")
+	recorder := get(sessionsHandler(registry, sessions, nil), "/v1/sessions")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %.300s; want 200 listing every session", recorder.Code, recorder.Body.String())
 	}
@@ -212,7 +213,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		{invalidKey, http.StatusBadRequest},
 	} {
 		t.Run("interests/"+refused.id[:min(len(refused.id), 8)], func(t *testing.T) {
-			recorder := get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+refused.id)
+			recorder := get(adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")), "/v1/interests/"+refused.id)
 			if recorder.Code != refused.want {
 				t.Fatalf("GET /v1/interests/<the %d-byte id %.16s>: status %d, body %.300s; want %d", len(refused.id), refused.id, recorder.Code, recorder.Body.String(), refused.want)
 			}

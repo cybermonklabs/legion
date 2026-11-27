@@ -25,6 +25,7 @@ interface Handed {
   readonly content: unknown;
   readonly deliverAs: CardDelivery;
   readonly identity: DedupeIdentity | undefined;
+  readonly dispatchMessageId?: string;
 }
 
 /**
@@ -79,9 +80,14 @@ function harness() {
     recordDelivered: async (session, identity) => {
       recorded.push({ session, identity });
     },
-    handCard: (content, deliverAs, identity) => {
+    handCard: (content, deliverAs, identity, dispatchMessageId) => {
       if (state.refuseHand) throw new Error("the host refused the card");
-      handed.push({ content, deliverAs, identity });
+      handed.push({
+        content,
+        deliverAs,
+        identity,
+        ...(dispatchMessageId === undefined ? {} : { dispatchMessageId }),
+      });
     },
     cardNotShown: (session, identity) => notShown.push({ session, identity }),
     handNotice: (content) => {
@@ -394,6 +400,27 @@ describe("an inert card", () => {
     expect(handed).toEqual([]);
     expect(frames.waitsOnCard(frame)).toBe(false);
     expect(became).toEqual(["released"]);
+  });
+
+  // The live view draws a Dispatch message from Dispatch's store, so the agent stream leaves out
+  // the card that delivers it, which its `details` name (dispatch://INFRA-5271): a card held for a
+  // settled host still names it when it is handed.
+  test("held, is handed naming the Dispatch message it delivers, as one handed at once is", () => {
+    const { frames, state, handed, claim } = harness();
+    const held = dispatchFrame(1);
+    const atOnce = dispatchFrame(2);
+    state.settled = false;
+    frames.sendCard("s1", "late BTW", "inert", held, claim(held), "message-1");
+    expect(handed).toEqual([]);
+
+    state.settled = true;
+    frames.handBackWithdrawn();
+    frames.sendCard("s1", "card", "card", atOnce, claim(atOnce), "message-2");
+
+    expect(handed).toEqual([
+      { content: "late BTW", deliverAs: "inert", identity: held, dispatchMessageId: "message-1" },
+      { content: "card", deliverAs: "card", identity: atOnce, dispatchMessageId: "message-2" },
+    ]);
   });
 });
 

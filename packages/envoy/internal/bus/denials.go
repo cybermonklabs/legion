@@ -2,6 +2,7 @@ package bus
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strconv"
@@ -140,7 +141,11 @@ func (c *Client) deniedPublishLocked(subject string, sentAt time.Time) error {
 }
 
 // deniedPublishOf is the server's refusal of the caller's own publish to the first of subjects that
-// has one recorded at or after sentAt (deniedPublish), and nil when none has.
+// has one recorded at or after sentAt (deniedPublish), and nil when none has. Each subject is
+// matched as the request sends it, a full wildcard at its end included: the create of a consumer
+// filtered on `notifications.github.>` goes to a subject ending in `.>`, and only that subject's
+// refusal answers it, not the refusal of a narrower create of the same consumer. A send whose
+// subject holds a part nats.go picks as it sends reads deniedPublishMatching instead.
 func (c *Client) deniedPublishOf(subjects []string, sentAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -282,6 +287,16 @@ func clientOwning(conn *nats.Conn) *Client {
 	return nil
 }
 
+// loggerOwning is the logger of the client that owns conn (WithLogger), and followsDefault, which
+// writes where slog.Default() points at each line, when no client owns it: where a function given
+// a connection and no client, such as EnsureKeyValue, writes its lines.
+func loggerOwning(conn *nats.Conn) *slog.Logger {
+	if owner := clientOwning(conn); owner != nil {
+		return owner.log()
+	}
+	return followsDefault
+}
+
 // refusedBy is send's answer, or the server's refusal of one of subjects, the subjects send
 // publishes to, when owner, the client that owns the connection send goes out on, records one of
 // them at or after the moment this send began, whichever comes first. The server reports such a
@@ -294,8 +309,12 @@ func clientOwning(conn *nats.Conn) *Client {
 // A request the connection's grant does not cover is refused however often it is sent, so naming
 // the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
 // that is not unanswered, so a step wrapped in this makes one send and ends with an error naming
-// the subject the server refused. subjects are listed in the order a send publishes them, so the
-// refusal a step ends on is the one of the request it stopped at.
+// the subject the server refused. send is one request, and subjects are the subjects that request
+// can be sent to, each matched as it is sent (deniedPublishOf). A call that makes several requests
+// one after another is made one request at a time, each under its own subject (refusalReads's
+// AddConsumer, createBucketStream): listed for the whole call, a later request's subject would
+// take another send's refusal of it while the call still waits on an earlier one, and take it out
+// of the record that send reads.
 //
 // send runs on a goroutine of its own, so a refusal can answer before it returns; that goroutine
 // ends at send's own wait, and its answer is then dropped, as Bounded drops one, since what

@@ -40,6 +40,8 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: ${{ github.action_path }}/../../../packages/envoy/go.mod
+        go-download-base-url: https://go.dev/dl
+        token: ''
         cache: false
 
     # setup-go adds its `go` problem matcher for the rest of the job, and the runner reads every
@@ -75,6 +77,7 @@ runs:
     # restore falls back to the newest entry of the same Go version (restore-keys), so the build
     # fetches only the modules that changed. cache-hit is true only for an exact match, so the save
     # step below runs after such a fallback too.
+    # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
     - id: cache
       name: Restore the command's module and build caches
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

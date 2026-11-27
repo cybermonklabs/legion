@@ -28,6 +28,7 @@ func importMarker(name string) string {
 // load beside them as the two explicit extensions: exactly the five markers, so a plugin root the
 // argv dropped, or a fixture Oh My Pi never looked at, shows as a missing one.
 func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	envoy, plugin, repo, home := filepath.Join(dir, "envoy"), filepath.Join(dir, "plugin"), filepath.Join(dir, "repo"), filepath.Join(dir, "home")

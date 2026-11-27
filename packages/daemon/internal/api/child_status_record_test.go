@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -47,7 +48,7 @@ func statusHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder) {
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: handlers, Dispatch: statuses,
+		Handlers: handlers, Dispatch: statuses, PrepareRepository: testRepositories.prepare,
 	}).Handler
 	root := statusRoot
 	h.recordIssue(record.Issue{Key: statusRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot,
@@ -57,7 +58,7 @@ func statusHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder) {
 		Project: testDispatchProject, Title: "the child", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
 		Rank: "B", LastDispatchSeq: 4})
 	approved := 1
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: statusRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
 			return err
 		}

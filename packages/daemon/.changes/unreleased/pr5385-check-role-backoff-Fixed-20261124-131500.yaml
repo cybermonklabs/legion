@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  A production check backs off a checking role that keeps failing. Before, each look's start
+  retried a failed claim with a fresh budget, so a role that could not start (a pod that died in
+  `workspace-init` every time, say) was launched a whole `launch_failure_limit` of times at every
+  look, every two hours, until the check's bound fourteen days on. Now the claim's failure in a
+  look ends the look, a failure after the look ended counts the same, and the next look comes two
+  hours after the first such failure and twice as long after each failed look in a row after it
+  (4 h, 8 h and so on, never past the check's bound), until a look the role reports sets it back to
+  two hours. A failure between looks moves the wake the ended look named out to that time, never
+  earlier, and the wake it replaced starts nothing. That look's start retries the claim with one
+  attempt left of each budget its failure spent (the launch budget, the deaths, or the prompt
+  retirements), so one more failure of the same kind fails it
+  again at once; a failure that spent no budget, a provider error's or a prompt refused at launch,
+  starts a fresh run as before. The architect's `worker-died` notice now names the cause, how the
+  last pod ended and when the next look retries the claim, and a failure between looks, which
+  used to tell nobody, sends one too. An operator's `legion claims retry` and the controller's
+  `fresh_session` still give the whole budget. The count of failed looks is kept in a new column,
+  `production_checks.failed_looks` (migration `20261125000600_production_check_failed_looks`),
+  and each queued `check_wake` row now carries the wake it was queued for (`wakeAt`); a rollback
+  runs the way back in that migration's header first, with every daemon of the database stopped,
+  which also takes `wakeAt` off the queued rows, a key the release before refuses.
+time: 2026-11-24T13:15:00Z
+custom:
+    Issue: pr5385

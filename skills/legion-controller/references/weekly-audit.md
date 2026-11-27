@@ -23,9 +23,9 @@ A tree is an open `legion`-labelled issue with no labelled ancestor, with its de
 
 ## 3. The nudges
 
-Nudge the architect of each tree with at least one open descendant that has more than 8 descendants or more than 2 levels below its root, or that filed a child no red-team verdict names. Each architect posts its verdict on the issue it files children under, a comment whose first line reads `Red-team verdict for <issue key>:`, so read every such issue of the tree (`--all-events`). Count no child created before the first release that carries this rule.
+Nudge the architect of each tree with at least one open descendant that has more than 8 descendants or more than 2 levels below its root.
 
-A nudge is one `dispatch comment` on the root naming what you counted and asking the architect to fold what can ride in an open pull request, ending `descendants: <n>, levels: <m>`; send the same text to the architect's role topic when `read_state` names one. Send no new nudge to a tree whose architect replied to your newest one until its descendants pass that `<n>`. List each nudge in the report.
+A nudge is one `dispatch comment` on the root that mentions the tree's architect (`--mention 'role:<token>'`, the token `skill://legion-controller/references/operations.md#a-request-to-another-session` names), naming what you counted and asking the architect to fold what can ride in an open pull request, ending `descendants: <n>, levels: <m>`. Send the architect nothing else. Send no new nudge to a tree whose architect replied to your newest one until its descendants pass that `<n>`. List each nudge in the report.
 
 ## 4. The duplicate audit
 

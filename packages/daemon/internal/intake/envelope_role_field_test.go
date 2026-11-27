@@ -13,6 +13,7 @@ import (
 // role a message Dispatch's API sent for a route to a role was sent for) is ignored: each
 // subject's envelope decodes to the same message, fact and id with the field as without it.
 func TestDecodeMessageReadsAnEnvelopeThatCarriesTheRoleFieldAsWithoutIt(t *testing.T) {
+	t.Parallel()
 	at := strconv.FormatInt(time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC).UnixMilli(), 10)
 	for _, tc := range []struct {
 		name, subject string
@@ -20,7 +21,7 @@ func TestDecodeMessageReadsAnEnvelopeThatCarriesTheRoleFieldAsWithoutIt(t *testi
 	}{
 		{"a Dispatch issue event", "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t)},
 		{"a GitHub pull request event", "notifications.github.sjawhar.legion.pr.42", capturedGitHubEnvelope(t, "pr-opened.json")},
-		{"the listener's wake report", legionWakeSubject, envelopeJSON(t, "wake-1", "envoy", `{"kind":"role_message","role":"legion-legion-legion-208-implementer","at":`+at+`}`)},
+		{"the listener's wake report", legionWakeSubject, envelopeJSON(t, "wake-1", "envoy", `{"kind":"role_message","role":"legion-capture-capture-208-implementer","at":`+at+`}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want, err := decodeMessage(tc.subject, "CAPTURE", capturedRepositories, tc.data)

@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The child the accepted-parent hold stopped runs once the ancestor that held it has closed,
-// which is what the architect's notice promises it ("it starts once <root> has closed").
+// The child the accepted-parent hold stopped is handed over when the linger of the root that held
+// it ends.
 //
 // A person moves a new issue under a tree whose root is already accepted. The daemon records it
 // at admitted and holds it there, and that same hold is what lets the root close at all:
@@ -27,6 +27,7 @@ import (
 // Two levels deep, through the linger's expiry: the held child hangs under a child of the root,
 // not under the root itself.
 func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
@@ -64,13 +65,12 @@ func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing
 	assertHandedOver(t, pool, held, root, 7)
 }
 
-// The same promise when a person closes the accepted root by hand, which leaves no merged pull
+// The same holds when a person closes the accepted root by hand, which leaves no merged pull
 // request at all: an architect's tree is signed off, and a person marks the root done on the
 // Dispatch dashboard while it stands in retro. The linger read the merge, so the held child was
-// skipped and stood todo at admitted in a closed tree for ever, though its architect had been
-// told it starts once the root has closed. The expiry reads the child's own state instead — in
-// the workflow and never started — which is the same answer whatever phase its root was closed
-// from and whatever the close wrote over (unfinishedHandOvers).
+// skipped and stood todo at admitted in a closed tree for ever. The expiry reads the child's
+// own state instead — in the workflow and never started — which is the same answer whatever
+// phase its root was closed from and whatever the close wrote over (unfinishedHandOvers).
 //
 // A root whose worker died in retro is accepted too: it stands held from retro, its reviewed
 // head is the one the architect signed off, and the same child is held beneath it
@@ -78,6 +78,7 @@ func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing
 // stayed todo at admitted in the closed tree; read by the child's own state, both roots hand it
 // over.
 func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenAPersonClosesItByHand(t *testing.T) {
+	t.Parallel()
 	for _, standing := range []record.Issue{
 		{Phase: phase.Retro},
 		{Phase: phase.Held, Hold: &record.Hold{From: phase.Retro}},
@@ -139,8 +140,8 @@ func assertHandedOver(t *testing.T, pool *pgxpool.Pool, key, tree string, genera
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'dispatch_status' and issue = $1
 		and payload->>'status' = 'todo' and payload->>'kind' = 'hand-over' and payload->>'handOverTree' = $2
 		and payload->>'handOverLinger' = $3`, key, tree, fmt.Sprint(generation)).Scan(&writes); err != nil || writes != 1 {
-		t.Fatalf("the hand-over writes of %s = %d, %v; want one fenced on %s's linger %d: nothing else would ever start it, though the architect was told it starts once %s closed",
-			key, writes, err, tree, generation, tree)
+		t.Fatalf("the hand-over writes of %s = %d, %v; want one fenced on %s's linger %d: nothing else would ever start it",
+			key, writes, err, tree, generation)
 	}
 }
 

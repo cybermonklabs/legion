@@ -34,6 +34,7 @@ func promptParts(spec runtime.SpawnSpec) []string {
 // tree root's architect prompt (architect-root.md), since each launch composes its prompt from
 // the claim's tree as it stands. The write's own event, arriving after, changes nothing more.
 func TestAHandedOverChildKeepsItsArchitectsSession(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {

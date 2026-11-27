@@ -1,44 +1,156 @@
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
-import { questionLine } from "./question-line";
+import { useAgentText } from "../refs/AgentName";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark } from "../refs/PostMarks";
+import { isPlainClick } from "../refs/picture-lightbox";
+import { PlainText } from "../refs/plain-text";
+import { deletedLineText, postDeletion } from "../refs/post-marks";
+import { ReferenceHostIs } from "../refs/reference-host";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 
 /**
- * What a thread row is about, in one line, bold with a dot while the thread holds a write the
- * reader has not read.
+ * What a thread row is about as plain text, for every name a row's controls carry - its
+ * checkbox's, its Dismiss's: the one plain-text projection of the thread's subject, from the
+ * same reader that draws the row's own line and with the record that line names
+ * (`ThreadTitle`), or, for a root its author deleted, whose subject the delete cleared, the
+ * deleted line's words (`deletedLineText`). One reading, so every name a row carries says the
+ * same thing. A name holds no markup, so `children` takes the line as words: undefined until
+ * the projection has answered.
+ */
+export function ThreadLine({
+  children,
+  thread,
+}: {
+  children: (line: string | undefined) => ReactNode;
+  thread: MyReplyRow;
+}): ReactNode {
+  const text = useAgentText();
+  const deleted = postDeletion(thread);
+  return deleted === null ? (
+    <PlainText
+      markdown={thread.subject}
+      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
+      surface="inbox-thread-title"
+      tree={thread.subject_tree}
+    >
+      {children}
+    </PlainText>
+  ) : (
+    children(deletedLineText(deleted, text))
+  );
+}
+
+/**
+ * What a thread row is about, in one line, in three named groups in this order:
  *
- * Both layouts draw it: the short row beside the reading column, where it is the link `o`
- * follows (`data-inbox-owner`), and the card below that width, where **Open** is that link and
- * the title is plain text. Each host sizes its own line, as the three-site owner line does
- * (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what unread looks like is this one place.
+ * - **Subject**: the thread's line - the root's subject, or the deleted line where its author
+ *   deleted the root - as the link `o` follows on the short row, or as plain text on the card.
+ *   It is the one group that shortens: at any width it ends in an ellipsis inside itself, its
+ *   whole text as its title, and never pushes the two groups after it out of the line.
+ * - **Edited**: ` · edited`, on a root its author edited, outside the cut so no ellipsis takes it.
+ * - **Unread**: the dot, while the thread holds a write the reader has not read; the line is
+ *   bold then.
+ *
+ * The three never wrap: Edited and Unread keep their width and stand right after the Subject.
+ * They are drawn as three items of the host's line (a fragment), so in the short row they are the
+ * run of its **Title** group between the kind's icon and the time, and on the card the run
+ * between the icon and the reply's time; the host sizes the Subject (`className`).
+ *
+ * The deleted line is its words alone (`deletedLineText`), in the deleted line's own italic, with
+ * no time: the row already shows its own age, and that age is the one time a row holds, the part
+ * of a short row that is neither the owner link nor a control, where the pointer selects the row
+ * (`selectRow` in the browser suite).
+ *
+ * The subject is the thread root's own markdown, so it is drawn by the one renderer
+ * (`MarkdownPreview`, clamped to one line): a heading, a bold word and a reference read here as
+ * they read in the thread itself. `fullTitle` gives a pointer reader the same line as plain
+ * text, from the same reader; a deleted root's hover text is the deleted line's words.
+ *
+ * Below 1280 px a plain click on the short row's link opens the row in place instead of following
+ * it (`onOpen`). What unread looks like is this one place.
  */
 export function ThreadTitle({
   className,
   href,
+  onOpen,
   thread,
 }: {
-  /** The classes the host's line gives the title; the unread weight is added to them. */
+  /** The classes the host's line gives the title; the unread weight is added to them. The host
+   *  cuts the line (`truncate`), as it did when it drew the subject as words, so the preview is
+   *  drawn as the host's inline text (`inline`), and the ellipsis falls where it did. */
   className: string;
   /** Where the title links, for the host that draws it as a link; plain text without one. */
   href?: string;
+  /** What a plain click on the link does instead of following it: below 1280 px the Inbox opens
+   *  the row in place. A click with a modifier or another button still follows the link. */
+  onOpen?: () => void;
   thread: MyReplyRow;
 }): ReactNode {
-  const title = questionLine(thread.subject);
+  const agentText = useAgentText();
+  const openInPlace =
+    onOpen === undefined
+      ? undefined
+      : (event: MouseEvent<HTMLAnchorElement>) => {
+          if (!isPlainClick(event.nativeEvent)) return;
+          event.preventDefault();
+          onOpen();
+        };
+  const deleted = postDeletion(thread);
+  const deletedWords = deleted === null ? undefined : deletedLineText(deleted, agentText);
   const text = `${className} ${
     thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
   }`;
+  // Below 1280 px every link is an `inline-flex` touch target (styles.css), which makes the
+  // Subject inside the title's link a flex item that draws in lines of its own: there it cuts
+  // its own line, with its own ellipsis (`truncate`), the preview and the deleted line alike - a
+  // deleting actor's name has no cap. Drawn inline, as the host's text, the host's ellipsis cuts
+  // it and `truncate` does nothing.
+  const line =
+    deletedWords === undefined ? (
+      <MarkdownPreview
+        className="inline min-w-0 truncate"
+        fullTitle
+        lines={1}
+        markdown={thread.subject}
+        source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
+        surface="inbox-thread-title"
+        tree={thread.subject_tree}
+      />
+    ) : (
+      <span className="inline min-w-0 truncate italic" data-post-deleted="" title={deletedWords}>
+        {deletedWords}
+      </span>
+    );
   return (
     <>
       {href === undefined ? (
-        <span className={text} title={title}>
-          {title}
+        <span className={text} title={deletedWords}>
+          {line}
         </span>
       ) : (
-        <a className={text} data-inbox-owner="" href={href} title={title}>
-          {title}
-        </a>
+        // The title is the link the row's `o` follows, so a reference in the subject reads as a
+        // link inside it and is none. The link keeps the row's own classes, the weight that
+        // says the thread is unread among them, as it did when it drew the words itself.
+        <ReferenceHostIs host="control">
+          <a
+            className={text}
+            data-inbox-owner=""
+            href={href}
+            onClick={openInPlace}
+            title={deletedWords}
+          >
+            {line}
+          </a>
+        </ReferenceHostIs>
       )}
+      <EditedMark
+        at={thread.edited_at}
+        className={`shrink-0 text-xs ${textMutedOnCanvas}`}
+        deleted={deleted}
+      />
       {thread.unread ? (
         <span
           aria-label="Unread"

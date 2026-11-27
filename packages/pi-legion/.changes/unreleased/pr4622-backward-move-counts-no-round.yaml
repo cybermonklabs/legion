@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The `legion` tool's description of `request_backward_move` no longer says that the architect's
+  move back from `accepting` counts a review round. It counts none: `review_round_cap` counts only
+  a review that requests changes. Its description of `CHILD_UNDER_ACCEPTED_PARENT` says to release
+  the child once the ancestor has closed only where that ancestor is not the tree's root.

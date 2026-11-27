@@ -59,7 +59,7 @@ export function useSessionSends(sessionId: string, landed?: () => void): Session
       store.send([...name, sendKey], {
         anchor: undefined,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body, mentions: [], replacement: "" },
+        draft: { body, replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { kind: "session", sessionId },

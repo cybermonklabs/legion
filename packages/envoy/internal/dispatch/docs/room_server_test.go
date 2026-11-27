@@ -12,12 +12,14 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A room's close gate leaves with the last close or repair that held it: the server keeps none
 // for a room nothing is closing or repairing, however many documents were repaired, evicted, or
 // closed with their issue without ever loading.
 func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
+	t.Parallel()
 	service, first := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -58,6 +60,7 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 // for the close: the close waits for repairs already committing, and a settlement writing a repair
 // holds the document's lock, which a failed room's close compacts under (roomServer).
 func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	generation := owedStamp(t, service, artifactID)
@@ -72,7 +75,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 			service.srv.releaseGate(artifactID, closing)
 		}
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
@@ -98,6 +101,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 // A repair holds the exact document Server.Apply found. Once its room has retired that document,
 // holdOpen refuses and releases the gate it acquired for the check.
 func TestHoldOpenRefusesRoomThatNoLongerHoldsItsDocument(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	owedStamp(t, service, artifactID)
@@ -122,6 +126,7 @@ func TestHoldOpenRefusesRoomThatNoLongerHoldsItsDocument(t *testing.T) {
 // editor connected for the next request rather than reporting a close that happened after its
 // caller gave up.
 func TestEvictWithACancelledContextLeavesTheRoomResident(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -138,6 +143,7 @@ func TestEvictWithACancelledContextLeavesTheRoomResident(t *testing.T) {
 }
 
 func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
+	t.Parallel()
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}
@@ -150,7 +156,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		close(evicting)
 		<-evict
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		letGo()
 		recoverRoom()
 		<-applied
@@ -199,6 +205,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 }
 
 func TestAnEvictionHandsOverFailureOnlyAfterTheRoomCloses(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		err    error

@@ -1,9 +1,10 @@
 # shellcheck shell=bash
 # packages/envoy/scripts/lib/airlock-stack.sh
 # The airlock's own half of scripts/dev-stack.sh --project-access, in one place: the stand-ins
-# that mint the certificate authority a proxy decrypts with, run in a container, the rules file
-# that says which secret may go to which host, and the BROKER_AIRLOCK_* settings a broker is
-# started with. It is sourced, never run, and dev-stack.sh is its one caller.
+# that mint the certificate authority a proxy decrypts with, run in a container, the profiles file
+# whose one kind says which host a secret behind it may go to, and the BROKER_PROFILES_FILE and
+# BROKER_AIRLOCK_* settings a broker is started with. It is sourced, never run, and dev-stack.sh is
+# its one caller.
 # scripts/dev-airlock.sh does not use it: that script starts its own stands as a process of this
 # machine, four of them on loopback addresses' port 443, each with options of its own, beside two
 # brokers behind two fronts, six kinds of secret and the model judge.
@@ -97,30 +98,26 @@ airlock_stands_stop() {
   [ -z "${AIRLOCK_STANDS_CONTAINER:-}" ] || docker rm -f "$AIRLOCK_STANDS_CONTAINER" >/dev/null 2>&1 || true
 }
 
-# airlock_rules_write writes the rules file at $1 that binds each name after it to the host $2,
-# one entry per name and nothing else: the value of such a secret leaves the broker only through
-# the proxy, and only to that host.
-airlock_rules_write() {
-  local file="$1" host="$2"
-  shift 2
-  local entries="" name
-  for name in "$@"; do
-    [ -z "$entries" ] || entries="$entries,"
-    entries="$entries
-  {\"name\": \"$name\", \"hosts\": [\"$host\"]}"
-  done
-  printf '{"secrets": [%s\n]}\n' "$entries" >"$file"
-  chmod 600 "$file"
+# airlock_profiles_write writes the profiles file at $1 that declares one kind, named $2, whose one
+# host is $3, by the way swap, and names no profile. A stored secret whose proxy tag names that
+# kind is behind the proxy: its value leaves the broker only through the proxy, only to that host,
+# and only in the Authorization header, the kind's header when it names none. Such a secret needs
+# no profile, since its tag is what puts it behind the kind, and whoever writes the secret writes
+# the tag (scripts/project-secrets-check.sh, for this stack's one such secret).
+airlock_profiles_write() {
+  jq -n --arg kind "$2" --arg host "$3" '{kinds: [{name: $kind, hosts: [$host], ways: ["swap"]}], profiles: []}' >"$1"
+  chmod 600 "$1"
 }
 
-# airlock_broker_env prints, one per line, the BROKER_AIRLOCK_* settings a broker reads to serve
-# the airlock: the rules file $1, the proxy URL $2 a release hands to a session, the address $3
-# the proxy listens on, the authority read above, and where the proxy may dial the bound host. A
-# caller reads them into an array (mapfile) and passes them to the broker it starts.
+# airlock_broker_env prints, one per line, the settings a broker reads to serve the airlock: the
+# profiles file $1, whose kind is the airlock's one entry, the proxy URL $2 a release hands
+# to a session, the address $3 the proxy listens on, the authority read above, and where the proxy
+# may dial the bound host. A caller reads them into an array (mapfile) and passes them to the
+# broker it starts.
 airlock_broker_env() {
-  local rules_file="$1" proxy_url="$2" listen_addr="$3"
+  local profiles_file="$1" proxy_url="$2" listen_addr="$3"
   printf '%s\n' \
-    "BROKER_AIRLOCK_RULES_FILE=$rules_file" \
+    "BROKER_PROFILES_FILE=$profiles_file" \
     "BROKER_AIRLOCK_LISTEN_ADDR=$listen_addr" \
     "BROKER_AIRLOCK_PROXY_URL=$proxy_url" \
     "BROKER_AIRLOCK_CA_CERT_FILE=$AIRLOCK_CA_CERT_FILE" \

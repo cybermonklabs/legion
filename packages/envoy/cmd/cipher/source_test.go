@@ -40,6 +40,7 @@ import (
 // project, which tells the person which one they write to. A broker from before the `store`
 // field holds them in AWS Secrets Manager.
 func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		base     string
@@ -78,6 +79,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 // what tells this CLI's answer from another secrets CLI's for the same name; the secret forms say
 // which broker by host in place of a store rather than guessing one.
 func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
+	t.Parallel()
 	src := brokerSource(cipheraddr.New("https://secrets.internal.example"))
 	if got := src.String(); got != "the broker AGENT_SECRETS_URL names" {
 		t.Fatalf("source = %q, want the broker AGENT_SECRETS_URL names alone", got)
@@ -98,6 +100,7 @@ func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
 // the command's own log sees the source above its first line. The line is quoted wherever that
 // output is, so for every store kind it names no host, account, region or project.
 func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	const prefix = "agent-secrets: GRANT_ME from the broker AGENT_SECRETS_URL names"
@@ -121,7 +124,7 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 				counters.serveSettings(*row.settings)
 			}
 			cmd := exec.Command(binary, "GRANT_ME", "--", "sh", "-c", "echo the-child-ran >&2")
-			cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir)
+			cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir)
 			pipe, err := cmd.StderrPipe()
 			if err != nil {
 				t.Fatalf("stderr pipe: %v", err)
@@ -161,6 +164,7 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 // cause prints as its class alone. A clean URL's messages read as before. No value forges a line
 // with a control byte, raw or escaped.
 func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -229,6 +233,7 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 // request id url.PathEscape would change is refused before any call, naming the id and not the
 // broker's address, while an ordinary id still verifies and is answered.
 func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	key := newProofKey(t)
 	keyDir := key.keyDir
@@ -278,6 +283,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 // over https and a real server that closes the connection each read as a peer that answered and
 // broke the exchange, with net/http's own cause.
 func TestAPeerThatBrokeTheExchangeIsNamed(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	plain := httptest.NewServer(http.NotFoundHandler())
@@ -311,6 +317,7 @@ func TestAPeerThatBrokeTheExchangeIsNamed(t *testing.T) {
 // point - net/http reads the header before it asks CheckRedirect - so the call fails as a
 // request, and its class alone prints.
 func TestARedirectsTargetIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	var targetCalls atomic.Int64
@@ -371,6 +378,7 @@ func TestARedirectsTargetIsNotPrinted(t *testing.T) {
 // configuration does not. Everything the invariant forbids is still forbidden, the host anywhere
 // else in the output included: the exception removes that one URL and then checks the list.
 func TestNoSessionLineNamesAHostOrAStoreID(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	run := func(name string) []string {
@@ -456,6 +464,7 @@ func approveURLOf(args []string, brokerURL string) string {
 // TestWhatAScriptReadsIsUnchanged pins the bytes a script parses: --json stdout is the broker's
 // body verbatim, and each outcome keeps its exit code, whatever the human-read lines say.
 func TestWhatAScriptReadsIsUnchanged(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -497,6 +506,7 @@ func TestWhatAScriptReadsIsUnchanged(t *testing.T) {
 // releases no value, each say which broker and store answered, so a refusal is never read as
 // another secrets CLI's answer for the same name.
 func TestExecFormRefusalsNameWhereItLooked(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -525,6 +535,7 @@ func TestExecFormRefusalsNameWhereItLooked(t *testing.T) {
 // TestStatusFormsNameTheirSource: self and status report the broker and store this session's
 // secrets come from, beside what they already report.
 func TestStatusFormsNameTheirSource(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -545,6 +556,7 @@ func TestStatusFormsNameTheirSource(t *testing.T) {
 // GET /v1/settings leaves every line naming the broker alone - the command still runs, and
 // nothing guesses a store.
 func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -561,7 +573,7 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 	}
 
 	cmd := exec.Command(binary, "GRANT_ME", "--", "sh", "-c", "echo the-child-ran")
-	cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir)
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir)
 	out, err := cmd.Output()
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
@@ -577,6 +589,7 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 // connection), names the address it tried and the variable that named it, so a session that
 // inherited a stale AGENT_SECRETS_URL reads a stale address rather than a broker that is down.
 func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 
@@ -611,6 +624,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 // exchange, and an error none of those covers worded as no more than a failed request. Each class
 // sends a reader to a different layer: DNS, routing or a listener, TLS or a proxy.
 func TestEveryUnreachableFailureIsClassified(t *testing.T) {
+	t.Parallel()
 	const base = "https://secrets.internal.example"
 	const answered = "answered but the exchange failed"
 	dial := func(errno syscall.Errno) error {
@@ -662,8 +676,12 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 // whether this process is in a session it registered, so a helper that refuses the probe or a
 // socket that does not answer must name its socket. A broker was never asked, and adding its
 // source trailer lies about the request path. (A helper answering NOT_A_SESSION, and a socket file
-// that is not there, are no failure: the chain skips the helper for them, chain_test.go.)
+// that is not there, are no failure: the chain skips the helper for them, chain_test.go.) Each row
+// runs twice: once as it stands, and once with a person's sign-in, a sign-in client and a machine
+// cache planted in the test process's own home and state directory, as on a developer's machine
+// where someone ran `agent-secrets login`: the binary runAgentSecrets starts reads none of them.
 func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.plantHostSignIn, t.Setenv at source_test.go:742).
 	binary := buildAgentSecrets(t)
 	socket, _ := fakeHelper(t, helper.Response{
 		Code:  helper.CodeSign,
@@ -677,30 +695,64 @@ func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
 		{"helper refusal", socket, "refused: SIGN: the session key could not sign"},
 		{"dead helper", dead, "did not answer"},
 	} {
-		t.Run(row.name, func(t *testing.T) {
-			_, stderr, exit := runAgentSecrets(
-				t,
-				binary,
-				"https://broker.invalid",
-				t.TempDir(),
-				[]string{"AGENT_SECRETS_HELPER_SOCK=" + row.socket},
-				"request",
-				"DEMO_API_KEY",
-			)
-			if exit == 0 {
-				t.Fatal("request succeeded with no helper")
+		for _, planted := range []bool{false, true} {
+			name := row.name
+			if planted {
+				name += ", a sign-in in the test process's own home"
 			}
-			for _, want := range []string{row.socket, row.want} {
-				if !strings.Contains(stderr, want) {
-					t.Fatalf("stderr = %q; want it to name %q", stderr, want)
+			t.Run(name, func(t *testing.T) {
+				if planted {
+					plantHostSignIn(t)
 				}
-			}
-			for _, notWant := range []string{"asked the broker", brokerURLVar} {
-				if strings.Contains(stderr, notWant) {
-					t.Fatalf("stderr = %q; the helper failure must not name %q", stderr, notWant)
+				_, stderr, exit := runAgentSecrets(
+					t,
+					binary,
+					"https://broker.invalid",
+					t.TempDir(),
+					[]string{"AGENT_SECRETS_HELPER_SOCK=" + row.socket},
+					"request",
+					"DEMO_API_KEY",
+				)
+				if exit == 0 {
+					t.Fatal("request succeeded with no helper")
 				}
-			}
-		})
+				for _, want := range []string{row.socket, row.want} {
+					if !strings.Contains(stderr, want) {
+						t.Fatalf("stderr = %q; want it to name %q", stderr, want)
+					}
+				}
+				for _, notWant := range []string{"asked the broker", brokerURLVar, "sign-in"} {
+					if strings.Contains(stderr, notWant) {
+						t.Fatalf("stderr = %q; the helper failure must not name %q", stderr, notWant)
+					}
+				}
+			})
+		}
+	}
+}
+
+// plantHostSignIn gives the rest of t a test process whose own home, config and state directories
+// hold what a developer's machine holds after `agent-secrets login`: ada@example.com's sign-in
+// with a live enrollment, the client's settings file naming a sign-in client and its secret file,
+// and a machine cache, each where the client looks for it when nothing else is set.
+func plantHostSignIn(t *testing.T) {
+	t.Helper()
+	r := &chainRig{t: t, home: t.TempDir(), state: t.TempDir()}
+	for name, value := range map[string]string{"HOME": r.home, "XDG_STATE_HOME": r.state, "XDG_CONFIG_HOME": "", "AGENT_SECRETS_SIGNIN_DIR": ""} {
+		t.Setenv(name, value)
+	}
+	writeSignInFixture(t, r, "ada@example.com")
+	r.writeMachineCacheFixture("host-machine-enrollment")
+	secret := filepath.Join(r.home, ".config", "agent-secrets", "signin-client-secret")
+	if err := os.MkdirAll(filepath.Dir(secret), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secret, []byte("not-a-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := "AGENT_SECRETS_SIGNIN_CLIENT_ID=device-client\nAGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE=" + secret + "\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(secret), "config"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

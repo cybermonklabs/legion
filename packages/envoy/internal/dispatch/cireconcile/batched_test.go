@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// The second mapped repository of the tests below, whose second page of open pull requests
-// GitHub refuses the query for.
+// The second project's default repository of the tests below, whose second page of open pull
+// requests GitHub refuses the query for.
 const (
 	refusedRow          = "acme/tools"
 	refusedRepository   = "Acme/Tools"
@@ -53,11 +53,10 @@ func runsOfSuite(repository, sha string, suite int64, count int) []object {
 //
 //   - pull request 1 has 31 check suites, one more than a query reads;
 //   - pull request 2 has one check suite of 61 check runs, one more than a query reads;
-//   - pull request 3 is the head a query answers whole, and the one that proves the query asks
-//     for every check type: its `flaky` check ran, passed, and was started again, so GitHub's
-//     default answer -- the latest run of each name -- holds only the re-run, which is queued
-//     and recorded by nothing, and the head never settles. Only a read of every check type
-//     holds the attempt that passed;
+//   - pull request 3 is a head a query answers whole whose `flaky` check ran, passed, and was
+//     started again: the attempt that passed and the re-run, which is queued, are both in the
+//     answer, and the record keeps the re-run, the newest run of the name, since GitHub has not
+//     finished the head's CI;
 //   - pull request 4's Checks fields GitHub refuses, answering them null with an errors entry
 //     against that head's own path.
 type batched struct {
@@ -69,8 +68,8 @@ type batched struct {
 func newBatched(t *testing.T) *batched {
 	t.Helper()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
-	h.mapRepository(refusedRow)
+	h.seedProjectDefault(rowRepository)
+	h.seedProjectDefault(refusedRow)
 	h.github.setRepository(refusedRow, refusedRepository, refusedRepositoryID)
 	b := &batched{h: h, manySuites: head(1), manyRuns: head(2), reRun: head(3), refused: head(4)}
 
@@ -108,7 +107,7 @@ func newBatched(t *testing.T) *batched {
 	return b
 }
 
-// A pass reads every open head of every mapped repository in batched queries, and records every
+// A pass reads every open head of every covered repository in batched queries, and records every
 // run and every suite of every one of them: from the query where the query could answer the
 // head whole, and from the paged REST reads of before this change where it could not. The pass
 // line counts the queries it asked, the points they cost and the heads it had to read over
@@ -145,18 +144,18 @@ func TestAPassRecordsEveryRunOfEveryHeadFromQueriesAndTheRESTItCannotAnswer(t *t
 		t.Errorf("the record does not hold run-%03d, the run past what a query reads: %v", runsPerQuery+1, state.Checks)
 	}
 
-	// The head whose `flaky` check passed and was started again: the query asks for every check
-	// type, so the attempt that passed is recorded although a newer run of that name is queued.
+	// The head whose `flaky` check passed and was started again: the record holds the re-run,
+	// queued, over the attempt that passed, so the head waits for the re-run to end.
 	state = h.recordOf(b.reRun, b.reRun.number)
 	if state == nil {
 		t.Fatal("the head with a re-run check has no record")
 	}
 	flaky, held := state.Checks["flaky"]
 	if !held {
-		t.Fatalf("the record does not hold the attempt that passed, which only a read of every check type answers: %v", state.Checks)
+		t.Fatalf("the record does not hold the flaky check: %v", state.Checks)
 	}
-	if flaky.CheckRunID != 31 || flaky.Status != "completed" || flaky.Conclusion != "success" {
-		t.Errorf("the record holds flaky as %+v, want run 31 completed with conclusion success", flaky)
+	if flaky.CheckRunID != 32 || flaky.Status != "queued" {
+		t.Errorf("the record holds flaky as %+v, want the re-run, run 32, queued", flaky)
 	}
 
 	// The head whose Checks fields GitHub refused the query: read over REST, and its run
@@ -270,7 +269,7 @@ func TestTheSecondPassReadsEveryOverflowHeadConditionally(t *testing.T) {
 // and a cycle whose heads were all read would still look short of one.
 func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), fakePull{number: 8, sha: ""})
 	// GitHub refuses the query for the repository's one page, so its heads are listed and read
 	// over REST.
@@ -302,7 +301,7 @@ func TestARefusedPullRequestWithNoHeadIsReadOverREST(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, reviewerAppID)
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			refused, answered := head(7), head(8)
 			h.listHeads(refused, answered)
 			for _, pull := range []fakePull{refused, answered} {

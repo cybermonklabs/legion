@@ -199,11 +199,11 @@ test("R3 gives a nested item the same verdict whether a sibling follows it or no
 for (const [shape, text] of [
   [
     "a sentence over 160 characters with a colon in it",
-    "Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/..=KEY` is refused, naming the entry, and the boot with it.\n",
+    "No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).\n",
   ],
   [
     "a list item whose sentence breaks after a comma",
-    "- A pass reads every repository it covers (`cireconcile.covered`): each one `repo_projects` maps,\n  and each one an issue names as its own `repo`, which needs no mapping.\n",
+    "- A pass reads every repository it covers (`cireconcile.covered`): each project's default repository,\n  and each one an issue names as its own `repo`.\n",
   ],
   [
     "a sentence that breaks after a clause, in a paragraph of two",

@@ -1,10 +1,11 @@
-import { expect, spyOn, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
@@ -13,7 +14,13 @@ import { presetPath } from "./issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
 import type { PresetSignal } from "./presets";
 
-const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+const SIGNALS: Readonly<Partial<Record<Preset, PresetSignal>>> = {
   conversation: { count: 0 },
   decisions: { count: 0 },
   plan: { count: 0 },
@@ -62,9 +69,9 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowDown}", "verification"],
       ["{ArrowDown}", "plan"],
       ["{ArrowDown}", "decisions"],
-      ["{ArrowDown}", "conversation"],
+      ["{ArrowDown}", "dashboard"],
       ["{ArrowUp}", "decisions"],
-      ["{Home}", "conversation"],
+      ["{Home}", "dashboard"],
       ["{End}", "decisions"],
       ["{ArrowUp}", "plan"],
     ] as const) {
@@ -194,16 +201,19 @@ function DialogOverTheRow(): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
   return open ? (
     <div aria-label="Over the row" ref={dialog.containerRef} role="dialog">
+      <p>Words of the dialog</p>
       <button type="button">in the dialog</button>
     </div>
   ) : null;
 }
 
-// Escape closes the innermost layer. A dialog open over the menu takes it even before its focus
-// has moved in, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
-// answer (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and
-// that Details' drawer asks too, so a dialog's markup does not change it.
-test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
+// Escape closes the innermost layer. A dialog open over the menu takes it wherever the focus is:
+// on the dialog itself in its first frame, or on the page after a press on the dialog's text.
+// In the second case the key's target is outside the dialog, and only whether a dialog is open
+// tells the menu to leave the key to it. That is `useDialog`'s registry's answer (`dialogOpen()`,
+// decision 318), the one that decides which dialog the key closes and that Details' drawer asks
+// too, so a dialog's markup does not change it.
+test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, wherever the focus is", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
@@ -223,20 +233,39 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     );
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
-    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on the menu's item.
+    // The dialog holds the focus itself until its control takes it a frame after it opens; with
+    // that frame held, the Escape lands on the dialog, not on the menu's item.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(dialog(), "? drew no dialog").not.toBeNull();
-      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(
-        menuItem("spec")
+      expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(
+        dialog()
       );
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
     }
-    expect(dialog(), "Escape before the dialog took the focus left it open").toBeNull();
+    expect(dialog(), "Escape in the dialog's first frame left it open").toBeNull();
+    expect(
+      screen.queryByRole("menu"),
+      "that Escape closed the menu under the dialog"
+    ).not.toBeNull();
+
+    // Once its frame has given the focus to its control, a press on the dialog's text puts the
+    // focus on the page, and the Escape's target is no part of the dialog.
+    await user.keyboard("?");
+    await waitFor(() =>
+      expect(document.activeElement, "the dialog's frame gave its control no focus").toBe(
+        screen.getByRole("button", { name: "in the dialog" })
+      )
+    );
+    await user.click(screen.getByText("Words of the dialog"));
+    expect(document.activeElement, "a press on the dialog's text kept the focus off the page").toBe(
+      document.body
+    );
+    await user.keyboard("{Escape}");
+    expect(dialog(), "Escape with the focus on the page left the dialog open").toBeNull();
     expect(
       screen.queryByRole("menu"),
       "that Escape closed the menu under the dialog"
@@ -265,8 +294,8 @@ function missingReferences(within: HTMLElement): string[] {
 // (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
 // the same, each control with its name alone, and no control points at a signal that is not
 // there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
-// row of five.
-test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
+// row of six.
+test("with no signals the row of six draws every view's control with its name alone, and no description names a missing element", () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
@@ -328,5 +357,62 @@ test("with no signals the one control and its menu draw every view named alone, 
   } finally {
     view.unmount();
     restoreMatchMedia();
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): Dashboard is the first control of the row, in
+// both its shapes, drawn and pressed as every control is: pressing it while it is on returns to
+// Conversation, at Conversation's own address, and Conversation's control opens that address
+// from Dashboard's, the issue's own among them. Dashboard draws no signal: what waits on the
+// reader is counted in the header.
+test("Dashboard is the first control, draws no count, and a press of it while it is on returns to Conversation", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const dashboard = screen.getByRole("button", { name: PRESET_NAMES.dashboard, pressed: true });
+    expect(
+      within(screen.getByRole("toolbar")).getAllByRole("button")[0],
+      "Dashboard is not the row's first control"
+    ).toBe(dashboard);
+    expect(dashboard.getAttribute("aria-describedby"), "Dashboard is described by a signal").toBe(
+      null
+    );
+    expect(
+      view.container.querySelector('[data-preset-count="dashboard"]'),
+      "Dashboard drew a count"
+    ).toBeNull();
+    await user.click(dashboard);
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+
+  const restorePhone = stubViewport(PHONE_WIDTH);
+  const phone = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.dashboard }));
+    expect(screen.getAllByRole("menuitemradio")[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getAllByRole("menuitemradio")[0]).toBe(menuItem("dashboard"));
+    await user.click(menuItem("conversation"));
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    phone.unmount();
+    restorePhone();
   }
 });

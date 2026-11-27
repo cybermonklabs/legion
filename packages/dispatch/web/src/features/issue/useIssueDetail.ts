@@ -2,7 +2,7 @@ import { itemFromSearch } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 
-import { primarySpec, roleDocument } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
@@ -21,10 +21,12 @@ export function useIssueDetail(route: IssueRoute) {
   const planArtifact = roleDocument(issue.data, "plan");
   const verificationArtifact = roleDocument(issue.data, "verification");
   const primaryArtifact = primarySpec(issue.data);
+  // A page opened at a document's current name, which a reference may write where its slug kept
+  // an earlier name, shows that document as the link to it drew it (`artifactAtAddress`).
   const selectedArtifact =
     artifactRouteSlug === undefined
       ? primaryArtifact
-      : issue.data?.artifacts?.find(({ slug }) => slug === artifactRouteSlug);
+      : artifactAtAddress(issue.data?.artifacts, artifactRouteSlug);
   const isPrimaryArtifactRoute = isPrimaryDocumentArtifactRoute(route, selectedArtifact);
   const activeTab = issueTabForRoute(route, selectedArtifact);
   const conversationFocusItemId =

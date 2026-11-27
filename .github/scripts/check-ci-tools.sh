@@ -22,17 +22,17 @@
 #      `primary_digest`, `primary_digest_of`, `primary_member`, `second_source` and `max_time`,
 #      and two more the word in its `second_source` decides: `mirror_from` and `mirror_member`
 #      for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, and `second_url` and
-#      `second_member` for `github-release`, `pypi` and `pulumi-releases`, which are the words
-#      whose source serves this row's bytes at an address of its own.
+#      `second_member` for `github-release`, `pypi`, `pulumi-releases` and `helm-releases`,
+#      which are the words whose source serves this row's bytes at an address of its own.
 #      `digest` is 64 lower-case hex characters, written bare, because that one literal goes into
 #      a `sha256sum` line and into a ghcr blob URL alike.
-#      Two rows never share a name, and `second_source` is one of the five words
+#      Two rows never share a name, and `second_source` is one of the six words
 #      .github/scripts/ci-tools.sh names a source by in every line and every refusal:
-#      `github-release`, `ghcr-mirror`, `npm`, `pypi` or `pulumi-releases`. `primary_source` is
-#      one of the three a primary may be written in — `github-release`, `pypi` or
-#      `pulumi-releases` — because a copy this repository fills and the npm package Bun
-#      publishes beside its own release are no origin of the bytes, and that refusal names the
-#      side the word was written on, as the helper's does.
+#      `github-release`, `ghcr-mirror`, `npm`, `pypi`, `pulumi-releases` or `helm-releases`.
+#      `primary_source` is one of the four a primary may be written in — `github-release`,
+#      `pypi`, `pulumi-releases` or `helm-releases` — because a copy this repository fills and
+#      the npm package Bun publishes beside its own release are no origin of the bytes, and that
+#      refusal names the side the word was written on, as the helper's does.
 #      A row's `primary`, where it is not empty, holds the row's `version`, and so do its
 #      `mirror_from` and its `second_url`: a row whose version and URL disagree installs one
 #      version and pins another, and no URL of this manifest escapes that rule.
@@ -63,8 +63,7 @@
 #
 #   2. Each row agrees with the pin that decides which version a job installs.
 #      Every `bun-*` row's `version` is the content of .bun-version.
-#      The `mise` row's `version` is `ARG MISE_VERSION` of
-#      packages/daemon/docker/worker.Dockerfile without its leading `v`, and its `digest` is that
+#      The `mise` row's `version` is `packages/daemon/docker/worker.Dockerfile#ARG MISE_VERSION` without its leading `v`, and its `digest` is that
 #      file's `ARG MISE_SHA256`, so the copy this repository fills and the mise the worker image
 #      builds with are one set of bytes.
 #      The `jj` row's `version` is the part of that file's `ARG JJ_TOOL` after the `@`.
@@ -72,9 +71,16 @@
 #      file's `ARG UV_SHA256`, the same pair the mise row answers to and for the same reason:
 #      the image's own toolchain stage builds uv from those two ARGs, so the row and the image
 #      install one tool and check one archive.
-#      The `pulumi-docker` row's `version` is `const DockerPluginVersion` of
-#      packages/envoy/infra/internal/pulumitest/pulumitest.go, the constant the live programs
+#      The `pulumi-docker` row's `version` is `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion`, the constant the live programs
 #      pin the plugin at.
+#      The `helm` row's `version` is the version of the last
+#      `HELM=helm.sh/helm/v<major>/cmd/helm@v<version>` line of
+#      packages/envoy/loadtest/cluster/render-nats.sh, without its leading `v`. The render runs
+#      an installed helm only where that helm answers this version, and
+#      .github/actions/install-helm installs this row's, so a row at another version installs a
+#      helm the render passes over for the one it builds with `go run`. That file is read only
+#      where a helm row exists, and then a file that is missing, is not readable as text, or
+#      holds no such line is refused too.
 #      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
 #      hold no version of their own and install the version the row names.
 #      A row whose name ends in `-aarch64` is the arm64 build of the row named without that
@@ -83,8 +89,8 @@
 #      release of one tool. Such a row with no row of its base name is refused too, since it then
 #      answers to no pin at all. The bun rows are left to the .bun-version clause above, which
 #      holds all three of them, aarch64 one included, to one pin.
-#      Each refusal names both values and both files, and the uv and pulumi-docker ones name
-#      which of the two to move.
+#      Each refusal names both values and both files, and the uv, pulumi-docker and helm ones
+#      name which of the two to move.
 #
 #   3. No file under .github/ fetches a tool asset no row of this manifest names and no
 #      no_second_source entry of it declines.
@@ -115,8 +121,7 @@
 #      written in a shell script under .github/scripts/ is invisible to this gate.
 #      The narrower reach is deliberate: the class this rule closes is GitHub release assets,
 #      and this repository writes the npm registry's address outside those two directories for
-#      reasons that fetch nothing (.github/scripts/check-bun-version.sh:137 lists
-#      `registry.npmjs.org/@oven/bun` as a string to detect).
+#      reasons that fetch nothing (`.github/scripts/check-bun-version.sh#registry.npmjs.org/@oven/bun` is a string it detects).
 #
 #      A URL ON A DOWNLOAD HOST A ROW NAMES is refused unless its text is exactly a row's
 #      `primary`, `mirror_from` or `second_url`, in the release-asset half's reach and not the
@@ -130,10 +135,10 @@
 #      and the same `curl` in a shell script would have been as easy to write and as invisible.
 #      Those hosts are derived from the rows themselves — the hosts of the addresses whose side
 #      is written in a URL word that is not `github-release`, which today is get.pulumi.com,
-#      from the pulumi rows, and files.pythonhosted.org, from the uv row — so a service this
-#      manifest reads a tool from is a service no file may fetch from behind the manifest's
-#      back. That is the hole the Pulumi CLI went through: one source, no row, and no rule here
-#      that could see a get.pulumi.com address at all.
+#      from the pulumi rows, files.pythonhosted.org, from the uv row, and get.helm.sh, from the
+#      helm row — so a service this manifest reads a tool from is a service no file may fetch
+#      from behind the manifest's back. That is the hole the Pulumi CLI went through: one
+#      source, no row, and no rule here that could see a get.pulumi.com address at all.
 #      github.com and the package `registry:` names are left out of that set and to the rules
 #      that already own them: a blanket host rule over ghcr.io would refuse every image
 #      reference in the tree.
@@ -160,6 +165,12 @@
 #        * its `digest` is 64 lower-case bare hex, the file `pinned_in` names can be read as
 #          text, and that digest occurs in it, each refused in its own words, so one source
 #          never means no checksum;
+#        * where its `pinned_in` is a Dockerfile (a file named `<x>.Dockerfile`, `Dockerfile.<x>`
+#          or plain `Dockerfile`), it carries `pinned_as: ARG <NAME>`, and its `digest` is the value
+#          of the last `ARG <NAME>=` line of that file, exactly. A Dockerfile checks a digest it
+#          holds as a build argument, and an occurrence alone is met by a comment that kept an
+#          old digest after the ARG moved; an entry with no `pinned_as` is refused naming the
+#          `ARG` line of that file that holds its digest, or saying none does;
 #        * no row already covers its repository, compared without regard to case because
 #          github.com reads an owner and a repository that way, so a decline never bypasses a
 #          tool that has a second source;
@@ -238,6 +249,10 @@ WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 # The file the docker provider plugin's version is pinned in: the live programs read this
 # constant, so the row that fetches the plugin carries what it holds.
 PULUMITEST = Path("packages/envoy/infra/internal/pulumitest/pulumitest.go")
+# The file helm's version is pinned in: the load test's NATS render runs an installed helm only
+# where it answers the version this file's HELM= line names, so the row that installs helm
+# carries that version.
+RENDER_NATS = Path("packages/envoy/loadtest/cluster/render-nats.sh")
 GITHUB = Path(".github")
 # Rule 3's npm half reads these two directories and nothing else; its release-asset half and
 # its download-host half read every file under .github/, and so does rule 4.
@@ -260,18 +275,19 @@ COMMON_FIELDS = (
     "max_time",
 )
 # The two more fields each word of a second source carries, which is the one table of those
-# fields: the helper reads a `github-release`, `pypi` or `pulumi-releases` second source at
-# the row's own `second_url`, a `ghcr-mirror` one in the package `registry:` names, and an
-# `npm` one in the package the row names. Its order is the helper's, so the words a refusal
-# lists here and the words it lists there are one list in one order. The places of this tree
-# that decide a source word are listed at ci_tools__source_fetch in .github/scripts/ci-tools.sh,
-# this table among them, and this gate keeps no count of its own.
+# fields: the helper reads a `github-release`, `pypi`, `pulumi-releases` or `helm-releases`
+# second source at the row's own `second_url`, a `ghcr-mirror` one in the package `registry:`
+# names, and an `npm` one in the package the row names. Its order is the helper's, so the words a
+# refusal lists here and the words it lists there are one list in one order. The places of this
+# tree that decide a source word are listed at ci_tools__source_fetch in
+# .github/scripts/ci-tools.sh, this table among them, and this gate keeps no count of its own.
 SECOND_FIELDS = {
     "github-release": ("second_url", "second_member"),
     "ghcr-mirror": ("mirror_from", "mirror_member"),
     "npm": ("npm_package", "npm_member"),
     "pypi": ("second_url", "second_member"),
     "pulumi-releases": ("second_url", "second_member"),
+    "helm-releases": ("second_url", "second_member"),
 }
 # A field whose value may be empty: `primary` on a row whose bytes a third party fetches,
 # `mirror_member` on a row that pushes an archive whole, `second_member` on a row whose second
@@ -286,15 +302,15 @@ MAY_BE_EMPTY = {
     "primary_member",
 }
 # The words a row writes a source as, which are the words the helper's own lines and refusals
-# say. A primary is written in the three of them that are an origin of the bytes: a copy this
+# say. A primary is written in the four of them that are an origin of the bytes: a copy this
 # repository fills and the npm package Bun publishes beside its own release are neither, so the
 # helper reads them on the second side alone and refuses either as a primary.
 SECOND_SOURCES = tuple(SECOND_FIELDS)
-PRIMARY_SOURCES = ("github-release", "pypi", "pulumi-releases")
+PRIMARY_SOURCES = ("github-release", "pypi", "pulumi-releases", "helm-releases")
 # The words whose source is read at an address the row writes out, minus the one that is a
 # GitHub release: the hosts of those addresses are the download hosts rule 3 keeps, and
 # `github-release` is left to the release-asset half that already owns github.com.
-URL_SOURCES = ("pypi", "pulumi-releases")
+URL_SOURCES = ("pypi", "pulumi-releases", "helm-releases")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 # The four fields a row writes a member in, one per side of each shape: the member taken out of
 # the primary's archive, and the one taken out of the second source's, whichever word that
@@ -391,9 +407,15 @@ ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
 ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 ARG_UV_VERSION = re.compile(r"^ARG\s+UV_VERSION=(\S+)\s*$")
 ARG_UV_SHA256 = re.compile(r"^ARG\s+UV_SHA256=(\S+)\s*$")
+# Any `ARG <name>=<value>` line, for the line of a Dockerfile that holds a declined URL's digest.
+ARG_LINE = re.compile(r"^ARG\s+(\w+)=(\S+)\s*$")
 # The Go constant the live programs pin the docker provider plugin at, read as the Dockerfile's
 # ARGs are: one line, one value, and the last one the file declares.
 DOCKER_PLUGIN_VERSION = re.compile(r'^const\s+DockerPluginVersion\s*=\s*"([^"]*)"\s*$')
+# The helm module render-nats.sh builds helm from where no helm of its version is installed,
+# read the same way: the value of the last `HELM=` line, the module path and its `@v<version>`,
+# whichever major version that path names.
+HELM_MODULE = re.compile(r"""^HELM=["']?(helm\.sh/helm/v\d+/cmd/helm@v[^\s"']+)["']?\s*$""")
 # A URL ends at whitespace or at a quote of any of the three kinds a YAML or a shell line uses.
 # GitHub serves one release asset at many addresses, and a rule that compares text reaches only
 # the ones it spells out. Every form below was measured against github.com on 2026-11-09 with
@@ -513,7 +535,10 @@ def fatal(message: str) -> None:
 
 
 def read_text(path: Path) -> str | None:
-    """A file's text, or None where it is not decodable as UTF-8."""
+    """A file's text, or None where it is not a file or is not decodable as UTF-8. A pin file a
+    rule reads may be missing, and that is refused in words of its own rather than as a crash."""
+    if not path.is_file():
+        return None
     try:
         return path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
@@ -773,15 +798,23 @@ if pulumitest_text is None:
 
 def last_arg(pattern: re.Pattern[str], text: str) -> str:
     """The value the last line of <text> matching <pattern> captures: the last
-    `ARG <name>=<value>` the Dockerfile declares, or the last `const DockerPluginVersion` the Go
-    file does. A later bare `ARG <name>` re-declares the build argument in another stage and
-    carries no value, so it is no match of these patterns."""
+    `ARG <name>=<value>` the Dockerfile declares, the last `const DockerPluginVersion` the Go
+    file does, or the last `HELM=` line render-nats.sh does. A later bare `ARG <name>`
+    re-declares the build argument in another stage and carries no value, so it is no match of
+    these patterns."""
     found = ""
     for line in text.splitlines():
         match = pattern.match(line)
         if match:
             found = match.group(1)
     return found
+
+
+def is_dockerfile(path: Path) -> bool:
+    """Whether <path> is named as Docker names a build file: `<x>.Dockerfile`, `Dockerfile.<x>` or
+    plain `Dockerfile`, the three forms this repository's Dockerfiles take."""
+    name = path.name
+    return name == "Dockerfile" or name.startswith("Dockerfile.") or name.endswith(".Dockerfile")
 
 
 mise_version = mise_sha256 = jj_tool = uv_version = uv_sha256 = ""
@@ -819,6 +852,26 @@ if pulumitest_text is not None:
 rows_by_name: dict[str, dict] = {}
 for row in readable:
     rows_by_name.setdefault(str(row["name"]).strip(), row)
+
+# render-nats.sh is read only where a helm row exists: a tree that holds no helm row holds no
+# version that file decides, so nothing here depends on it.
+helm_module = helm_version = ""
+if "helm" in rows_by_name:
+    render_nats_text = read_text(RENDER_NATS)
+    if render_nats_text is None:
+        problems.append(
+            f"{RENDER_NATS}:1: this file is missing or is not readable as text, and the helm row "
+            f"of {CI_TOOLS} carries the version its HELM= line pins"
+        )
+    else:
+        helm_module = last_arg(HELM_MODULE, render_nats_text)
+        helm_version = helm_module.rpartition("@v")[2]
+        if not helm_module:
+            problems.append(
+                f"{RENDER_NATS}:1: this file declares no "
+                f"HELM=helm.sh/helm/v<major>/cmd/helm@v<version> line, and the helm row of "
+                f"{CI_TOOLS} carries what it pins"
+            )
 
 for row in readable:
     name = str(row["name"]).strip()
@@ -885,6 +938,15 @@ for row in readable:
             f'const DockerPluginVersion = "{docker_plugin_version}". The envoy-infra live tests '
             f"install the plugin this row names at the version that constant holds: move this "
             f"row to the constant's version, or the constant to the row's."
+        )
+    if name == "helm" and helm_version and version != helm_version:
+        problems.append(
+            f"{CI_TOOLS}:{key_line(row, 'version')}: the helm row's version is {version} and "
+            f"{RENDER_NATS} pins HELM={helm_module}, whose version is {helm_version}. The render "
+            f"runs an installed helm only where it answers v{helm_version}, and "
+            f".github/actions/install-helm installs this row's, so the render passes this row's "
+            f"helm over and builds its own with go run: move this row to the HELM= line's "
+            f"version, or that line to the row's."
         )
     if name.endswith(ARM64_SUFFIX) and not name.startswith("bun-"):
         base_name = name[: -len(ARM64_SUFFIX)]
@@ -1182,6 +1244,43 @@ for entry, repository in declines:
             f"in {pinned_in}, the file it names as the pin, so nothing checks the bytes this "
             f"entry declines a second source for. One source never means no checksum."
         )
+    elif not str(entry.get("pinned_as") or "").strip() and is_dockerfile(pinned_in):
+        holders = [
+            (number, match[1])
+            for number, line in enumerate(pin_text.splitlines(), 1)
+            if (match := ARG_LINE.match(line)) and match[2] == digest
+        ]
+        where = (
+            f"{pinned_in}:{holders[-1][0]} holds it as ARG {holders[-1][1]}: add "
+            f"`pinned_as: ARG {holders[-1][1]}` to this entry."
+            if holders
+            else f"No ARG line of {pinned_in} holds {digest}: declare the digest the install "
+            f"checks as an ARG of that file, and name it in `pinned_as`."
+        )
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'pinned_in')}: this entry names {pinned_in}, a "
+            f"Dockerfile, as the file that pins these bytes, and carries no `pinned_as: ARG "
+            f"<NAME>`. A Dockerfile checks a digest it holds as a build argument, and without that "
+            f"argument's name this gate can only find the digest somewhere in the file, which a "
+            f"comment that kept it after the ARG moved also satisfies. {where}"
+        )
+    elif str(entry.get("pinned_as") or "").strip():
+        pinned_as = str(entry["pinned_as"]).strip()
+        arg = re.fullmatch(r"ARG\s+(\w+)", pinned_as)
+        value = last_arg(re.compile(rf"^ARG\s+{arg[1]}=(\S+)\s*$"), pin_text) if arg else ""
+        if not arg:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(entry, 'pinned_as')}: this entry's pinned_as is "
+                f"{one_line(pinned_as)}, and the one form it takes is `ARG <NAME>`, the build "
+                f"argument of {pinned_in} whose value is this entry's digest."
+            )
+        elif value != digest:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(entry, 'digest')}: this entry's digest is {digest} and "
+                f"{pinned_in} pins {pinned_as}={value or '(no such ARG)'}. The install checks the "
+                f"bytes against that ARG, so one of the two admits bytes the other refuses: move "
+                f"this digest to the ARG's value, or the ARG to this digest."
+            )
 
     covered_by = row_repositories.get(repository.casefold())
     if covered_by:

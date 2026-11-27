@@ -19,10 +19,10 @@ func TestTypedAttributesRenderInDeclarationOrder(t *testing.T) {
 		}},
 	}
 	useTestBlockSchema(t, BlockSchema{
-		Version: active.schema.Version,
-		Nodes:   active.schema.Nodes,
-		Marks:   active.schema.Marks,
-		Types: append(slices.Clone(active.schema.Types),
+		Version: active.Load().schema.Version,
+		Nodes:   active.Load().schema.Nodes,
+		Marks:   active.Load().schema.Marks,
+		Types: append(slices.Clone(active.Load().schema.Types),
 			BlockTypeSchema{Name: "ordered", Content: BlockContentParagraphs, Render: "host", Attributes: declared},
 		),
 	})

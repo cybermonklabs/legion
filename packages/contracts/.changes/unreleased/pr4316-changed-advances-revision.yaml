@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `advances` and `advances_revision` descriptions of `dispatch_issue_update`, from which the
+  command derives the help of `--advance` and `--advances-revision`, say that a change of two or
+  more priorities needs the issue's advances revision, sent with the whole list. The revision is
+  on the `Advances:` line of `dispatch read --issue <KEY>`, and a 409 ADVANCES_REVISION names it
+  too. They no longer say that the command sends the revision of its own read.
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.

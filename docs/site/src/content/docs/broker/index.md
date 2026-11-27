@@ -35,7 +35,7 @@ it.
   itself, say who gets it automatically and who needs a yes. The request waits in that
   person's Dispatch Inbox, where they already work, and one click there opens its page on the
   broker, where one more click approves it. A deployment may also run a model judge, which decides
-  the keys the airlock rules give it, each against its owner's guidance, and whose refusal is final;
+  the keys whose own `judge` tag gives it seconds of them, each against its owner's guidance, and whose refusal is final;
   a person never sees such a request unless the judge cannot decide it
   ([Concepts](/legion/broker/concepts/#the-model-judge)).
 - **Every grant is recorded.** Each approval rests on a signed, content-addressed record of who
@@ -62,17 +62,15 @@ sequenceDiagram
     alt granted at once
         Broker-->>CLI: granted
     else someone must decide
-        opt the request carries a GitHub App narrowing
-            Broker->>GitHub: list the App's installations, to check the account
-            GitHub-->>Broker: the installations, or none on that account
-            opt the narrowing names repositories or read access
-                Broker->>GitHub: mint the token the release would mint, to check the narrowing
-                GitHub-->>Broker: that token, or a refusal of the narrowing
-                Broker->>GitHub: revoke that token at once
-            end
-            Broker-->>CLI: a narrowing it cannot serve is refused here, before the approval request
+        opt the request names a GitHub profile
+            Broker->>GitHub: list the App's installations, to check each account in effect
+            GitHub-->>Broker: the installations, or none on an account
+            Broker->>GitHub: mint the token the release would mint, cut to what the installation holds
+            GitHub-->>Broker: that token, or a refusal
+            Broker->>GitHub: revoke that token at once
+            Broker-->>CLI: a profile GitHub refuses, or a cut that leaves nothing, is refused here, before the approval request
         end
-        alt every key is one the airlock rules let the judge decide
+        alt every key is one whose judge tag lets the judge decide
             Broker-->>CLI: pending, held for the judge, with no page
             CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
             Broker->>Dispatch: the issue and the ask the reason points at, if any
@@ -94,18 +92,20 @@ sequenceDiagram
     CLI->>Agent: run ./deploy.sh with DEMO_API_KEY in its environment
 ```
 
-The GitHub step is there only for a request that carries a GitHub App narrowing, which
-`agent-secrets` sends with the request. The broker decides such a narrowing before the approval
-request, and nothing is written and nobody is asked where it refuses one. It refuses five
-things: an account the secret's `github-owners` tag does not list, a request that names no
-GitHub App secret, a name the airlock holds back, a narrowing GitHub itself refuses, and an
-account the App has no installation on. Where it reaches no verdict, for example because GitHub
-is out of reach or refuses the App itself, or because the check passes its own time bounds, the
-request waits for its approver as it did before, and the refusal comes when the grant is read
+The GitHub step is there only for a request that names a GitHub profile. The broker checks such a
+request before the approval request, and nothing is written and nobody is asked where it refuses
+one. It refuses four things with `422 PROFILE_MINT_REFUSED`: an account in effect that the App has
+no installation on, a `value: token` profile on an account where the App has more than one
+installation, a profile whose token GitHub refuses, for example for a repository the installation
+does not reach, and a cut that leaves none of the profile's permissions but `metadata`. A target
+outside the profile is refused earlier still, with `400 TARGET_REFUSED`. Where
+the check reaches no verdict, for example because GitHub is out of reach or refuses the App itself,
+or because the check passes its own time bounds, the request waits for its approver as it did
+before, and the refusal comes when the grant is read
 ([Concepts](/legion/broker/concepts/#requests-and-grants)).
 
 The judge's step is there only where a deployment configures one. It takes a request whose every
-key that needs a decision has a `judge` entry in the airlock rules and no `admin` tag. It grants
+key that needs a decision has a `judge` tag and no `admin` tag. It grants
 such a request or refuses it for good, and a request it cannot decide goes to the approver once;
 every other request waits for its person exactly as it does today
 ([Concepts](/legion/broker/concepts/#the-model-judge)).

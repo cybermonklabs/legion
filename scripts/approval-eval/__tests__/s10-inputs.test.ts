@@ -1663,7 +1663,8 @@ const TREE_OF_A = {
 describe("the claim's draw under the read, taken by this stage", () => {
   test("draws the eligible tree into report, reads no roots and asks no model, and is taken whole", async () => {
     const rows = [A1, A2].map(heldRow);
-    expect(rows.map((row) => reserveOf(row))).toEqual(["held", "held"]);
+    // Held under a registration with no end, as the read this stage takes is one.
+    expect(rows.map((row) => reserveOf(row, null))).toEqual(["held", "held"]);
     const reserve = { leftOut: false, cases: 2, issues: 1, readUnder: CLAIM, claimRun: START };
     const built = await build({ snapshot: { reserve }, rows, groups: [TREE_OF_A] });
     // Each names an id, as item 6 (c) and (d) take only a file that does, and neither ASK_A's.

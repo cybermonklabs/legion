@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeWatcher is a jetstream.KeyWatcher the test drives: it delivers what the test hands it
@@ -51,14 +52,19 @@ func (f *fakeWatcher) end() {
 }
 
 // deliver hands the watcher's reader entry (nil is the scan's end marker), returning once the
-// reader has taken it.
+// reader has taken it. It offers the entry at testwait's pace rather than blocking on the send, so
+// a wait that gives up leaves no send behind for the watcher's end to panic on, and only the test
+// binary's deadline ends it.
 func (f *fakeWatcher) deliver(t *testing.T, entry jetstream.KeyValueEntry) {
 	t.Helper()
-	select {
-	case f.updates <- entry:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out handing the watcher's reader an entry: nothing reads it")
-	}
+	testwait.Until(t, "the watcher's reader to take an entry", func() (bool, bool) {
+		select {
+		case f.updates <- entry:
+			return true, true
+		default:
+			return false, false
+		}
+	})
 }
 
 // step is the watch that hands out f, keeping the context it was created in.
@@ -125,14 +131,6 @@ type staleStream struct {
 
 func (s staleStream) CachedInfo() *jetstream.StreamInfo { return s.info }
 
-// endWithin runs End within 10 s.
-func endWithin(t *testing.T, w *kvwatch.Watcher) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	w.End(ctx)
-}
-
 // scanningFirst starts a watcher feeding into whose first watch is f, and returns once its consume
 // has taken a record of the scan f never ends, so the watcher installed f and is reading it
 // mid-scan.
@@ -175,7 +173,7 @@ func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testi
 		t.Fatalf("after the replaced watcher delivered and ended: its record applied %v, Err %v, logged %q, Following %v; want nothing applied, recorded or logged, the copy following",
 			into.has("from-the-replaced-watcher"), w.Err(), warnings(records()), w.Following())
 	}
-	endWithin(t, w)
+	w.End(testContext(t))
 	scanning.stopCount(t, 1, "after End")
 }
 
@@ -193,7 +191,9 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 		{
 			name: "a watch of an older stream",
 			older: func(t *testing.T, conn *natsgo.Conn, kv bus.KeyValue) *jetstream.StreamInfo {
-				stream, err := kv.Streams().Stream(context.Background(), "KV_"+kv.Bucket())
+				// The handle's stream client is the product's: the read takes the test's context,
+				// which ends near the test binary's deadline, not the client's own bound.
+				stream, err := kv.Streams().Stream(testContext(t), "KV_"+kv.Bucket())
 				if err != nil {
 					t.Fatalf("stream: %v", err)
 				}
@@ -243,7 +243,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 				t.Fatalf("after the discarded watch delivered: %d reads begun (%d before it), Err %v, its record applied %v; want it discarded",
 					got, reads, w.Err(), into.has("from-the-discarded-watcher"))
 			}
-			endWithin(t, w)
+			w.End(testContext(t))
 			discarded.stopCount(t, 1, "after End")
 		})
 	}

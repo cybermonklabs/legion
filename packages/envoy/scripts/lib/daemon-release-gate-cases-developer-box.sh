@@ -242,11 +242,14 @@ done
 # A link whose target is gone, or that never resolves, is something there that cannot be read, never
 # nothing there: not a record that is the dotfiles' own, and not a profiles directory with no
 # profile in it. ~/.omp, the profiles directory's parent, is read through ~/.omp/plugins. A link to
-# a link whose target is gone is named as one that does not resolve: its own target is there.
-for shape in package package-chain outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-chain profiles-newline omp omp-chain omp-not-utf8; do
+# a link whose target is gone is named as one that does not resolve: its own target is there. A
+# link whose target cannot be reached another way, through a directory the gate may not search or a
+# loop part-way along its path, is named with that error, never as one that does not exist.
+for shape in package package-chain package-unsearchable package-loop outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-chain profiles-newline omp omp-chain omp-not-utf8; do
   echo "case: --clients, a link that does not resolve (${shape})"
   box_case "box-dangling-${shape}"
   assign=()
+  hide=""
   case "$shape" in
     package)
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
@@ -257,6 +260,19 @@ for shape in package package-chain outside-record outside-record-loop outside-re
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
       rm -r "$at" && ln -s ../gone-link "$at" && ln -s gone "$(dirname "$at")/../gone-link"
       want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../gone-link, which does not resolve"
+      ;;
+    package-unsearchable)
+      # Its target is the install, behind a directory the gate may not search.
+      at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+      hide="${case_root}/home/.dotfiles/omp/plugins/node_modules/locked"
+      mkdir "$hide" && mv "$at" "$hide/real" && ln -s ../locked/real "$at"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../locked/real, which does not resolve: Permission denied"
+      ;;
+    package-loop)
+      # Its target's path loops part-way: ../loop is a link to itself.
+      at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+      rm -r "$at" && ln -s loop "$(dirname "$at")/../loop" && ln -s ../loop/x "$at"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../loop/x, which does not resolve: Too many levels of symbolic links"
       ;;
     outside-record)
       mkdir -p "${case_root}/home/.claude/plugins" && ln -s gone.json "${case_root}/home/.claude/plugins/installed_plugins.json"
@@ -309,7 +325,15 @@ for shape in package package-chain outside-record outside-record-loop outside-re
       want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone\\udcff, which does not exist"
       ;;
   esac
+  if [ -n "$hide" ]; then
+    check "the link resolves while its directory may be searched, as the case needs" \
+      "$([ -e "$at/package.json" ] && echo true || echo false)"
+    chmod 000 "$hide"
+    check "this user cannot search the hidden directory, as the case needs" \
+      "$([ -e "$at" ] && echo false || echo true)"
+  fi
   run_gate "${assign[@]}" -- --clients "$commit"
+  [ -z "$hide" ] || chmod 755 "$hide"
   check "exits 3" "$(is "$status" 3)"
   check "refuses UNKNOWN naming the link" "$(grep -qF "$want" "$out" && echo true || echo false)"
   check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
@@ -416,6 +440,20 @@ run_gate LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 -- --clients "$commit"
 check "exits 0, the copy being the dotfiles' own" "$(is "$status" 0)"
 check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 
+# The same profile under the same Python, holding a copy of its own: the gate reads a profile by
+# the bytes of its name, so that copy is one outside the dotfiles, UNKNOWN by name. A reader that
+# hands the name back as other text (`caf\udcc3\udca9` in place of its two UTF-8 bytes) finds no
+# profile at that path and opens the gate, as the row above opens it.
+echo "case: --clients, a UTF-8 profile holding its own copy, read by a Python whose locale is ASCII"
+box_case box-utf8-profile-own-copy-ascii-python
+at="${case_root}/home/.omp/profiles/$(printf 'caf\303\251')/plugins/node_modules/@sjawhar/pi-envoy"
+mkdir -p "$at" && printf '{"name": "@sjawhar/pi-envoy", "version": "17.40.0"}\n' >"$at/package.json"
+run_gate LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the profile's tree as one outside the dotfiles" \
+  "$(grep -qF "UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.omp/profiles/caf" "$out" && echo true || echo false)"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
 # Something the gate cannot tell is there or not is never read as not there: a directory it may
 # not search or list, and a link along the way whose target is gone, each hide an install that would
 # shut the gate. Each fixture holds one, and each readable control beside it shuts or refuses.
@@ -471,6 +509,21 @@ for shape in package-parent claude-record-parent outside-claude profiles omp-tre
   check "refuses UNKNOWN naming what it could not see" "$(grep -qF "$want" "$out" && echo true || echo false)"
   check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 done
+
+# Two surfaces hidden at once, the profiles directory and the dotfiles' @sjawhar directory, which
+# ~/.omp/plugins links to: a profiles directory the gate cannot list still leaves it ~/.omp/plugins
+# to read, so the one UNKNOWN line names both, and the operator sees every surface to fix at once.
+echo "case: --clients, the profiles and ~/.omp/plugins' copy both hidden"
+box_case box-unseen-profiles-and-plugins
+home="${case_root}/home"
+mkdir -p "$home/.omp/profiles/work/plugins"
+chmod 000 "$home/.omp/profiles" "$home/.dotfiles/omp/plugins/node_modules/@sjawhar"
+run_gate -- --clients "$commit"
+chmod 755 "$home/.omp/profiles" "$home/.dotfiles/omp/plugins/node_modules/@sjawhar"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the unlisted profiles and ~/.omp/plugins' copy in one line" \
+  "$(grep -qF "$home/.omp/profiles cannot be listed: Permission denied, $home/.omp/plugins/node_modules/@sjawhar/pi-envoy: Permission denied" "$out" && echo true || echo false)"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 # A plugin name the gate cannot read, a tab in it among them, is refused whole: the record's fields
 # are never shifted into one another.

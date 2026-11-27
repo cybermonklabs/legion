@@ -1,4 +1,5 @@
-import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -6,6 +7,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { displayTree } from "../../__tests__/display-trees";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump, settle } from "../../__tests__/fake-clock";
 import {
@@ -15,6 +17,8 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
@@ -29,6 +33,7 @@ import type {
   Comment,
   CommentDelivery,
   DispatchEvent,
+  DisplayTree,
   Handoff,
   IssueAskRow,
   IssueAskThreadRow,
@@ -49,6 +54,12 @@ import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
 import { threadReplySendKey } from "./usePhoneThread";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const alice: Actor = { id: "alice", kind: "user" };
 
@@ -90,6 +101,7 @@ function message(id: string, overrides: Partial<Message> = {}): Message {
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: "CORE-1",
@@ -545,6 +557,36 @@ test("agent authors render the registry title and fall back to a short id", asyn
   }
 });
 
+// Each issue a status change's option moves or unlinks, and each issue R25's fix changes, gets a
+// comment written as Dispatch's system actor: no person and no session. Its thread names it as
+// `AgentName` names every actor that is not a session, by its id, and reads no registry for it.
+test("a comment from Dispatch's system actor shows its author", async () => {
+  const user = userEvent.setup();
+  const body =
+    "Dispatch moved this issue from `todo` to `done`, because alice's status change of its parent passed `include_children`.";
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", { author: { id: "parent-status-rule", kind: "system" }, body }),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turns = await screen.findByRole("list", { name: "Conversation turns" });
+    const turn = (await within(turns).findByText(/Dispatch moved this issue/)).closest<HTMLElement>(
+      "[data-turn]"
+    );
+    if (turn === null) throw new Error("the comment is drawn in no turn");
+    // A thread names its comments' authors once it is open.
+    await user.click(within(turn).getByRole("button", { name: "Expand thread" }));
+    expect(await within(turn).findByText(/^parent-status-rule ·/)).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
 // A closed issue takes a message's retry and replies, so its card offers them as an open one does.
 test("offers targeted-message retries and Reply on a closed issue", async () => {
   const stub = stubLists({
@@ -662,6 +704,78 @@ test("a mention its session answered with an error is pointed at a new comment, 
         `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
       )
     );
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A delete ends each send of its post still pending, with its own words, and Dispatch refuses
+// every new delivery of a deleted post (409 POST_DELETED). So the attempt a comment's delete
+// ended reads the delete's words alone, never that it failed, with no Retry, while a standing
+// comment's failed mention still reads as failed and keeps its Retry; and a deleted targeted
+// message's card says the delete ended it and offers neither Retry nor a mode change.
+test("an attempt a post's delete ended offers no Retry or mode change, and a standing post's still does", async () => {
+  const deletion = { deleted_at: "2026-09-20T00:05:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", {
+        ...deletion,
+        body: "",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-1",
+            error: DELETED_POST_DELIVERY_ERROR,
+            session_id: "worker",
+            target: "session:worker",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "worker", target: "session:worker" }],
+      }),
+      comment("comment-2", {
+        body: "@reviewer take a look",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-2",
+            error: "reviewer failed",
+            session_id: "reviewer",
+            target: "session:reviewer",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "reviewer", target: "session:reviewer" }],
+      }),
+    ],
+    messages: [
+      thread(
+        message("message-1", {
+          ...deletion,
+          body: "",
+          deliveries: [attempt({ error: DELETED_POST_DELIVERY_ERROR, state: "failed" })],
+          target: "session:s1",
+        })
+      ),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await screen.findByText(wholeText("session:worker… · Ended by the post's delete"));
+    expect(
+      screen.queryByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`))
+    ).toBeNull();
+    screen.getByText(
+      wholeText(
+        `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
+      )
+    );
+    const card = (await screen.findByText("Ended by the post's delete")).closest(
+      "[data-turn]"
+    ) as HTMLElement;
+    expect(within(card).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
+    // The one Retry on the page is the standing comment's.
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
     view.unmount();
@@ -978,7 +1092,7 @@ test("each handoff version is a card naming its phase, version and author, and e
   }
 });
 
-test("a handoff body that is not a JSON object shows as its raw text", async () => {
+test("a handoff body that is not a JSON object is drawn whole by the renderer", async () => {
   const user = userEvent.setup();
   const stub = stubLists({
     handoffs: [handoffRecord("handoff-1", 1, "not { json", "2026-09-10T09:00:00Z")],
@@ -989,8 +1103,129 @@ test("a handoff body that is not a JSON object shows as its raw text", async () 
   try {
     await user.click(await screen.findByRole("button", { name: "Show fields" }));
     const raw = await screen.findByText("not { json");
-    expect(raw.hasAttribute("data-handoff-raw")).toBe(true);
+    expect(raw.closest("[data-handoff-raw]")).not.toBeNull();
     expect(view.container.querySelector("[data-handoff-field]")).toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// The words a handoff's session wrote are drawn by the renderer from the reading the server
+// sends for each (`field_trees`, keyed by the text's JSON Pointer into the body - `/summary` for a
+// field, `/proof/<n>` for a proof entry - and `` for a body that is no JSON object), so a
+// reference in them reads as its target's name and the page parses none of them: the tree here
+// reads `**Second** pass` where the field says `Second pass`. A field of JSON stays the JSON it
+// is (`conversation-handoff-data`).
+test("a handoff's words are drawn from the trees the server sends, its JSON as JSON", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const record = {
+    ...handoffRecord(
+      "handoff-1",
+      1,
+      JSON.stringify({ files: ["a.ts"], proof: ["CI is green"], summary: "Second pass" }),
+      "2026-09-10T09:00:00Z"
+    ),
+    field_trees: {
+      "/proof/0": displayTree("CI is *green*") as DisplayTree,
+      "/summary": displayTree("**Second** pass") as DisplayTree,
+    },
+  };
+  const stub = stubLists({ handoffs: [record] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
+    const summary = await waitFor(() => {
+      const found = view.container.querySelector('[data-handoff-field="summary"] strong');
+      if (found === null) throw new Error("the summary is not drawn from its tree yet");
+      return found;
+    });
+    expect(summary.textContent).toBe("Second");
+    expect(view.container.querySelector('[data-handoff-field="proof"] em')?.textContent).toBe(
+      "green"
+    );
+    expect(view.container.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
+      '[\n  "a.ts"\n]'
+    );
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A field named `proof.0` and the first entry of `proof` are two texts with two keys
+// (`/proof.0`, `/proof/0`), so each draws its own tree: here a word in strong type for the one
+// and in emphasis for the other, which their own words write neither of.
+test("a handoff field named like a proof entry and the entry draw their own trees", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const record = {
+    ...handoffRecord(
+      "handoff-1",
+      1,
+      JSON.stringify({ "proof.0": "x one", proof: ["y two"] }),
+      "2026-09-10T09:00:00Z"
+    ),
+    field_trees: {
+      "/proof.0": displayTree("**x** one") as DisplayTree,
+      "/proof/0": displayTree("*y* two") as DisplayTree,
+    },
+  };
+  const stub = stubLists({ handoffs: [record] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
+    const field = await waitFor(() => {
+      const found = view.container.querySelector('[data-handoff-field="proof.0"] strong');
+      if (found === null) throw new Error("the field is not drawn from its tree yet");
+      return found;
+    });
+    expect(field.textContent).toBe("x");
+    expect(view.container.querySelector('[data-handoff-field="proof.0"] em')).toBeNull();
+    const entry = view.container.querySelector('[data-handoff-field="proof"] em');
+    expect(entry?.textContent).toBe("y");
+    expect(view.container.querySelector('[data-handoff-field="proof"] strong')).toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A tree is looked up among the answer's own keys alone: a field named after a member every
+// object inherits - `constructor`, `toString` - whose tree the answer does not hold (an empty
+// string has none) reads no such member as its tree, and is drawn from its own words.
+test("a handoff field named after an inherited member reads no member as its tree", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const record = {
+    ...handoffRecord(
+      "handoff-1",
+      1,
+      JSON.stringify({ constructor: "**bold** words", toString: "" }),
+      "2026-09-10T09:00:00Z"
+    ),
+    field_trees: {},
+  };
+  const stub = stubLists({ handoffs: [record] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
+    const words = await waitFor(() => {
+      const found = view.container.querySelector('[data-handoff-field="constructor"] strong');
+      if (found === null) throw new Error("the field is not drawn from its words yet");
+      return found;
+    });
+    expect(words.textContent).toBe("bold");
+    expect(view.container.querySelector('[data-handoff-field="toString"] dd')?.textContent).toBe(
+      ""
+    );
   } finally {
     view.unmount();
     stub.restore();
@@ -1421,7 +1656,9 @@ test("at a desktop width, another comment's Reply redirects onto the one whose r
 });
 
 // A comment's Reply prefills its mention as the mention picker names the session
-// (`useAgentText().sessionText`): by its registry title, else as `@session <id>`.
+// (`useAgentText().sessionText`): the link's words are its registry title, else the shortened
+// `session:<id>` the picker shows, and its address names the session whole whatever the words
+// read.
 test("a comment's Reply names its session author's mention as the picker does", async () => {
   const user = userEvent.setup();
   const untitled = "01234567-89ab-7def-8000-000000000001";
@@ -1444,6 +1681,8 @@ test("a comment's Reply names its session author's mention as the picker does", 
       }),
     ],
   });
+  // The prefilled mention's pill asks once about the session the registry does not list.
+  const known = spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] });
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   const turn = (id: string) => {
@@ -1458,13 +1697,16 @@ test("a comment's Reply names its session author's mention as the picker does", 
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(field.value).toBe(`@session ${untitled}`));
+    await waitFor(() =>
+      expect(field.value).toBe(`[@session:01234567…](dispatch://agent/${untitled}) `)
+    );
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
   } finally {
     view.unmount();
     stub.restore();
+    known.mockRestore();
   }
 });
 
@@ -2794,5 +3036,222 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+test("the Conversation marks an edited message and reads a deleted one as deleted", async () => {
+  const root = message("message-1", { edited_at: "2026-09-09T01:00:00Z" });
+  // The deleted reply keeps its body, "Body of message-2", beside the marks, so only the
+  // Conversation's own reading of the marks keeps it off the page.
+  const deletedReply = message("message-2", {
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turn = await screen.findByText("Body of message-1");
+    const card = turn.closest("[data-turn]") as HTMLElement;
+    expect(card.textContent).toContain("edited");
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+    expect(card.textContent).not.toContain("Body of message-2");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// An author who edits a reply and then deletes it leaves both marks on the record, and the
+// reader meets only the deleted line: ` · edited` points at a body no read of the reply gives any more.
+test("a deleted reply its author had edited reads as deleted, with no edited mark", async () => {
+  const root = message("message-1");
+  const deletedReply = message("message-2", {
+    body: "",
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T04:00:00Z",
+    deleted_by: alice,
+    edited_at: "2026-09-09T03:00:00Z",
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const deletedLine = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>("[data-post-deleted]");
+      if (found === null) throw new Error("the deleted reply is not on the page yet");
+      return found;
+    });
+    const reply = deletedLine.closest("[data-reply]") as HTMLElement;
+    expect(reply.textContent).toContain("Deleted by alice");
+    expect(reply.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// The quote under a reply prints its parent, so a parent its author edited carries ` · edited`
+// there too, as its own byline does; a parent nobody edited does not.
+test("a reply's quote of an edited parent marks the parent as edited, and of a standing one does not", async () => {
+  const reply = (id: string, parent: string) =>
+    message(id, { body: `Answer ${id}.`, created_at: "2026-09-09T02:00:00Z", in_reply_to: parent });
+  const stub = stubLists({
+    messages: [
+      thread(message("message-1", { body: "Alpha.", edited_at: "2026-09-09T01:00:00Z" }), [
+        reply("message-2", "message-1"),
+      ]),
+      thread(message("message-3", { body: "Gamma." }), [reply("message-4", "message-3")]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="message:${id}"]`);
+
+  try {
+    await waitFor(() =>
+      expect(turn("message-2")?.textContent).toContain("Replying to alice · edited — Alpha.")
+    );
+    await waitFor(() =>
+      expect(turn("message-4")?.textContent).toContain("Replying to alice — Gamma.")
+    );
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// Reply takes the message as it stands when it is pressed, and a draft can be open when its
+// author deletes it. The composer's quote reads the message from the Conversation's own read, so
+// once the delete lands it says the message is deleted and gives no part of the body the draft
+// took; until then it quotes the standing message as ever.
+test("the composer's quote of a message deleted while the draft is open reads as deleted, with no part of its body", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(composer().textContent).toContain("Replying to alice — Alpha."));
+
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    expect(composer().textContent).toContain("Replying to alice");
+    expect(composer().textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Conversation offers no
+// Reply on one - a message, a reply to one, a comment - as the margin's card draws no reply
+// composer under a deleted root; a standing post beside each keeps its Reply.
+test("the Conversation offers no Reply on a deleted message, reply or comment, and a standing one keeps it", async () => {
+  const deleted = { deleted_at: "2026-09-21T00:00:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", deleted),
+      comment("comment-2", { created_at: "2026-09-20T01:00:00Z" }),
+    ],
+    messages: [
+      thread(message("message-1", deleted), [
+        message("message-2", { created_at: "2026-09-09T01:00:00Z", in_reply_to: "message-1" }),
+      ]),
+      thread(message("message-3", { created_at: "2026-09-09T02:00:00Z" }), [
+        message("message-4", {
+          ...deleted,
+          created_at: "2026-09-09T03:00:00Z",
+          in_reply_to: "message-3",
+        }),
+      ]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="${id}"]`);
+
+  try {
+    await screen.findByText("Body of message-2");
+    await screen.findByText("Body of comment-2");
+    expect({
+      deletedComment: ownReplies(turn("comment:comment-1")),
+      deletedMessage: ownReplies(turn("message:message-1")),
+      deletedReply: ownReplies(turn("message:message-4")),
+      standingComment: ownReplies(turn("comment:comment-2")),
+      standingMessage: ownReplies(turn("message:message-3")),
+      standingReply: ownReplies(turn("message:message-2")),
+    }).toEqual({
+      deletedComment: 0,
+      deletedMessage: 0,
+      deletedReply: 0,
+      standingComment: 1,
+      standingMessage: 1,
+      standingReply: 1,
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A reply open when its message is deleted can no longer go: the message takes no reply (409
+// POST_DELETED), so Send says so and sends nothing, and Cancel reply takes the words the reader
+// wrote to the issue's own address, where they go as a message that answers none.
+test("a reply open when its message is deleted sends nothing, and Cancel reply takes its words to the issue", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+  const send = () => within(composer()).getByRole("button", { name: "Send" });
+  const field = () =>
+    within(composer()).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await user.click(field());
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Ship it.");
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    const deleted = { refusal: send().getAttribute("title"), text: field().value };
+    await user.click(within(composer()).getByRole("button", { name: "Cancel reply" }));
+    expect({
+      cancelled: {
+        quoted: composer().textContent?.includes("Replying to") ?? false,
+        refusal: send().getAttribute("title"),
+        text: field().value,
+      },
+      deleted,
+    }).toEqual({
+      cancelled: { quoted: false, refusal: null, text: "Ship it." },
+      deleted: {
+        refusal:
+          "The message this reply answers was deleted, so it takes no reply. Press Cancel reply to send it as a message that answers none.",
+        text: "Ship it.",
+      },
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
   }
 });

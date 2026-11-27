@@ -18,7 +18,7 @@ body: |-
   names, is left off the pending and grant lists of everyone outside the project, who may neither
   read nor decide it. To tell, the broker reads from Dispatch, for the person reading, the project
   of each issue key a request's reason names, kept 30 seconds, even in a deployment that tags
-  nothing: `INFRA-12: rotate the deploy key` costs one read of `INFRA`. While Dispatch cannot
+  nothing: `ACME-12: rotate the deploy key` costs one read of `ACME`. While Dispatch cannot
   answer, that request alone is left off the lists and logged, its page answers 503, and an
   approval of it decides nothing; every other request is listed and decided as before. A broker
   with no `BROKER_PROJECT_ACCESS_URL` asks Dispatch nothing about projects.

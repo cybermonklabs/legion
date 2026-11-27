@@ -29,6 +29,8 @@ mkdir -p "$evidence"
 transcript_to "$evidence/transcript.log"
 # shellcheck source-path=SCRIPTDIR source=lib/kind-sandbox.sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 cluster=legion-burstable-$$
 work=$(mktemp -d "/tmp/legion-e2e-burstable.$$.XXXXXXXX")
@@ -41,16 +43,17 @@ note() { echo "   $*"; }
 pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
+# cleanup tears the run down and prints its last line through lib/run-verdict.sh: PASS only for a
+# run that reached run_end, the script's last statement. A run a signal ended reads FAIL, and the
+# teardown keeps the cluster's evidence for it as it does for a failure.
 cleanup() {
   local status=$?
   docker rm -f "$cluster-driver" >/dev/null 2>&1 || true
-  kind_sandbox_teardown "$status" "$evidence"
+  kind_sandbox_teardown "$(run_status "$status")" "$evidence"
   rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
-    echo "burstable kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "burstable kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "burstable kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "burstable kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 
@@ -144,3 +147,4 @@ for broken in 'memory_request: 40Gi|runtime.kubernetes.resources.issue.memory_re
   note "$value: refused, exit 1: $refused"
 done
 pass
+run_end

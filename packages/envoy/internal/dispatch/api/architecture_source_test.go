@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -204,17 +205,32 @@ func (f *fakeGitHubApp) handler(t *testing.T) http.Handler {
 
 func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handler, *store.Store) {
 	t.Helper()
+	return newRenamingArchitectureSourceServer(t, fake, refs.Renames{})
+}
+
+// newRenamingArchitectureSourceServer is newArchitectureSourceServer given the rename pairs
+// renames, as a boot gives the server the pairs it read.
+func newRenamingArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp, renames refs.Renames) (http.Handler, *store.Store) {
+	t.Helper()
+	options := architectureAppOptions(t, fake)
+	options.renames = renames
+	handler, database, _ := newTestServer(t, options)
+	return handler, database
+}
+
+// architectureAppOptions is the options of a server whose GitHub App reads fake's repositories,
+// for a test that sets more options of its own.
+func architectureAppOptions(t *testing.T, fake *fakeGitHubApp) testServerOptions {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	github := githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
-	handler, database, _ := newTestServer(t, testServerOptions{
+	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: github,
-	})
-	return handler, database
+		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP}),
+	}
 }
 
 // archFiles and infraFiles are the models of two sources with no component id in common:
@@ -279,12 +295,15 @@ func decodeStrict[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return value
 }
 
-func createTestProject(t *testing.T, handler http.Handler, key string) {
+// createTestProject creates each project a test writes, as a person.
+func createTestProject(t *testing.T, handler http.Handler, keys ...string) {
 	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": key, "name": key,
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	for _, key := range keys {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": key, "name": key,
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -377,6 +396,7 @@ func sourceEvents(t *testing.T, database *store.Store) []string {
 // A project lists its sources in the order it added them; saving a repository it already has
 // changes that source's branch in place.
 func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
+	t.Parallel()
 	fake := twoSourceFake()
 	fake.installations["legion/arch"] = "write"
 	handler, database := newArchitectureSourceServer(t, fake)
@@ -391,7 +411,7 @@ func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
 		t.Fatalf("list for a project that does not exist: status=%d body=%s", absent.Code, absent.Body.String())
 	}
 
-	// The repository in the path is stored as repository mappings are: lowercase, .git trimmed.
+	// The repository in the path is stored as an issue's own repository is: lowercase, .git trimmed.
 	saved := putSource(t, handler, "CORE", "Legion/Arch.git", "main")
 	if got, want := saved.String(), "CORE legion/arch@main enabled=true commit=- error=- components=0"; got != want {
 		t.Fatalf("saved source = %s, want %s", got, want)
@@ -461,10 +481,65 @@ func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
 	}
 }
 
+// A source saved under the old name of a rename pair, in any case, is saved under its new name:
+// the access check reads the repository by the new name, and the row and its event carry it. A
+// repository that only begins like the old name is saved as given. A sync and a removal under the
+// old name reach the source under the new name.
+func TestAnArchitectureSourceUnderARenamedNameIsSavedUnderItsNewName(t *testing.T) {
+	t.Parallel()
+	fake := &fakeGitHubApp{
+		installations: map[string]string{"cybermonklabs/legion": "read", "sjawhar/legion-smoke": "read"},
+		repos: map[string]*fakeArchitectureRepo{
+			"cybermonklabs/legion": {commit: shaArch, files: archFiles()},
+			"sjawhar/legion-smoke": {commit: shaInfra, files: infraFiles()},
+		},
+	}
+	handler, database := newRenamingArchitectureSourceServer(t, fake,
+		refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}))
+	createTestProject(t, handler, "INFRA")
+
+	if got, want := putSource(t, handler, "INFRA", "SJawhar/Legion", "main").String(), "INFRA cybermonklabs/legion@main enabled=true commit=- error=- components=0"; got != want {
+		t.Fatalf("saved source = %s, want %s", got, want)
+	}
+	if got, want := putSource(t, handler, "INFRA", "sjawhar/legion-smoke", "main").String(), "INFRA sjawhar/legion-smoke@main enabled=true commit=- error=- components=0"; got != want {
+		t.Fatalf("saved source = %s, want %s", got, want)
+	}
+	if got, want := fake.headReads, []string{"cybermonklabs/legion@main", "sjawhar/legion-smoke@main"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the access checks read %q, want %q", got, want)
+	}
+	var stored string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select string_agg(repo, ' ' order by id) from architecture_sources where project_key = 'INFRA'`).Scan(&stored); err != nil {
+		t.Fatalf("read the stored sources: %v", err)
+	}
+	if stored != "cybermonklabs/legion sjawhar/legion-smoke" {
+		t.Fatalf("the stored sources = %s, want cybermonklabs/legion sjawhar/legion-smoke", stored)
+	}
+	if got, want := syncSource(t, handler, "INFRA", "sjawhar/legion").String(), "INFRA cybermonklabs/legion@main enabled=true commit="+shaArch+" error=- components=2"; got != want {
+		t.Fatalf("the source synced under the old name = %s, want %s", got, want)
+	}
+	if removed := dispatchRequest(t, handler, http.MethodDelete, sourcePath("INFRA", "SJawhar/Legion"), nil, "alice"); removed.Code != http.StatusNoContent {
+		t.Fatalf("remove the source under the old name: status=%d body=%s, want 204", removed.Code, removed.Body.String())
+	}
+	if got, want := sourceStrings(listSources(t, handler, "INFRA")), []string{
+		"INFRA sjawhar/legion-smoke@main enabled=true commit=- error=- components=0",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("INFRA sources after the removal = %q, want %q", got, want)
+	}
+	if got, want := sourceEvents(t, database), []string{
+		"INFRA cybermonklabs/legion@main deleted=false by alice",
+		"INFRA sjawhar/legion-smoke@main deleted=false by alice",
+		"INFRA cybermonklabs/legion@main deleted=true by alice",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source events = %q, want %q", got, want)
+	}
+}
+
 // Removing one source retires only the components it projected: another source's components and
 // edges stay, and an issue attached to one of each keeps the removed one as unknown. The times
 // recorded for the removed components (component_facts) go with them; the other source's stay.
 func TestArchitectureSourceDeleteRemovesOnlyItsComponents(t *testing.T) {
+	t.Parallel()
 	handler, database := newArchitectureSourceServer(t, twoSourceFake())
 	createTestProject(t, handler, "CORE")
 	putSource(t, handler, "CORE", "legion/arch", "main")
@@ -542,6 +617,7 @@ func TestArchitectureSourceDeleteRemovesOnlyItsComponents(t *testing.T) {
 // Every source route is authAny: an agent session lists, saves, refreshes and removes sources,
 // and a bearer save or removal is attributed to the session its body names.
 func TestAgentUsesEveryArchitectureSourceRoute(t *testing.T) {
+	t.Parallel()
 	handler, database := newArchitectureSourceServer(t, twoSourceFake())
 	createTestProject(t, handler, "CORE")
 	session := func(id string) map[string]string { return map[string]string{"kind": "session", "id": id} }
@@ -608,6 +684,7 @@ func TestAgentUsesEveryArchitectureSourceRoute(t *testing.T) {
 }
 
 func TestArchitectureSourceAccessFailuresAnswer409(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"legion/noread": "none"}}
 	handler, database := newArchitectureSourceServer(t, fake)
 	createTestProject(t, handler, "CORE")
@@ -634,6 +711,7 @@ func TestArchitectureSourceAccessFailuresAnswer409(t *testing.T) {
 }
 
 func TestArchitectureSourceWithoutAppKeyAnswers409(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "CORE")
 	response := dispatchRequest(t, handler, http.MethodPut, sourcePath("CORE", "legion/arch"), map[string]string{"branch": "main"}, "alice")
@@ -644,6 +722,7 @@ func TestArchitectureSourceWithoutAppKeyAnswers409(t *testing.T) {
 }
 
 func TestArchitectureSourceInputValidation(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read", "mona-cat_octo/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"mona-cat_octo/arch": {commit: shaArch, files: archFiles()}},
@@ -716,6 +795,7 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 }
 
 func TestArchitectureSourceRePutRevalidatesBeforeWriting(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "write"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},
@@ -741,6 +821,7 @@ func TestArchitectureSourceRePutRevalidatesBeforeWriting(t *testing.T) {
 // A branch the repository does not have is refused before any write, as the sync would refuse it:
 // 409 SOURCE_ACCESS naming the branch and the repository, and no source row or event.
 func TestArchitectureSourcePutRefusesAMissingBranch(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles(), branchMissing: true}},
@@ -766,6 +847,7 @@ func TestArchitectureSourcePutRefusesAMissingBranch(t *testing.T) {
 // Re-pointing a source at a branch the repository does not have is refused the same way, and the
 // stored source keeps its branch, its sync bookkeeping and its components.
 func TestArchitectureSourceRePutRefusesAMissingBranch(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},
@@ -805,6 +887,7 @@ func TestArchitectureSourceRePutRefusesAMissingBranch(t *testing.T) {
 // repository, with no source row and no event; and re-pointing a saved source at one leaves the
 // source on its branch.
 func TestArchitectureSourcePutRefusesACommitThatIsNoBranch(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},
@@ -856,6 +939,7 @@ func TestArchitectureSourcePutRefusesACommitThatIsNoBranch(t *testing.T) {
 // on the row, because the HTTP call itself succeeded and the previous projection stays up; a
 // credential or branch problem is 409. It imports its own source only.
 func TestArchitectureSourceSyncRoute(t *testing.T) {
+	t.Parallel()
 	fake := twoSourceFake()
 	handler, database := newArchitectureSourceServer(t, fake)
 	createTestProject(t, handler, "CORE")
@@ -956,6 +1040,7 @@ func TestArchitectureSourceSyncRoute(t *testing.T) {
 // row with its own outcome: one source's model error or access failure is on that row, and the
 // other source still imports.
 func TestArchitectureSourcesSyncEverySource(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	for _, target := range []string{"/api/v1/projects/CORE/architecture-sources/sync", "/api/v1/projects/NOPE/architecture-sources/sync"} {
@@ -1037,6 +1122,7 @@ func TestArchitectureSourcesSyncEverySource(t *testing.T) {
 // the next sync records a snapshot for the new branch's commit rather than
 // taking the unchanged-tree short-circuit against the old branch's import.
 func TestArchitectureSourceRePutReprojectsAnIdenticalTree(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},

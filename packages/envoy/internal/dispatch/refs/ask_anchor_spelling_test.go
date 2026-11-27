@@ -13,6 +13,7 @@ import (
 // the spec's uuid, so the ask node keeps the spec as its parent, as it did before the guard: only
 // an artifact_id that cannot cast falls through to the ask's block document.
 func TestAskNodeKeepsTheDocumentAnUpperCaseOrBracedAnchorNames(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -30,7 +31,7 @@ func TestAskNodeKeepsTheDocumentAnUpperCaseOrBracedAnchorNames(t *testing.T) {
 	}
 	wantParent := model.NodeParent{Kind: "artifact", ID: specID, Ref: "dispatch://" + specRefKey}
 	for spelling, askID := range spellings {
-		node, found, err := Node(ctx, tx, "ask", askID, false)
+		node, found, err := Node(ctx, tx, model.Actor{}, "ask", askID, false)
 		if err != nil || !found {
 			t.Fatalf("read the %s ask node: found=%t err=%v", spelling, found, err)
 		}

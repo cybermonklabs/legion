@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -15,12 +16,19 @@ import type { ClaimHolderLiveness, Issue, IssueDetails, Subscriber } from "../..
 import { runningAgent } from "../credentials/agent-fixture";
 import { claimIssue as base, sessionClaim as claim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** These rows are about the claim chip, not the priority: the header's write never runs, and it
  *  draws no priority, as `base` has none. */
@@ -54,11 +62,8 @@ function header(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as these do; a project that maps none shows no repository item. The components line
-  // reads the project's architecture sources the same way, and a project with none offers no
-  // picker, so neither read reaches the network.
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
+  // The components line reads the project's architecture sources at once, and a project with
+  // none offers no picker, so the read does not reach the network.
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
@@ -82,7 +87,6 @@ function header(
     client,
     unmount: () => {
       view.unmount();
-      mappings.mockRestore();
       architectureSources.mockRestore();
     },
     user,
@@ -180,6 +184,30 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
   try {
     expect(await screen.findByText("Live registry title")).toBeDefined();
     expect(screen.queryByText("Implementer")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// A pointer over the holder's name, most of the chip, shows the claim's own tooltip: the nearest
+// element with a `title` above the name is the chip, so what a claim is and when it was taken
+// are not hidden behind the bare name.
+test("over the holder's name the claim chip's own tooltip shows, not the name alone", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
+  ]);
+  const view = header({ ...base, claim });
+  try {
+    const chip = await screen.findByTestId("issue-claim");
+    const name = within(chip).getByRole("link", { name: "Implementer" });
+    const tooltipOver = name.closest("[title]");
+    expect(tooltipOver).toBe(chip);
+    expect(tooltipOver?.getAttribute("title")).toMatch(
+      /^Claimed by Implementer · since .*two agents never take the same work/
+    );
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -399,9 +427,12 @@ const planner: Subscriber = {
   topics: [],
 };
 
-/** Opens the header's subscriber list and presses Planner's Unsubscribe and the dialog's
- *  Confirm, the Confirm on the held clock when `held`. */
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
+/** Opens the header's subscriber list, in Details, and presses Planner's Unsubscribe and the
+ *  dialog's Confirm, the Confirm on the held clock when `held`. */
 async function unsubscribePlanner(user: UserEvent, held: boolean) {
+  await openIssueDetails(user);
   await user.click(await screen.findByRole("button", { name: /^Subscribers: 1/ }));
   const subscribed = screen.getByRole("region", { name: "Subscribed agents" });
   await user.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));

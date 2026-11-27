@@ -25,6 +25,7 @@ import (
 // description, since those are the text the redactor withheld, so a 4xx still settles as a refusal
 // and not as an unknown outcome.
 func TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint(t *testing.T) {
+	t.Parallel()
 	const (
 		clean = "http://127.0.0.1:1"
 		dirty = "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:1"

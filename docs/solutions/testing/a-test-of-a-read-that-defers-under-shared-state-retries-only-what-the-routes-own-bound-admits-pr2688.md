@@ -52,11 +52,14 @@ In sjawhar/legion#2688, `TestAnAnsweredAsksPartEdgesAreListedSince` took one
 `GET /api/v1/references?since=` read as final. That route lists only edges at or below the event
 log's safe horizon and waits at most `referencesSinceWait`, one second, for it
 (`packages/envoy/internal/dispatch/api/references.go`, `referencesSinceWait` and `sinceHorizon`,
-which falls back to the horizon it has rather than failing). The horizon is instance-wide, and the
-holder inside that very package is the test process's own `storetest` database clone and drop, so
-the test failed about one run in six on main: measured in an issue pod, 25 of 40 runs passed with
-a transaction held 2 s of every 2.5 s and 0 of 10 with one held open throughout, while 40 of 40
-passed with nothing holding one.
+which falls back to the horizon it has rather than failing). The horizon was then instance-wide,
+and the holder inside that very package was the test process's own `storetest` database clone and
+drop, so the test failed about one run in six on main: measured in an issue pod, 25 of 40 runs
+passed with a transaction held 2 s of every 2.5 s and 0 of 10 with one held open throughout, while
+40 of 40 passed with nothing holding one. Since cybermonklabs/legion#4913 the horizon waits only
+on the event writers of Dispatch's own database, so a clone, a drop or any other transaction that
+writes no event of that database no longer holds it; the rules above hold for the event writes
+that still do.
 
 `awaitSinceRead` (`packages/envoy/internal/dispatch/api/references_test.go`) is the two-armed wait:
 it fatals at once on an answer returned inside `referencesSinceWait` ("the horizon held nothing

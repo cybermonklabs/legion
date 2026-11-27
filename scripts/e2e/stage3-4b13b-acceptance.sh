@@ -12,7 +12,7 @@
 #     rerun_child with its refusal, and the Dispatch writes' actor;
 #   - phase-finished carrying the worker's summary and verdict;
 #   - the merger merging its own pull request, under the squash message it writes itself, and a
-#     design gate re-closed in merging holding nothing;
+#     design gate re-closed in merging holding that merge until the person approves the new version;
 #   - pr-merged / pr-closed-unmerged, and a merge the merger did not make closing the issue.
 # Nothing here merges into sjawhar/legion-smoke's main: each proof PR is retargeted to a scratch base
 # branch before any merge, and the scratch base is deleted at the end.
@@ -389,6 +389,14 @@ assert_claim_endpoints() {
   omp=$(omp_descendant "$pane_pid") || fail "$role pane on $issue (pid $pane_pid) has no OMP process"
   if mismatch=$(endpoint_mismatch "$omp"); then fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"; fi
 }
+# pane_watcher polls every 0.2 s and checks each pane the daemon launches once its Oh My Pi runs and
+# its environment is laid out, usually before the plugin registers, though no barrier holds the pane
+# back for it. The kernel names the program an exec starts before it lays out that program's
+# environment (environ_laid_out, lib/process-tree.sh), so an Oh My Pi found inside that window is
+# read again at the next poll, never counted: a read there would find no environment. One that never
+# lays its environment out stays out of pane-endpoints-checked.txt, and the every-launched-pane wait
+# fails naming it. A mismatch it reads is recorded, the private tmux server is killed, which ends
+# every agent of the run, and the next bounded wait aborts naming the pane.
 pane_watcher() {
   local claims inc issue role pane omp mismatch
   trap - EXIT ERR
@@ -399,6 +407,7 @@ pane_watcher() {
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
         pane=$(incarnation_pid "$inc") || continue
         omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" >"$evidence/pane-endpoint-violation.txt"
           TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
@@ -450,9 +459,11 @@ claim_json() { claims list --json | jq -ce --arg t "$1" '.claims[] | select(.tok
 claim_is() { claim_json "$1" | jq -e "$2" >/dev/null; }
 token_session() { claim_json "$1" | jq -er '.session // empty | select(. != "")'; }
 
-# The reminder the phase stall sends (packages/pi-shared/src/phase-stall.ts REMINDER), which now
-# comes at the end of every turn a phase stays open through; this check reads the first of them.
-followup_needle="Your turn ended with your Legion phase still open"
+# A sentence of the reminder the phase stall sends (owedReminder in
+# packages/pi-shared/src/phase-stall.ts), which also ends the reminder given when the daemon's
+# answer could not be read (UNREAD_REMINDER). It comes at the end of every turn for as long as the
+# daemon answers that the claim owes work; this check reads the first of them.
+followup_needle="This reminder repeats at the end of every turn"
 
 # tool_outcomes FILE: every tool result in an OMP session file, joined to the call that produced it.
 tool_outcomes() {
@@ -634,6 +645,10 @@ read_app_logins
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
 require_process_tree
+# The pane watcher reads an Oh My Pi's environment only once it is laid out (environ_laid_out),
+# which ACCEPT_ROOT's lib/process-tree.sh must provide: without it the watcher's call would fail for
+# every pane, and no pane would be checked.
+declare -F environ_laid_out >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/process-tree.sh ($root) predates environ_laid_out: point ACCEPT_ROOT at a checkout that has it"
 real_gh=$(mise which gh) || fail "mise has no gh"
 # The real tmux comes after the real gh on the daemon's PATH: the tmux runtime runs tmux with the
 # pane allow-list alone, where a shimmed tmux, run from a directory under the operator's real
@@ -696,7 +711,7 @@ port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connecti
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "4b.13b acceptance $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
   SMOKE_UPSTREAM_NATS="$upstream_nats" \
   start_process bridge env -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
@@ -834,27 +849,27 @@ begin gates
 for issue in "$root1" "$root2" "$root3"; do gate_send "$issue"; done
 root1_architect_file() { claim_session_file "$root1" architect; }
 root1_planner_file() { claim_session_file "$root1" planner; }
-# assignment_delivered ISSUE ROLE: the daemon's assignment (a user message) reached the worker and
-# armed its phase stall. Each planner is instructed as soon as its assignment is in its session, so
-# no instruction races the assignment (an instruction sent earlier could reach a planner before
-# its assignment) and no planner is left to act on the assignment alone (waiting for an idle turn
-# instead let planners complete planning unprompted before any instruction reached them).
+# assignment_delivered ISSUE ROLE: the daemon's assignment (a user message) reached the worker. The
+# phase stall writes no entry for it: the machine keeps no phase, and an arriving message only puts
+# the run of reminders back at zero, which writes nothing when it is at zero already. Each planner
+# is instructed as soon as its assignment is in its session, so no instruction races the assignment
+# (an instruction sent earlier could reach a planner before its assignment) and no planner is left
+# to act on the assignment alone (waiting for an idle turn instead let planners complete planning
+# unprompted before any instruction reached them).
 assignment_delivered() {
   local f
   f=$(claim_session_file "$1" "$2") || return 1
-  jq -e -s 'any(.[]; .type == "message" and .message.role == "user")' "$f" >/dev/null &&
-    grep -qF '"customType":"legion-phase-stall"' "$f"
+  jq -e -s 'any(.[]; .type == "message" and .message.role == "user")' "$f" >/dev/null
 }
 gate_finish "$root1"
-until_true 600 "the daemon's assignment to arm $root1's planner stall" assignment_delivered "$root1" planner
-note "root1 planner stall entries at its assignment: $({ grep -F '"customType":"legion-phase-stall"' "$(root1_planner_file)" || true; } | jq -r .data.state | tr '\n' ' ')"
+until_true 600 "the daemon's assignment to reach $root1's planner" assignment_delivered "$root1" planner
 marker_plan="PHASE-STALL-PLANNER-$stamp"
 send_agent "$root1" planner "Acceptance planning operation ($marker_plan): write the required plan handoff file, commit it and push the issue branch as your instructions require, then end your turn WITHOUT calling the legion tool's handoff_complete: reply with one line saying the handoff is committed and pushed, and wait. Do not call handoff_complete in this turn, and do not begin any line with WAITING."
 gate_finish "$root2"
-until_true 600 "the daemon's assignment to arm $root2's planner stall" assignment_delivered "$root2" planner
+until_true 600 "the daemon's assignment to reach $root2's planner" assignment_delivered "$root2" planner
 send_agent "$root2" planner "Acceptance planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 gate_finish "$root3"
-until_true 600 "the daemon's assignment to arm $root3's planner stall" assignment_delivered "$root3" planner
+until_true 600 "the daemon's assignment to reach $root3's planner" assignment_delivered "$root3" planner
 send_agent "$root3" planner "Acceptance planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 wait_for_phase "$child" planning
 wait_for_worker "$child" planner
@@ -864,11 +879,12 @@ pass
 # ---- 3. the phase-stall follow-up ----------------------------------------------------------------------
 
 begin phase-stall-follow-up
-db_value "select coalesce(handoff_commit, '') || '|' || coalesce(summary, '') from phases where issue = '$root1' and role = 'planner'" >"$evidence/phase-stall-planner-row-before-follow-up.txt" || true
-note "planner phase row before the follow-up: '$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")' (no row, or an empty handoff: nothing completed)"
-# The planner's turn ended with its phase open, so the reminder comes; the rig's
-# instructions let it answer WAITING. Once the reminder is in its session, it is given 60 s to
-# complete on its own, then told to.
+row_read=0
+db_value "select coalesce(handoff_commit, '') || '|' || coalesce(summary, '') from phases where issue = '$root1' and role = 'planner'" >"$evidence/phase-stall-planner-row-before-follow-up.txt" || row_read=$?
+note "planner phase row before the follow-up: '$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")' (psql exit $row_read; no row, or an empty handoff: nothing completed)"
+# The planner's turn ended with its phase not completed, so the daemon answers that its claim owes
+# that phase and the reminder comes; the rig's instructions let it answer WAITING. Once the
+# reminder is in its session, it is given 60 s to complete on its own, then told to.
 followup_seen() { grep -qF -- "$followup_needle" "$(root1_planner_file)"; }
 until_true 600 "the phase stall's follow-up to reach $root1's planner" followup_seen
 if ! until_true_quiet 60 issue_phase "$root1" implementing; then
@@ -879,8 +895,7 @@ fi
 f=$(root1_planner_file)
 jq -s -c --arg followup "$followup_needle" --arg marker "$marker_plan" '
   to_entries | map(.key as $i | .value as $e |
-    if ($e.type == "custom" and $e.customType == "legion-phase-stall") then {i: $i, kind: "stall", state: $e.data.state}
-    elif ($e.type == "message" and $e.message.role == "toolResult") then
+    if ($e.type == "message" and $e.message.role == "toolResult") then
       if $e.message.toolName == "legion" then
         {i: $i, kind: "legion-result", isError: $e.message.isError, text: (([$e.message.content[]? | select(.type == "text") | .text] | join("\n")) | .[0:240])}
       else empty end
@@ -890,22 +905,22 @@ jq -s -c --arg followup "$followup_needle" --arg marker "$marker_plan" '
     elif (($e | tostring) | contains($followup)) then {i: $i, kind: "followup", type: $e.type, customType: ($e.customType // $e.message.role // null)}
     elif (($e | tostring) | contains($marker)) then {i: $i, kind: "instruction", type: $e.type}
     else empty end)' "$f" >"$evidence/phase-stall-timeline.json"
-# The predicate: Oh My Pi appends the re-arming `open` for an arriving Envoy message before that
-# message's own entry, so the stall state at the instruction is the last one before the entry
-# carrying the marker.
-jq '
+# The predicate: the daemon's record held the planner's phase not completed when the follow-up was
+# awaited (its row, read then with psql exiting 0, names no handoff commit), the follow-up came
+# after the instruction, the tool's handoff_complete after the follow-up succeeded, and no
+# follow-up came after the success.
+jq --arg row_before "$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")" --argjson row_read "$row_read" '
   ([.[] | select(.kind == "instruction")] | first | .i) as $instr
-  | ([.[] | select(.kind == "stall" and .i < $instr)] | last | .state) as $stall_at
   | ([.[] | select(.kind == "followup" and .i > $instr)] | first | .i) as $follow
   | ([.[] | select(.kind == "legion-call" and (.ops | index("handoff_complete")) and .i > $follow)] | first | .i) as $call
   | ([.[] | select(.kind == "legion-result" and .isError == false and .i > $call)] | first | .i) as $done
-  | {stall_at_instruction: $stall_at, instruction: $instr, follow: $follow, call: $call, done: $done,
-     closed_after_call: any(.[]; .kind == "stall" and .state == "closed" and .i > $call),
+  | {owed_before_follow_up: ($row_read == 0 and (($row_before | split("|") | .[0] // "") == "")), row_read: $row_read,
+     instruction: $instr, follow: $follow, call: $call, done: $done,
      followups_after_done: (if $done == null then null else [.[] | select(.kind == "followup" and .i > $done)] | length end)}' \
   "$evidence/phase-stall-timeline.json" >"$evidence/phase-stall-verdict.json"
-if jq -e '.stall_at_instruction == "open" and .instruction != null and .follow != null and .call != null and .done != null
-    and .closed_after_call and .followups_after_done == 0' "$evidence/phase-stall-verdict.json" >/dev/null; then
-  note "stall: open at the instruction → the turn ends with the phase open → the follow-up → the tool's handoff_complete → closed; no follow-up after it: $(jq -c . "$evidence/phase-stall-verdict.json")"
+if jq -e '.owed_before_follow_up and .instruction != null and .follow != null and .call != null and .done != null
+    and .followups_after_done == 0' "$evidence/phase-stall-verdict.json" >/dev/null; then
+  note "stall: owed at the instruction → the turn ends with the phase owed → the follow-up → the tool's handoff_complete → completed in the record; no follow-up after it: $(jq -c . "$evidence/phase-stall-verdict.json")"
 else
   soft "the planner's stall timeline fails the follow-up predicate: $(jq -c . "$evidence/phase-stall-verdict.json")"
 fi
@@ -1057,10 +1072,11 @@ note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$p
 pass
 
 begin reviewers
-# A review ends when its reviewer completes it: the reviewer approves the head it has, then commits
-# and pushes its handoff, so the pull request's head moves past the approved commit before the issue
-# leaves reviewing, and the retro's handoff moves it again. Whether that approval still stands for
-# the head the round ends on is the daemon's judgement (classify.ApprovalStands), recorded on the
+# An approval ends the review round once GitHub reports the approved head one the issue may advance
+# on, whether the reviewer's completion came before it or after it; no handoff is a commit, and
+# retro commits nothing, so the head stays where the reviewer approved it unless a merge forward
+# moves it. Whether that approval still stands for the head the round ends on is the daemon's
+# judgement (classify.ApprovalStands), recorded on the
 # round as its decision; the proof checks the review App approved and the daemon ended the round on
 # that approval, which moves the issue to accepting, where no worker runs: the tree's architect
 # accepts with the legion tool's sign_off (→ retro), told here by the proof, since it acts on no
@@ -1140,7 +1156,7 @@ pass
 begin merger-merges-with-its-own-squash-message
 # The early-merge section merged $root2's pull request into the scratch base, and both proof pull
 # requests branched from the same main commit, so $root1's may no longer merge there cleanly (their
-# retro learnings, for one). It merges into a base of its own, cut from that main commit.
+# changes to one file, for one). It merges into a base of its own, cut from that main commit.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$merge_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root1]}" --base "$merge_base" >/dev/null
 note "$repo#${pr_of[$root1]} retargeted to its own base $merge_base at main $main_sha"
@@ -1171,27 +1187,71 @@ n=$(notice_deliveries "$root1" architect "$(notice_needle pr-merged "$root1")")
 note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message ('$merge_message'); $root1 → done on the daemon's read of that merge, pr-merged notices $n (negative control)"
 pass
 
-# ---- 8. a design gate that re-closes in merging holds no merge -------------------------------------
-begin a-reclosed-gate-holds-no-merge
-# The design gate holds a tree's start and nothing after it: a new primary spec version while
-# $root3 is in merging closes the gate, and the merger merges all the same. $root3 merges into a
-# base of its own for the same reason $root1 did.
+# ---- 8. a design gate that re-closes in merging holds the merge until a person approves ------------
+begin a-reclosed-gate-holds-the-merge
+# The design gate holds the merge as well as the tree's start. A new primary spec version while
+# $root3 is in merging closes the gate, and its merger, told to merge, merges nothing while the
+# gate is closed: it ends its turn on a WAITING line instead (roles/merger.md, "A closed design
+# gate"). The proof human then approves that version, the opening reaches the merger, as a task
+# that names what changed or as the opened message, and the merge follows it. The new version
+# keeps the approved text and adds one section that asks for no change, so a merger that reads it
+# has no reason to move the issue back. $root3 merges into a base of its own for the same reason
+# $root1 did.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
+gate_artifact=${gate_artifacts[$root3]}
 # The upload replaces the spec whole, so it names the token of the version it replaces: the document
-# token the live read answers, which Dispatch checks under the write's own lock.
-spec_base=$(dispatch_get "artifacts/${gate_artifacts[$root3]}/text" | jq -er '.token') ||
+# token the live read answers, which Dispatch checks under the write's own lock. One read answers the
+# text and its token, so the token names the version whose text the upload keeps.
+spec_read=$(dispatch_get "artifacts/$gate_artifact/text")
+spec_now=$(jq -er .markdown <<<"$spec_read")
+spec_base=$(jq -er .token <<<"$spec_read") ||
   fail "the spec of $root3 answers no document token for the upload to name as its base"
+spec_note=$'\n\n## Proof note\n\nThe human added this section while the merger stood in merging. It asks for no change to the pull request.\n'
 dispatch_human POST "issues/$root3/artifacts" \
-  "$(jq -cn --arg name spec.md --arg content "# Acceptance smoke\n\nThe human revised this proof specification while the merger stood in merging.\n" --arg base "$spec_base" '{name:$name,content:$content,summary:"4b.13b gate re-close",precondition:{document:$base}}')" >/dev/null
+  "$(jq -cn --arg name spec.md --arg content "$spec_now$spec_note" --arg base "$spec_base" '{name:$name,content:$content,summary:"4b.13b gate re-close",precondition:{document:$base}}')" >/dev/null
 until_true 180 "the new primary spec version to close $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' '.issues[\$issue].designGate.currentVersion > .issues[\$issue].designGate.approvedVersion'"
-note "$root3's gate closed on a new spec version while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
-send_agent "$root3" merger "Acceptance merge operation: merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Then wait."
+reclosed=$(daemon_state | jq -er --arg issue "$root3" '.issues[$issue].designGate.currentVersion')
+note "$root3's gate closed on spec version $reclosed while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
+# The closed role message comes first: an instruction that reached the merger before it would be
+# answered as an open gate allows, and its WAITING line, if any, would be for another reason.
+closed="The design gate of $root3 closed"
+until_true 600 "the closed message of $root3's gate to reach its merger" session_contains "$root3" merger "$closed"
+marker_gate="GATED-MERGE-$stamp"
+send_agent "$root3" merger "Acceptance merge operation ($marker_gate): merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Where your instructions say to wait first, wait as they say: this operation still stands when the wait ends."
+# merger_waits_after MARKER: $root3's merger session holds, after the first entry carrying MARKER
+# (the instruction), an assistant turn with a line that starts WAITING and names the opening, the
+# line roles/merger.md ends each turn on while the gate is closed ("names the opening you wait
+# for"). A WAITING line that names no opening waits for something else.
+merger_waits_after() {
+  local f
+  f=$(claim_session_file "$root3" merger) || return 1
+  jq -R -s -e --arg marker "$1" '[split("\n")[] | fromjson?] as $e
+    | ([$e | to_entries[] | select(.value | tostring | contains($marker)) | .key] | first) as $at
+    | $at != null and any($e[($at + 1):][]; .type == "message" and .message.role == "assistant"
+        and any(.message.content[]?; .type == "text" and (.text | test("(^|\n)WAITING[^\n]*[Oo]pen"))))' "$f" >/dev/null
+}
+until_true 900 "$root3's merger to end its turn on a WAITING line naming the opening while the gate is closed" merger_waits_after "$marker_gate"
+# The merger's turn has ended, so nothing of that turn merges. The pull request is read after a
+# further minute, in which only the opening could release the merge, and that read is the last one
+# before the person approves, so the merge that follows is the approval's.
+sleep 60
+held=$(gh -R "$repo" pr view "${pr_of[$root3]}" --json state,autoMergeRequest,isInMergeQueue --jq '[.state, (.autoMergeRequest != null), .isInMergeQueue] | @tsv')
+[ "$held" = $'OPEN\tfalse\tfalse' ] ||
+  fail "$repo#${pr_of[$root3]} reads '$held' (state, auto-merge armed, in a merge queue) while $root3's gate is closed, want it open with nothing armed or queued"
+note "$root3's merger ended its turn on a WAITING line, and $repo#${pr_of[$root3]} stayed open with nothing armed or queued a minute later"
+dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
+until_true 180 "the person's approval of version $reclosed to open $root3's gate" sh -c \
+  "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' --argjson v '$reclosed' '.issues[\$issue].designGate.approvedVersion == \$v'"
+opening="The design gate of $root3 opened: a person approved version $reclosed"
+until_true 600 "the opening of version $reclosed to reach $root3's merger" session_contains "$root3" merger "$opening"
+how="a task"
+! notice_delivered "$root3" merger "$opening" || how="the opened role message"
 await_merger_merge "$repo" "${pr_of[$root3]}"
 wait_for_phase "$root3" "done" 600
 daemon_state >"$evidence/state-after-gated-merge.json" || true
-note "the closed gate held nothing: the merger merged $repo#${pr_of[$root3]} at $merge_when_clean_commit and $root3 reached done with its gate still closed"
+note "the closed gate held the merge: $repo#${pr_of[$root3]} stayed open while version $reclosed was with the person, the opening reached the merger as $how, and the merger merged at $merge_when_clean_commit; $root3 reached done"
 pass
 
 begin production-untouched

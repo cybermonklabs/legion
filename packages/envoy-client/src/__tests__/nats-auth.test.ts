@@ -1,12 +1,23 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { connect, nkeys } from "nats";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServer,
+  useNatsServerDirectory,
+} from "../../test/nats-server";
 import { natsSeedFromEnvironment } from "../envoy-settings";
 import { natsAuthOptions } from "../nats-auth";
 import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
-import { type NatsServer, startNatsServer, useNatsServerDirectory } from "./nats-server";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 interface TestKeyPair {
   getSeed(): Uint8Array;
@@ -31,8 +42,8 @@ function seedFile(contents: string): string {
 }
 
 /** The credential the environment's seed variables name, or none. */
-function seedCredential(env: NodeJS.ProcessEnv): NatsCredential {
-  const seed = natsSeedFromEnvironment(env);
+async function seedCredential(env: NodeJS.ProcessEnv): Promise<NatsCredential> {
+  const seed = await natsSeedFromEnvironment(env);
   return seed === undefined ? { kind: "none" } : { kind: "seed", seed };
 }
 
@@ -42,29 +53,39 @@ async function connectWith(url: string, env: NodeJS.ProcessEnv) {
   const connection = await connect({
     servers: [url],
     name: "nats-auth-test",
-    ...natsAuthOptions(seedCredential(env)),
+    ...natsAuthOptions(await seedCredential(env)),
     reconnect: false,
   });
   await connection.flush();
   return connection;
 }
 
+/** Settles every one of `steps` before it throws, naming each that failed: a step that fails
+ *  leaves the others to finish, so the afterAll finds each server as far as its own start got. */
+async function settleAll(steps: readonly Promise<void>[]): Promise<void> {
+  const failures = (await Promise.allSettled(steps)).flatMap((step) =>
+    step.status === "rejected"
+      ? [step.reason instanceof Error ? step.reason.message : String(step.reason)]
+      : []
+  );
+  if (failures.length > 0) throw new Error(failures.join("; "));
+}
+
 // Docker-backed: CI runs this package's tests with LEGION_E2E=1 after pulling the image.
 describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real NATS", () => {
   const user = createUser();
-  let open: NatsServer;
-  let authorized: NatsServer;
+  const open = natsServer(serverDirectory);
+  const authorized = natsServer(serverDirectory, user.publicKey);
 
+  // The two starts side by side, and the two removals, each whatever its start got to.
   beforeAll(async () => {
-    [open, authorized] = await Promise.all([
-      startNatsServer(serverDirectory),
-      startNatsServer(serverDirectory, user.publicKey),
-    ]);
-  }, 120_000);
-  afterAll(() => {
-    open?.stop();
-    authorized?.stop();
-  }, 60_000);
+    const deadline = natsHookDeadline(NATS_START_HOOK_MS);
+    await settleAll([open.start(deadline), authorized.start(deadline)]);
+  }, NATS_START_HOOK_MS);
+  afterAll(async () => {
+    const deadline = natsHookDeadline(NATS_STOP_HOOK_MS);
+    await settleAll([open.stop(deadline), authorized.stop(deadline)]);
+  }, NATS_STOP_HOOK_MS);
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});
@@ -89,8 +110,8 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
 describe("natsAuthOptions", () => {
   const user = createUser();
 
-  test("is no option for no credential", () => {
-    expect(natsSeedFromEnvironment({})).toBeUndefined();
+  test("is no option for no credential", async () => {
+    expect(await natsSeedFromEnvironment({})).toBeUndefined();
     expect(natsAuthOptions({ kind: "none" })).toEqual({});
   });
 
@@ -131,7 +152,7 @@ describe("natsAuthOptions", () => {
     expect(asked).toEqual(["server-nonce"]);
   });
 
-  test("refuses an unusable seed naming its variable, never its path, never falling back", () => {
+  test("refuses an unusable seed naming its variable, never its path, never falling back", async () => {
     const dir = makeDirectory();
     const missing = path.join(dir, "missing");
     const blank = seedFile(" \n");
@@ -158,7 +179,7 @@ describe("natsAuthOptions", () => {
     for (const [env, message] of cases) {
       let thrown: unknown;
       try {
-        natsAuthOptions(seedCredential(env));
+        natsAuthOptions(await seedCredential(env));
       } catch (error) {
         thrown = error;
       }

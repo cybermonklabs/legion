@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+  The author of a comment or of an issue message can replace its body or delete it: PATCH and DELETE
+  on /api/v1/comments/{id} and on /api/v1/messages/{id}, and GET /api/v1/comments/{id}/history and
+  GET /api/v1/messages/{id}/history list an entry for each edit of the post and one for its delete,
+  newest first, each with the body that write replaced, its actor and its time; no entry of a
+  deleted post carries a body. A deleted post keeps its place in
+  its thread and gives its body to no read: the events written before the delete keep their
+  payloads in the event log, and every read of them gives the post's marks and no body. The delete
+  of a comment whose insert suggestion no accept made document text, pending or rejected, empties
+  its anchor's quote, which is the suggestion's own words.
+  The delete of a comment whose accepted suggestion named a document version after its body renames
+  that version, and its comment.deleted event names the version and its new name (renamed_version).
+  The comment PATCH, which before took a person's edit alone and refused one on a closed
+  issue, now takes its author's edit, an agent's included, on an open or a closed issue. Each
+  route's own description, which GET /api/v1 serves, states its rules. A repeat under an
+  Idempotency-Key whose first answer holds text a delete withdrew answers ANSWER_NOT_KEPT instead of
+  that answer (IDEMPOTENCY_KEY_HEADER in @legion/contracts states when), and GET
+  /api/v1/issues/{key}/references takes its ETag from a hash of its answer. After the delete of a
+  comment or an issue message whose text an answer run gave its model, every read of that run's
+  stream (GET /api/v1/going/requests/{id}/stream) gives none of its frames and ends on the error
+  ANSWER_WITHDRAWN.
+time: 2026-11-11T07:23:15.742008842Z
+custom:
+    Issue: pr3512

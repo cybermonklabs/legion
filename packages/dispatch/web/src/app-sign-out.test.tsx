@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
@@ -12,10 +12,12 @@ import userEvent from "@testing-library/user-event";
 
 import { endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
-import { aliceWrite, keptWrites, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
+import { aliceWrite, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
 import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { answerDraft, setAnswerDraft } from "./features/inbox/answer-drafts";
 import { setReplyDraft, useReplyDraft } from "./features/inbox/reply-drafts";
@@ -27,6 +29,13 @@ import { writesOf } from "./features/writes/write-store";
 // suspended resource outside `act`. So the module is loaded here, with the test file, and no row
 // starts or waits for it.
 import "./features/margin/Margin";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -61,7 +70,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -81,7 +90,7 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     act(() => first.reject(new ApiError(403, { code: "FORBIDDEN", error: "not now" })));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The sign-out did not go through.");
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(
       writesOf(app.queryClient)
         .rows()
@@ -116,7 +125,7 @@ test("a sign-out the reader stopped does not say the person is still signed in",
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
   });
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
     await tick(SEND_DEADLINE_MS + 1_000);
@@ -153,13 +162,13 @@ test("a sign-out refused for one person is gone, its Retry with it, once another
   const tab = new BroadcastChannel("dispatch-sign-in");
   const refusal = "The sign-out did not go through. You are still signed in, with every change.";
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     expect(await screen.findByText(refusal)).toBeTruthy();
 
     login = "bob";
     act(() => tab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     expect(screen.queryByText(refusal)).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(app.logout).toHaveBeenCalledTimes(1);
@@ -178,10 +187,10 @@ test("another person signed in from another tab finds none of the drafts the per
   const app = renderApp({ whoAmI: async () => ({ event_head: "0", kind: "user", login }) });
   const tab = new BroadcastChannel("dispatch-sign-in");
   const unsent = unsentDraftsOf(app.queryClient);
-  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const draft = { body: "Alice's unsent reply", replacement: "" };
   const reply = renderHook(() => useReplyDraft("ask-1"));
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     act(() => {
       unsent.write("composer", draft);
       unsent.keepAway("composer", {
@@ -199,7 +208,7 @@ test("another person signed in from another tab finds none of the drafts the per
 
     login = "bob";
     act(() => tab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(unsent.read("composer")).toBeUndefined());
     expect(unsent.readAway("composer", null)).toBeUndefined();
     expect(answerDraft("ask-1")).toBe("");
@@ -230,9 +239,9 @@ test("after another person's sign-in, a reload of the same tab brings back none 
   const whoAmI = async () => ({ event_head: "0", kind: "user" as const, login });
   let app = renderApp({ whoAmI });
   const tab = new BroadcastChannel("dispatch-sign-in");
-  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const draft = { body: "Alice's unsent reply", replacement: "" };
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const unsent = unsentDraftsOf(app.queryClient);
     act(() => {
       unsent.write("composer", draft);
@@ -248,13 +257,13 @@ test("after another person's sign-in, a reload of the same tab brings back none 
 
     login = "bob";
     act(() => tab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(unsent.read("composer")).toBeUndefined());
     const keptAfterBob = keptDrafts();
 
     endAsAReload(() => app.teardown());
     app = renderApp({ whoAmI });
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     const reloaded = unsentDraftsOf(app.queryClient);
     expect({
       afterBob: keptAfterBob,
@@ -298,7 +307,7 @@ test("a composer's typed text is not shown to another person signed in from anot
   const tab = new BroadcastChannel("dispatch-sign-in");
   const typed = "Alice's words for the planner";
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const region = await screen.findByRole("region", { name: "Agents" });
     const row = (await within(region).findByRole("heading", { name: "Planner" })).closest(
       "article"
@@ -314,7 +323,7 @@ test("a composer's typed text is not shown to another person signed in from anot
 
     login = "bob";
     act(() => tab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(screen.queryAllByDisplayValue(typed).length).toBe(0));
   } finally {
     tab.close();
@@ -333,7 +342,7 @@ test("a sign-out's write says it goes under no key, since /auth/logout sends non
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
   });
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
     const signOut = writesOf(app.queryClient)
@@ -366,7 +375,7 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -383,7 +392,7 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
 
     signedIn = true;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const made = attempts.length;
     await tick(2_500);
     expect(attempts).toHaveLength(made);
@@ -412,7 +421,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -431,7 +440,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
 
     signedIn = true;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const made = attempts.length;
     await tick(2_500);
     expect(attempts).toHaveLength(made);
@@ -461,7 +470,7 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -495,7 +504,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
   });
   const tab = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() => expect(tab.told).toContainEqual(expect.objectContaining({ here: true })));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -508,7 +517,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The sign-out did not go through.");
     expect(app.logout).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(
       writesOf(app.queryClient)
         .rows()
@@ -542,7 +551,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
   });
   const second = otherTab("tab-2", [change("CORE-4 set to backlog"), change("Labels of CORE-4")]);
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(second.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -607,7 +616,7 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
   });
   const tabs: OtherTab[] = [];
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
@@ -665,7 +674,7 @@ test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with 
     },
   });
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to todo");
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to backlog", true);
@@ -714,7 +723,7 @@ test("the sign-in link of a lapsed tab raises no leave prompt", async () => {
   const stay = (event: Event) => event.preventDefault();
   window.addEventListener("click", stay);
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     void aliceWrite(app.queryClient, attempts, "CORE-7 set to todo");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
