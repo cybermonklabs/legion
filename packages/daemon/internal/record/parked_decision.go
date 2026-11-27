@@ -93,12 +93,21 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to
 //     tell. The root is read for the two answers that are the root's own: whether it waits for its
 //     slot, and the one parked-decision controller notice that names it, the decision, where in
-//     Dispatch, who made it, and a spec decision's version and a changes request's reason.
+//     Dispatch, who made it, and what spec says of it.
+//
+// spec is the notice that reported a spec decision (the daemon's parkDecision passes the one no
+// architect took), and the controller notice carries what it says as it says it: the version, a
+// changes request's reason, and Dispatch's mark of the review with the document reviewed
+// (Notice.Review, Notice.Artifact). A decision no notice reported, an ask's, passes the zero
+// Notice. The mark is the notice's own and never the time the decision is kept at, which is the
+// daemon's clock where the notice gave none (ParkedDecision.At), because the publish of a relayed
+// changes request asks again whether the person's approval followed it (the daemon's
+// controllerNotice), and asks it of that mark and that document.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
-	decision ParkedDecision, version int, reason string, steps []DesignStep) (RelayOutcome, error) {
+	decision ParkedDecision, spec Notice, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -124,8 +133,10 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
-		Ref: decision.Ref, Actor: decision.Actor, Version: version, Reason: reason}, decision.At)
+	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice,
+		Decision: decision.Decision, Root: root.Key, Ref: decision.Ref, Actor: decision.Actor,
+		Version: spec.Version, Reason: spec.Reason, Review: spec.Review, Artifact: spec.Artifact},
+		decision.At)
 	if err != nil {
 		return RelayNone, err
 	}
@@ -149,6 +160,36 @@ type DecisionMark struct {
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
+	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), Artifact the
+	// document reviewed (ParkedDecision.Artifact) and Version its version reviewed
+	// (ParkedDecision.Version), which a send asks the gate with (workflow.SupersedingApproval);
+	// none is part of the row's identity.
+	Seq      int64  `json:"seq,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
+	Version  int    `json:"version,omitempty"`
+}
+
+// KeptForget deletes in tx what a clear of a generation would otherwise leave to be asked of no
+// gate, once it is no longer the person's word: the row of each decision of owed, decisions kept
+// on issues of tree, and each changes request of queued, the ones the outbox holds on the issues
+// the clear covers. The record holds no rule of its own for that: the workflow's forget is the one
+// rule (workflow.ForgetSuperseded, which a start, a ready and a send each run before they name
+// what a tree is owed, and workflow.SupersedingApproval for a queued request, which its delivery
+// asks), and a clear of a generation is handed it (Store.ClearGeneration), because the clear
+// deletes the gates the rule reads.
+type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecisions,
+	queued []QueuedChanges) error
+
+// QueuedChanges is a person's changes request the outbox still holds, a row a runner has leased
+// included: a design-changes-requested or basis-changes-requested notice for an architect, or the
+// parked-decision controller notice that relays a changes request (Kind, the row's kind, says
+// which). Row is the row's id, Issue the row's issue, whose gates the request is asked of, and
+// Notice the decision the row carries, a relay read as the Notice it is.
+type QueuedChanges struct {
+	Row    int64
+	Kind   OutboxKind
+	Issue  string
+	Notice Notice
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start
@@ -157,8 +198,15 @@ type DecisionMark struct {
 // kept approval. The step is what says which document the task names, since a deployment that
 // gates more than one step can keep a pair of any of them. KeptDecisions embeds it, so the pair
 // travels to the architect as it was kept, with nothing copied field by field.
+//
+// Artifact is the document approved, the gate's own at the keep (DesignGate.ArtifactID), so the
+// kept approval is asked of that document (workflow.KeptDecisionsTask): the new generation can
+// register the step on another document, and an approval of the old one is no approval of it. It
+// is not part of the pair's identity. It is "" for a pair kept before the column was added
+// (readmitted_approvals.artifact), and such a pair is asked of whichever document the gate holds.
 type KeptApproval struct {
 	Step     DesignStep `json:"step,omitempty"`
+	Artifact string     `json:"artifact,omitempty"`
 	Approved int        `json:"approved,omitempty"`
 	Latest   int        `json:"latest,omitempty"`
 }
@@ -176,7 +224,7 @@ type KeptApproval struct {
 //
 // The approval it names is the kept approval itself (KeptApproval), embedded: encoding/json
 // writes an embedded struct's own fields as fields of this one, so the stored shape is the
-// decisions and the three fields of the pair, as it has always been.
+// decisions and the fields of the pair beside them.
 //
 // A record written before a deployment could gate more than one step carries no step, and the
 // task it is written again from reads it as the spec step, the one step that release gated.
@@ -242,14 +290,16 @@ func SpecDecision(kind NoticeKind) (DecisionKind, bool) {
 	}
 }
 
+// validDecisionKinds is every decision a parked-decision notice may relay, which is what
+// validDecisionKind decides from. It is a list rather than a switch so a test can range over it,
+// as validNoticeKinds is.
+var validDecisionKinds = []DecisionKind{
+	DecisionDesignApproved, DecisionDesignChangesRequested, DecisionCarriedGateOpened,
+	DecisionAskAnswered, DecisionAskResolved, DecisionAskReply,
+}
+
 func validDecisionKind(kind DecisionKind) bool {
-	switch kind {
-	case DecisionDesignApproved, DecisionDesignChangesRequested, DecisionCarriedGateOpened,
-		DecisionAskAnswered, DecisionAskResolved, DecisionAskReply:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(validDecisionKinds, kind)
 }
 
 // PersonActor says whether actor, as Dispatch names an event's author (`<kind>:<id>`), is a person.

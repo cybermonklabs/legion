@@ -86,9 +86,10 @@ trap cleanup EXIT
 # --- Fake docker: reports dispatch-pg already running on dev-postgres.sh's pinned image (so
 # dev-postgres.sh reuses it) or, with DEV_BROKER_TEST_PG_IMAGE_ID set, on that other image (so
 # dev-postgres.sh refuses it), answers every "exec ... pg_isready"/"exec ... psql -c ..." with
-# success, and records the exact command line of every invocation to the caller's own
-# DEV_BROKER_TEST_DOCKER_CALL_FILE (each instance below gets its own, so two concurrent
-# instances' calls never interleave in one file). ---
+# success, answers dev-postgres.sh's read of the reused server's shared_preload_libraries with
+# pg_stat_statements (the preload it requires to reuse a container), and records the exact
+# command line of every invocation to the caller's own DEV_BROKER_TEST_DOCKER_CALL_FILE (each
+# instance below gets its own, so two concurrent instances' calls never interleave in one file). ---
 cat >"${fake_bin_dir}/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${DEV_BROKER_TEST_DOCKER_CALL_FILE:?}"
@@ -106,6 +107,11 @@ case "$1 $2" in
     esac
     ;;
   "image inspect") printf '%s\n' "$pinned_id" ;;
+  "exec dispatch-pg")
+    case "$*" in
+      *" psql -h 127.0.0.1 -U postgres -Atc show shared_preload_libraries") printf 'pg_stat_statements\n' ;;
+    esac
+    ;;
 esac
 exit 0
 EOF
@@ -673,6 +679,22 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s signs people in to its broker at that same issuer, with a 0600 secret it never prints, and names its broker'"'"'s approval page\n' "$label"
+
+  # The exports name this run's own sign-in store and no machine identity, whatever the shell
+  # they are pasted into carried before (dev-broker.sh's header says what each of a person's own
+  # would do to a session here). Pasted into a shell that carries a person's own of both, they
+  # leave the run's.
+  local exports pasted
+  exports="$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$log_file")"
+  # shellcheck disable=SC2016 # the pasted shell expands both variables, after the exports ran
+  pasted="$(env AGENT_SECRETS_SIGNIN_DIR=/the-persons-own/signins AGENT_SECRETS_MACHINE_IDENTITY=metadata \
+    bash -c "${exports}"$'\n''printf "%s|%s" "$AGENT_SECRETS_SIGNIN_DIR" "${AGENT_SECRETS_MACHINE_IDENTITY:-none}"' || true)"
+  if [[ "$pasted" != "${workdir}/signins|none" ]]; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's exports, pasted into a shell with a person's own sign-in store and machine identity, leave AGENT_SECRETS_SIGNIN_DIR|AGENT_SECRETS_MACHINE_IDENTITY at '${pasted}'; want '${workdir}/signins|none'" >&2
+    exit 1
+  fi
+  printf 'PASS: %s exports a sign-in store of its own and no machine identity, so a pasted shell takes neither from the person\n' "$label"
 
   # The read entry's pod token. The issuer mints it for the reader account at the exchange's own
   # audience, the one the exchange token carries, into the workdir's read-token, and binds it to a

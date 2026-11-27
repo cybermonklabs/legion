@@ -63,10 +63,11 @@ const oldestFirst = [deletedFirst, standing, closedLast];
 /** The standing message, saying BODY. */
 const says = (body: string): Event => ({ ...standing, payload: { ...standing.payload, body } });
 
-// multi-repo-acceptance.sh's note for a repository edit the daemon refused: the baseline's
-// repository kept, and Dispatch's spelling of the one it refused.
+// multi-repo-acceptance.sh's note for a repository edit the daemon cannot apply yet
+// (noteRepositoryChangeWaits): the baseline's repository kept, and Dispatch's spelling of the one
+// it waits on, on which a role App is not installed.
 const keptNote =
-  "Legion keeps acme/smoke-t as this issue's repository; the change to acme/smoke-x in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for acme/smoke-x instead.";
+  "Legion did not move this issue off acme/smoke-t: the implement App is not installed on acme/smoke-x. Install it on acme/smoke-x, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on acme/smoke-x.";
 
 describe("multi-repo-none-note.jq (multi-repo-acceptance.sh's negative no-repo)", () => {
   const args = { actor: daemon.id, none: noneNote };
@@ -83,7 +84,12 @@ describe("multi-repo-none-note.jq (multi-repo-acceptance.sh's negative no-repo)"
 });
 
 describe("multi-repo-kept-note.jq (multi-repo-acceptance.sh's negative repo-edit)", () => {
-  const args = { actor: daemon.id, note: keptNote };
+  const args = {
+    actor: daemon.id,
+    opening: "Legion did not move this issue off acme/smoke-t: ",
+    lead: " Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on ",
+    x: "acme/smoke-x",
+  };
 
   test("passes over the deleted message: no standing message is the kept-repository note", () => {
     expect(judge("multi-repo-kept-note", args, newestFirst)).toBe(false);

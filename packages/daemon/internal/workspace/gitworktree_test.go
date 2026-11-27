@@ -57,6 +57,7 @@ func unreadableOwnEntry(t *testing.T) (located Workspace, entry, want string) {
 // provision of the workspace fails the same way and nothing repairs the entry, so the error says
 // what does, as restoreGitWorktree's refusal of a pointer outside the clone says it.
 func TestLockGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
+	t.Parallel()
 	located, entry, want := unreadableOwnEntry(t)
 	want += "; provisioning cannot lock it. Remove the workspace so the next provisioning adds it again"
 	err := lockGitWorktree(located.Clone, located.Dir)
@@ -71,6 +72,7 @@ func TestLockGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
 // removeGitWorktree answers the same entry with the same error, and leaves the entry where it is:
 // it is the workspace's, and removing nothing must not read as removing it.
 func TestRemoveGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
+	t.Parallel()
 	located, entry, want := unreadableOwnEntry(t)
 	err := removeGitWorktree(located.Clone, located.Dir)
 	if err == nil || err.Error() != want {
@@ -89,6 +91,7 @@ func TestRemoveGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T)
 // The answer is waited for with no span of its own (testwait.Receive), so a read that waits on the
 // fifo fails the row by name before the test binary's deadline, and a slow provision passes.
 func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +147,7 @@ func (r worktreesToFifo) Run(_ context.Context, command Command) (Result, error)
 // the lock. A removal that waits on the fifo fails the row by name before the test binary's
 // deadline (testwait.Receive).
 func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
+	t.Parallel()
 	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +208,7 @@ func (r gitDirAway) Run(_ context.Context, command Command) (Result, error) {
 // symlink to a directory of its choosing, before the restore or while its jj runs, and the restore
 // must then refuse, naming the link, and make nothing where it points.
 func TestRestoreGitWorktreeRefusesAGitDirectorySymlinkedAway(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		whileJJ bool
@@ -292,6 +297,7 @@ func excludeWithin(t *testing.T, clone string) error {
 // open of a read when nobody holds it, in the read when a writer holds it open and writes nothing,
 // and in the open of the write after. The fifo is left as it was.
 func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		writer bool
@@ -328,6 +334,7 @@ func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
 // provisioning append `.codegraph/` to any file the daemon can write. The file the link names is
 // left as it was.
 func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		link func(t *testing.T, clone, outside string) string
@@ -373,6 +380,7 @@ func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
 // A clone's .git/info/exclude larger than excludeLimit is refused, naming it and the bound,
 // rather than read whole, and is left as it was.
 func TestExcludeCodegraphDirectoryRefusesAFileLargerThanItsBound(t *testing.T) {
+	t.Parallel()
 	clone, exclude := excludeClone(t)
 	if err := os.WriteFile(exclude, []byte(strings.Repeat("a", excludeLimit+1)), 0o600); err != nil {
 		t.Fatal(err)
@@ -390,6 +398,7 @@ func TestExcludeCodegraphDirectoryRefusesAFileLargerThanItsBound(t *testing.T) {
 // directory made at 0700 when that is missing too; `.codegraph/` appended on a line of its own,
 // after a newline the file lacked; and nothing written when a line already is `.codegraph/`.
 func TestExcludeCodegraphDirectoryAppendsToAnOrdinaryFile(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		plant   func(t *testing.T, exclude string)
