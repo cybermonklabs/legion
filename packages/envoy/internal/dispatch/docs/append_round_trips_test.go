@@ -490,7 +490,7 @@ func TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone(t *testing.T) {
 			t.Fatalf("seed the document's history: %v", err)
 		}
 	}
-	head, err := versioned.head(ctx, service.store.Pool, artifactID)
+	head, err := roomHead(ctx, service.store.Pool, artifactID)
 	if err != nil {
 		t.Fatalf("read the document's head: %v", err)
 	}

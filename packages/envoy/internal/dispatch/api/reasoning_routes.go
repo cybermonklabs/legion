@@ -37,6 +37,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -100,7 +101,7 @@ func (c reasoningCaller) reader() model.Actor { return c.proving.Recorded() }
 // judges it (refuseSpecWriterOfNode): the actor the write records, a person where the credential
 // that proved the caller holds the person scope, as specWriterOf reads it.
 func (c reasoningCaller) specWriter() specWriter {
-	return specWriter{actor: c.recorded, person: c.proving.Credential.Holds(model.ScopePerson)}
+	return specWriter{actor: c.recorded, person: docs.CallerIsPerson(c.proving)}
 }
 
 // reasoningCallerOf resolves the caller of a reasoning write, answering the refusal itself and

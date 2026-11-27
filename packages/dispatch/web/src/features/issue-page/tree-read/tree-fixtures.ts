@@ -125,17 +125,73 @@ export function treeNode(
   };
 }
 
-/** A comment as the tree read answers it: its words, who wrote it and when, under the node
- *  `parent` names - where none is given, the comment it replies to, else the issue. */
+/** A comment as the tree read answers it: its words, who wrote it and when, and the words of a
+ *  document it is anchored to, under the node `parent` names - where none is given, the comment
+ *  it replies to, else the issue. No mark of its author's: a case that reads one gives it
+ *  (`markedCommentNode`). */
 export function commentNode(
-  comment: Pick<Comment, "author" | "body" | "created_at" | "id" | "reply_to">,
+  comment: Pick<Comment, "author" | "body" | "created_at" | "id" | "reply_to"> &
+    Partial<Pick<Comment, "anchor">>,
   parent: string = comment.reply_to ?? TREE_KEY
 ): TreeAnswerNode {
+  const anchor = comment.anchor ?? null;
   return treeNode(comment.id, "comment", parent, {
+    ...(anchor === null ? {} : { anchor: treeAnchor(anchor) }),
     author: [comment.author],
     made_at: comment.created_at,
     text: comment.body,
   });
+}
+
+/** A comment's document anchor (`Comment.anchor`) as the tree read answers it on the comment's
+ *  node (`IssueTreeAnchor`), which names no block where the anchor stores none. */
+export function treeAnchor(
+  anchor: NonNullable<Comment["anchor"]>
+): NonNullable<TreeAnswerNode["anchor"]> {
+  return {
+    artifact_id: anchor.artifact_id,
+    ...(anchor.block_id === null ? {} : { block_id: anchor.block_id }),
+    mark_id: anchor.mark_id,
+    orphaned: anchor.orphaned,
+    quote: anchor.quote,
+    version: anchor.version,
+  };
+}
+
+/** `commentNode` of `comment` with what its author did to it, as the read answers a post's
+ *  marks on its node (`TreeAnswerNode`): when they last edited it, and when and by whom they
+ *  deleted it, with no text once deleted. */
+export function markedCommentNode(
+  comment: Pick<
+    Comment,
+    "author" | "body" | "created_at" | "deleted_at" | "deleted_by" | "edited_at" | "id" | "reply_to"
+  > &
+    Partial<Pick<Comment, "anchor">>,
+  parent?: string
+): TreeAnswerNode {
+  return {
+    ...commentNode(comment, parent),
+    ...postMarks(comment),
+    ...(comment.deleted_at === null || comment.deleted_at === undefined ? {} : { text: "" }),
+  };
+}
+
+/** A post's marks as the read answers them on its node (`IssueTreeNode`): when its author last
+ *  edited it, and when and by whom they deleted it, each left out where the post holds none. */
+export function postMarks(
+  post: Partial<Pick<Comment, "deleted_at" | "deleted_by" | "edited_at">>
+): Pick<TreeAnswerNode, "deleted_at" | "deleted_by" | "edited_at"> {
+  return {
+    ...(post.edited_at === null || post.edited_at === undefined
+      ? {}
+      : { edited_at: post.edited_at }),
+    ...(post.deleted_at === null || post.deleted_at === undefined
+      ? {}
+      : { deleted_at: post.deleted_at }),
+    ...(post.deleted_by === null || post.deleted_by === undefined
+      ? {}
+      : { deleted_by: post.deleted_by }),
+  };
 }
 
 /** The decisions read's object for a decision whose words are `text`: never kept, replaced or

@@ -119,36 +119,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_tree_order_empty_database: drops the database database_url names and creates it empty, so
-# the earlier release's own Store.Migrate writes its schema and the run's rows are the database's
-# only content. It drops only a database on this machine whose name ends `_upgrade`, the database
-# the Verification preamble gives the upgrade drivers, connecting to the `postgres` database of
-# the same server with the same role.
-issue_tree_order_empty_database() {
-  local scheme authority name query
-  loopback_database_url "$database_url" ||
-    tree_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
-  [[ "$database_url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
-    tree_refuse "DATABASE_URL is no postgres:// URL naming a database"
-  scheme="${BASH_REMATCH[1]}" authority="${BASH_REMATCH[3]}" name="${BASH_REMATCH[4]}" query="${BASH_REMATCH[5]}"
-  [[ "$name" =~ ^[a-z0-9_]+_upgrade$ ]] ||
-    tree_refuse "DATABASE_URL names the database $name: this driver drops and creates only a database whose name ends _upgrade"
-  baseline_psql "${scheme}${authority}/postgres${query}" -q \
-    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" >"$work/reset" 2>&1 ||
-    fail setup "empty the database $name" "psql: $(<"$work/reset")"
-  pass setup "dropped the database $name and created it empty"
-}
-
-# issue_tree_order_key SECTION WHAT VALUE: VALUE is an issue key, which the SQL below names.
-issue_tree_order_key() {
-  [[ "$3" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "$2" "'$3' is no issue key"
-}
-
-# issue_tree_order_uuid SECTION WHAT VALUE: VALUE is a uuid as Dispatch writes one.
-issue_tree_order_uuid() {
-  [[ "$3" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "$1" "$2" "'$3' is no uuid"
-}
-
 # issue_tree_order_version SECTION ARTIFACT NUMBER: GET /api/v1/artifacts/{id}/versions/{number}
 # as the agent, its body in $work/body, and the Dispatch-Render-Source it answered in
 # render_source.
@@ -159,31 +129,6 @@ issue_tree_order_version() {
   tree_want 200 "$1" "read version $3 of $2"
   render_source="$(tr -d '\r' <"$work/headers" | grep -i '^dispatch-render-source:' | tail -n 1)" || render_source=""
   render_source="${render_source#*: }"
-}
-
-# issue_tree_order_outcome KEY: what the last conversion's output in $work/out printed for the
-# issue KEY, in outcome: `converted`, `passed over`, `deferred` or `none`, read off the line that
-# names the key as a word.
-issue_tree_order_outcome() {
-  local pattern="(^|[^A-Za-z0-9-])${1}([^0-9]|\$)" line
-  outcome=none
-  while IFS= read -r line; do
-    [[ "$line" =~ $pattern ]] || continue
-    case "$line" in
-      *deferred*) outcome=deferred ;;
-      *"passed over"*) outcome="passed over" ;;
-      *converted*) outcome=converted ;;
-    esac
-  done <"$work/out"
-}
-
-# issue_tree_order_census SECTION: `envoy-dispatch census --store` into $work/census.out. It
-# exits 1 where a kind of another child holds no row, so this reads its lines, not that verdict.
-issue_tree_order_census() {
-  tree_envoy_dispatch_status census --store
-  cp "$work/out" "$work/census.out"
-  [[ "$tree_envoy_status" -le 1 ]] ||
-    fail "$1" "run the store census" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/census.out")"
 }
 
 # issue_tree_order_routes FILE: the routes routes_table.go's rows in FILE declare, one `METHOD
@@ -204,23 +149,10 @@ issue_tree_order_schema_version() {
     schema_version=""
 }
 
-# issue_tree_order_first_part_of DOCUMENT NAME: the seq of the first part_of tuple the conversion
-# wrote, after seq_before, for the nodes the room ordered_tree holds of DOCUMENT (its
-# issue_room_blocks rows, each node keyed by the tree's address tree_ref), in first_seq; `none`
-# where it wrote none.
-issue_tree_order_first_part_of() {
-  query "$section" "read the first part_of the conversion wrote for the nodes of $2" "
-    select coalesce(min(t.seq)::text, 'none') from graph_tuples t
-    join issue_room_blocks r on r.tree_artifact_id = '$ordered_tree' and r.document_id = '$1'
-      and t.from_kind = 'block' and t.from_id = '$tree_ref' || '#' || r.block_id
-    where t.kind = 'part_of' and t.asserted and t.seq > $seq_before"
-  first_seq="$answer"
-}
-
 # --- setup: the earlier release over an emptied database --------------------------------------
 
 section=setup
-issue_tree_order_empty_database
+tree_reset_database "$database_url" '?*_upgrade' "$section"
 baseline_start
 token="$baseline_token"
 unset DISPATCH_TOKEN DISPATCH_TOKEN_FILE
@@ -239,7 +171,7 @@ printf 'The issue the order check waits on.\n\n:::requirement{#r-w}\nThe blocker
 corpus_issue "$section" "The blocker of the order check" "$work/w-spec.md"
 blocker="$corpus_key"
 readonly blocker
-issue_tree_order_key "$section" "the blocker's key" "$blocker"
+tree_key "$section" "the blocker's key" "$blocker"
 {
   printf 'The issue whose three documents the conversion orders.\n\n'
   printf ':::requirement{#r1}\nThe documents convert in one transaction.\n:::\n\n'
@@ -250,8 +182,8 @@ corpus_issue "$section" "The issue the conversion orders" "$work/o-spec.md" "" "
 ordered="$corpus_key"
 ordered_spec="$corpus_spec"
 readonly ordered ordered_spec
-issue_tree_order_key "$section" "the ordered issue's key" "$ordered"
-issue_tree_order_uuid "$section" "the ordered issue's spec" "$ordered_spec"
+tree_key "$section" "the ordered issue's key" "$ordered"
+tree_uuid "$section" "the ordered issue's spec" "$ordered_spec"
 {
   printf 'How the order is proved.\n\n'
   printf ':::check{#c1 serves="dispatch://%s/spec#b-r1" surface="cli" run="bash e2e/acceptance/issue-tree-order.sh" negative_control="Convert the spec first and the seqs read out of order."}\nThe three documents convert in one transaction.\n:::\n\n' "$ordered"
@@ -268,8 +200,8 @@ ordered_verification="$corpus_doc"
 corpus_upload "$section" "$ordered" plan.md "$work/o-plan.md"
 ordered_plan="$corpus_doc"
 readonly ordered_verification ordered_plan
-issue_tree_order_uuid "$section" "the ordered issue's verification-md" "$ordered_verification"
-issue_tree_order_uuid "$section" "the ordered issue's plan-md" "$ordered_plan"
+tree_uuid "$section" "the ordered issue's verification-md" "$ordered_verification"
+tree_uuid "$section" "the ordered issue's plan-md" "$ordered_plan"
 corpus_wait_settled "$section"
 # The capture: the three documents as their text reads answer them, the spec's newest version as
 # its version read answers it, and the issue read.
@@ -308,7 +240,7 @@ corpus_issue "$section" "An issue this head creates before the conversion" "$wor
 fresh="$corpus_key"
 fresh_spec="$corpus_spec"
 readonly fresh fresh_spec
-issue_tree_order_key "$section" "the fresh issue's key" "$fresh"
+tree_key "$section" "the fresh issue's key" "$fresh"
 printf ':::check{#c-h serves="dispatch://%s/spec#b-r-h" surface="cli" run="bash e2e/acceptance/issue-tree-order.sh" negative_control="Leave the query nodes out and they are not there."}\nThe query nodes stand.\n:::\n' "$fresh" >"$work/h-verification.md"
 corpus_upload "$section" "$fresh" verification.md "$work/h-verification.md"
 printf ':::plan_task{#t-h serves="dispatch://%s/spec#b-r-h"}\nWrite the query nodes.\n:::\n' "$fresh" >"$work/h-plan.md"
@@ -367,7 +299,7 @@ seq_before="$answer"
 readonly seq_before
 tree_convert "$section"
 printf '%s\n' "$(<"$work/out")"
-issue_tree_order_outcome "$ordered"
+tree_outcome "$ordered"
 [[ "$outcome" == converted ]] ||
   fail "$section" "convert-issues prints $ordered converted" "it prints $outcome for it: $(tail -n 20 "$work/out")"
 tree_read agent "$ordered"
@@ -376,7 +308,7 @@ expect "$section" "$ordered reads converted: true after the conversion" true '.c
 tree_field "$section" "$ordered's tree artifact" '.tree'
 ordered_tree="$tree_value"
 readonly ordered_tree
-issue_tree_order_uuid "$section" "$ordered's tree artifact" "$ordered_tree"
+tree_uuid "$section" "$ordered's tree artifact" "$ordered_tree"
 want_value "$section" "each of $ordered's spec, verification-md and plan-md holds a document_rooms row naming its tree $ordered_tree" 3 "
     select count(*) from document_rooms
     where artifact_id in ('$ordered_spec', '$ordered_verification', '$ordered_plan') and room = '$ordered_tree'"
@@ -389,11 +321,11 @@ pass "$section" "one transaction (${answer#*|}) wrote $ordered's three document_
 query "$section" "read $ordered's tree's address" "select ref_key from artifacts where id = '$ordered_tree'"
 tree_ref="$answer"
 readonly tree_ref
-issue_tree_order_first_part_of "$ordered_verification" verification-md
+tree_first_part_of "$section" "$ordered_tree" "$tree_ref" "$seq_before" "$ordered_verification" verification-md
 verification_seq="$first_seq"
-issue_tree_order_first_part_of "$ordered_plan" plan-md
+tree_first_part_of "$section" "$ordered_tree" "$tree_ref" "$seq_before" "$ordered_plan" plan-md
 plan_seq="$first_seq"
-issue_tree_order_first_part_of "$ordered_spec" spec
+tree_first_part_of "$section" "$ordered_tree" "$tree_ref" "$seq_before" "$ordered_spec" spec
 spec_seq="$first_seq"
 readonly verification_seq plan_seq spec_seq
 read_seqs="verification-md=$verification_seq plan-md=$plan_seq spec=$spec_seq"
@@ -403,7 +335,7 @@ read_seqs="verification-md=$verification_seq plan-md=$plan_seq spec=$spec_seq"
   fail "$section" "the first part_of of each document's nodes rises in the order verification-md, plan-md, spec" \
     "the seqs read, in that order: $read_seqs"
 pass "$section" "the first part_of of each document's nodes rises in the order verification-md, plan-md, spec: $read_seqs"
-issue_tree_order_census "$section"
+tree_store_census "$section"
 summary="$(grep -E '^census: store rows_checked=' "$work/census.out" || true)"
 [[ -n "$summary" ]] || fail "$section" "the store census prints its summary line" "$(tail -n 20 "$work/census.out")"
 printf '%s\n' "$summary"

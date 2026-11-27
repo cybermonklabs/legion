@@ -1120,7 +1120,7 @@ function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClie
     open_questions: [],
   });
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["issue-messages", KEY], []);
   if (specHeld) {
     client.setQueryData(
       outlineQuery(KEY, "conversation").queryKey,

@@ -24,17 +24,20 @@ import (
 //
 // Each topic of the store keeps its kinds in a list in a file of its own, census_<topic>.go, and
 // projections is those lists one after another, so a kind of one topic is registered in that
-// topic's file alone. A topic whose list is empty projects no kind of its own.
+// topic's file alone. A topic whose list is empty projects no kind of its own. The comments, the
+// people and the agents keep their kinds below, and so do the backfill's passes over the comments,
+// the ended preventions, the people and the agents and the projects, whose writers live in files of
+// their own (backfill_comments.go, backfill_preventions.go, backfill_roles.go, backfill_sessions.go,
+// projects_backfill.go).
 //
 // The comment, the block, the block reference and the run each hold a row to the tuples that
-// answer it as well as to its node row.
-// A row that names its node is answered from the tuples by graph_edges, refs.Edges and
-// refs.BacklinkCounts (migration 20261109215947), so a link whose tuple is missing or retracted
-// is gone from every read while the node row still stands, and a census of the node rows alone
-// reads zero differences over a store that has lost edges. A row's digest therefore carries
-// every link the row states (statedLinks), and its node's digest carries every link the store
-// states now under the same tuple kinds (currentLinks): the two agree exactly when the store
-// states each link the row names and no other.
+// answer it as well as to its node row. A row that names its node is answered from the tuples by
+// graph_edges, refs.Edges and refs.BacklinkCounts (migration 20261109215947), so a link whose
+// tuple is missing or retracted is gone from every read while the node row still stands, and a
+// census of the node rows alone reads zero differences over a store that has lost edges. A row's
+// digest therefore carries every link the row states (statedLinks), and its node's digest carries
+// every link the store states now under the same tuple kinds (currentLinks): the two agree exactly
+// when the store states each link the row names and no other.
 //
 // An address past the store's bound (graphstore.MaxAddressBytes) is deliberately no part of the
 // store: a block whose address is longer carries no node, a role name of 1,400 bytes is no node
@@ -204,11 +207,11 @@ var actorProjections = []projection{{
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
 
 // The tuple kinds each projection row states of its node, which the census digests against the
-// tuples of those kinds the node states now (currentLinks, placedLinks, heldTuples): a comment's
-// anchor, its owner and its author; a block's document and the block or document holding it;
-// a run's author; and the ties of a decision that block_refs projects. A block_refs row of a block
-// states the kinds blockRefKinds reads out of the store. A tuple of any other kind out of such a
-// node is no part of any row.
+// tuples of those kinds the node states now (currentLinks, blockPlacedLinks, heldTuples): a
+// comment's anchor, its owner and its author; a block's document and the block or document
+// holding it; a run's author; and the ties of a decision that block_refs projects. A block_refs
+// row of a block states the kinds blockRefKinds reads out of the store. A tuple of any other kind
+// out of such a node is no part of any row.
 var (
 	commentLinkKinds    = []string{graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleAuthoredBy}
 	blockPlacementKinds = []string{refs.TupleInDocument, graphstore.TuplePartOf}

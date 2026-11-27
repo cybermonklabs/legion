@@ -403,14 +403,12 @@ test("a send while a write is stopped makes that write again under its key, and 
   }
 });
 
-// A criterion whose write is out holds the box. A row's Reply, `r` and `a`, another row's Write a
-// criterion, an edit, Write on the issue and `clear` are each refused, as they are while a send
-// of the line's own is out, so the line keeps its text and draws its refusal; once the write
-// settles each takes the line again.
-test("a criterion out holds the box's other targets", () => {
+/** The box's writer of `KEY`, held as each render hands it over, with its reads answered empty and
+ *  no tree read of the issue held. */
+function drawWriter() {
   const client = signedInClient();
   client.setQueryData(["asks", KEY, "thread"], []);
-  for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["agents"], []);
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(
@@ -424,6 +422,28 @@ test("a criterion out holds the box's other targets", () => {
     if (held === undefined) throw new Error("no writer is drawn");
     return held;
   };
+  return { box, writer };
+}
+
+/** A person's comment a Reply aims the line at, which the writer reads alone for its mentions
+ *  (`GET /api/v1/comments/{id}`) before it sets the line (`outline-writer.tsx`' `replyTo`). */
+const REPLY = {
+  author: { id: "bob", kind: "user" },
+  id: "comment-2",
+  kind: "comment",
+  text: TEXT,
+} as const;
+
+/** What the read of `REPLY`'s comment answers: its author, and no mention. */
+const REPLIED = { comment: { author: REPLY.author, mentions: [] }, replies: [] } as never;
+
+// A criterion whose write is out holds the box. A row's Reply, `r` and `a`, another row's Write a
+// criterion, an edit, Write on the issue and `clear` are each refused, as they are while a send
+// of the line's own is out, so the line keeps its text and draws its refusal; once the write
+// settles each takes the line again, a Reply once its comment's read answers.
+test("a criterion out holds the box's other targets", async () => {
+  const getComment = spyOn(api, "getComment").mockResolvedValue(REPLIED);
+  const { box, writer } = drawWriter();
   const comment = treeNode({ id: "comment-1", reference: PARENT, type: "comment" });
   const other = treeNode({
     id: "message-1",
@@ -436,18 +456,12 @@ test("a criterion out holds the box's other targets", () => {
     state: "open",
     type: "ask",
   });
-  const reply = {
-    author: { id: "bob", kind: "user" },
-    id: "comment-2",
-    kind: "comment",
-    text: TEXT,
-  } as const;
   try {
     act(() => writer().criterionUnder(comment));
     expect(writer().criterion?.id).toBe("comment-1");
 
     act(() => writer().holdCriterion(true));
-    act(() => writer().replyTo(reply));
+    act(() => writer().replyTo(REPLY));
     act(() => writer().answerNode(ask));
     act(() => writer().criterionUnder(other));
     act(() => writer().edit("comment-3", "Words."));
@@ -461,10 +475,55 @@ test("a criterion out holds the box's other targets", () => {
     act(() => writer().holdCriterion(false));
     act(() => writer().clear());
     expect(writer().criterion).toBeUndefined();
-    act(() => writer().replyTo(reply));
-    expect(writer().reply?.id).toBe("comment-2");
+    act(() => writer().replyTo(REPLY));
+    await waitFor(() => expect(writer().reply?.id).toBe("comment-2"));
   } finally {
     box.unmount();
+    getComment.mockRestore();
+  }
+});
+
+// A Reply to a person's comment sets the line once that comment's own read answers. Write a
+// criterion pressed while the read is out aims the line, as any later press does, so the read's
+// answer sets nothing and the criterion line stays.
+test("a Reply whose comment is still being read sets nothing once Write a criterion aims the line", async () => {
+  const read = Promise.withResolvers<never>();
+  const getComment = spyOn(api, "getComment").mockReturnValue(read.promise);
+  const { box, writer } = drawWriter();
+  try {
+    act(() => writer().replyTo(REPLY));
+    act(() =>
+      writer().criterionUnder(treeNode({ id: "comment-1", reference: PARENT, type: "comment" }))
+    );
+    await act(async () => read.resolve(REPLIED));
+    expect(writer().criterion?.id, "the Reply's read ended the criterion line").toBe("comment-1");
+    expect(writer().reply).toBeNull();
+  } finally {
+    box.unmount();
+    getComment.mockRestore();
+  }
+});
+
+// The criterion line's write going out while a Reply's comment is still being read holds the box
+// as it holds every press made while the write is out: the read's answer sets nothing, so the line
+// keeps its text and its refusal.
+test("a Reply whose comment is still being read sets nothing once the criterion line's write is out", async () => {
+  const read = Promise.withResolvers<never>();
+  const getComment = spyOn(api, "getComment").mockReturnValue(read.promise);
+  const { box, writer } = drawWriter();
+  try {
+    act(() =>
+      writer().criterionUnder(treeNode({ id: "comment-1", reference: PARENT, type: "comment" }))
+    );
+    act(() => writer().replyTo(REPLY));
+    act(() => writer().holdCriterion(true));
+    await act(async () => read.resolve(REPLIED));
+    expect(writer().criterion?.id, "the Reply's read ended the criterion line").toBe("comment-1");
+    expect(writer().reply).toBeNull();
+    act(() => writer().holdCriterion(false));
+  } finally {
+    box.unmount();
+    getComment.mockRestore();
   }
 });
 

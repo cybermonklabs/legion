@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -14,8 +13,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
@@ -139,14 +136,7 @@ func (k *personKeptRig) snapshot(t *testing.T) map[string]string {
 	awaitBackgroundWrites(t, k.served)
 	held := make(map[string]string, len(personKeptTables)+len(k.documents))
 	for _, table := range personKeptTables {
-		var digest string
-		if err := k.database.Pool.QueryRow(context.Background(), fmt.Sprintf(
-			`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
-			pgx.Identifier{table}.Sanitize(),
-		)).Scan(&digest); err != nil {
-			t.Fatalf("fingerprint %s: %v", table, err)
-		}
-		held["the table "+table] = digest
+		held["the table "+table] = tableFingerprint(t, k.database, table)
 	}
 	for _, document := range k.documents {
 		held["the text of "+document] = documentMarkdown(t, k.handler, document)
@@ -188,20 +178,7 @@ func (k *personKeptRig) awaitQueriesDrained(t *testing.T) {
 // and the write stored nothing since before.
 func (k *personKeptRig) requireRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, before map[string]string, status int, code string, names ...string) {
 	t.Helper()
-	var refusal refusalAnswer
-	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-	if response.Code != status || refusal.Code != code {
-		got := strconv.Itoa(response.Code)
-		if refusal.Code != "" {
-			got += " " + refusal.Code
-		}
-		t.Fatalf("%s answered %s, want %d %s: %s", what, got, status, code, response.Body.String())
-	}
-	for _, name := range names {
-		if !strings.Contains(refusal.Error, name) {
-			t.Errorf("%s is refused %q, which does not hold %s", what, refusal.Error, name)
-		}
-	}
+	requireRelationRefused(t, what, response, status, code, names...)
 	k.requireUnchanged(t, what, before)
 }
 
@@ -209,14 +186,6 @@ func (k *personKeptRig) requireRefusal(t *testing.T, what string, response *http
 func (k *personKeptRig) requireKept(t *testing.T, what string, response *httptest.ResponseRecorder, before map[string]string, names ...string) {
 	t.Helper()
 	k.requireRefusal(t, what, response, before, http.StatusConflict, codeAnsweredAskKept, names...)
-}
-
-// requirePersonKeptTaken fails t unless response is want.
-func requirePersonKeptTaken(t *testing.T, what string, response *httptest.ResponseRecorder, want int) {
-	t.Helper()
-	if response.Code != want {
-		t.Fatalf("%s answered %d, want %d: %s", what, response.Code, want, response.Body.String())
-	}
 }
 
 // personKeptIssue is one issue alice wrote whole (personKeptSpec) on an issue Legion does not run,
@@ -445,8 +414,7 @@ func personKeptAskChanges() []personKeptChange {
 	}
 }
 
-// personKeptEntry is the Decisions read's entry of the block id of the issue's spec, as alice
-// reads it.
+// entry is the Decisions read's entry of the block id of the issue's spec, as alice reads it.
 func (k *personKeptRig) entry(t *testing.T, f personKeptIssue, id string) decisionEntry {
 	t.Helper()
 	return requireEntry(t, readEntries(t, k.handler, f.key), id, refs.BlockNodeKind+":"+f.node(id))
@@ -466,7 +434,7 @@ func (k *personKeptRig) stateOf(t *testing.T, kind, id string) string {
 func (k *personKeptRig) dryRun(t *testing.T, caller personKeptCaller, f personKeptIssue, address string) int {
 	t.Helper()
 	response := k.send(t, caller, http.MethodDelete, f.nodePath(address, "dry_run=true"), nil, "")
-	requirePersonKeptTaken(t, caller.name+"'s dry run of the delete of "+address, response, http.StatusOK)
+	succeeded(t, caller.name+"'s dry run of the delete of "+address, response)
 	return decodeBody[struct {
 		Count int `json:"count"`
 	}](t, response).Count
@@ -487,7 +455,7 @@ func (k *personKeptRig) move(t *testing.T, caller personKeptCaller, f personKept
 	return k.send(t, caller, http.MethodPatch, f.nodePath(address, ""), map[string]any{"parent": parent}, tag)
 }
 
-// state is caller's write of value on the node address names under f.
+// state is caller's write of value on the node address names under the issue key.
 func (k *personKeptRig) state(t *testing.T, caller personKeptCaller, key, address, value string) *httptest.ResponseRecorder {
 	t.Helper()
 	return k.send(t, caller, http.MethodPost, statePath(key, address, "state"), map[string]any{"state": value}, "")
@@ -554,7 +522,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			body["scopes"] = scopes
 		}
 		response := k.send(t, minter, http.MethodPost, "/api/v1/me/agent-tokens", body, "")
-		requirePersonKeptTaken(t, minter.name+"'s mint of "+name, response, http.StatusCreated)
+		created(t, minter.name+"'s mint of "+name, response)
 		return decodeBody[agentTokenResponse](t, response)
 	}
 	holds := func(t *testing.T, what string, token agentTokenResponse, want ...string) {
@@ -574,7 +542,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		t.Fatalf("the token minted naming no scope holds %v", later.Scopes)
 	}
 	changed := k.send(t, browser, http.MethodPatch, "/api/v1/me/agent-tokens/"+later.ID, map[string]any{"scopes": []string{model.ScopePerson}}, "")
-	requirePersonKeptTaken(t, "alice's change of the token minted without person to hold it", changed, http.StatusOK)
+	succeeded(t, "alice's change of the token minted without person to hold it", changed)
 	holds(t, "the token changed to hold person", decodeBody[agentTokenResponse](t, changed), model.ScopePerson)
 	minter := mint(t, browser, "holding person and approve", []string{model.ScopePerson, model.ScopeApprove})
 	tokenMinted := mint(t, personKeptBearer("alice's personal token holding person and approve", minter.Token), "minted by a personal token", nil)
@@ -595,12 +563,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 	t.Run("no broker token mints a token", func(t *testing.T) {
 		tokens := countRows(t, k.database, `select (select count(*) from agent_tokens) + (select count(*) from agent_read_tokens)`)
 		response := k.send(t, aliceBroker, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "from the broker"}, "")
-		var refusal refusalAnswer
-		_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-		if response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired || !strings.Contains(refusal.Error, model.ScopeApprove) {
-			t.Fatalf("broker token mint answered %d %s, want 403 %s naming %s: %s",
-				response.Code, refusal.Code, codeScopeRequired, model.ScopeApprove, response.Body.String())
-		}
+		requireRelationRefused(t, "the broker token's mint", response, http.StatusForbidden, codeScopeRequired, model.ScopeApprove)
 		if after := countRows(t, k.database, `select (select count(*) from agent_tokens) + (select count(*) from agent_read_tokens)`); after != tokens {
 			t.Fatalf("the broker token's refused mint moved the tokens from %d to %d", tokens, after)
 		}
@@ -608,17 +571,15 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 
 	t.Run("the text paths", func(t *testing.T) {
 		f := k.issue(t, "PKA")
-		requirePersonKeptTaken(t, "the shared token's decision ad1", k.send(t, shared, http.MethodPost, f.edits(),
-			map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": personKeptAgentDecisionCode}}}, ""), http.StatusOK)
+		succeeded(t, "the shared token's decision ad1", k.send(t, shared, http.MethodPost, f.edits(),
+			map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": personKeptAgentDecisionCode}}}, ""))
 		// A typed block's opening line carries braces (pmdoc's malformedDirectiveReason), so the
 		// plan's decision names an id of its own.
 		plan := k.send(t, shared, http.MethodPost, f.uploads(), map[string]any{
 			"name": "plan.md", "content": "# Plan\n\n" + personKeptQuestion + " The ledger.\n\n:::decision{#td1}\n" + personKeptWords + "\n:::\n",
 		}, "")
-		requirePersonKeptTaken(t, "the shared token's plan holding alice's words", plan, http.StatusCreated)
-		k.documents = append(k.documents, decodeBody[struct {
-			Artifact model.Artifact `json:"artifact"`
-		}](t, plan).Artifact.ID)
+		created(t, "the shared token's plan holding alice's words", plan)
+		k.documents = append(k.documents, decodeBody[uploadedArtifact](t, plan).Artifact.ID)
 		awaitSettled(t, k.database, f.spec.id)
 		requireDecidedByNode(t, k.database, "the agent's decision ad1", f.node("ad1"), graphstore.KindSession, decidingSession)
 
@@ -636,7 +597,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			{name: "the project's upload", path: p.uploads(), upload: personKeptProjectDocName},
 		}
 		before := k.snapshot(t)
-		askNames := []string{refs.AskRef(textRefOf(f.key, f.ask)), strconv.Quote(personKeptQuestion), f.block("q1")}
+		askNames := []string{refs.AskRef(text.Ref{IssueKey: f.key, ID: f.ask}), strconv.Quote(personKeptQuestion), f.block("q1")}
 		for _, path := range paths {
 			for _, change := range personKeptAskChanges() {
 				what := "agent " + change.what + " of the answered ask's block " + f.block("q1") + " through " + path.name
@@ -675,7 +636,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 				{"op": "insert", "into": "block:s2", "markdown": ":::decision{#pd2}\n" + personKeptWords + "\n:::\n"},
 			}},
 		} {
-			requirePersonKeptTaken(t, move.what, k.send(t, shared, http.MethodPost, f.edits(), map[string]any{"ops": move.ops}, ""), http.StatusOK)
+			succeeded(t, move.what, k.send(t, shared, http.MethodPost, f.edits(), map[string]any{"ops": move.ops}, ""))
 			awaitSettled(t, k.database, f.spec.id)
 			if moved := k.entry(t, f, "pd2"); moved.Document == nil || moved.Document.ArtifactID != f.spec.id || moved.Text != words.Text {
 				t.Fatalf("after the %s it reads %s, want it in the spec %s with its words %q", move.what, entryJSON(t, moved), f.spec.id, words.Text)
@@ -703,7 +664,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 				"op": "retype", "block": "pd2", "type": "decision", "attributes": map[string]any{"shaped": []string{pointer}},
 			}},
 		} {
-			requirePersonKeptTaken(t, write.what, k.send(t, shared, http.MethodPost, f.edits(), map[string]any{"ops": []map[string]any{write.op}}, ""), http.StatusOK)
+			succeeded(t, write.what, k.send(t, shared, http.MethodPost, f.edits(), map[string]any{"ops": []map[string]any{write.op}}, ""))
 		}
 		awaitSettled(t, k.database, f.spec.id)
 		read := k.entry(t, f, "pd2")
@@ -723,30 +684,28 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		// by the agent leaves its sum and her Keep standing, and the agent may change its words.
 		agents := k.entry(t, f, "ad1")
 		keepBlock(t, k.handler, f.spec.id, "ad1", agents.TextSHA256)
-		requirePersonKeptTaken(t, "agent retype writing the shaped of its decision alice kept", k.send(t, shared, http.MethodPost, f.edits(), map[string]any{
+		succeeded(t, "agent retype writing the shaped of its decision alice kept", k.send(t, shared, http.MethodPost, f.edits(), map[string]any{
 			"ops": []map[string]any{{"op": "retype", "block": "ad1", "type": "decision", "attributes": map[string]any{"shaped": []string{pointer}}}},
-		}, ""), http.StatusOK)
+		}, ""))
 		awaitSettled(t, k.database, f.spec.id)
 		if kept := k.entry(t, f, "ad1"); kept.TextSHA256 != agents.TextSHA256 || kept.Kept == nil || kept.Kept.KeptBy != "alice" || kept.WaitingReview {
 			t.Fatalf("the agent's shaped of %s moved its text_sha256 from %s to %s, and its Keep reads %s with waiting_review %t, want alice's Keep standing",
 				f.node("ad1"), agents.TextSHA256, kept.TextSHA256, entryJSON(t, kept.Kept), kept.WaitingReview)
 		}
 		requireDecidedByNode(t, k.database, "the agent's decision ad1 alice kept", f.node("ad1"), graphstore.KindSession, decidingSession)
-		requirePersonKeptTaken(t, "agent change of the words of its decision alice kept", k.send(t, shared, http.MethodPost, f.slugEdits(), map[string]any{
+		succeeded(t, "agent change of the words of its decision alice kept", k.send(t, shared, http.MethodPost, f.slugEdits(), map[string]any{
 			"ops": []map[string]any{{"op": "replace", "find": personKeptAgentWords, "with": "We cache every read for an hour."}},
-		}, ""), http.StatusOK)
-		requirePersonKeptTaken(t, "agent change of alice's prose", k.send(t, shared, http.MethodPost, f.edits(), map[string]any{
+		}, ""))
+		succeeded(t, "agent change of alice's prose", k.send(t, shared, http.MethodPost, f.edits(), map[string]any{
 			"ops": []map[string]any{{"op": "replace", "find": personKeptProse, "with": "The agent rewrote alice's paragraph."}},
-		}, ""), http.StatusOK)
+		}, ""))
 		notes := k.send(t, browser, http.MethodPost, f.uploads(), map[string]any{"name": "notes.md", "content": "# Notes\n\nAlice's notes, no decision among them.\n"}, "")
-		requirePersonKeptTaken(t, "alice's notes", notes, http.StatusCreated)
-		notesID := decodeBody[struct {
-			Artifact model.Artifact `json:"artifact"`
-		}](t, notes).Artifact.ID
+		created(t, "alice's notes", notes)
+		notesID := decodeBody[uploadedArtifact](t, notes).Artifact.ID
 		k.documents = append(k.documents, notesID)
-		requirePersonKeptTaken(t, "agent replacement of alice's notes, which hold no decision of hers", k.send(t, shared, http.MethodPost, f.uploads(), map[string]any{
+		created(t, "agent replacement of alice's notes, which hold no decision of hers", k.send(t, shared, http.MethodPost, f.uploads(), map[string]any{
 			"name": "notes.md", "content": "# Notes\n\nThe agent's notes.\n", "precondition": uploadBase(t, k.handler, notesID),
-		}, ""), http.StatusCreated)
+		}, ""))
 	})
 
 	t.Run("the node routes and the state route", func(t *testing.T) {
@@ -759,7 +718,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		if held := k.stateOf(t, refs.BlockNodeKind, pd2); held != graphstore.StateLive {
 			t.Fatalf("agent state overtaken of %s answered 409 and left it %s, want live", pd2, held)
 		}
-		requirePersonKeptTaken(t, "alice's overtaken of her decision", k.state(t, browser, f.key, pd2, graphstore.StateOvertaken), http.StatusOK)
+		succeeded(t, "alice's overtaken of her decision", k.state(t, browser, f.key, pd2, graphstore.StateOvertaken))
 		before = k.snapshot(t)
 		k.requireKept(t, "agent state live of "+pd2, k.state(t, shared, f.key, pd2, graphstore.StateLive), before, strconv.Quote(personKeptWords))
 		k.requireRefusal(t, "agent state proposed of "+pd2, k.state(t, shared, f.key, pd2, graphstore.StateProposed), before, http.StatusForbidden, codeStateNotPermitted, f.block("pd2"))
@@ -769,10 +728,10 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		if held := k.stateOf(t, refs.BlockNodeKind, pd2); held != graphstore.StateOvertaken {
 			t.Fatalf("the agent's refused state writes left alice's decision %s, want the overtaken she wrote", held)
 		}
-		requirePersonKeptTaken(t, "alice's live of her decision", k.state(t, browser, f.key, pd2, graphstore.StateLive), http.StatusOK)
+		succeeded(t, "alice's live of her decision", k.state(t, browser, f.key, pd2, graphstore.StateLive))
 		for _, person := range people {
 			for _, value := range []string{graphstore.StateOvertaken, graphstore.StateLive} {
-				requirePersonKeptTaken(t, person.name+"'s state "+value+" of "+pd2, k.state(t, person, f.key, pd2, value), http.StatusOK)
+				succeeded(t, person.name+"'s state "+value+" of "+pd2, k.state(t, person, f.key, pd2, value))
 				if held := k.stateOf(t, refs.BlockNodeKind, pd2); held != value {
 					t.Fatalf("%s's state %s of %s left it %s", person.name, value, pd2, held)
 				}
@@ -803,7 +762,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		// The agent moves the section that holds alice's decision: the decision stays in its spec,
 		// with its words.
 		held := k.entry(t, f, "pd1")
-		requirePersonKeptTaken(t, "agent PATCH of the section "+f.node("s1"), k.move(t, shared, f, f.node("s1"), f.node("s2")), http.StatusOK)
+		succeeded(t, "agent PATCH of the section "+f.node("s1"), k.move(t, shared, f, f.node("s1"), f.node("s2")))
 		awaitSettled(t, k.database, f.spec.id)
 		if moved := k.entry(t, f, "pd1"); moved.Document == nil || moved.Document.ArtifactID != f.spec.id || moved.Text != held.Text {
 			t.Fatalf("alice's decision after the agent moved its section reads %s, want it in the spec %s with its words %q",
@@ -812,9 +771,9 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 	})
 
 	t.Run("the own node of an ask an agent asked and alice answered", func(t *testing.T) {
-		requirePersonKeptTaken(t, "alice's project "+brokerTestProject, k.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+		created(t, "alice's project "+brokerTestProject, k.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 			"key": brokerTestProject, "name": "Broker",
-		}), http.StatusCreated)
+		}))
 		issue := createSpecIssue(t, k.handler, brokerTestProject, "The sessions ask here.\n")
 		k.documents = append(k.documents, issue.PrimaryArtifactID)
 		session := func(name, id, owner, token string) personKeptCaller {
@@ -829,7 +788,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		asked := k.send(t, asker, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 			"question": personKeptQuestion, "options": []map[string]string{{"label": "Ledger"}, {"label": "Log"}},
 		}, "")
-		requirePersonKeptTaken(t, "the asking session's ask", asked, http.StatusCreated)
+		created(t, "the asking session's ask", asked)
 		ask := decodeBody[model.Ask](t, asked)
 		answerAskForChange(t, k.handler, ask.ID, "alice", "Ledger", nil)
 		node := graphstore.KindAsk + "/" + ask.ID
@@ -854,39 +813,39 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			project := "PKT" + string(rune('A'+index))
 			f := k.issue(t, project)
 			for _, value := range []string{graphstore.StateOvertaken, graphstore.StateLive} {
-				requirePersonKeptTaken(t, person.name+"'s state "+value+" of alice's decision", k.state(t, person, f.key, f.node("pd1"), value), http.StatusOK)
+				succeeded(t, person.name+"'s state "+value+" of alice's decision", k.state(t, person, f.key, f.node("pd1"), value))
 			}
-			requirePersonKeptTaken(t, person.name+"'s change of the words of alice's decision through the spec's edit by its id",
+			succeeded(t, person.name+"'s change of the words of alice's decision through the spec's edit by its id",
 				k.send(t, person, http.MethodPost, f.edits(), map[string]any{
 					"ops": []map[string]any{{"op": "replace", "find": personKeptWords, "with": personKeptRewordedWords}},
-				}, ""), http.StatusOK)
-			requirePersonKeptTaken(t, person.name+"'s removal of the answered ask's block through the spec's edit by its issue's slug",
-				k.send(t, person, http.MethodPost, f.slugEdits(), map[string]any{"ops": []map[string]any{{"op": "delete", "block": "q1"}}}, ""), http.StatusOK)
+				}, ""))
+			succeeded(t, person.name+"'s removal of the answered ask's block through the spec's edit by its issue's slug",
+				k.send(t, person, http.MethodPost, f.slugEdits(), map[string]any{"ops": []map[string]any{{"op": "delete", "block": "q1"}}}, ""))
 			awaitSettled(t, k.database, f.spec.id)
-			requirePersonKeptTaken(t, person.name+"'s PATCH of alice's decision", k.move(t, person, f, f.node("pd1"), f.node("s2")), http.StatusOK)
+			succeeded(t, person.name+"'s PATCH of alice's decision", k.move(t, person, f, f.node("pd1"), f.node("s2")))
 			awaitSettled(t, k.database, f.spec.id)
-			requirePersonKeptTaken(t, person.name+"'s DELETE of alice's decision",
-				k.remove(t, person, f, f.node("pd2"), k.dryRun(t, person, f, f.node("pd2"))), http.StatusOK)
+			succeeded(t, person.name+"'s DELETE of alice's decision",
+				k.remove(t, person, f, f.node("pd2"), k.dryRun(t, person, f, f.node("pd2"))))
 			awaitSettled(t, k.database, f.spec.id)
-			requirePersonKeptTaken(t, person.name+"'s upload changing the words of alice's decision",
+			created(t, person.name+"'s upload changing the words of alice's decision",
 				k.write(t, person, personKeptPath{name: "the issue's upload", path: f.uploads(), upload: personKeptSpecDocumentName}, f.spec.id, personKeptChange{
 					upload: personKeptReword(personKeptSectionWords, "We write through two ledgers."),
-				}), http.StatusCreated)
+				}))
 
 			p := k.projectDocument(t, project)
-			requirePersonKeptTaken(t, person.name+"'s change of the words of alice's project decision through its project's slug",
+			succeeded(t, person.name+"'s change of the words of alice's project decision through its project's slug",
 				k.send(t, person, http.MethodPost, p.slugEdits(), map[string]any{
 					"ops": []map[string]any{{"op": "replace", "find": personKeptProjectWords, "with": personKeptRewordedProject}},
-				}, ""), http.StatusOK)
-			requirePersonKeptTaken(t, person.name+"'s retype of alice's project decision through its id",
+				}, ""))
+			succeeded(t, person.name+"'s retype of alice's project decision through its id",
 				k.send(t, person, http.MethodPost, p.edits(), map[string]any{"ops": []map[string]any{{
 					"op": "retype", "block": "jd2", "type": "callout", "attributes": map[string]any{"kind": "note", "title": "Was decided"},
-				}}}, ""), http.StatusOK)
+				}}}, ""))
 			awaitSettled(t, k.database, p.document.ID)
-			requirePersonKeptTaken(t, person.name+"'s upload without alice's project decision",
+			created(t, person.name+"'s upload without alice's project decision",
 				k.write(t, person, personKeptPath{name: "the project's upload", path: p.uploads(), upload: personKeptProjectDocName}, p.document.ID, personKeptChange{
 					upload: personKeptCut(":::decision{#jd3"),
-				}), http.StatusCreated)
+				}))
 		})
 	}
 
@@ -897,14 +856,14 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		spec := readDecisionDocument(t, k.database, issue.Key, "spec")
 		k.documents = append(k.documents, spec.id)
 		edits := "/api/v1/artifacts/" + spec.id + "/edits"
-		requirePersonKeptTaken(t, "the agent's decisions e1 and e2", k.send(t, shared, http.MethodPost, edits, map[string]any{"ops": []map[string]any{{
+		succeeded(t, "the agent's decisions e1 and e2", k.send(t, shared, http.MethodPost, edits, map[string]any{"ops": []map[string]any{{
 			"op": "insert", "after": "end", "markdown": ":::decision{#e1}\nWe page every read.\n:::\n\n:::decision{#e2}\nWe batch the writes.\n:::\n",
-		}}}, ""), http.StatusOK)
+		}}}, ""))
 		pointer := "dispatch://" + issue.Key + "/spec#b-r1"
 		for _, id := range []string{"e1", "e2"} {
-			requirePersonKeptTaken(t, "the agent's shaped of "+id, k.send(t, shared, http.MethodPost, edits, map[string]any{"ops": []map[string]any{{
+			succeeded(t, "the agent's shaped of "+id, k.send(t, shared, http.MethodPost, edits, map[string]any{"ops": []map[string]any{{
 				"op": "retype", "block": id, "type": "decision", "attributes": map[string]any{"shaped": []string{pointer}},
-			}}}, ""), http.StatusOK)
+			}}}, ""))
 		}
 		awaitSettled(t, k.database, spec.id)
 		entries := readEntries(t, k.handler, issue.Key)
@@ -912,9 +871,9 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			keepBlock(t, k.handler, spec.id, id, requireEntry(t, entries, id, refs.BlockNodeKind+":"+spec.address(id)).TextSHA256)
 		}
 		unchanged := documentMarkdown(t, k.handler, spec.id)
-		requirePersonKeptTaken(t, "alice's change of e2's words", dispatchRequest(t, k.handler, http.MethodPost, edits, map[string]any{
+		succeeded(t, "alice's change of e2's words", dispatchRequest(t, k.handler, http.MethodPost, edits, map[string]any{
 			"ops": []map[string]any{{"op": "replace", "find": "We batch the writes.", "with": "We batch every write."}},
-		}, "alice"), http.StatusOK)
+		}, "alice"))
 		awaitSettled(t, k.database, spec.id)
 		e1Sum := personKeptShapedSum(t, documentMarkdown(t, k.handler, spec.id), "e1")
 		e2Sum := personKeptShapedSum(t, unchanged, "e2")
@@ -927,13 +886,7 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 			if err != nil {
 				t.Fatalf("take the store census: %v", err)
 			}
-			for _, kind := range report.Kinds {
-				if kind.Kind == "keep_shaped_sum" {
-					return kind.Owed
-				}
-			}
-			t.Fatalf("the store census reported no kind keep_shaped_sum")
-			return 0
+			return censusKindOf(t, report, "keep_shaped_sum").Owed
 		}
 		if owed := census(t); owed != 1 {
 			t.Errorf("census kind keep_shaped_sum reads %d, want %d", owed, 1)
@@ -960,9 +913,6 @@ func TestOnlyAPersonChangesAPersonsDecision(t *testing.T) {
 		}
 	})
 }
-
-// textRefOf is the ask id of the issue key as an ask's address is written from.
-func textRefOf(key, id string) text.Ref { return text.Ref{IssueKey: key, ID: id} }
 
 // personKeptShapedSum is the sum a release before this one stored for a Keep of the decision id of
 // markdown: the decision rendered alone with its shaped attribute, without the readings it closes

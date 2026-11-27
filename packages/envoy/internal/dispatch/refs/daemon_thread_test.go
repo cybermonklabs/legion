@@ -16,10 +16,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// R2's rule of the Legion daemon (this issue's spec R2), read through every reader of R2's test:
-// no message of a thread whose root the daemon's session posted is a conversation node, whoever
-// wrote it, a person's reply included, and neither is the daemon's own message in a thread a
-// person began, while every other message of that thread is one.
+// R2's rule of the Legion daemon (R2 of the issue-tree spec), read through every reader of R2's
+// test: no message of a thread whose root the daemon's session posted is a conversation node,
+// whoever wrote it, a person's reply included, and neither is the daemon's own message in a thread
+// a person began, while every other message of that thread is one.
 //
 // The issue holds two threads of messages. The first the session legion-daemon:CORE began: its
 // READY, a person's reply to it, an agent's reply to it, and a person's reply to that agent's
@@ -52,21 +52,16 @@ func TestNoMessageOfADaemonThreadIsAConversationNode(t *testing.T) {
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
 	spec, refKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
-	const (
-		person = `{"kind":"user","id":"alice"}`
-		agent  = `{"kind":"session","id":"architect-1"}`
-		daemon = `{"kind":"session","id":"legion-daemon:CORE"}`
-	)
 	t1 := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	second := func(n int) time.Time { return t1.Add(time.Duration(n) * time.Second) }
-	ready, readyBlock := conversationItem(t, tx, "messages", "CORE-1", daemon, "READY: the issue is claimed.", second(0), "")
-	held, heldBlock := conversationItem(t, tx, "messages", "CORE-1", person, "Hold it until Friday.", second(1), ready)
-	noted, notedBlock := conversationItem(t, tx, "messages", "CORE-1", agent, "Held until Friday.", second(2), ready)
-	deeper, deeperBlock := conversationItem(t, tx, "messages", "CORE-1", person, "And tell me when it runs.", second(3), noted)
-	asked, askedBlock := conversationItem(t, tx, "messages", "CORE-1", person, "Is the issue claimed?", second(4), "")
-	withdrawn, withdrawnBlock := conversationItem(t, tx, "messages", "CORE-1", daemon, "Withdrawn.", second(5), asked)
-	under, underBlock := conversationItem(t, tx, "messages", "CORE-1", person, "Why was it withdrawn?", second(6), withdrawn)
-	agreed, agreedBlock := conversationItem(t, tx, "messages", "CORE-1", agent, "It lost its claim.", second(7), under)
+	ready, readyBlock := conversationItem(t, tx, "messages", "CORE-1", itemDaemon, "READY: the issue is claimed.", second(0), "")
+	held, heldBlock := conversationItem(t, tx, "messages", "CORE-1", itemPerson, "Hold it until Friday.", second(1), ready)
+	noted, notedBlock := conversationItem(t, tx, "messages", "CORE-1", itemAgent, "Held until Friday.", second(2), ready)
+	deeper, deeperBlock := conversationItem(t, tx, "messages", "CORE-1", itemPerson, "And tell me when it runs.", second(3), noted)
+	asked, askedBlock := conversationItem(t, tx, "messages", "CORE-1", itemPerson, "Is the issue claimed?", second(4), "")
+	withdrawn, withdrawnBlock := conversationItem(t, tx, "messages", "CORE-1", itemDaemon, "Withdrawn.", second(5), asked)
+	under, underBlock := conversationItem(t, tx, "messages", "CORE-1", itemPerson, "Why was it withdrawn?", second(6), withdrawn)
+	agreed, agreedBlock := conversationItem(t, tx, "messages", "CORE-1", itemAgent, "It lost its claim.", second(7), under)
 	at := second(60)
 
 	messages := []struct {
@@ -143,13 +138,9 @@ func TestNoMessageOfADaemonThreadIsAConversationNode(t *testing.T) {
 	// conversationTargets, the read a write's pointers are resolved through, by the message and by
 	// its first block.
 	messageRef := func(id string) string { return "dispatch://CORE-1/message/" + id }
-	blockRef := func(nodeID string) string {
-		_, id, block, _ := ParseItemBlockNode(nodeID)
-		return messageRef(id) + "#b-" + text.EncodeBlockID(block)
-	}
 	var targets []text.Ref
 	for _, message := range messages {
-		for _, written := range []string{messageRef(message.id), blockRef(message.block)} {
+		for _, written := range []string{messageRef(message.id), itemBlockReference(message.block)} {
 			ref, parsed := text.ParseRef(written, "")
 			if !parsed {
 				t.Fatalf("%s is no reference", written)
@@ -175,19 +166,9 @@ func TestNoMessageOfADaemonThreadIsAConversationNode(t *testing.T) {
 	}
 
 	// A criterion's parent, through the resolver docs' refuseBlockPointers calls.
-	check := func(parent string) error {
-		t.Helper()
-		tree, err := pmdoc.Parse(":::criterion{#k1 parent=\"" + parent + "\"}\nI want it.\n:::\n")
-		if err != nil {
-			t.Fatalf("parse a criterion under %s: %v", parent, err)
-		}
-		return pmdoc.CheckBlockPointers(tree, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-			return BlockTargets(ctx, tx, spec, storedAddress(t, tx, spec), nil, targets)
-		})
-	}
 	for _, message := range messages {
-		for _, parent := range []string{messageRef(message.id), blockRef(message.block)} {
-			err := check(parent)
+		for _, parent := range []string{messageRef(message.id), itemBlockReference(message.block)} {
+			err := criterionUnder(t, tx, spec, parent)
 			switch {
 			case message.want && err != nil:
 				t.Errorf("a criterion under %s, %s = %v, want it taken", parent, message.name, err)

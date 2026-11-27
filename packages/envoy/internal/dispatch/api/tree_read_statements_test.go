@@ -176,10 +176,10 @@ func countedTreeRead(t *testing.T, handler http.Handler, issue string) *httptest
 // document_nodes and answers none of the blocks of (R8), held to that shape first - read as its
 // reader with display trees, reads the store set-wise: it sends no statement that reads the
 // children of the walk's nodes again, which the walk has read already (docs' IssueTree.Children),
-// and it sends at most treeReadStatementBound statements, a batch counted once, where the read of
-// each part a node at a time sent 23. A read that put the children read back sends that
-// statement, and fails here naming it. This is the half of the read's cost that a shared
-// machine's clock cannot blur; TestTheTreeReadAnswersTheSkeletonWithinItsBounds times the read.
+// and it sends at most treeReadStatementBound statements, a batch counted once. A read that put the
+// children read back sends that statement, and fails here naming it. This is the half of the read's
+// cost that a shared machine's clock cannot blur; TestTheTreeReadAnswersTheSkeletonWithinItsBounds
+// times the read.
 func TestTheTreeReadSendsNoRepeatedStatement(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}

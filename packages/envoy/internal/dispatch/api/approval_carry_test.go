@@ -24,8 +24,8 @@ import (
 // ask block is held once, on the ask's node, and writes one version. When the answer is that
 // version's whole change (docs' changesAskAttributesAlone: text a person was editing in the
 // browser can settle into the same version), the version changes only the server-owned attributes
-// of the ask's block (R3), and R10's case carries an approval across it; the carries are those of
-// a version restoring the approved text, of R2's readings (reading_approval_test.go) and of R10's
+// of the ask's block (R3), and R5's case carries an approval across it; the carries are those of
+// a version restoring the approved text, of R2's readings (reading_approval_test.go) and of R5's
 // case (docs.carryApproval).
 
 // carriedAsk is an approval ask as the carry tests read it: the document version it names and the
@@ -505,7 +505,7 @@ func requireNoVersionPast(t *testing.T, handler http.Handler, database *store.St
 
 // requireCarriedByTheAttributeCase fails t unless the document reads approved by login at its
 // latest version, number, carried from login's approval of version from (directly, or through the
-// carries between) by R10's case of the server-owned ask attributes.
+// carries between) by R5's case of the server-owned ask attributes.
 func requireCarriedByTheAttributeCase(t *testing.T, handler http.Handler, artifactID, login string, from, number int) {
 	t.Helper()
 	read := readApproval(t, handler, artifactID)
@@ -523,7 +523,7 @@ func requireCarriedByTheAttributeCase(t *testing.T, handler http.Handler, artifa
 // version and carries nothing: the approval stays where it stood, stale, since the blocks
 // themselves are a change he did not approve. Once he approves the version holding the answered
 // block, his change of the answer and the resolution of the other block write the versions of
-// their state, which R10's case carries his approval across: no approval request is opened, and
+// their state, which R5's case carries his approval across: no approval request is opened, and
 // no stored version holds an answer's words. The document is one no query covers
 // (uncoveredDocument): R14 reads a spec's approval by the Spec query's record, which holds no ask
 // block, so a spec that holds no requirement would read approved after the blocks' insert.
@@ -573,11 +573,11 @@ func TestAnAnswerWritesOneVersionOfItsStateAndTheApprovalIsCarriedAcrossIt(t *te
 	}
 }
 
-// R3 and R10's turn rule: a person's answer, resolve or decline of an ask writes one version,
+// R3 and R5's turn rule: a person's answer, resolve or decline of an ask writes one version,
 // whose only change from the version an open approval request names is in the server-owned
 // attributes of the ask's block, every block agreeing with its node. So a request that waits on
 // the person moves to that version and still waits on the person, requested at it, and the move's
-// ask.edited is quiet and notifies nobody (docs.MoveApprovalAsk, by the test R10's carry case makes).
+// ask.edited is quiet and notifies nobody (docs.MoveApprovalAsk, by the test R5's carry case makes).
 // The reopen's settlement keeps the turn by the same rule
 // (TestAReopenKeepsTheRequestWithThePersonWhenItsVersionDiffersOnlyInTheAskAttributes).
 func TestAnAnswerAResolveAndADeclineLeaveAnApprovalRequestWithThePerson(t *testing.T) {
@@ -644,7 +644,7 @@ func TestAnAnswerAResolveAndADeclineLeaveAnApprovalRequestWithThePerson(t *testi
 // An agent's edit through the edits route versions the document in its own transaction, and a
 // person's answer given just before it reaches that version only as its block's kept state - its
 // state, who answered and when (R3) - never its words. So the version the edit writes holds the edit and no answer's words, and the edit, inside
-// another block's question, supersedes the approval as any further character does (R10: "A write
+// another block's question, supersedes the approval as any further character does (R5: "A write
 // that changes one further character supersedes the approval as it does today"). The document is
 // one no query covers (uncoveredDocument): R14 carries a spec's approval across the edit by the
 // record carry, since the Spec query takes no ask block.
@@ -693,10 +693,10 @@ func versionMarkdown(t *testing.T, handler http.Handler, artifactID string, numb
 // question: an answered ask is a person's decision, whose words no agent's write changes (R32), so
 // its edit is refused and writes no version. bob's edit of the question, through the edits route,
 // versions in the route's own transaction: it shows the answer's block under wording nobody
-// decided, a further character the approval does not hold, so nothing is carried (R10: "A write
+// decided, a further character the approval does not hold, so nothing is carried (R5: "A write
 // that changes one further character supersedes the approval"). Settlement then writes the decided
 // wording back, and that version is the one alice approved but for what a version keeps of the
-// second answer (its block's state, answerer and time), which carries her approval by R10's case.
+// second answer (its block's state, answerer and time), which carries her approval by R5's case.
 // The document is one no query covers (uncoveredDocument): R14 reads a spec's approval approved
 // by its record's digest at the reworded version, since the Spec query takes no ask block.
 func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes(t *testing.T) {
@@ -726,7 +726,7 @@ func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
 
 	// The decided wording back, and the second block showing what a version keeps of alice's answer
 	// to it (docs' keptAskState): version 4 differs from the approved version 2 in the server-owned
-	// attributes of its ask blocks alone, so R10's case carries the approval.
+	// attributes of its ask blocks alone, so R5's case carries the approval.
 	settledVersion(t, handler, documents, notes, 4)
 	if restored, approved := versionMarkdown(t, handler, notes, 4), versionMarkdown(t, handler, notes, 2); askServerAttribute.ReplaceAllString(restored, "") != askServerAttribute.ReplaceAllString(approved, "") || strings.Contains(restored, "goes last?") {
 		t.Fatalf("version 4 = %s, want settlement to have written the decided wording back, giving the approved version 2's text %s but for its ask blocks' server-owned attributes", restored, approved)
@@ -743,10 +743,10 @@ func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
 // release before serves: the one fleet whose version writes keep every attribute a version can
 // store, since on a fleet of one build a version written before settlement takes the answer's
 // words off (docs' storableVersionTree). That version's block shows a state its row does not hold,
-// so it does not agree with its node and nothing is carried (R10: "Every ask of the document must
+// so it does not agree with its node and nothing is carried (R5: "Every ask of the document must
 // still agree with its node"). Once the release before's process has left, settlement writes the
 // block's kept state from its node over the forgery, and that version is the one he approved but
-// for what a version keeps of the second answer, which carries his approval by R10's case; for
+// for what a version keeps of the second answer, which carries his approval by R5's case; for
 // `invalid`, which no rendering writes and no version write takes off, settlement's repair changes
 // no markdown and versions nothing, so the approval stays stale. The document is one no query
 // covers (uncoveredDocument): R14 reads a spec's approval approved by its record's digest at the
@@ -871,28 +871,23 @@ func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.S
 // settledWithoutVersion settles the document's room at once, for a document whose settlement is
 // owed, and waits until that settlement has committed: its pending-settlement row, which a live
 // write leaves and only a settlement's commit clears, is gone. The row is keyed by the room the
-// document is edited in (documentRoomOf), as the settlement that clears it is. It fails t
+// document is edited in (documentOwesSettlement), as the settlement that clears it is. It fails t
 // when the document owes no settlement, since then there would be nothing to wait for. The wait's
 // one bound is the test binary's deadline less testwait's margin.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
-	room, _ := documentRoomOf(t, database.Pool, artifactID)
-	owed := func() bool {
-		var pending bool
-		if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, room).Scan(&pending); err != nil {
-			t.Fatalf("read the document's pending settlement: %v", err)
-		}
-		return pending
-	}
-	if !owed() {
+	if !documentOwesSettlement(t, database, artifactID) {
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
+	room, _ := documentRoomOf(t, database.Pool, artifactID)
 	documents.SettleNow(room)
-	waitUntil(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool { return !owed() })
+	waitUntil(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool {
+		return !documentOwesSettlement(t, database, artifactID)
+	})
 }
 
 // Stale: the agent changed a paragraph outside the blocks after his approval and before his answer.
-// The paragraph edit supersedes the approval as any further character does (R10), and the answer,
+// The paragraph edit supersedes the approval as any further character does (R5), and the answer,
 // which writes one version of its block's state alone (R3), changes nothing of that: the approval
 // stays stale. The document is one no query covers (uncoveredDocument): R14 carries a spec's
 // approval across the paragraph's edit and the answer by the record carry, since the Spec query
@@ -913,7 +908,7 @@ func TestAParagraphEditBeforeTheAnswerDoesNotCarry(t *testing.T) {
 
 // Approved: answers by humans other than the approver - here alice's answer to one block and bob's
 // own to the other, on a document only bob approved - write the versions of their blocks' state
-// alone (R3), and R10's case carries his approval across them, whoever answered.
+// alone (R3), and R5's case carries his approval across them, whoever answered.
 func TestAnswersByHumansOtherThanTheApproverWriteTheirStatesVersionsAndTheApprovalIsCarried(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
@@ -969,7 +964,7 @@ func TestAnAnswerAfterAnotherHumanRequestedChangesDoesNotCarry(t *testing.T) {
 // again with its id and wording. Its row stays answered - settlement retracts only an open ask -
 // and his answer wrote one version, its block's kept state (R3), which he approved. The agent's
 // insert writes the block as an agent writes it, with none of the server-owned attributes, so that
-// version differs from the approved one in those alone: R10's case carries his approval to it.
+// version differs from the approved one in those alone: R5's case carries his approval to it.
 // Settlement then writes the block's kept state back, from its ask's node, which is the approved
 // version's text byte for byte, and the approval is carried to that version too; the delete's
 // version carried nothing. An agent reading the text reads his answer on the block again, rendered
@@ -1034,7 +1029,7 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 // state) beside its block node's copied_from tuple; an agent reading the copy's text reads the block
 // as a copy of the spec's ask, rendered from the store. The human approved both documents; his
 // answer to the spec's ask writes one version of each, which changes only the server-owned
-// attributes of its block (R3), so R10's case carries each approval to it, and the copy's text then
+// attributes of its block (R3), so R5's case carries each approval to it, and the copy's text then
 // shows his answer on its block.
 func TestAnAnswerThroughACopysSourceWritesOneStateVersionOfEachDocumentAndCarriesBothApprovals(t *testing.T) {
 	t.Parallel()
@@ -1125,16 +1120,26 @@ func requestApprovalWithVerification(t *testing.T, handler http.Handler, artifac
 // agent's edit, which holds the approved text (docs.restoresApprovedText) - writes the spec's
 // review in the human's name and leaves the request open, because nobody has approved the
 // Verification document; his approval of that document then answers the request, reviewing both.
+// The issue has not converted (holdIssuesUnconverted), so each document's approval covers its
+// stored markdown: on a converted issue R14 reads the spec's approval by the Spec query's record,
+// which a spec holding no requirement leaves empty at every version, so that approval stands
+// across the agent's edit and the request needs no ask.
 func TestACarryOnOneDocumentOfATwoDocumentRequestLeavesItOpen(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry one of two", "Context\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
 	request := requestApprovalWithVerification(t, handler, issue.PrimaryArtifactID)
 	if request.Approval.Version != 2 || request.Approval.Approved == nil || request.Approval.Approved.Version != 1 {
-		t.Fatalf("request = %#v, want one at spec version 2 following the approval of version 1", request.Approval)
+		approved := "none"
+		if request.Approval.Approved != nil {
+			approved = fmt.Sprintf("%+v", *request.Approval.Approved)
+		}
+		t.Fatalf("request at version %d (requested %d), approved %s, want one at spec version 2 following the approval of version 1",
+			request.Approval.Version, request.Approval.RequestedVersion, approved)
 	}
 
 	// The undo restores the text he approved, so the spec's review is carried; the Verification

@@ -132,6 +132,7 @@ import { type GoneReplyWords, type KeptReplyWords, keptAwayLine } from "./KeptRe
 import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "./MentionField";
 import { ReplyQuote } from "./ReplyQuote";
 import {
+  type Address,
   addressWords,
   carriedIdsOf,
   type DeliveryPlan,
@@ -143,6 +144,7 @@ import {
   type SentDraft,
   type SentRequest,
   type StatementAnchor,
+  sameAddress,
   saveCommentEdit,
   unedited,
 } from "./send-request";
@@ -484,6 +486,11 @@ export interface OutlineLook {
   readonly cancelReply: string;
   /** The word of the control beside a refusal that drops the draft the refusal handed back. */
   readonly discardDraft: string;
+  /** The comment the host's edit line changes while this line waits under it, hidden and still
+   *  mounted so that its draft stays the reader's: part of this line's address, as `edit` is part
+   *  of the edit line's, so that a reason a press drew on this line goes when the edit opens
+   *  (`pressedReason`). None while no edit is open, and on the edit line itself. */
+  readonly editing?: { readonly id: string };
   /** What the target line's control and Escape do: the host ends the line's target - a reply, a
    *  statement, an edit - or, with none, leaves the line. The composer counts each as the reader's
    *  own move of its address, as Cancel reply is (`ownMoves`), so the draft goes with it. */
@@ -1379,13 +1386,18 @@ export function MentionComposer({
   // Every other reason Send refuses on the issue page's line is drawn only once the reader acts:
   // a press of Send, or Enter on a draft that cannot go, puts it on the line's own reason line
   // (`pressedReasonId`), which Send names, empty until then. The press is kept with the address
-  // it was made at - the post a reply answers, the statement a comment is on, the comment an edit
-  // changes - and the line empties as soon as Send's reason changes or goes - the reader writes,
-  // picks another kind, or the draft can go - or the line moves to another address, where the
-  // reader pressed nothing; the next press of a refused Send says it again.
-  const pressedAt = JSON.stringify([replyTo?.id, statement?.artifact, statement?.quote, edit?.id]);
-  const [pressed, setPressed] = useState<{ readonly at: string; readonly said: string }>();
-  if (pressed !== undefined && (pressed.said !== submitReason || pressed.at !== pressedAt)) {
+  // it was made at (`Address`) - the post a reply answers, the statement a comment is on, the
+  // comment an edit changes, which for the issue page's write line is the comment its host's edit
+  // line changes while the write line waits under it (`OutlineLook.editing`) - and the line
+  // empties as soon as Send's reason changes or goes - the reader writes, picks another kind, or
+  // the draft can go - or the line moves to another address (`sameAddress`), where the reader
+  // pressed nothing; the next press of a refused Send says it again.
+  const pressedAt: Address = { anchor, edit: edit ?? outline?.editing, owner, replyTo, statement };
+  const [pressed, setPressed] = useState<{ readonly at: Address; readonly said: string }>();
+  if (
+    pressed !== undefined &&
+    (pressed.said !== submitReason || !sameAddress(pressed.at, pressedAt))
+  ) {
     setPressed(undefined);
   }
   const pressedReason = pressed?.said;

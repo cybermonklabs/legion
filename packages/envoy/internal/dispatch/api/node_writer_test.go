@@ -265,16 +265,24 @@ func (rig *nodeWriterRig) writes(as nodeWriterAs, targets nodeWriterTargets) []n
 	}}
 }
 
-// requireApproved waits until version 1 of the document id holds the version_renders row of the
-// pass that stated it, then approves it as a person, and answers the digest the approval pins.
-func (rig *nodeWriterRig) requireApproved(t *testing.T, id string) string {
+// awaitFirstRender waits until version 1 of the document id holds the version_renders row of the
+// pass that stated it.
+func awaitFirstRender(t *testing.T, database *store.Store, id string) {
 	t.Helper()
 	testwait.Eventually(t, "version 1 of "+id+" to hold its render", func() bool {
 		var rendered bool
-		err := rig.database.Pool.QueryRow(context.Background(),
+		err := database.Pool.QueryRow(context.Background(),
 			`select exists (select 1 from version_renders where artifact_id = $1 and number = 1)`, id).Scan(&rendered)
 		return err == nil && rendered
 	})
+}
+
+// requireApproved waits until version 1 of the document id holds the version_renders row of the
+// pass that stated it (awaitFirstRender), then approves it as a person, and answers the digest the
+// approval pins.
+func (rig *nodeWriterRig) requireApproved(t *testing.T, id string) string {
+	t.Helper()
+	awaitFirstRender(t, rig.database, id)
 	review := reviewDocument(t, rig.handler, id, "alice", "approved", "")
 	if review.Version != 1 || review.ContentSHA256 == nil {
 		t.Fatalf("a person's approval of %s approves version %d pinning %v, want version 1 and a digest", id, review.Version, review.ContentSHA256)

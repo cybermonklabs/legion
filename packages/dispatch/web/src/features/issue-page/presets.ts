@@ -218,8 +218,15 @@ export function presetView(
   if (!isFilter(preset)) {
     return conversationView(root, wanted, named, memo, preset === "conversation");
   }
-  // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
-  if (preset === "decisions") return filterView(root, preset, wanted, named);
+  // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members. Where
+  // the tree carries the decisions view read's answer (`TreeNode.views`), as the tree that read
+  // builds does (`decisions-filter/decisions-entries.ts`' `useDecisionsTree`), an ask or a
+  // decision is a row only where that answer holds it as a node of its own, not as context: the
+  // tree also holds each node of Conversation's pages held so far that the read's own page lacks
+  // (`useIssueTree.ts`' `viewWithContext`), and no row, count or part of the view reads one.
+  if (preset === "decisions") {
+    return filterView(root, preset, wanted, named, ownNodes(root.views?.decisions, root.id));
+  }
   const held = root.views?.[preset];
   // A view's rows carry the states its own answer gives them, and a node it holds by its id alone
   // those the outline's node of that id carries.
@@ -417,12 +424,16 @@ function liftPast(node: TreeNode, parts: readonly Lifted[]): TreeNode[] {
   );
 }
 
-/** One filter over the tree: its kinds as rows, each other parent a line on its child's row. */
+/** One filter over the tree: its kinds as rows, each other parent a line on its child's row.
+ *  Where `ownIds` is given, a node the tree read drew (`TreeNode.readId`) is a row of the
+ *  filter's kinds only where its read id is among them, the nodes the filter's view read answers
+ *  as its own (`ownNodes`); the node the address names is drawn all the same. */
 function filterView(
   root: TreeNode,
   filter: Filter,
   wanted: string,
-  named: ReadonlySet<string>
+  named: ReadonlySet<string>,
+  ownIds?: ReadonlySet<string>
 ): PresetView {
   const rows = ROW_KINDS[filter];
   const contextKinds = CONTEXT_KINDS[filter];
@@ -453,7 +464,11 @@ function filterView(
     // nowhere.
     const kind = kindOf(node);
     const own =
-      named.has(node.id) || (kind !== undefined && rows.includes(kind) && holds(node, wanted));
+      named.has(node.id) ||
+      (kind !== undefined &&
+        rows.includes(kind) &&
+        (ownIds === undefined || node.readId === undefined || ownIds.has(node.readId)) &&
+        holds(node, wanted));
     const placing =
       !own &&
       kind !== undefined &&
@@ -820,8 +835,21 @@ function heldFilterView(
  *  context: a node its query took, and under Plan a node of an issue under `key`, the issue the
  *  page is of, which the Plan read answers beside the issue's own as context, each marked with
  *  its issue. The row kinds (`ROW_KINDS`) still choose which of them are rows. */
-function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean {
+function viewRow(node: TreeAnswerNode, filter: Filter, key: string): boolean {
   return node.role === "query" || (filter === "plan" && isForeign(node, key));
+}
+
+/** The read ids of the nodes the decisions view read's `answer` holds as its own rather than as
+ *  context, by the one rule each view's own nodes are read by (`viewRow`), for the issue `key`
+ *  the page is of: the nodes a filter drawn off the tree that answer builds draws as rows
+ *  (`filterView`). That tree also holds each node of the outline's read the answer lacks
+ *  (`useIssueTree.ts`' `viewWithContext`), which is no row of the filter. Undefined where no
+ *  answer is held: the tree is the outline's own, and each node of it is one of its own. */
+function ownNodes(answer: TreeAnswer | undefined, key: string): ReadonlySet<string> | undefined {
+  if (answer === undefined) return undefined;
+  return new Set(
+    (answer.nodes ?? []).flatMap((node) => (viewRow(node, "decisions", key) ? [node.id] : []))
+  );
 }
 
 /**

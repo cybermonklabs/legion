@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -209,7 +210,7 @@ var (
 // under them, then the tuples (graphstore.QueueWrite, which writes no node: each document's node is the
 // object pass's or its writer's). Every writer of a document's refs rows on this build holds the
 // document's owner row - its version index (docs' lockArtifactOwner) and rebuild-refs (refs'
-// lockDocumentOwner) - and states the tuple of each row it inserts and the retraction of each it
+// readSourceUnderOwner) - and states the tuple of each row it inserts and the retraction of each it
 // deletes in the same transaction, so a move read again under the owner rows is still owed as it
 // commits, and one that writer made meanwhile is not read again and states nothing. The read again
 // is narrowed to the batch's documents, which each part of the moves reads through an index, and
@@ -221,16 +222,11 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 		documents := make([]string, 0, len(batch))
 		moves := make(map[referenceMove]struct{}, len(batch))
 		for _, move := range batch {
-			owner := ""
-			if move.issue == "" {
-				owner = move.document
-			}
-			owners.Add(move.issue, owner)
-			if len(documents) == 0 || documents[len(documents)-1] != move.document {
-				documents = append(documents, move.document)
-			}
+			owners.Add(move.issue, move.document)
+			documents = append(documents, move.document)
 			moves[referenceMove{document: move.document, toKind: move.toKind, toID: move.toID}] = struct{}{}
 		}
+		documents = slices.Compact(documents)
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 			return err
 		}

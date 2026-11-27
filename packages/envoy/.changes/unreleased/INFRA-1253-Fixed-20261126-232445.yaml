@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A write whose advice read cannot end its savepoint now answers a 500 that logs the savepoint's
+  own failure, and sends nothing more on the aborted transaction. Before, the advice's rollback,
+  cancelled by the 500 ms bound the advice sets, left the write's transaction aborted with nothing
+  logged, and the write failed at its commit with SQLSTATE 25P02, which names nothing of what
+  failed first. A failed advice read that rolls back cleanly still costs the write its advice
+  alone.
+time: 2026-11-26T23:24:45Z
+custom:
+    Issue: INFRA-1253

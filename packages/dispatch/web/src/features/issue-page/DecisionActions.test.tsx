@@ -25,7 +25,9 @@ import {
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
+import { writesOf } from "../writes/write-store";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
+import { presetPath } from "./issue-address";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -623,6 +625,46 @@ test("a waiting decision past the outline read's first page draws Keep and Chang
   }
 });
 
+// Where both reads hold the decision, the node finds it first in the read its row is drawn from
+// (`useDecisionReads`): on the Decisions view the decisions view read, and on Conversation the
+// outline read. Here the two answer the same decision with different sums, as where the agent
+// changed it between the two reads: Keep on the Decisions view sends the decisions view read's
+// sum, and on Conversation the outline read's, so a Keep never stands over words the row it was
+// pressed on did not draw.
+test("Keep sends the sum of the read the view draws the decision from, where both reads hold it", async () => {
+  const keep = spyOn(api, "keepDecision").mockImplementation(() => new Promise<never>(() => {}));
+  const drawn = (sum: string) =>
+    treeAnswer([decisionNode("d1", ONE.text, { decision: { text_sha256: sum } })]);
+  try {
+    for (const preset of ["decisions", "conversation"] as const) {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(conversationTreeKey(KEY), drawn("sum-outline"));
+      client.setQueryData(viewKey(KEY, "decisions"), drawn("sum-view"));
+      const user = userEvent.setup();
+      const view = render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+      try {
+        const calls = keep.mock.calls.length;
+        await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
+        await waitFor(() => expect(keep.mock.calls.length).toBe(calls + 1));
+      } finally {
+        view.unmount();
+      }
+    }
+    expect(
+      keep.mock.calls.map((call) => call[2]),
+      "Keep sent a sum of a read other than the one the view draws the decision from"
+    ).toEqual(["sum-view", "sum-outline"]);
+  } finally {
+    keep.mockRestore();
+  }
+});
+
 // Dispatch refuses a Keep of words the agent changed since the node was drawn
 // (`409 DECISION_CHANGED`). The decision still waits, so Keep stays drawn, with the alert that
 // says why; and the tree is read again and the Decisions view dropped, so the page draws the
@@ -969,5 +1011,51 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// A Change's write names its issue on the write store (as Keep does), so the tree read and its
+// views are held while the write is out and read once it settles, and invalidates no comments
+// list: the new page reads Changes from the tree read.
+test("a Change's write names its issue and invalidates no comments list", async () => {
+  const out = Promise.withResolvers<unknown>();
+  const createComment = spyOn(api, "createComment").mockReturnValue(out.promise as never);
+  const listComments = spyOn(api, "listComments");
+  // The tree read again once the write settles, answering the node the row was drawn from.
+  const tree = spyOn(api, "getIssueTree").mockResolvedValue(treeAnswer([ONE]));
+  const client = heldReads([ONE]);
+  const invalidate = spyOn(client, "invalidateQueries");
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(
+      writesOf(client).writesOutOf(KEY).length,
+      "the Change's write did not name its issue on the write store"
+    ).toBe(1);
+    out.resolve({ id: "c-sent" });
+    await waitFor(() => expect(writesOf(client).writesOutOf(KEY)).toEqual([]));
+    expect(
+      invalidate.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === "comments"),
+      "the Change's settle invalidated the issue's comments list"
+    ).toEqual([]);
+    expect(listComments, "the Change's settle read the issue's comments").not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    invalidate.mockRestore();
+    tree.mockRestore();
+    createComment.mockRestore();
+    listComments.mockRestore();
   }
 });

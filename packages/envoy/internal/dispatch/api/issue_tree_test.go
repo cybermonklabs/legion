@@ -108,11 +108,7 @@ func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T
 	if markdown != "" {
 		t.Errorf("the tree's version 1 holds %q, want it empty", markdown)
 	}
-	var versions int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from artifact_versions where artifact_id = $1`, id).Scan(&versions); err != nil {
-		t.Fatalf("count the tree's versions: %v", err)
-	}
-	if versions != 1 {
+	if versions := versionCount(t, database, id); versions != 1 {
 		t.Errorf("the tree holds %d versions, want its version 1 alone", versions)
 	}
 	version := graphstore.VersionID(refKey, 1)

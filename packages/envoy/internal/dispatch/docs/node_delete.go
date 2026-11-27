@@ -22,10 +22,11 @@ import (
 // already) and its lock taken (lockDocumentRoom), once for a room several of the documents share.
 // Under them each document's tree is read, its taken blocks' text is taken out of it with what each
 // holds that the delete does not take lifted out to where that text stood
-// (pmdoc.ValidDocument.DeleteNodeText), and the tree is validated once and written as the
-// fragment's new state (writeNodeText), never through the edit route's ops: pmdoc.MoveBlock
-// validates the document after each move, and the block+ content of a callout or a decision refuses
-// a container a lift-out leaves empty for a moment, though the same write then takes it out.
+// (pmdoc.ValidDocument.DeleteNodeText, which validates the tree at the end), and the tree is
+// validated again and written as the fragment's new state (writeNodeText), never through the edit
+// route's ops: pmdoc.MoveBlock validates the document after each move, and the block+ content of a
+// callout or a decision refuses a container a lift-out leaves empty for a moment, though the same
+// write then takes it out.
 //
 // It answers the documents whose text the write changed, in the order it wrote them, each of which
 // the caller versions (SnapshotVersion). A document the write would leave holding a block with no
@@ -58,16 +59,14 @@ func (s *Service) DeleteBlocksText(ctx context.Context, taken map[string][]strin
 	}
 	var changed []string
 	for _, target := range targets {
-		blocks := make(map[string]bool, len(taken[target.document]))
-		for _, id := range taken[target.document] {
-			blocks[id] = true
-		}
+		blocks := takenBlocks(taken[target.document])
 		wrote, err := s.writeNodeText(ctx, target.document, actor, "DeleteBlocksText", func(start pmdoc.ValidDocument) (*pmdoc.Node, error) {
 			return start.DeleteNodeText(blocks)
 		})
 		if err != nil {
 			var emptied *pmdoc.ContainerEmptiedError
 			if errors.As(err, &emptied) {
+				emptied.Document = target.document
 				return nil, err
 			}
 			return nil, fmt.Errorf("write the delete of %d blocks into %s: %w", len(blocks), target.document, err)
@@ -84,6 +83,15 @@ func sortDocumentTargets(targets []liveTarget) {
 	slices.SortFunc(targets, func(left, right liveTarget) int {
 		return cmp.Or(cmp.Compare(left.room, right.room), cmp.Compare(left.document, right.document))
 	})
+}
+
+// takenBlocks is the set of ids, the blocks of one document a delete takes.
+func takenBlocks(ids []string) map[string]bool {
+	blocks := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		blocks[id] = true
+	}
+	return blocks
 }
 
 // PlanDeleteBlocksText is the dry run of DeleteBlocksText over taken: it reads each document's tree
@@ -111,13 +119,11 @@ func (s *Service) PlanDeleteBlocksText(ctx context.Context, taken map[string][]s
 		if err != nil {
 			return fmt.Errorf("read the tree of %s for the delete's dry run: %w", target.document, err)
 		}
-		blocks := make(map[string]bool, len(taken[target.document]))
-		for _, id := range taken[target.document] {
-			blocks[id] = true
-		}
+		blocks := takenBlocks(taken[target.document])
 		if _, err := current.DeleteNodeText(blocks); err != nil {
 			var emptied *pmdoc.ContainerEmptiedError
 			if errors.As(err, &emptied) {
+				emptied.Document = target.document
 				return err
 			}
 			return fmt.Errorf("take %d blocks out of a copy of %s: %w", len(blocks), target.document, err)

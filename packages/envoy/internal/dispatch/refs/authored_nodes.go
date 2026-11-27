@@ -30,7 +30,7 @@ func writtenAtAcceptance(typ string) bool {
 // blocks to the block-index reconciliation writes of each requirement, check and plan task of the
 // version (writtenAtAcceptance), so the coverage read and the tree read answer each one at once
 // with no read changed: its block node where the store holds none live,
-// under the supertag its writer gives (TypedFacts.supertag); its document_blocks row, with its
+// under the supertag its type gives (TypeSupertag); its document_blocks row, with its
 // type, its text_sha256 and its changed_version and the other columns as the block index writes
 // them (BlockIndexing.queueRows), its text recorded in document_block_texts at that version, its
 // text value, from whose first line a read takes the node's type (TreeNodeType), and, for a row
@@ -62,13 +62,8 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 	refKey := record.RefKey
 	nodes, _, _ := uniqueBlocks(blocks)
 	fits, _ := blockFits(refKey, nodes)
-	// The blocks the pass writes: the version's requirements, checks and plan tasks, and every
-	// block of the version their part_of climbs through up to the document's top, and that the
-	// part_of of each decision and reading the typed-node pass placed (DecisionIndexing.blocks)
-	// climbs through: a criterion one names its parent, a list or a callout one stands in. So no
-	// part_of the write states names a node the store does not hold, and the walk from the issue
-	// reaches each node it writes. A decision or a
-	// reading is the typed-node pass's own node, which the pass climbs past and writes no row of.
+	// The blocks the pass writes, as the doc comment lists them. A decision or a reading is the
+	// typed-node pass's own node, which the pass climbs past and writes no row of.
 	only := map[string]struct{}{}
 	var accepted []string
 	for position, block := range nodes {
@@ -194,16 +189,16 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 	}
 	ids := make([]string, len(positions))
 	addresses := make([]string, len(positions))
-	// The document each block is a block of, as PlanBlocks takes it: the one its row names, else
-	// the one whose fragment of the issue room holds it, else the indexed document itself.
+	// The document each block is a block of, as PlanBlocks takes it of a block the version holds:
+	// the one whose fragment of the issue room holds it, else the indexed document itself. The one
+	// its row names is the document it was a block of (was, below), so a block cut from one
+	// fragment and pasted into another moves into the other's document.
 	documents := make([]string, len(positions))
 	for at, position := range positions {
 		block := nodes[position]
 		ids[at], addresses[at] = block.ID, blockNodeAddress(refKey, block.ID)
 		documents[at] = d.artifactID
-		if stored, held := index.blocks[block.ID]; held && stored.document != "" {
-			documents[at] = stored.document
-		} else if _, known := fragments[block.Document]; known {
+		if _, known := fragments[block.Document]; known {
 			documents[at] = block.Document
 		}
 		if documents[at] != d.artifactID {
@@ -222,10 +217,10 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 	var sum blockSumHex
 	changed := make([]bool, len(positions))
 	inserted := make([]bool, len(positions))
-	held := maps.Clone(index.blocks)
-	if held == nil {
-		held = make(map[string]storedBlock, len(positions))
-	}
+	// held is index.blocks until the pass writes a row, and a copy from then on: no writer changes
+	// a BlockIndex's map in place.
+	held := index.blocks
+	copied := false
 	for at, position := range positions {
 		block := nodes[position]
 		body := markdown[block.From:block.To]
@@ -242,6 +237,12 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		joined := now
 		if kept {
 			joined = stored.joined
+		}
+		if !copied {
+			held, copied = maps.Clone(index.blocks), true
+			if held == nil {
+				held = make(map[string]storedBlock, len(positions))
+			}
 		}
 		held[block.ID] = storedBlock{sum: hexSum, joined: joined, node: addresses[at], supertag: TypeSupertag(block.Type), document: documents[at]}
 		changed[at], inserted[at] = true, !kept
@@ -279,7 +280,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 	changes := 0
 	for at, position := range positions {
 		block, address := nodes[position], addresses[at]
-		supertag := TypedFacts{}.supertag(block.ID, block.Type)
+		supertag := TypeSupertag(block.Type)
 		if _, already := written[address]; !already {
 			switch node, holds := heldNodes[address]; {
 			case changed[at]:
@@ -298,11 +299,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 		changes++
 		// The text value and the document_block_texts row move together (planBlockValues), and a
 		// row the pass inserts states the membership the insert projects (PlanBlocks).
-		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-			FromKind: BlockNodeKind, FromID: address, Kind: graphstore.AttributeText,
-			ToKind: graphstore.KindValue, ToID: markdown[block.From:block.To],
-			At: record.At, Who: record.Writer, Asserted: true,
-		}})
+		tuples = append(tuples, graphstore.UncausedTuple{Tuple: valueTuple(address, graphstore.AttributeText, markdown[block.From:block.To], record.At, record.Writer, true)})
 		// A row the pass inserts is of a block no pass has placed yet: it takes what decides its
 		// parent, as planBlockValues states it, so the store census reads an authored node's part_of
 		// to no block of its artifact as its row's null parent states it.
@@ -312,11 +309,7 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 				placement = PlacementAuthored
 			}
 			tuples = append(tuples, membership(address, record.inDocument(block, fragments), now, record.Writer),
-				graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-					FromKind: BlockNodeKind, FromID: address, Kind: AttributePlacement,
-					ToKind: graphstore.KindValue, ToID: placement,
-					At: record.At, Who: record.Writer, Asserted: true,
-				}})
+				graphstore.UncausedTuple{Tuple: valueTuple(address, AttributePlacement, placement, record.At, record.Writer, true)})
 		}
 	}
 	tuples = append(tuples, parents...)
@@ -357,19 +350,11 @@ func (d DecisionIndexing) PlanAuthored(ctx context.Context, q Queryer, record In
 }
 
 // versionDocument is the document whose version block blockID's row records (versionOf): the one
-// whose fragment of an issue room holds it where the pass covers that document, else the indexed
-// document where the pass covers it, else the document of the newest version the pass covers.
+// whose fragment of an issue room holds it, or the indexed document, as the pass covers them
+// (Versions.of).
 func (b BlockIndexing) versionDocument(blockID string) string {
-	if document, held := b.documentOf[blockID]; held {
-		if _, covered := b.versions[document]; covered {
-			return document
-		}
-	}
-	if _, covered := b.versions[b.artifactID]; covered {
-		return b.artifactID
-	}
-	lead, _ := b.versions.Newest(b.artifactID)
-	return lead
+	document, _ := b.versions.of(b.documentOf[blockID], b.artifactID)
+	return document
 }
 
 // heldBlockNodes reads, in one statement, the supertag and the state of each block node of

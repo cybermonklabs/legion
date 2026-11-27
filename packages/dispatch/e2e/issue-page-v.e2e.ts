@@ -582,10 +582,17 @@ test("the Verification filter says an issue holds no checks, in its own column",
       tree(page).getByText(EMPTY_STATE_LINES.verification, { exact: true }),
       "the view's tree does not say the issue holds no checks"
     ).toHaveCount(1);
+    // "What you will be shown", under "In short" in the Contents pane beside the view, says the
+    // same line for an issue with no check (`IssueThreeThings.tsx`'s `CheckCounts`); the page
+    // says it nowhere else.
+    const inShort = await page
+      .getByTestId("issue-three-things")
+      .getByText(EMPTY_STATE_LINES.verification, { exact: true })
+      .count();
     await expect(
       page.getByText(EMPTY_STATE_LINES.verification, { exact: true }),
       "the line is drawn outside the Verification view's tree as well"
-    ).toHaveCount(1);
+    ).toHaveCount(1 + inShort);
     await expect(verificationCardBoxes(page), "an issue with no statement draws one").toHaveCount(
       0
     );

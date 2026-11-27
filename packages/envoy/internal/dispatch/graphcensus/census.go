@@ -50,13 +50,13 @@ type projection struct {
 	// nodes is the kind's nodes at any state. It names no state: presentNodes wraps it.
 	nodes string
 	// tuples, where it is set, holds the kind triple by triple, over the triple of holding node,
-	// tuple kind and far end, and nodes is unused. It is a
-	// select of (from_kind, from_id, kind, to_kind, to_id): one row per relation of the kind a
-	// present node states now (heldTuples). rows then answers (row_label, node_kind, node_address,
-	// kind, to_kind, to_id): one row per relation a projection row states, of the node it names.
-	// A row no tuple states is a difference named at the row, and a tuple no row projects one
-	// named at the tuple, so a tuple moved to the wrong far end reads as the row it left and the
-	// tuple it became, and the other rows of that node read nothing.
+	// tuple kind and far end, and nodes is unused. It is a select of (from_kind, from_id, kind,
+	// to_kind, to_id): one row per relation of the kind a present node states now (heldTuples).
+	// rows then answers (row_label, node_kind, node_address, kind, to_kind, to_id): one row per
+	// relation a projection row states, of the node it names. A row no tuple states is a
+	// difference named at the row, and a tuple no row projects one named at the tuple, so a tuple
+	// moved to the wrong far end reads as the row it left and the tuple it became, and the other
+	// rows of that node read nothing.
 	tuples string
 	// names is a select of one text column, the kind's row side, which the census reads once for
 	// the run (readNames) and which rows and pastBound read as $1, rather than reading it again in
@@ -104,10 +104,10 @@ type projection struct {
 	// row-side difference. Empty for a kind every writer of whose rows deletes a row in the write
 	// that ends its node.
 	rowOwed string
-	// emptyAgrees says a kind that holds no row, no present node and no unmarked row is no refusal:
-	// one of the tie kinds, a decision's, a reading's and an answered or
-	// followed ask's, which a deployment holds none of until an agent writes a decision or a
-	// person answers an ask. Every other kind is one every store holds rows of, and checking
+	// emptyAgrees says a kind that holds no row, no present node, no unmarked and no unstated row
+	// (KindReport.Empty) is no refusal: one of the tie kinds, a decision's, a reading's and an
+	// answered or followed ask's, which a deployment holds none of until an agent writes a decision
+	// or a person answers an ask. Every other kind is one every store holds rows of, and checking
 	// none of it refuses.
 	emptyAgrees bool
 	// mayBeEmpty says a deployment can hold no row of this kind - no run of the command bar, no
@@ -149,8 +149,8 @@ type KindReport struct {
 	// backfill's Keep pass rewrites, and which read zero once it has run.
 	CountsOwed bool
 	Owed       int64
-	// EmptyAgrees says a kind that read no row, no present node and no unmarked row is no refusal
-	// (projection.emptyAgrees).
+	// EmptyAgrees says a kind that read no row, no present node, no unmarked and no unstated row is
+	// no refusal (projection.emptyAgrees, KindReport.Empty).
 	EmptyAgrees bool
 	// MayBeEmpty is the kind's projection.mayBeEmpty: zero rows of it refuse nothing.
 	MayBeEmpty bool
@@ -272,8 +272,8 @@ func (r *StoreReport) Differences() int64 {
 }
 
 // Unpopulated is every kind the census checked no row of, in the order it read them, but a kind
-// that may be empty (KindReport.EmptyAgrees) and is: no row, no present node and no unmarked row;
-// and a kind a deployment may hold none of (KindReport.MayBeEmpty).
+// that may be empty (KindReport.EmptyAgrees) and is (KindReport.Empty); and a kind a deployment
+// may hold none of (KindReport.MayBeEmpty).
 func (r *StoreReport) Unpopulated() []string {
 	var empty []string
 	for _, kind := range r.Kinds {
@@ -289,10 +289,10 @@ func (r *StoreReport) Unpopulated() []string {
 // far end of a kind no table projects resolves. A total over the kinds is no such proof: two
 // empty sides of one kind agree, and one kind's rows say nothing about another's, so a census
 // whose comments carried every row would pass while it proved nothing of the blocks, the roles or
-// the sessions. One of the tie kinds is one exception: no row, no node and no
-// unmarked row of it is a store nothing of that kind was written to yet, and is no refusal
-// (projection.emptyAgrees). A table of the earlier release whose rows no backfill has marked yet
-// is not that store: its kind checked no row while rows stand, and it refuses. A kind a
+// the sessions. One of the tie kinds is one exception: no row, no node, no unmarked and no
+// unstated row of it (KindReport.Empty) is a store nothing of that kind was written to yet, and is
+// no refusal (projection.emptyAgrees). A table of the earlier release whose rows no backfill has
+// marked yet is not that store: its kind checked no row while rows stand, and it refuses. A kind a
 // deployment may hold none of - a run and its frames, and the visibility and state of a run, a
 // lens, a finding, a risk, a constraint and a lens kind - is the other: it refuses nothing on zero
 // rows alone (projection.mayBeEmpty); a driver over a corpus that holds them still reads the
@@ -624,7 +624,8 @@ func readStoreOnly(ctx context.Context, tx pgx.Tx) ([]StoreOnlyReport, error) {
 	})
 }
 
-// censusOfKinds reads every kind of projections in order, running afterKind after each.
+// censusOfKinds reads every kind of projections in order, then the kinds Go reads (Keeps, review
+// carries, the head projection), running afterKind after each.
 func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Context, kind string) error) ([]KindReport, error) {
 	var kinds []KindReport
 	// A kind's names are read before the first kind that binds them and kept for every kind after
@@ -669,8 +670,8 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	// The Go readers come after the projections: Keeps, whose decisions' words only Go renders;
 	// review carries, whose legacy reasons Go parses; and last the head projection, over every
 	// node kind, once every projection of the nodes its rows read has been read.
-	for _, read := range []func(context.Context, pgx.Tx) (KindReport, error){CensusOfKeepSums, censusOfReviewCarries, CensusOfHeads} {
-		kind, err := read(ctx, tx)
+	for _, census := range []func(context.Context, pgx.Tx) (KindReport, error){CensusOfKeepSums, censusOfReviewCarries, CensusOfHeads} {
+		kind, err := census(ctx, tx)
 		if err != nil {
 			return nil, err
 		}

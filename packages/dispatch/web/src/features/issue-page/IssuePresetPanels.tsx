@@ -1,21 +1,30 @@
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useState, useSyncExternalStore } from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
+import { createHeld, type Held } from "./held-value";
 import { useEditedTree } from "./model-rows/room-target";
 import { StagedDocument } from "./StagedDocument";
 import { useToolbarSink } from "./useDocumentToolbars";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 
+/** Which document a row is being edited in, and how to hand that row the editor. */
+interface OutlineEdited {
+  readonly artifactId: string;
+  readonly onEditor?: OnEditor;
+}
+
 /**
  * How a body that draws the outline's rows lets one be edited in its document's one editor:
  * `onEditing`, handed to the rows, names the document a row is being edited in, and how to hand
- * that row the editor, and `panels` is that document's editor (`IssuePresetPanels`), drawn by the
- * body for the row to take onto its own stage, where a version picked opens that document at it.
- * The toolbar sink is read alone, which never changes: the toolbars it fills are no part of the
- * body, so each one an editor publishes while a row is edited draws the body no more.
+ * that row the editor, and `panels` is that document's editor (`OutlineEditedPanels`), drawn by
+ * the body for the row to take onto its own stage, where a version picked opens that document at
+ * it. The edited document is held outside the body's state (`Held`) and read inside `panels`
+ * alone, so starting, moving or ending an edit draws the editor and never the body or its
+ * outline. The toolbar sink is read inside `panels` too: the toolbars it fills are no part of
+ * the body.
  *
  * The outline's body imports it (`slots/body.tsx`), and it is exported for the Plan view's chart
  * too, which is to edit a step as a row of the outline is edited.
@@ -24,47 +33,57 @@ export function useOutlineEditing(issue: IssueDetails): {
   readonly onEditing: OnEditing;
   readonly panels: ReactNode;
 } {
-  const navigate = useNavigate();
-  const toolbarSink = useToolbarSink();
-  const [editing, setEditing] = useState<
-    { readonly artifactId: string; readonly onEditor?: OnEditor } | undefined
-  >(undefined);
+  const [editing] = useState(() => createHeld<OutlineEdited | undefined>(undefined));
   // Stable: the rows call it from an effect that depends on it.
   const onEditing = useCallback<OnEditing>(
     (artifactId, onEditor) =>
-      setEditing(artifactId === undefined ? undefined : { artifactId, onEditor }),
-    []
+      editing.set(artifactId === undefined ? undefined : { artifactId, onEditor }),
+    [editing]
   );
-  // A node written into the issue is edited in the tree artifact, which no document of the issue
-  // is, so its editor is drawn from the artifact read.
-  const tree = useEditedTree(issue.key, editing?.artifactId);
-  const edited =
-    editing === undefined
-      ? undefined
-      : (issue.artifacts?.find((artifact) => artifact.id === editing.artifactId) ?? tree);
   return {
     onEditing,
-    panels: (
-      <IssuePresetPanels
-        editedDocument={edited}
-        isClosed={issue.closed_at !== null}
-        issueKey={issue.key}
-        onEditor={editing?.onEditor}
-        onToolbarSink={toolbarSink}
-        // A version picked in the edited document's own editor opens that document at it.
-        onVersionChange={(artifact, version) =>
-          navigate(
-            buildIssuePath({
-              key: issue.key,
-              kind: "artifact",
-              slug: artifact.slug,
-              ...(version === null ? {} : { version }),
-            })
-          )
-        }
-      />
-    ),
+    panels: <OutlineEditedPanels editing={editing} issue={issue} />,
   };
+}
+
+/** Reads `editing` below the body, so naming a document to edit draws only the editor. */
+function OutlineEditedPanels({
+  editing,
+  issue,
+}: {
+  editing: Held<OutlineEdited | undefined>;
+  issue: IssueDetails;
+}): ReactNode {
+  const navigate = useNavigate();
+  const toolbarSink = useToolbarSink();
+  const current = useSyncExternalStore(editing.subscribe, editing.get);
+  // A node written into the issue is edited in the tree artifact, which no document of the issue
+  // is, so its editor is drawn from the artifact read.
+  const tree = useEditedTree(issue.key, current?.artifactId);
+  const edited =
+    current === undefined
+      ? undefined
+      : (issue.artifacts?.find((artifact) => artifact.id === current.artifactId) ?? tree);
+  return (
+    <IssuePresetPanels
+      editedDocument={edited}
+      isClosed={issue.closed_at !== null}
+      issueKey={issue.key}
+      onEditor={current?.onEditor}
+      onToolbarSink={toolbarSink}
+      // A version picked in the edited document's own editor opens that document at it.
+      onVersionChange={(artifact, version) =>
+        navigate(
+          buildIssuePath({
+            key: issue.key,
+            kind: "artifact",
+            slug: artifact.slug,
+            ...(version === null ? {} : { version }),
+          })
+        )
+      }
+    />
+  );
 }
 
 /**

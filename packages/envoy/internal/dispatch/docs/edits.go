@@ -1581,7 +1581,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			at = pmdoc.Range{From: 0, To: pmdoc.Size(tree.node)}
 		}
 		// Front matter opens only the document's start, so only there does the insert read it.
-		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget)
+		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget, tree.node)
 		if err != nil {
 			return nil, invalidMarkdownOp("markdown", err)
 		}
@@ -1755,7 +1755,7 @@ func insertInto(tree *batchTree, op model.EditOp, blockID string, budget *pmdoc.
 		return nil, invalidSchemaOp("markdown", err)
 	}
 	out, with, err := valid.InsertInto(blockID, func(parent string) (*pmdoc.Node, error) {
-		fragment, err := uploadedInput(pmdoc.ParseFragmentInto(op.Markdown, parent, budget))
+		fragment, err := uploadedInput(pmdoc.ParseFragmentInto(op.Markdown, parent, budget, tree.node))
 		return fragment, invalidMarkdownOp("markdown", err)
 	})
 	if errors.Is(err, pmdoc.ErrHoldsNoBlocks) {
@@ -2360,7 +2360,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		// may send. The cost is one uncharged parse an operation, bounded by a budget of its
 		// own as every other parse is.
 		opens := opensDocument(tree.node, r.From)
-		parsed, parseErr := pmdoc.ParseFragment(replacement, opens, pmdoc.NewWriteBudget())
+		parsed, parseErr := pmdoc.ParseFragmentHolding(replacement, opens, pmdoc.NewWriteBudget(), tree.node)
 		switch {
 		case parseErr == nil:
 			// Which way the `with` goes is its blocks' types and nothing else, so this tree is
@@ -2372,7 +2372,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		}
 		if blocks {
 			// The blocks the document keeps are the second parse's, the one the batch pays for.
-			if with, err = parseFragmentInput(replacement, opens, budget); err != nil {
+			if with, err = parseFragmentInput(replacement, opens, budget, tree.node); err != nil {
 				return nil, invalidMarkdownOp("with", err)
 			}
 		} else if with, err = inlineReplacement(replacement, edgesOf(at, r), budget); err != nil {
@@ -2469,7 +2469,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 // is kept (continueText) and a leading list or heading marker is text, never a new block. A `with`
 // that names blocks of its own is written by blockReplacement instead. Its ErrSchema refusal
 // names the `with` as HTML that opens a block, which is true of the text it can be given and of
-// no other: its caller must reach it only for a `with` the block parser (pmdoc.ParseFragment)
+// no other: its caller must reach it only for a `with` the block parser (pmdoc.ParseFragmentHolding)
 // refused with pmdoc.ErrBlockHTML, or read as one paragraph or as nothing, which is what
 // applyReplace does. Text no such parse has sorted could reach that refusal as a footnote
 // definition, a link reference definition or two paragraphs across a blank line, none of them
@@ -2844,11 +2844,12 @@ func hasHardBreak(with *pmdoc.Node) bool {
 	return false
 }
 
-// inlineAware parses a suggestion's replacement as blocks written into the document, keeping the
-// edge whitespace of a replacement that stays inline. opensDocument says whether the replacement
-// lands where the document begins; its tables are padded on budget, the accept's.
-func inlineAware(markdown string, edges textEdges, opensDocument bool, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
-	tree, err := parseFragmentInput(markdown, opensDocument, budget)
+// inlineAware parses a suggestion's replacement as blocks written into live, the document the
+// accept started from (parseFragmentInput), keeping the edge whitespace of a replacement that
+// stays inline. opensDocument says whether the replacement lands where the document begins; its
+// tables are padded on budget, the accept's.
+func inlineAware(markdown string, edges textEdges, opensDocument bool, budget *pmdoc.WriteBudget, live *pmdoc.Node) (*pmdoc.Node, error) {
+	tree, err := parseFragmentInput(markdown, opensDocument, budget, live)
 	if err != nil {
 		return nil, err
 	}

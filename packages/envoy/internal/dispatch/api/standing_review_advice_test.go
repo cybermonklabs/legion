@@ -56,11 +56,13 @@ func askAnchoredStandingReview(t *testing.T, handler http.Handler, issueKey stri
 }
 
 // approveThenEditLive writes restoreSpec into a new issue's spec, has alice approve version 1 and
-// then changes the spec's paragraph in the live document, storing no version: the documents
+// then adds a requirement to the spec in the live document, storing no version: the documents
 // settle nothing for an hour, and the change goes into the live document as an upload's does
 // (replaceDocumentText), so version 1 stays the newest the table holds until a write snapshots
 // the document. It answers the handler, the issue's key, its spec's id and a writer that puts
-// markdown into the live document the same way.
+// markdown into the live document the same way. The live edit adds a requirement: R14's record
+// carry carries the spec's approval across a change of its paragraph, which the Spec query does
+// not take, so the version a snapshot of that change writes would read approved.
 func approveThenEditLive(t *testing.T, project string) (http.Handler, string, string, func(markdown string)) {
 	t.Helper()
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
@@ -73,7 +75,7 @@ func approveThenEditLive(t *testing.T, project string) (http.Handler, string, st
 			t.Fatalf("write the live document: %v", err)
 		}
 	}
-	editLive(strings.Replace(restoreSpec, "behind a flag.", "behind a flag and a canary.", 1))
+	editLive(restoreSpec + "\n" + requirementMarkdown("r-live", "The gateway refuses an unsigned handshake."))
 	return handler, issue.Key, issue.PrimaryArtifactID, editLive
 }
 
@@ -250,13 +252,15 @@ func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testin
 // The same restore over a record that moved since the approval is no restore of what alice
 // approved, whatever its text. A requirement uploaded beside the spec, in the issue's
 // Verification document, is a node of the spec's record - the spec query takes requirements
-// wherever the issue's tree holds them - and writes no version of the spec, so the record the
-// carry to version 3 pinned is no longer the spec's. The live text changed and put back again,
-// the next anchored question's snapshot writes version 5, version 3's text byte for byte: the
-// write phase pins its carry to that digest behind a savepoint, finds the version's record
-// another digest, and drops the carry. The advice names no review: the newest one is the carry to
-// version 3, and the spec is at version 5. Read in the read phase, it would name the carry to
-// version 5 that the write phase dropped.
+// wherever the issue's tree holds them - so the upload's write appends version 4 of the spec,
+// which holds version 3's text over the moved record (R14: each accepted write of the issue's room
+// appends a version of each query whose answer changed), and the record the carry to version 3
+// pinned is no longer the spec's. The live text changed and put back again, the next anchored
+// question's snapshot writes version 6, version 3's text byte for byte: the write phase pins its
+// carry to that digest behind a savepoint, finds the version's record another digest, and drops
+// the carry. The advice names no review: the newest one is the carry to version 3, and the spec is
+// at version 6. Read in the read phase, it would name the carry to version 6 that the write phase
+// dropped.
 func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	t.Parallel()
 	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK")
@@ -294,17 +298,21 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	}
 
 	uploadDocument(t, handler, "/api/v1/issues/"+issueKey, "verification.md", requirementMarkdown("r1", "Each handshake is logged."))
+	waitForArtifactVersion(t, handler, artifactID, 4)
+	if moved, restored := versionMarkdown(t, handler, artifactID, 4), versionMarkdown(t, handler, artifactID, 3); moved != restored {
+		t.Fatalf("version 4 = %q, want version 3's text %q: the upload moved the spec's record and none of its text", moved, restored)
+	}
 	editLive(strings.Replace(restoreSpec, "behind a flag.", "behind a flag and a canary.", 1))
-	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 4 {
-		t.Fatalf("the third anchor is pinned to version %d, want 4, the version its snapshot of the live edit writes", version)
+	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 5 {
+		t.Fatalf("the third anchor is pinned to version %d, want 5, the version its snapshot of the live edit writes", version)
 	}
 	editLive(restoreSpec)
 	version, review = askAnchoredStandingReview(t, handler, issueKey)
-	if version != 5 {
-		t.Fatalf("the fourth anchor is pinned to version %d, want 5, the version its snapshot of the restored text writes", version)
+	if version != 6 {
+		t.Fatalf("the fourth anchor is pinned to version %d, want 6, the version its snapshot of the restored text writes", version)
 	}
 	if review != nil {
-		t.Fatalf("standing review = %#v, want none: version 5 restores the text of version 3 over another record, so no carry reaches it", review)
+		t.Fatalf("standing review = %#v, want none: version 6 restores the text of version 3 over another record, so no carry reaches it", review)
 	}
 	listed = dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/reviews", nil, "alice")
 	if listed.Code != http.StatusOK {
@@ -316,7 +324,8 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 }
 
 // The cases that name no review. Each writes a question on an issue and reads the advice back,
-// and each must carry none.
+// and each must carry none. The later version writes a requirement: R14's record carry carries the
+// spec's approval across a sentence of prose, which the Spec query does not take.
 func TestAskAdviceNamesNoStandingReview(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -330,7 +339,7 @@ func TestAskAdviceNamesNoStandingReview(t *testing.T) {
 			key:  "STANDSTALE",
 			setUp: func(t *testing.T, handler http.Handler, _, artifactID string) {
 				reviewDocument(t, handler, artifactID, "alice", "approved", standingReviewReason)
-				editAdviceDocument(t, handler, artifactID, "A sentence nobody has read.")
+				editAdviceDocument(t, handler, artifactID, queryBlockMarkdown("requirement", "r-unread", "A requirement nobody has read."))
 			},
 		},
 		{

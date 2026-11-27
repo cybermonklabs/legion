@@ -36,7 +36,7 @@ import (
 // one marked, since a mark stands, and nothing a pass of this rule has stated since.
 func markStaleDocuments(ctx context.Context, database *store.Store, rule int) ([]string, error) {
 	var marked []string
-	after := "00000000-0000-0000-0000-000000000000"
+	after := zeroUUID
 	for {
 		rows, err := database.Pool.Query(ctx, StaleDocumentsStatement, after, backfillBatch, rule)
 		if err != nil {

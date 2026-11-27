@@ -170,8 +170,8 @@ var readRowDrives = map[string]rowDrive{
 	// The coverage read's read of the document each requirement stands in (blockDocuments in
 	// coverage_tuples.go), which it sends only once its walk of the tree found the seed's
 	// requirement and it read what serves it: no other read sends that statement. The serves read
-	// itself is no marker since t16c moved the coverage read onto the store's tuples: it is
-	// tuplesInto's, which the tree read sends too, with the tuple kind bound.
+	// itself is no marker: it is tuplesInto's, which the tree read sends too, with the tuple kind
+	// bound.
 	"GET /api/v1/issues/{key}/coverage": {target: "/api/v1/issues/$issue/coverage",
 		statement: statementOf(`\bselect\s+d\.node_id,\s*doc\.slug\s+from\s+document_blocks\s+d\s+cross\s+join\s+lateral\b`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},

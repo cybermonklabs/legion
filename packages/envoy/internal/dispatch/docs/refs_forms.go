@@ -192,15 +192,7 @@ func (s *Service) ReconcileRefsForms(ctx context.Context, queue refs.OwedQueue, 
 	// (drainFormsRoomDocument): rooms holds how each room this pass indexed fared, and a room is
 	// counted once, as the block index counts one (ReconcileBlockIndex).
 	rooms := map[string]owedOutcome{}
-	counted := map[string]struct{}{}
-	counts := func(document owedDocument) bool {
-		if document.room == "" {
-			return true
-		}
-		_, done := counted[document.room]
-		counted[document.room] = struct{}{}
-		return !done
-	}
+	counted := roomCounter{}
 rows:
 	for index, source := range owed {
 		switch source.Kind {
@@ -225,12 +217,12 @@ rows:
 				slog.Error("dispatch: refs forms index skipped a document it could not index",
 					"queue", queue.Table(), "artifact", source.ID, "error", err)
 			case still:
-				switch {
-				case !counts(document):
-				case remembered.unreadable:
-					tick.Unreadable++
-				default:
-					tick.LiveAhead++
+				if counted.counts(document) {
+					drained := formsDocumentLiveAhead
+					if remembered.unreadable {
+						drained = formsDocumentUnreadable
+					}
+					drained.count(&tick)
 				}
 				liveAhead.rows[document.id] = source
 			case documents == blockIndexDocumentBatch:
@@ -251,7 +243,7 @@ rows:
 				case err != nil:
 					slog.Error("dispatch: refs forms index skipped a document it could not index",
 						"queue", queue.Table(), "artifact", source.ID, "error", err)
-				case counts(document):
+				case counted.counts(document):
 					drained.count(&tick)
 				}
 			}
@@ -357,6 +349,21 @@ func (drained formsDocumentDrain) count(tick *RefsFormsTick) {
 	case formsDocumentUnindexed:
 		tick.Unindexed++
 	}
+}
+
+// roomCounter is the issue rooms a pass over owed documents has counted, so it counts each room
+// once, whichever of its documents the pass lists (ReconcileBlockIndex, the forms drain).
+type roomCounter map[string]struct{}
+
+// counts reports whether the pass counts document: a document that is its own room always, and a
+// document of an issue room only where it is the first of its room the pass counts.
+func (counted roomCounter) counts(document owedDocument) bool {
+	if document.room == "" {
+		return true
+	}
+	_, done := counted[document.room]
+	counted[document.room] = struct{}{}
+	return !done
 }
 
 // drainFormsDocument drains one `artifact` row of a forms queue, source, by indexing the

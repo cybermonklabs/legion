@@ -229,9 +229,11 @@ function stub<T extends { mockRestore: () => void }>(spy: T): T {
   return spy;
 }
 
-/** The issue's comments read, which a saved edit reads again; and the search the reference
+/** The issue's whole comments list, which the box reads none of; a comment's own read, which a
+ *  Reply and the write line make of the comment a reply answers; and the search the reference
  *  picker's `#` door reads. */
 let commentsRead: Mock<typeof api.listComments>;
+let commentRead: Mock<typeof api.getComment>;
 let searchRead: Mock<typeof api.search>;
 
 beforeAll(async () => {
@@ -250,6 +252,7 @@ beforeEach(() => {
   // behind the reference picker and an edit's blocks, which the box hosts.
   const answered = answerBoxReads(reads);
   commentsRead = answered.commentsRead;
+  commentRead = answered.commentRead;
   searchRead = answered.searchRead;
   restores.push(answered.restore);
 });
@@ -1219,14 +1222,15 @@ test("an edit saves the comment's words", async () => {
   expect(kinds()).toEqual([]);
   expect(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.save })).toBeTruthy();
 
-  const readsBefore = commentsRead.mock.calls.length;
+  // The edit line names the comment's author from the outline's tree, and reads no whole comments
+  // list as it opens or once it saves: the outline draws the comment again from the tree read,
+  // which the edit's event reads again.
   await user.keyboard("{Control>}a{/Control}My better words{Enter}");
   await waitFor(() =>
     expect(editComment).toHaveBeenCalledWith("comment-2", { body: "My better words" }, keyedAttempt)
   );
   await waitFor(() => expect(page.writer().editing).toBeUndefined());
-  // The outline draws the comment again from the read that answers after the save.
-  expect(commentsRead.mock.calls.length).toBeGreaterThan(readsBefore);
+  expect(commentsRead, "the edit line read the issue's whole comments list").not.toHaveBeenCalled();
   await waitFor(() => expect(focusedRowId()).toBe("comment-2"));
 });
 
@@ -1353,6 +1357,41 @@ test("the box's list of who a comment is delivered to reads a stopped session by
       .getAllByRole("listitem")
       .map((item) => item.textContent)
   ).toEqual(["Planner", CONTROL_LABELS.unnamed_author, "planner"]);
+});
+
+// Decision 548: the box's picker names the image a party's row draws its agent as (`RowAgent`) by
+// the words the row draws for that agent (`sessionShown`). The row of a stopped role whose last
+// session nobody titled draws the page's word for an agent nothing names, and names its image so
+// too - never by the session's short form, an address that names nobody - while its detail still
+// draws that word and then the role's own words after it.
+test("the box's picker names the image of a session nobody titled by the page's word, never its short form", async () => {
+  const user = userEvent.setup();
+  (
+    api.getIssueCollaborators as unknown as Mock<typeof api.getIssueCollaborators>
+  ).mockResolvedValue(issueCollaborators({ agents: [UNTITLED_TESTER] }));
+  const { client } = renderPage();
+  act(() => client.setQueryData(["agents"], [plannerAgent()]));
+  await user.click(writeField());
+  await user.keyboard("@");
+  const parties = await within(composerBox()).findByRole("listbox", {
+    name: BOX_PICKER_NAMES.label,
+  });
+  const agent = await waitFor(() => {
+    const found = parties.querySelector(`[data-agent-name="${UNTITLED_TESTER.session_id}"]`);
+    if (found === null) throw new Error("the picker draws no row of the tester's role");
+    return found;
+  });
+  const image = agent.closest('[role="img"]');
+  const row = agent.closest('[role="option"]');
+  expect({
+    drawn: row?.textContent ?? "",
+    named: image?.getAttribute("aria-label"),
+  }).toEqual({
+    drawn: `${UNTITLED_ROLE.token}${CONTROL_LABELS.unnamed_author} · ${UNTITLED_ROLE.role} · ${BOX_PICKER_LINES.stopped_role}`,
+    named: CONTROL_LABELS.unnamed_author,
+  });
+  // What a screen reader reads the row by, which takes the image's name in place of its words.
+  expect(row).not.toHaveAccessibleName(new RegExp(UNTITLED_ROLE.short, "u"));
 });
 
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches
@@ -2077,7 +2116,7 @@ test("a stopped reply let go with the target line's control is sent under a new 
 
 // A comment or a message its author deleted takes no reply (`409 POST_DELETED`), and its row
 // offers no Reply, so the box answers one only where the delete came while it was open. The box
-// reads the post as the outline's comments read holds it now (`MentionComposer`'s `replyParent`),
+// reads the post as the comment's own read holds it now (`MentionComposer`'s `replyParent`),
 // so Send refuses the reply before it goes, in the page's one sentence that says so and where the
 // box sends the draft instead (`COMPOSER_ANSWER_WORDS.deleted_reply`), which names the box's
 // control that writes on the issue, on a line under the box that Send's refusal names; neither
@@ -2091,10 +2130,18 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
+  // The line reads the comment its reply answers alone, under the key the Reply read it by, and
+  // never the issue's whole comments list.
+  expect(commentRead.mock.calls.map(([id]) => id)).toEqual(["comment-1"]);
+  expect(
+    commentsRead,
+    "the write line read the issue's whole comments list"
+  ).not.toHaveBeenCalled();
   await user.keyboard("Ship it.");
 
-  // bob deletes his comment: the comments read answers it with the marks of his delete, and the
-  // outline draws its row as the deleted line from that same read.
+  // bob deletes his comment: the comment's own read answers it with the marks of his delete, as
+  // the feed reads it again on the delete (`api/event-refresh.ts`), and the outline draws its row
+  // as the deleted line.
   const deletedAt = "2026-11-05T12:00:00Z";
   reads.comments = [
     commentRecord("comment-1", BOB, "", { deleted_at: deletedAt, deleted_by: BOB }),
@@ -2109,7 +2156,7 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
         : child
     ),
   });
-  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+  await act(() => page.client.invalidateQueries({ queryKey: ["comment", "comment-1"] }));
 
   const refused = COMPOSER_ANSWER_WORDS.deleted_reply.comment;
   expect(refused).toContain(`press ${CONTROL_LABELS.write_on_issue} `);
@@ -2134,7 +2181,9 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
 // presses it, is said of the address the press was made at. A row's `r` moves the box to another
 // address, where the reader pressed nothing, so no reason is drawn there, nor once the box's own
 // end of the reply brings it back, though Send refuses the empty draft for the same reason at
-// each - until Send is pressed again.
+// each - until Send is pressed again. Review 6081271841, its first thread: an edit of the reader's
+// comment is another address too, which the edit line writes while the write line waits under
+// it, hidden, so a reason pressed on the write line is not drawn there once Escape ends the edit.
 test("Send's reason drawn after a press goes when the box moves to another target", async () => {
   const user = userEvent.setup();
   const { empty } = COMPOSER_ANSWER_WORDS.send_refusals;
@@ -2155,6 +2204,17 @@ test("Send's reason drawn after a press goes when the box moves to another targe
 
   await user.click(send());
   await waitFor(() => expect(send()).toHaveAccessibleDescription(empty));
+
+  await editHoldingFrames(page, "comment-2", "My own words");
+  await waitFor(() =>
+    expect(
+      within(composerBox()).getByRole("textbox", { name: CONTROL_LABELS.composer_edit })
+    ).toHaveFocus()
+  );
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(page.writer().editing).toBeUndefined());
+  expect(send()).toHaveAccessibleDescription("");
+  expect(composerBox().textContent ?? "").not.toContain(empty);
 });
 
 // R3: the target line names the entry a reply answers by its author and the page's word for its
@@ -2586,6 +2646,32 @@ const STOPPED_REVIEWER: IssueCollaboratorAgent = {
   title: STOPPED_ROLE.title,
 };
 
+/** A second role of the issue no running session holds - the tester, by its name, its token and
+ *  the short form of the session that last held it (`short`) - whose session nobody titled. The
+ *  picker's row draws that session by the page's word for an agent nothing names, with no mark of
+ *  a name somebody gave around it, so its state mark stands inside the image the row draws the
+ *  agent as (`RowAgent`) and in no part marked as an author's. The box names that image by the
+ *  same word (decision 548), so the short form is no data of the box's: the row never draws it. */
+const UNTITLED_ROLE = {
+  role: "tester",
+  short: "session:untitled…",
+  token: "legion-p-core-1-tester",
+} as const;
+const UNTITLED_TESTER: IssueCollaboratorAgent = {
+  kind: "session",
+  last_at: null,
+  legion: {
+    replaced_at: null,
+    replaced_by: null,
+    role: UNTITLED_ROLE.role,
+    role_token: UNTITLED_ROLE.token,
+    started_at: "2026-10-26T03:00:00Z",
+  },
+  reasons: [],
+  session_id: "untitled-tester",
+  title: null,
+};
+
 /** A comment the search answers the `#` door's query with, whose row opens its parts. */
 const RELAY_HIT: SearchResult = {
   href: "/issues/CORE-2/comments/comment-7",
@@ -2655,18 +2741,23 @@ function textsNamed(ids: string | null): string[] {
   });
 }
 
-/** Each thing the box tells a reader now that is neither a word or a sentence of the page's lists
- *  nor made of them and of `DRAWN_DATA` and `data`, and each place it says Dispatch's own words
- *  (`DISPATCH_SAID`), each named with `state`. It reads every text the box draws, the name of
- *  every element - its `aria-label`, the text its `aria-labelledby` names, its `title` and its
- *  placeholder - and the text of every line an element's `aria-describedby` names. The box is
- *  marked whole as words the page did not write (`AUTHOR_TEXT_ATTRIBUTE`), since its field holds
- *  the reader's; a part something inside it marks so, the field's own text and a part that is
- *  hidden are not the page's words, and nor is a name inside an image, which a screen reader
- *  reads by the image's own name, so none of them is read. An image's own name is the page's
- *  wherever it stands - the state mark beside an agent's name, inside the mark of that name - so
- *  it is read inside a part marked so too: on the target line and in the reference picker's agent
- *  rows alike. */
+/**
+ * Each thing the box tells a reader now that is neither a word or a sentence of the page's lists
+ * nor made of them and of `DRAWN_DATA` and `data`, and each place it says Dispatch's own words
+ * (`DISPATCH_SAID`), each named with `state`. The box is marked whole as words the page did not
+ * write (`AUTHOR_TEXT_ATTRIBUTE`), since its field holds the reader's, so a part something inside
+ * it marks so holds words that are not the page's. It reads nothing hidden, and of the rest, in
+ * one pass over the texts and one over the elements:
+ * - every text the box draws, but the field's own and a text inside a part marked so;
+ * - every image's `aria-label`, wherever the image stands: inside a part marked so, as the state
+ *   mark beside a name somebody gave an agent stands, and inside another image, as the state mark
+ *   of a session with no title stands inside the image a row of the reference picker draws its
+ *   agent as (`RowAgent`), where the mark still carries the page's words though no screen reader
+ *   reads them;
+ * - and of every element that stands outside both a part marked so and an image, its
+ *   `aria-label`, the text its `aria-labelledby` names, its `title`, its placeholder and the text
+ *   of every line its `aria-describedby` names.
+ */
 function unlisted(state: string, data: readonly string[] = []): string[] {
   const box = composerBox();
   const drawnData = [...DRAWN_DATA, ...data];
@@ -2698,12 +2789,17 @@ function unlisted(state: string, data: readonly string[] = []): string[] {
     read("text", text.nodeValue ?? "");
   }
   for (const element of [box, ...box.querySelectorAll("*")]) {
-    if (notThePage(element)) continue;
+    if (element.closest("[hidden]") !== null) continue;
     const named = elementName(element);
+    // Every name is read of an element outside both a part marked so and an image; of any other,
+    // an image's `aria-label` alone.
+    const everyName =
+      !notThePage(element) && (element.parentElement?.closest('[role="img"]') ?? null) === null;
     const label = element.getAttribute("aria-label");
-    if (label !== null && (element.parentElement?.closest('[role="img"]') ?? null) === null) {
+    if (label !== null && (everyName || element.getAttribute("role") === "img")) {
       read(`the name of ${named}`, label);
     }
+    if (!everyName) continue;
     for (const said of textsNamed(element.getAttribute("aria-labelledby"))) {
       read(`the name of ${named}`, said);
     }
@@ -2714,11 +2810,6 @@ function unlisted(state: string, data: readonly string[] = []): string[] {
     for (const said of textsNamed(element.getAttribute("aria-describedby"))) {
       read(`the description of ${named}`, said);
     }
-  }
-  for (const image of box.querySelectorAll('[role="img"]')) {
-    if (image.closest("[hidden]") !== null || !notThePage(image)) continue;
-    const label = image.getAttribute("aria-label");
-    if (label !== null) read(`the name of ${elementName(image)}`, label);
   }
   return found;
 }
@@ -2791,26 +2882,26 @@ const JUST_NOW = "just now";
 // draws words - a comment a reload ended; at rest, Send pressed there, writing a question, aimed
 // at a reply with a draft kept on the issue; aimed at a running agent's comment and at one of an
 // agent that is not running, each named with its state mark; the picker at each of its doors
-// (`@`, `#` with and without a query, `[[` with and without a match), a row's parts opened with
-// none, the agent list refilling and unreachable; drafts kept for a comment, a message and a
-// statement, and those drafts once their targets are gone; a reply whose post is deleted while
-// it is open; a mention of one session and of two that takes the plain mode, that does not take
-// the mode the draft asks for with another to take instead and, for one, with none, and that
-// takes no mode at all because its list holds nothing, holds no mode this page knows or, for
-// two, some of each; a delivery command with nothing after it; a send refused with a code the
-// box has no sentence for and with one it has, and the same held for the issue while the box
-// replies elsewhere; a refused reply held for its comment while the box writes on the issue,
-// then once the comment is no longer listed and once it is deleted; a statement held twice; an
-// edit and one over a newer comment; an upload out, refused with a code the box has no sentence
-// for and with each it has, failed, stored with no answer, and stopped, with a Retry under its
-// key and a day later; and a send past its deadline, stopping, stopped, a day later with its key
-// expired, and carried to the issue - and reads every text, name and description of the box in
-// each (`unlisted`). The lists are the page's tables (`UNASKED_SOURCES`, `ANSWER_PHRASES`). A
-// text that is in no list, nor made of the lists' parts around the names and words the case drew
-// it with, fails the case by its words, and so do Dispatch's own text of a refusal wherever the
-// box draws it and a kind named by a word the page does not use (`KIND_WORDS_REFUSED`). Send's
-// reason is drawn only once the reader presses Send or Enter: at rest no line and no description
-// says it.
+// (`@`, `#` with and without a query, `[[` with and without a match), with a role whose session
+// nobody titled among its rows, a row's parts opened with none, the agent list refilling and
+// unreachable; drafts kept for a comment, a message and a statement, and those drafts once their
+// targets are gone; a reply whose post is deleted while it is open; a mention of one session and
+// of two that takes the plain mode, that does not take the mode the draft asks for with another
+// to take instead and, for one, with none, and that takes no mode at all because its list holds
+// nothing, holds no mode this page knows or, for two, some of each; a delivery command with
+// nothing after it; a send refused with a code the box has no sentence for and with one it has,
+// and the same held for the issue while the box replies elsewhere; a refused reply held for its
+// comment while the box writes on the issue, then once the comment is no longer listed and once
+// it is deleted; a statement held twice; an edit and one over a newer comment; an upload out,
+// refused with a code the box has no sentence for and with each it has, failed, stored with no
+// answer, and stopped, with a Retry under its key and a day later; and a send past its deadline,
+// stopping, stopped, a day later with its key expired, and carried to the issue - and reads every
+// text, name and description of the box in each (`unlisted`). The lists are the page's tables
+// (`UNASKED_SOURCES`, `ANSWER_PHRASES`). A text that is in no list, nor made of the lists' parts
+// around the names and words the case drew it with, fails the case by its words, and so do
+// Dispatch's own text of a refusal wherever the box draws it and a kind named by a word the page
+// does not use (`KIND_WORDS_REFUSED`). Send's reason is drawn only once the reader presses Send
+// or Enter: at rest no line and no description says it.
 test("every string the box draws, in each of its states, is a word or sentence of the page's lists", async () => {
   const found: string[] = [];
   const user = userEvent.setup();
@@ -2894,16 +2985,19 @@ test("every string the box draws, in each of its states, is a word or sentence o
   cleanup();
   reads.comments = ownComments;
 
-  // The picker at each door, with the planner's session and role, the reviewer's role no running
-  // session holds, and the comment the search finds; a row's parts opened with none; and the
-  // agent list refilling, then unreachable.
+  // The picker at each door, with the planner's session and role, the reviewer's role and the
+  // tester's, which no running session holds, the tester's session titled by nobody, and the
+  // comment the search finds; a row's parts opened with none; and the agent list refilling, then
+  // unreachable.
   const listAgents = api.listAgents as unknown as Mock<typeof api.listAgents>;
   const collaborators = api.getIssueCollaborators as unknown as Mock<
     typeof api.getIssueCollaborators
   >;
   const planner = plannerAgent({ last_seen: PLANNER_SEEN });
   listAgents.mockResolvedValue([planner]);
-  collaborators.mockResolvedValue(issueCollaborators({ agents: [STOPPED_REVIEWER] }));
+  collaborators.mockResolvedValue(
+    issueCollaborators({ agents: [STOPPED_REVIEWER, UNTITLED_TESTER] })
+  );
   stub(spyOn(api, "listAgentArtifacts").mockResolvedValue([]));
   const relay = nodeRouteFromHref(RELAY_HIT.href);
   const asked = nodeRouteFromHref(QUESTION_HIT.href);
@@ -2917,6 +3011,8 @@ test("every string the box draws, in each of its states, is a word or sentence o
     STOPPED_ROLE.token,
     STOPPED_ROLE.role,
     STOPPED_ROLE.title,
+    UNTITLED_ROLE.token,
+    UNTITLED_ROLE.role,
     RELAY_HIT.snippet,
     shortForm(relay),
     QUESTION_HIT.snippet,
@@ -3014,7 +3110,7 @@ test("every string the box draws, in each of its states, is a word or sentence o
       child.id === "comment-1" ? { ...child, deletedAt: hour(4), deletedBy: BOB } : child
     ),
   });
-  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+  await act(() => page.client.invalidateQueries({ queryKey: ["comment", "comment-1"] }));
   await drawn(COMPOSER_ANSWER_WORDS.deleted_reply.comment);
   found.push(...unlisted("a reply to a deleted comment"));
   cleanup();

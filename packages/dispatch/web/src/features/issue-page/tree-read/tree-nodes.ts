@@ -24,7 +24,6 @@ import {
   askNodeId,
   askOfNode,
   type DecisionNode,
-  decidedByPerson,
   decisionNodes,
   isSpecBlock,
   issueAsks,
@@ -38,12 +37,15 @@ import {
 } from "../decision-nodes/decision-nodes";
 import {
   blockIdOfNode,
+  decidedByPerson,
   decisionNodeChanges,
   deletedPostIds,
   firstOfEachId,
   inReviewList,
   parentsIn,
   reviewState,
+  type TreeComment,
+  treeComments,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
@@ -70,6 +72,7 @@ import {
   type Draft,
   deciderOf,
   deletedPostLine,
+  markChangeUnread,
   requirementGaps,
   stableSourceOf,
   type TreeContext,
@@ -128,10 +131,6 @@ export interface PostMarks {
  *  outline's builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one
  *  address. */
 export interface KeptReads {
-  /** The comments the comments read anchors to text (`Comment.anchor`, which names the text's
-   *  block and quote), by their own ids: the tree read answers no anchor on a comment node, and
-   *  hangs such a comment under the node whose text it is on (`onNodeText`). */
-  readonly anchored: ReadonlySet<string>;
   /** Each check of the results read, with the results recorded against it, a check that names
    *  no document by its own id (`keptReads`). */
   readonly checks: ReadonlyMap<string, CheckBlock>;
@@ -150,9 +149,9 @@ export interface KeptReads {
    *  answers with the issue's own. Once one is held a statement no plan task serves is a gap,
    *  since a plan is written after the spec is approved; false while that read holds no answer. */
   readonly planned: boolean;
-  /** What the author of each comment and message of the comments read and the messages read did
-   *  to it, by the post's own id: the tree read answers its words, a deleted post's none, and no
-   *  mark of either. A post nobody corrected has no entry. */
+  /** What the author of each comment of the answer (`treeComments`) and each message of the
+   *  messages read did to it, by the post's own id: the read answers a comment's marks on its
+   *  node, and a message's on none. A post nobody corrected has no entry. */
   readonly posts: ReadonlyMap<string, PostMarks>;
   /** The artifact id of the issue's Verification document (`roleDocument`): a check block of it
    *  is a check, which draws a state, and one of any other document is a block and nothing more,
@@ -311,7 +310,7 @@ export function treeDraftsFrom(
   const drafting: TreeDraftContext = {
     ...context,
     askOf: lookup.askOf,
-    changes: decisionNodeChanges(answer, idOfNode, deletedPostIds(reads.comments)),
+    changes: decisionNodeChanges(answer, idOfNode, deletedPostIds(treeComments(answer))),
     decisions: new Map(
       decisionNodes(answer, reads, lookup).map((decision) => [decision.node, decision])
     ),
@@ -550,8 +549,11 @@ export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates
  * The answer's nodes in the order they are offered to the steps: the read's own walk, a parent
  * before its children, with the nodes that hang from nothing in this issue's tree after the rest,
  * in the read's order among themselves - a node whose parent is in an issue above, which the
- * answer does not hold, and the context the read carries (`role: "context"`), which stands in no
- * issue's tree. Every node a step is offered then has its ancestors' drafts made before it.
+ * answer does not hold, and the context the read carries with no parent (`role: "context"`), such
+ * as the person a decision's `decided_by` names or a constraint of the catalogue, which stands in
+ * no issue's tree. A context node whose chain of parents reaches the issue - an ancestor of a node
+ * a read with kind takes - keeps its place: the read orders it among its siblings as it orders
+ * every other node. Every node a step is offered then has its ancestors' drafts made before it.
  */
 function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
   const nodes = firstOfEachId(answer.nodes ?? []);
@@ -563,10 +565,9 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
     inTree.set(node, false);
     const parent = node.parent === null ? undefined : nodes.get(node.parent.id);
     const reached =
-      node.role !== "context" &&
-      (node.parent === null ||
-        node.parent.id === key ||
-        (parent !== undefined && reachesIssue(parent)));
+      node.parent === null
+        ? node.role !== "context"
+        : node.parent.id === key || (parent !== undefined && reachesIssue(parent));
     inTree.set(node, reached);
     return reached;
   };
@@ -768,7 +769,8 @@ function draftResult(
  * `decision` names no decider; none where the read answers no such tuple. A person's Change the
  * read hangs under it says it waits on its agent (`decisionNodeChanges`), and names who asked
  * for it: the first author of the newest Change (`changedBy`), whose name the row draws after
- * "Changed by".
+ * "Changed by". Where the read hangs no Change under it and the answer names an older comment
+ * page that may hold one, its state says so (`markChangeUnread`).
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -778,9 +780,10 @@ function draftResult(
  * is handed too (`coverageStatements`, `TreeDraftContext.isCoverageStatement`). A decision node
  * that carries no `decision`, or that no document holds, is no decision of `decisionNodes` - the
  * one has no review state, the other no address and no document a Keep could be written against
- * - so it waits on nobody, and is unsure only where the read says so.
+ * - so it waits on nobody, and is unsure only where the read says so. Nor does one the read
+ * answers `overtaken` wait on anybody (R2), as the header's count does not count it.
  *
- * A decision whose `decided_by` names a person is that person's decision (`decision-nodes.ts`'
+ * A decision whose `decided_by` names a person is that person's decision (`decision-review.ts`'
  * `decidedByPerson`, INFRA-1196's decision 516), so its author is that person, and it is not an
  * agent's to keep or change: it waits for no review, whatever the read's `waiting_review` says, a
  * comment under it asks no change of it, and the one state it stands in is replaced, where it
@@ -788,7 +791,7 @@ function draftResult(
  */
 function draftDecision(
   node: TreeAnswerNode,
-  _answer: TreeAnswer,
+  answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "decision") return undefined;
@@ -809,19 +812,24 @@ function draftDecision(
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
   const decided = context.decisions.get(node);
-  const person = decidedByPerson({ decidedBy: decider });
-  const change = person ? undefined : context.changes.get(draft.id);
+  // How it stands is read with who decided it: a decision a person decided waits for no review,
+  // whatever its `waiting_review` says, and stands only replaced, where it was (`reviewState`,
+  // `inReviewList`).
+  const reviewed = { ...decision, ...(decider === undefined ? {} : { decidedBy: decider }) };
+  const change = context.changes.get(draft.id);
   const changed = change !== undefined;
-  draft.state = reviewState(person ? { replaced: decision.replaced } : decision, changed);
+  draft.state = reviewState(reviewed, changed);
   const changer = change?.author?.[0];
   if (draft.state === "change_requested" && changer !== undefined) draft.changedBy = changer;
-  if (!person && decision.kept != null && decision.waiting_review !== true) {
+  if (!decidedByPerson(reviewed) && decision.kept != null && decision.waiting_review !== true) {
     draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
   }
   draft.replaced = decision.replaced === true;
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
+  // A decision the read hangs no Change under may have one on a comment page not read yet.
+  markChangeUnread(draft, decision, answer);
   draft.waiting =
-    !person &&
+    node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
     inReviewList(decided, context.isCoverageStatement, changed);
@@ -899,8 +907,8 @@ function draftAsk(
  *  carries when and by whom (`deletedAt`, `deletedBy`) and holds the deleted line as its text
  *  (`deletedPostLine`) and no reading, so no line, body, filter or citation read from the node
  *  reads any part of its body. It carries no `editedAt`: the deleted line already says what
- *  became of the text. The marks are the comments read's and the messages read's, by the post's
- *  id (`KeptReads.posts`): the tree read holds neither.
+ *  became of the text. The marks are the answer's own for a comment and the messages read's for
+ *  a message, by the post's id (`KeptReads.posts`).
  *
  * A comment on a node's text is no row of either outline (R9, R10): it stays in the answer, and
  * the margin beside that node draws it (root R41). A post on the issue, a comment tied to no
@@ -932,11 +940,11 @@ function draftTurn(
 
 /**
  * Whether `node` is a comment on a node's text, or a reply in such a comment's thread (R9, R10:
- * no row of either outline, since the margin beside that node draws it, root R41). The tree read
- * answers no anchor on a comment node: the comments read does (`Comment.anchor`, the text's block
- * and its quote, `KeptReads.anchored`), and the read hangs a comment anchored inside a typed
- * block under that block's node. So a comment is on a node's text where the comments read anchors
- * it and the read hangs it under a node other than the issue's own. The second half is why the
+ * no row of either outline, since the margin beside that node draws it, root R41). The read
+ * answers a comment's anchor on its node (`anchor`: a document's words, or a node of the issue),
+ * and hangs a comment anchored inside a typed block under that block's node. So a comment is on
+ * a node's text where it carries an anchor and the read hangs it under a node other than the
+ * issue's own. The second half is why the
  * rule reads the read's placement too: a comment the read hangs under the issue - anchored in a
  * document whose block the answer holds no node for, as a `decisions.md` section's Change is -
  * has no node for the margin to draw it beside, and is drawn as a post. A reply the read hangs
@@ -951,7 +959,7 @@ function onNodeText(
 ): boolean {
   const { parent } = node;
   if (node.supertag !== "comment" || parent === null || passed?.has(node.id)) return false;
-  if (context.kept.anchored.has(node.id)) return parent.supertag !== "issue";
+  if (node.anchor != null) return parent.supertag !== "issue";
   if (parent.supertag !== "comment") return false;
   const above = context.nodeOf(parent.id);
   if (above === undefined) return false;
@@ -1332,14 +1340,11 @@ function keptReads(
     }
   }
   return {
-    anchored: new Set(
-      (reads.comments ?? []).flatMap((comment) => (comment.anchor == null ? [] : [comment.id]))
-    ),
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
     coverageNotes: coverageNotes(reads.coverage),
     planned: reads.holdsPlanTask === true,
-    posts: postMarksOf(reads),
+    posts: postMarksOf(treeComments(answer), reads.messages),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
     ),
@@ -1352,14 +1357,18 @@ function keptReads(
 }
 
 /** What the author of each comment and message did to it (`PostMarks`), by the post's id: the
- *  comments read's and the messages read's, which carry the marks the tree read does not. A post
- *  nobody deleted or edited has none, and a deleted post has no edit mark, since the deleted
- *  line says what became of its text. */
-function postMarksOf(reads: Pick<IssueTreeReads, "comments" | "messages">): Map<string, PostMarks> {
+ *  answer's comments (`treeComments`), whose nodes carry their marks, and the messages read's
+ *  messages, which carry the marks the read answers on no message node. A post nobody deleted or
+ *  edited has none, and a deleted post has no edit mark, since the deleted line says what became
+ *  of its text. */
+function postMarksOf(
+  comments: readonly TreeComment[],
+  messages: IssueTreeReads["messages"]
+): Map<string, PostMarks> {
   const marks = new Map<string, PostMarks>();
   const posts = [
-    ...(reads.comments ?? []),
-    ...(reads.messages ?? []).flatMap((thread) => [thread.message, ...(thread.replies ?? [])]),
+    ...comments,
+    ...(messages ?? []).flatMap((thread) => [thread.message, ...(thread.replies ?? [])]),
   ];
   for (const post of posts) {
     const deleted = postDeletion(post);
@@ -1623,10 +1632,10 @@ function compareIds(left: string, right: string): number {
  * walk's order across pages: each comment of the page with the nodes under it, under the node its
  * `parent` names where the answer holds that node - an ask, a comment of another page - and else
  * under the issue, as the page places it; among that node's children before the first the read
- * orders after it (ranked siblings by `rank`, ties by id, then the rest by `made_at`, ties by
- * id), else after the last of them and every node under it. A node the answer holds already is
- * not added again. The answer then has the page's `comments_before`, so the next older page is
- * read from there, and none once the page says no older comment remains.
+ * orders after it (`sortsAfter`: the conversation by when each was made, then the ranked children
+ * by `rank`, then the rest), else after the last of them and every node under it. A node the
+ * answer holds already is not added again. The answer then has the page's `comments_before`, so
+ * the next older page is read from there, and none once the page says no older comment remains.
  */
 export function mergeCommentPage(answer: TreeAnswer, page: TreeAnswer): TreeAnswer {
   const nodes = [...(answer.nodes ?? [])];
@@ -1672,8 +1681,10 @@ function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...Tree
  * Where in `nodes` the run of a comment page that `head` starts goes (`mergeCommentPage`): under
  * the node its `parent` names where `nodes` holds it, else under the issue's own node (`issue`),
  * before the first of that node's children the read orders after `head` (`sortsAfter`), else
- * where that node's branch ends. A parent's branch is every node after it whose chain of parents
- * reaches it, which the read's walk keeps together, each node after its parent.
+ * where that node's branch ends. The read stands two children first, ahead of that order, and so
+ * the run after them: an item's own blocks under it, and the issue's memo, the callout the read
+ * stands first under the issue's node. A parent's branch is every node after it whose chain of
+ * parents reaches it, which the read's walk keeps together, each node after its parent.
  */
 function placeOfRun(
   nodes: readonly TreeAnswerNode[],
@@ -1682,14 +1693,12 @@ function placeOfRun(
   parents: ReadonlyMap<string, TreeAnswerNode["parent"]>
 ): number {
   const named = head.parent === null ? -1 : lastPlaceOf(nodes, head.parent.id);
-  const parentAt =
-    named >= 0
-      ? named
-      : nodes.findIndex(
-          (node) => node.supertag === "issue" && (node.id === issue || node.parent === null)
-        );
+  const isIssue = (node: TreeAnswerNode): boolean =>
+    node.supertag === "issue" && (node.id === issue || node.parent === null);
+  const parentAt = named >= 0 ? named : nodes.findIndex(isIssue);
   const parent = nodes[parentAt];
   if (parent === undefined) return nodes.length;
+  const underIssue = isIssue(parent);
   const reaches = (node: TreeAnswerNode): boolean => {
     let above = node.parent;
     for (let steps = 0; above !== null && steps < nodes.length; steps += 1) {
@@ -1701,7 +1710,9 @@ function placeOfRun(
   for (let place = parentAt + 1; place < nodes.length; place += 1) {
     const node = nodes[place];
     if (node === undefined || !reaches(node)) return place;
-    if (node.parent?.id === parent.id && sortsAfter(node, head)) return place;
+    if (node.parent?.id !== parent.id || ITEM_BLOCK_KINDS.includes(node.kind)) continue;
+    const memo = underIssue && place === parentAt + 1 && node.supertag === "callout";
+    if (!memo && sortsAfter(node, head)) return place;
   }
   return nodes.length;
 }
@@ -1714,17 +1725,41 @@ function lastPlaceOf(nodes: readonly TreeAnswerNode[], id: string): number {
   return -1;
 }
 
-/** Whether the read orders `sibling` after `node` under one parent: ranked siblings first, by
- *  `rank` in byte order, ties by id; then the rest by `made_at`, ties by id. */
+/** The kinds of node the read orders as a node's conversation, first among its children: an ask,
+ *  a comment, a message, a lens and a risk, as the server's `refs.OrderedAsConversation` reads a
+ *  node's `kind`. */
+const CONVERSATION_NODE_KINDS: readonly string[] = ["ask", "comment", "lens", "message", "risk"];
+
+/** The kinds of an ask's, a comment's and a message's own blocks, which the read stands first
+ *  under their item, before its replies. */
+const ITEM_BLOCK_KINDS: readonly string[] = ["ask_block", "comment_block", "message_block"];
+
+/** Where a node stands among its parent's children in the read's order of siblings: the
+ *  conversation, then the children that hold a rank, then the rest. */
+function siblingClass(node: TreeAnswerNode): number {
+  if (CONVERSATION_NODE_KINDS.includes(node.kind)) return 0;
+  return node.rank === null ? 2 : 1;
+}
+
+/**
+ * Whether the read orders `sibling` after `node` among one parent's children, by the server's
+ * order of siblings (`refs.CompareSiblings`): the conversation first, by when each was made; then
+ * the children that hold a rank, by `rank`; then the rest, by when each was made. A node the read
+ * names no time for stands first of its class, and a tie goes to the lower address,
+ * `<kind>:<id>`, byte for byte.
+ */
 function sortsAfter(sibling: TreeAnswerNode, node: TreeAnswerNode): boolean {
-  if (node.rank !== null) {
-    if (sibling.rank === null) return true;
-    return (compareIds(sibling.rank, node.rank) || compareIds(sibling.id, node.id)) > 0;
-  }
-  if (sibling.rank !== null) return false;
-  const at =
-    sibling.made_at === null || node.made_at === null
-      ? 0
-      : compareTimes(sibling.made_at, node.made_at);
-  return (at || compareIds(sibling.id, node.id)) > 0;
+  const classes = siblingClass(sibling) - siblingClass(node);
+  if (classes !== 0) return classes > 0;
+  const by =
+    siblingClass(node) === 1
+      ? compareIds(sibling.rank ?? "", node.rank ?? "")
+      : compareMadeAt(sibling.made_at, node.made_at);
+  return (by || compareIds(`${sibling.kind}:${sibling.id}`, `${node.kind}:${node.id}`)) > 0;
+}
+
+/** How two `made_at`s stand, as `compareTimes` reads them, a time the read does not name first. */
+function compareMadeAt(left: string | null, right: string | null): number {
+  if (left === null || right === null) return left === right ? 0 : left === null ? -1 : 1;
+  return compareTimes(left, right);
 }

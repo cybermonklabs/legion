@@ -4,35 +4,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The answer as an ask's node holds it, which Settle writes and every reader of an answer reads
-// here (R3), as a statement or as a value. A statement selects NodeAnswerColumn, which holds each
-// fact of the answer that stands, or picks asks by one fact of it (NodeValueOf, NodeStateOf and
-// the rest of the Node...Of fragments); a reader that wants the facts of several asks takes them
-// through NodeFacts. The value is NodeAnswer: ReadNodeAnswer decodes the column into it, Read
-// decodes one fact, and ApplyTo lays it over the ask's row. A reader that reads the facts through
-// another statement of its own reads them through those decoders, so a value that does not parse
-// is refused alike by every read of an answer (ErrNodeAnswerUnreadable).
+// through this package (R3), as a statement or as a value. A statement selects NodeAnswerColumn,
+// which holds each fact of the answer that stands, or picks asks by one fact of it (NodeValueOf,
+// NodeStateOf and the rest of the Node...Of fragments); a reader that wants the facts of several
+// asks takes them through NodeAnswerTuples. The value is NodeAnswer: ReadNodeAnswer decodes the
+// column into it, NodeAnswer.Read decodes one fact, and NodeAnswer.ApplyTo lays it over the ask's
+// row. A reader that reads the facts through another statement of its own reads them through
+// those decoders, so a value that does not parse is refused alike by every read of an answer
+// (ErrNodeAnswerUnreadable).
 
-// ErrNodeAnswerUnreadable is the error of a node whose answer holds a value that does not parse:
-// an answer state outside open, answered and resolved, a selection that is no list of labels, a
-// time that is none, or a resolution that is no JSON of its shape. Settle writes none of them, so
-// it names a node written by hand.
+// ErrNodeAnswerUnreadable is the error of a node whose answer holds a value that does not parse
+// (NodeAnswer.Read): an answer state outside open, answered and resolved, a selection that is no
+// list of labels, a time that is none, or a resolution that is no JSON of its shape. Settle writes
+// none of them, so it names a node written by hand.
 var ErrNodeAnswerUnreadable = errors.New("the node holds an answer that does not parse")
 
-// nodeAnswerKinds are the values and relations of an ask's node that state its answer to a
-// reader: the answer state, the answer's words, selection and time, the person who gave it, and
-// the resolution. decided_by, the one fact of AnswerKinds left out, names the person answered_by
-// names and is shown by the Decisions read alone, which reads it itself.
-var nodeAnswerKinds = []string{
-	graphstore.TupleAnswerState, graphstore.TupleAnswer, graphstore.TupleSelected,
-	graphstore.TupleAnsweredAt, graphstore.TupleAnsweredBy, graphstore.TupleResolution,
+// IsAnswerKind reports whether kind is one NodeAnswer.Read takes into the answer: the answer
+// state, the answer's words, selection and time, the person who gave it, and the resolution.
+// decided_by, the one kind of AnswerKinds Read leaves, names the person answered_by names and is
+// shown by the Decisions read alone, which reads it itself.
+func IsAnswerKind(kind string) bool {
+	switch kind {
+	case graphstore.TupleAnswerState, graphstore.TupleAnswer, graphstore.TupleSelected,
+		graphstore.TupleAnsweredAt, graphstore.TupleAnsweredBy, graphstore.TupleResolution:
+		return true
+	}
+	return false
 }
 
 // NodeFact is one value or relation of a node as a statement aggregates it: its kind, the kind of
@@ -43,64 +46,9 @@ type NodeFact struct {
 	ToID   string `json:"to_id"`
 }
 
-// NodeAnswer is what the node of an ask holds of its answer state, each field nil where the node
-// holds none. Named says the ask's row names the node (asks.node_kind), so the node holds its
-// answer: ReadNodeAnswer sets it, and a reader that reads facts through Read alone leaves it
-// unset.
-type NodeAnswer struct {
-	Named      bool
-	State      *string
-	Answer     *string
-	Selected   []string
-	AnsweredAt *time.Time
-	AnsweredBy *string
-	Resolution *model.AskResolution
-}
-
-// Read takes value, the far end of one fact of the node of kind, and answers whether kind is one
-// the node states an answer with (nodeAnswerKinds), with ErrNodeAnswerUnreadable and the reason
-// where the value does not parse: an answer state none of the three, a selection that is no list
-// of labels, a time that is none, or a resolution that is no JSON of its shape.
-func (node *NodeAnswer) Read(kind, value string) (bool, error) {
-	switch kind {
-	case graphstore.TupleAnswerState:
-		switch value {
-		case StateOpen, StateAnswered, StateResolved:
-			node.State = &value
-		default:
-			return true, fmt.Errorf("%w: answer_state holds %q, which is none of open, answered and resolved", ErrNodeAnswerUnreadable, value)
-		}
-	case graphstore.TupleAnswer:
-		node.Answer = &value
-	case graphstore.TupleSelected:
-		selected := []string{}
-		if err := json.Unmarshal([]byte(value), &selected); err != nil {
-			return true, fmt.Errorf("%w: selected holds %q, which is no list of labels: %w", ErrNodeAnswerUnreadable, value, err)
-		}
-		node.Selected = selected
-	case graphstore.TupleAnsweredAt:
-		at, err := time.Parse(time.RFC3339Nano, value)
-		if err != nil {
-			return true, fmt.Errorf("%w: answered_at holds %q, which is no time: %w", ErrNodeAnswerUnreadable, value, err)
-		}
-		node.AnsweredAt = &at
-	case graphstore.TupleAnsweredBy:
-		node.AnsweredBy = &value
-	case graphstore.TupleResolution:
-		var resolution model.AskResolution
-		if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-			return true, fmt.Errorf("%w: resolution holds %q, which is no resolution: %w", ErrNodeAnswerUnreadable, value, err)
-		}
-		node.Resolution = &resolution
-	default:
-		return false, nil
-	}
-	return true, nil
-}
-
 // ReadNodeAnswer decodes NodeAnswerColumn, or answers which of its facts does not parse
 // (ErrNodeAnswerUnreadable). A null column is a row that names no node, whose answer the node
-// does not hold.
+// does not hold (NodeAnswer.Named).
 func ReadNodeAnswer(encoded []byte) (NodeAnswer, error) {
 	if encoded == nil {
 		return NodeAnswer{}, nil
@@ -111,7 +59,7 @@ func ReadNodeAnswer(encoded []byte) (NodeAnswer, error) {
 	}
 	node := NodeAnswer{Named: true}
 	for _, fact := range facts {
-		if _, err := node.Read(fact.Kind, fact.ToID); err != nil {
+		if err := node.Read(fact.Kind, fact.ToID); err != nil {
 			return NodeAnswer{}, err
 		}
 	}
@@ -137,66 +85,25 @@ func ReadAnswer(askID, state string, answer, nodeAnswer []byte) (model.Ask, erro
 	return ask, nil
 }
 
-// ApplyTo lays node over ask, read from its row, in the shape the row projects it in (migration
-// 0007's asks_answer_state_check and asks_resolution_state_check): the answer state the node
-// holds, open where it holds none - an ask no settlement has written (Settle), as docs' textAskOf
-// reads one; its answer on an answered ask alone, with its words, selection, time and person; and
-// its resolution on a resolved ask alone. The node holds no act (model.AskAnswer.Act), so the
-// answer carries the row's where the row holds the node's own answer, the same person's at the
-// same time, and none otherwise. A row that names no node is left as it reads.
-func (node NodeAnswer) ApplyTo(ask *model.Ask) {
-	if !node.Named {
-		return
-	}
-	row := ask.Answer
-	ask.State, ask.Answer, ask.Resolution = StateOpen, nil, nil
-	if node.State != nil {
-		ask.State = *node.State
-	}
-	switch ask.State {
-	case StateAnswered:
-		answer := &model.AskAnswer{Selected: append([]string{}, node.Selected...), Text: node.Answer}
-		if node.AnsweredAt != nil {
-			answer.At = *node.AnsweredAt
-		}
-		if node.AnsweredBy != nil {
-			answer.User = *node.AnsweredBy
-		}
-		if row != nil && row.At.Equal(answer.At) && model.CanonicalLogin(row.User) == answer.User {
-			answer.Act = row.Act
-		}
-		ask.Answer = answer
-	case StateResolved:
-		ask.Resolution = node.Resolution
-	}
+// NodeAnswerColumn is the answer state of the ask aliased ask as its node holds it: each fact of
+// AnswerKinds that stands, as a JSON list of NodeFact, read through the one reading of the node's
+// answer (NodeAnswerTuples). ReadNodeAnswer decodes it. It is null for a row that names no node
+// (asks.node_kind): Settle writes the answer on the node only once the row names it, so the row of
+// an ask a process of the release before wrote, until the boot step's backfill marks it, and of an
+// ask whose relations are past the store's bound (graphstore.AskFacts) is its answer's only record.
+func NodeAnswerColumn(ask string) string {
+	return NodeAnswerColumnIn(`graph_tuples`, ask)
 }
 
-// NodeAnswerColumn is the answer state of the ask aliased ask as its node holds it: each value
-// and relation of nodeAnswerKinds that stands, as a JSON list of NodeFact, read through the
-// store's one reading of the log (graphstore.CurrentTupleRead). ReadNodeAnswer decodes it. It is
-// null for a row that names no node (asks.node_kind): Settle writes the answer on the node only
-// once the row names it, so the row of an ask a process of the release before wrote, until the
-// boot step's backfill marks it, and of an ask whose relations are past the store's bound
-// (graphstore.AskFacts) is its answer's only record.
-func NodeAnswerColumn(ask string) string {
+// NodeAnswerColumnIn is NodeAnswerColumn over table, graph_tuples under the name the calling
+// statement gives it (NodeAnswerTuplesIn): the replay's check of the answers it serves reads
+// public.graph_tuples (loadtest's servedAnswersQuery). table is a constant of the caller's own
+// text, never a request's value.
+func NodeAnswerColumnIn(table, ask string) string {
 	return `case when ` + ask + `.node_kind is not null then (
 		select coalesce(json_agg(json_build_object('kind', f.kind, 'to_kind', f.to_kind, 'to_id', f.to_id)), '[]'::json)
-		from (` + NodeFacts(ask) + `) f
+		from (` + NodeAnswerTuplesIn(table, ask+`.id::text`) + `) f
 		where f.asserted) end`
-}
-
-// NodeFacts reads the facts of nodeAnswerKinds on the node of the ask aliased ask, whose id the
-// statement may bind as text: each value and relation with its newest tuple
-// (graphstore.CurrentTupleRead), as f.kind, f.to_kind, f.to_id and f.asserted, which the caller's
-// `where f.asserted` cuts to the facts that stand. NodeAnswerColumn aggregates them for one ask;
-// a reader of several asks joins them in a lateral and decodes each fact through NodeAnswer.Read.
-// A statement that filters on one fact of the node reads that fact through the same reading of
-// the log, one fact at a time (NodeValueOf, NodeRelationOf).
-func NodeFacts(ask string) string {
-	return graphstore.CurrentTupleRead(
-		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
-		`t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+ask+`.id::text and t.kind in ('`+strings.Join(nodeAnswerKinds, `', '`)+`')`)
 }
 
 // NodeValueOf is the value of kind that stands on the node of the ask aliased ask, null where

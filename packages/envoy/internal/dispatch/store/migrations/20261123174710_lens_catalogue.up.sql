@@ -35,10 +35,10 @@
 -- `envoy-dispatch lens-kind-add`, which writes the same shape (graphstore.AddLensKind).
 --
 -- It is a type migration written after the store's backfill, as
--- 20261123174700_graph_supertags_decision_reading is: it is numbered above backfillVersion
+-- 20261125163555_graph_supertags_decision_reading is: it is numbered above backfillVersion
 -- (cmd/dispatch/supertag_nodes_test.go), the newest migration of the releases that may have run
 -- `backfill-graph-store` over graph_nodes and graph_tuples, so a store of those releases applies
--- it after the backfill, as a fresh store applies it after 20261123174700. cmd/dispatch's
+-- it after the backfill, as a fresh store applies it after 20261125163555. cmd/dispatch's
 -- TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs it over a backfilled
 -- store with the census at a one-byte limit.
 --
@@ -51,9 +51,9 @@
 -- ascending (kind, id), all before any tuple, and the tuples in the order of their node, then
 -- their kind and far end. Every row is dated '2026-11-16 12:33:54+00', a literal, and signed by
 -- the catalogue's writer, `{"kind": "system", "id": "lens-catalogue"}`. The stamp is not now(),
--- as 20261123174700's is, since no later `at` has to win over one of these: a reader at a moment
+-- as 20261125163555's is, since no later `at` has to win over one of these: a reader at a moment
 -- (graphstore.AsOfOut) orders a node's tuples by `at` first, which matters where two writers state
--- one attribute of one node, as 20261123174700 and 20261123080000 both state each block type's
+-- one attribute of one node, as 20261125163555 and 20261123080000 both state each block type's
 -- `version`. Nothing else states a tuple out of a node this file writes: no route or command
 -- writes a type node, each constraint's id is one only this file writes, and
 -- `envoy-dispatch lens-kind-add` refuses a kind whose id the catalogue holds.

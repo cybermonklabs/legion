@@ -24,9 +24,11 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   type NodeState,
+  type Preset,
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals, type PresetSignal, presetView } from "./presets";
+import { planTasksOut } from "./tree-read/tree-read";
 import { CAP, queryTyped } from "./verification-filter/VerificationFilterBody";
 
 /** Each sentence's label, in the order the summary holds them (R8). */
@@ -66,7 +68,11 @@ export interface BriefCounts {
  * every read the tree is built from holds its answer (`readsHeld`), and under a words filter the
  * names too (`namesHeld`): a read still out leaves nodes out of the tree, and the names give a
  * plan task its words, so a count taken sooner would read 0 for what the page has not read yet.
- * The rows wait as it does, and send no request of their own.
+ * The rows wait as it does, and send no request of their own. Under Conversation and each filter
+ * (`preset`) they wait for Plan's view read too: Conversation's read holds no plan task, so there
+ * the plan's tasks are that view's, which the load sends with the page (`tree-read/view-read.tsx`'
+ * `sentWithLoad`), and until it answers the plan would read as holding none. Graph's read holds
+ * them itself.
  *
  * "How it gets done" takes the Plan control's own signal. "What you will be shown" counts the
  * checks the Verification view draws, each once however many statements it serves, each in the
@@ -82,11 +88,12 @@ export interface BriefCounts {
  */
 export function briefCounts(
   reads: { namesHeld: boolean; readsHeld: boolean; root: TreeNode },
-  query: string
+  query: string,
+  preset: Preset
 ): BriefCounts | undefined {
   const { namesHeld, readsHeld, root } = reads;
   const filtered = queryTyped(query);
-  if (!readsHeld || (filtered && !namesHeld)) return undefined;
+  if (!readsHeld || planTasksOut(root, preset) || (filtered && !namesHeld)) return undefined;
   const inState = new Map<NodeState, number>();
   const seen = new Set<string>();
   const walk = (node: TreeNode): void => {

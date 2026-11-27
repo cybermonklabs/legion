@@ -116,19 +116,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# issue_relations_read_far_ends SECTION KIND ISSUE: the far ends of the current KIND tuples out of
-# the issue node ISSUE - for each far end, the newest tuple naming it is asserted - each written
-# <to_kind>:<to_id>, sorted and joined by commas, in $answer.
-issue_relations_read_far_ends() {
-  with_vars "$1" "read the current $2 tuples out of $3" \
-    "select coalesce(string_agg(t.to_kind || ':' || t.to_id, ',' order by t.to_kind, t.to_id), '')
-     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
-           where from_kind = 'issue' and from_id = :'issue' and kind = :'kind' and to_kind <> 'value'
-           order by to_kind, to_id, seq desc) t
-     where t.asserted" \
-    issue="$3" kind="$2"
-}
-
 # issue_relations_read_create SECTION TITLE JSON: the agent creates an issue of `project` titled
 # TITLE, the members of the JSON object JSON added to the create, forced past the near-copy check;
 # sets issue_relations_read_key and adds it to the issues the run closes.
@@ -137,7 +124,7 @@ issue_relations_read_create() {
     '{project: $p, title: $t, spec: ("The issue \"" + $t + "\" of the relations check."), force: true, actor: $a} + $more')"
   tree_want 201 "$1" "create the issue \"$2\""
   tree_field "$1" "create the issue \"$2\"" .key
-  [[ "$tree_value" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "create the issue \"$2\"" "the key $tree_value is no issue key"
+  tree_key "$1" "create the issue \"$2\"" "$tree_value"
   issue_relations_read_key="$tree_value"
   keys+=("$tree_value")
 }
@@ -342,12 +329,12 @@ keys+=("$duplicate")
 pass R5 "dispatch issue --duplicate-of $issue created $duplicate"
 run R5 "set $duplicate's filed_from" issue-update --issue "$duplicate" --filed-from "$message_ref"
 pass R5 "dispatch issue-update --filed-from $message_ref wrote $duplicate"
-issue_relations_read_far_ends R5 duplicate_of "$duplicate"
-[[ "$answer" == "issue:$issue" ]] ||
+tree_node_far R5 "issue/$duplicate" duplicate_of
+[[ "$answer" == "issue/$issue" ]] ||
   fail R5 "the store holds $duplicate's duplicate_of tuple at $issue" "its current duplicate_of tuples name '$answer'"
 pass R5 "the store holds $duplicate's duplicate_of tuple at $issue"
-issue_relations_read_far_ends R5 filed_from "$duplicate"
-[[ "$answer" == "message:$message_id" ]] ||
+tree_node_far R5 "issue/$duplicate" filed_from
+[[ "$answer" == "message/$message_id" ]] ||
   fail R5 "the store holds $duplicate's filed_from tuple at the message $message_id" "its current filed_from tuples name '$answer'"
 pass R5 "the store holds $duplicate's filed_from tuple at the message $message_id"
 
@@ -355,16 +342,16 @@ pass R5 "the store holds $duplicate's filed_from tuple at the message $message_i
 
 tree_send PATCH "/api/v1/issues/$duplicate" "$(jq -cn --arg s "$sibling" --argjson a "$(tree_actor)" '{needs: [$s], actor: $a}')"
 tree_want 200 R6 "make $duplicate wait on $sibling"
-issue_relations_read_far_ends R6 needs "$duplicate"
+tree_node_far R6 "issue/$duplicate" needs
 readonly tuples_read="$answer"
 with_vars R6 "read the issue_links rows of $duplicate" \
   "select coalesce(string_agg(issue_key || ' ' || kind || ' ' || target_key, ',' order by target_key), '')
    from issue_links where issue_key = :'k'" k="$duplicate"
 readonly links_read="$answer"
-[[ "$tuples_read" == "issue:$sibling" && "$links_read" == "$duplicate blocked_by $sibling" ]] ||
+[[ "$tuples_read" == "issue/$sibling" && "$links_read" == "$duplicate blocked_by $sibling" ]] ||
   fail R6 "the dependency $duplicate -> $sibling is a needs tuple, and issue_links holds its row" \
-    "issue_links holds '$links_read'; the current needs tuples out of $duplicate name '$tuples_read'; want '$duplicate blocked_by $sibling' beside 'issue:$sibling'"
-pass R6 "the dependency $duplicate -> $sibling is the needs tuple 'issue:$sibling', and issue_links holds '$links_read'"
+    "issue_links holds '$links_read'; the current needs tuples out of $duplicate name '$tuples_read'; want '$duplicate blocked_by $sibling' beside 'issue/$sibling'"
+pass R6 "the dependency $duplicate -> $sibling is the needs tuple 'issue/$sibling', and issue_links holds '$links_read'"
 
 # --- R7: the issue read answers its query nodes ------------------------------------------------------
 

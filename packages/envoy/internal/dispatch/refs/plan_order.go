@@ -498,8 +498,12 @@ func (tree *planTree) baseOrder() []OrderNode {
 func (tree *planTree) order() TreeOrder {
 	var placed, overtaken []OrderNode
 	issue := map[OrderNode]string{}
+	// Whether each issue, or one above it, is overtaken, read once per issue for its halves and
+	// its plan nodes alike: an issue the tree does not hold is none.
+	overtakenIssues := make(map[string]bool, len(tree.issues))
 	for key := range tree.issues {
 		overtakenIssue := tree.overtakenIssue(key)
+		overtakenIssues[key] = overtakenIssue
 		for _, half := range (IssueHalf{Key: key, Done: true}).Halves() {
 			node := halfOf(half)
 			issue[node] = key
@@ -513,7 +517,7 @@ func (tree *planTree) order() TreeOrder {
 	for address, plan := range tree.plans {
 		node := OrderNode{Kind: BlockNodeKind, ID: address}
 		issue[node] = plan.issue
-		if plan.overtaken || tree.overtakenIssue(plan.issue) {
+		if plan.overtaken || overtakenIssues[plan.issue] {
 			overtaken = append(overtaken, node)
 		} else {
 			placed = append(placed, node)

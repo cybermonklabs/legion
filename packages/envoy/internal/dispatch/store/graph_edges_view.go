@@ -15,7 +15,7 @@ import (
 type GraphEdgesArms int
 
 const (
-	// GraphEdgesIssueRelations is the set 20261117140000_issue_tree_relations states. The arms
+	// GraphEdgesIssueRelations is the set 20261126050003_issue_tree_relations states. The arms
 	// over issues (child_of), issue_links (blocked_by) and artifacts (attached_to) answer only the
 	// rows that name no node, which no writer of this release wrote, and the store answers the
 	// rest: the tuple arm renders an issue's child_of, its needs to an issue under the kind
@@ -24,7 +24,7 @@ const (
 	// renders each one's attached_to while its part_of to that issue stands. The child_of arm also
 	// answers a marked row whose parent the release before moved in place (IssueParentMoved).
 	GraphEdgesIssueRelations GraphEdgesArms = iota + 1
-	// GraphEdgesComponents is the set 20261118023219_issue_tree_components states:
+	// GraphEdgesComponents is the set 20261126050004_issue_tree_components states:
 	// GraphEdgesIssueRelations with the three arms over a component's relations split the same
 	// way. The arms over components (part_of), component_depends (depends_on) and
 	// issue_component_members (affects) answer only the rows that name no node, the part_of arm
@@ -32,26 +32,25 @@ const (
 	// and the tuple arm renders a component's part_of and depends_on and an issue's affects while
 	// the projection row that names each carries its node.
 	GraphEdgesComponents
-	// GraphEdgesArtifactRefs is the set 20261119100000_issue_tree_artifact_refs states:
+	// GraphEdgesArtifactRefs is the set 20261126050005_issue_tree_artifact_refs states:
 	// GraphEdgesComponents with the arm over refs split the same way for the references a document
 	// makes, which the version index and rebuild-refs now state as tuples. The arm over refs answers
 	// a row whose source is no document, a document whose row names no node, or a far end past the
 	// store's bound (ReferenceNotStated), and the tuple arm renders a document's mentions while the
 	// refs row that names the edge stands, naming the document by its uuid.
 	GraphEdgesArtifactRefs
-	// GraphEdgesTupleArmFilter is the set 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter
+	// GraphEdgesTupleArmFilter is the set 20261126050006_issue_tree_graph_edges_after_tuple_arm_filter
 	// states: GraphEdgesArtifactRefs with the tuple arm's sub-select keeping only the kinds the arm
 	// renders before its `distinct on` sorts the tuples, the test spelled over the tuple's own
 	// columns as the `when` arms of the `projects` case (tupleArmFilter), and the outer
-	// `edge.projects is not null` test gone, as the sibling branch's
-	// 20261120122700_graph_edges_tuple_arm_filter has it for its own arms. It is stated after
-	// 20261121034242_graph_edges_asks_and_tuple_arm_filter, which restates the view from the arms of
-	// 20261116094101 alone, and stated again, last, by
-	// 20261123180000_issue_tree_graph_edges_after_store_class_last, after the sibling branch's
-	// 20261121104002_graph_edges_store_class_last restates it from its own arms, so a database that
-	// ran any of them holds every arm of this branch again.
+	// `edge.projects is not null` test gone, as 20261120122700_graph_edges_tuple_arm_filter has it
+	// for its own arms. It is stated after 20261125163554_graph_edges_asks_and_tuple_arm_filter,
+	// which restates the view from the arms of 20261125163553 alone, and stated again, last, by
+	// 20261126050008_issue_tree_graph_edges_after_store_class_last, after
+	// 20261126050007_graph_edges_store_class_last restates it from its own arms, so a database that
+	// ran any of them holds every arm of this set again.
 	GraphEdgesTupleArmFilter
-	// GraphEdgesBlockNodeListed is the set 20261125150001_issue_tree_graph_edges_block_node_listed
+	// GraphEdgesBlockNodeListed is the set 20261126050009_issue_tree_graph_edges_block_node_listed
 	// states: GraphEdgesTupleArmFilter with the tuple arm testing a pointer's target through
 	// block_node_listed, which 20261125150000_issue_tree_block_node_listed creates with the body of
 	// block_ref_listed, in place of block_ref_listed (R26 of the issue-tree spec,
@@ -137,14 +136,13 @@ const (
 // it does, that every row of the three tables names its node, so the arms it drops answer nothing
 // then; a row written after it that names no node, past the store's address bound, has no edge.
 func GraphEdgesView(arms GraphEdgesArms) string {
-	components, stated := componentArms[arms]
-	if !stated {
+	if arms < GraphEdgesIssueRelations || arms > GraphEdgesFourArmsDeleted {
 		panic(fmt.Sprintf("graph_edges is stated with no arm set %d", arms))
 	}
 	references, nodeColumn, tuples, nodes := graphEdgesRefs, "", graphEdgesTuples, graphEdgesNodes
-	classes, probes := "", ""
+	components, classes, probes := issueRelationsComponentArms, "", ""
 	if arms >= GraphEdgesComponents {
-		classes, probes = componentClasses, componentProbes
+		components, classes, probes = unmarkedComponentArms, componentClasses, componentProbes
 	}
 	if arms >= GraphEdgesArtifactRefs {
 		references, nodeColumn, tuples, nodes = artifactRefsArm, artifactRefNodeColumn, artifactRefTuples, artifactRefNodes
@@ -240,14 +238,13 @@ const ComponentParentMoved = `not exists (
       where newest.asserted
       offset 0)`
 
-// componentArms are, for each set, the arms over a component's part_of (components.parent), its
-// depends_on (component_depends) and an issue's affects (issue_component_members): the three over
-// every row in GraphEdgesIssueRelations, and from GraphEdgesComponents on the three over the rows
-// no writer of this release wrote (unmarkedComponentArms). Each is dated as it always was: a
-// component's edges at its snapshot's imported_at, an issue's affects at its issue_components
-// row's updated_at.
-var componentArms = map[GraphEdgesArms]string{
-	GraphEdgesIssueRelations: `  select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
+// issueRelationsComponentArms are GraphEdgesIssueRelations' arms over a component's part_of
+// (components.parent), its depends_on (component_depends) and an issue's affects
+// (issue_component_members), the three over every row. From GraphEdgesComponents on the view takes
+// the three over the rows no writer of this release wrote instead (unmarkedComponentArms). Each is
+// dated as it always was: a component's edges at its snapshot's imported_at, an issue's affects at
+// its issue_components row's updated_at.
+const issueRelationsComponentArms = `  select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
   from components c join architecture_snapshots s on s.id = c.snapshot_id
   where c.parent is not null
   union all
@@ -258,19 +255,13 @@ var componentArms = map[GraphEdgesArms]string{
   union all
   select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, null
   from issue_component_members m join issue_components c using (issue_key)
-`,
-	GraphEdgesComponents:      unmarkedComponentArms,
-	GraphEdgesArtifactRefs:    unmarkedComponentArms,
-	GraphEdgesTupleArmFilter:  unmarkedComponentArms,
-	GraphEdgesBlockNodeListed: unmarkedComponentArms,
-	// kept as GraphEdgesBlockNodeListed has them: the three arms over a component's relations are
-	// the root's to delete.
-	GraphEdgesFourArmsDeleted: unmarkedComponentArms,
-}
+`
 
 // unmarkedComponentArms are the arms over a component's three relations over the rows no writer
 // of this release wrote, the part_of arm also over a marked row whose parent was moved in place
-// (ComponentParentMoved).
+// (ComponentParentMoved): every set's from GraphEdgesComponents on. GraphEdgesFourArmsDeleted
+// keeps them as GraphEdgesBlockNodeListed has them: the three arms over a component's relations
+// are the root's to delete.
 const unmarkedComponentArms = `  select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
   from components c join architecture_snapshots s on s.id = c.snapshot_id
   where c.parent is not null
@@ -534,11 +525,17 @@ const graphEdgesTupleKinds = `           case
            case
 `
 
+// storeClassKinds are the relations of the class `store` out of any node but a finding, which the
+// tuple arm's arm over a finding (the `lens_block` arm of graphEdgesTailRest) answers out of a
+// finding too, beside its part_of and its authored_by: one list, so the two arms name the same
+// kinds.
+const storeClassKinds = `'changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by'`
+
 // graphEdgesStoreClasses are the tuple arm's classes from a block's membership to an issue's wait,
 // the classes every set states before a set's own.
 const graphEdgesStoreClasses = `             when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
              when not (tuple.from_kind = 'block' and tuple.from_id like 'lens/%')
-               and (tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
+               and (tuple.kind in (` + storeClassKinds + `)
                     or (tuple.kind in ('part_of', 'authored_by')
                         and tuple.from_kind in ('interaction', 'lens', 'risk', 'constraint'))) then 'store'
              when tuple.from_kind = 'issue' and tuple.kind in ('duplicate_of', 'filed_from') then 'store'
@@ -783,7 +780,7 @@ const graphEdgesTailRest = `          when 'ask' then exists (
            tuple.asserted
     from graph_tuples tuple
     where tuple.from_kind = 'block' and tuple.from_id like 'lens/%'
-      and tuple.kind in ('part_of', 'authored_by', 'changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
+      and tuple.kind in ('part_of', 'authored_by', ` + storeClassKinds + `)
       and tuple.to_kind <> 'value'
     order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
   ) finding

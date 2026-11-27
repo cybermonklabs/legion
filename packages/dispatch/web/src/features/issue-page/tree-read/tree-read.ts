@@ -11,7 +11,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -31,10 +31,11 @@ import type {
   IssueTreeRead,
   IssueTreeTuple,
 } from "../../../api/types";
-import { EVENT_FRESH } from "../../refs/reference-target";
+import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
 import { presetOf } from "../issue-address";
+import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
 import {
@@ -54,6 +55,12 @@ import {
  * below, which are the generated contract's (`IssueTreeRead`, `IssueTreeNode`, `IssueTreeTuple`).
  */
 export type TreeAnswer = IssueTreeRead;
+/** A node of the answer, with what the author of a comment or a message did to it, as the
+ *  contract's node declares it: when they last edited it (`edited_at`), and when and by whom they
+ *  deleted it (`deleted_at`, `deleted_by`), each absent where it is none. The read answers these
+ *  marks on a post's node, with no text for a deleted post, and a correction event writes them
+ *  into every answer the cache holds (`api/corrected-post.ts`). The page reads a comment's marks
+ *  from its node alone (`decision-review.ts`' `treeComments`). */
 export type TreeAnswerNode = IssueTreeNode;
 export type TreeTuple = IssueTreeTuple;
 
@@ -78,8 +85,16 @@ export function viewKey(key: string, view: TreeView): readonly ["issue-tree", st
  *  next on. It marks none, and clears the mark a write's drop put on a view (`droppedWhileHeld`):
  *  after a load the view is a load's first read. `subscribeTreeFreshness` resets none: it
  *  refreshes each held view through `refreshQueries`, and the view keeps what it draws until its
- *  new answer lands. */
-export function resetViews(queryClient: QueryClient, key: string): void {
+ *  new answer lands. It starts the load's hold (`LoadHold`), dropping the decisions view's answer
+ *  a write's drop kept, and answers the load's end, which `ViewReadProvider` calls as the stage
+ *  goes: once the last load of the issue has ended, the answers and the refusals the cache keeps
+ *  of its views are an earlier visit's, and no reader takes them (`loadEnded`) until the next
+ *  load resets the views. */
+export function resetViews(queryClient: QueryClient, key: string): () => void {
+  const hold = loadHoldOf(queryClient, key);
+  hold.loads += 1;
+  hold.ended = false;
+  hold.kept = undefined;
   for (const name of TREE_VIEWS) {
     const queryKey = viewKey(key, name);
     const view = queryClient.getQueryCache().find({ exact: true, queryKey });
@@ -88,6 +103,15 @@ export function resetViews(queryClient: QueryClient, key: string): void {
     treePagesOf.delete(view);
     void queryClient.resetQueries({ exact: true, queryKey });
   }
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    hold.loads -= 1;
+    if (hold.loads > 0) return;
+    hold.ended = true;
+    hold.kept = undefined;
+  };
 }
 
 /** Drops every view of issue `key` for a write's own callback, as Dispatch answers the write,
@@ -96,17 +120,30 @@ export function resetViews(queryClient: QueryClient, key: string): void {
  *  besides. The write whose callback drops them has landed or been refused, so a view it drops is
  *  read at once, as a load's; but one it drops after a read of it while another write of the
  *  issue is out, which holds it, is a refresh: held as an answered one and read once as the last
- *  write settles (`droppedWhileHeld`, `mayReadNow`). One never read reads at once. */
+ *  write settles (`droppedWhileHeld`, `mayReadNow`). One never read reads at once. The answer the
+ *  decisions view holds as it is dropped is kept for the read the drop starts (`LoadHold.kept`),
+ *  and the Decisions view draws it until that read's answer lands (`useDecisionsView`): only where
+ *  that read is out, as a view whose filter is on is read at once, or owed to the last write's
+ *  settle. A drop of a view nothing reads - the decisions view on any other view - keeps nothing,
+ *  so the Decisions view opened later draws no answer from before the write while its read is
+ *  out. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const name of TREE_VIEWS) {
     const queryKey = viewKey(key, name);
-    const view = queryClient.getQueryCache().find({ exact: true, queryKey });
+    const view = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
     if (view === undefined) continue;
     if (heldByWrites.has(view)) {
       const { fetchStatus, status } = view.state;
       if (status !== "pending" || fetchStatus !== "idle") droppedWhileHeld.add(view);
     }
+    const answer = view.state.data;
     void queryClient.resetQueries({ exact: true, queryKey });
+    if (name !== "decisions") continue;
+    // The reset sends the read of an observed view at once, so it is out now, or owes it to the
+    // last write's settle; either way the answer it drops is the one that read replaces.
+    const hold = loadHoldOf(queryClient, key);
+    if (view.state.fetchStatus === "idle" && !droppedWhileHeld.has(view)) hold.kept = undefined;
+    else if (answer !== undefined && !hold.ended) hold.kept = answer;
   }
 }
 
@@ -386,6 +423,17 @@ export function outlineOf(preset: Preset): Outline | undefined {
 }
 
 /**
+ * Whether the plan's tasks are still to be read under `preset`: Conversation's read, and the read
+ * beside each filter, holds no plan task, so there they are Plan's view read's, which a load of
+ * Conversation or of a filter sends with the page (`ViewReadProvider`'s `sentWithLoad`), and the
+ * issue's node holds it (`TreeNode.views`) once it has answered. Until then a count of the plan's
+ * tasks would read 0 for what the page has not read yet. Graph's read holds them.
+ */
+export function planTasksOut(root: Pick<TreeNode, "views">, preset: Preset): boolean {
+  return outlineOf(preset) === "conversation" && root.views?.plan === undefined;
+}
+
+/**
  * Which outline read the page holds, as the view of the address the router is at chooses it
  * (`outlineOf`). Every reader of the outline - the model (`useIssueTree`), the header's count,
  * the view row's counts, the Contents list, the stage's views, the refused read's line
@@ -528,8 +576,11 @@ export interface TreeRead {
  * and elsewhere the outline read, which holds the memo, the criteria and the statements. A read
  * nothing has sent - Conversation's on Spec below 1024 px until the Outline sheet opens - is not
  * pending: nothing is out, and the reads that wait on every read of the page do not wait on it.
+ * The view read is this load's alone: while the last load of the issue has ended, what the cache
+ * keeps of it is an earlier visit's, and no block is drawn from it (`loadEnded`).
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
+  const queryClient = useQueryClient();
   const { choice, read } = useOutlineRead(issue.key);
   const { filter } = choice;
   const {
@@ -543,13 +594,14 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
   } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
   const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
-  const viewAnswer = filter === undefined ? undefined : view.data;
+  const viewHeld = filter !== undefined && !loadEnded(queryClient, issue.key);
+  const viewAnswer = viewHeld ? view.data : undefined;
   const blocks = useMemo(
     () => byRole((role) => blocksOfRole(role === filter ? viewAnswer : answer, role, issue)),
     [answer, filter, issue, viewAnswer]
   );
-  const viewErrors = filter === undefined ? 0 : view.errorUpdateCount;
-  const viewRefused = filter !== undefined && view.isError;
+  const viewErrors = viewHeld ? view.errorUpdateCount : 0;
+  const viewRefused = viewHeld && view.isError;
   const viewRefetch = view.refetch;
   const blocksOf = useMemo(
     () =>
@@ -594,18 +646,127 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
   return role === choice.filter ? view.isFetching : read.isFetching;
 }
 
+/**
+ * The last value given other than undefined: the one given while there is one, and the last one
+ * given before while undefined is. The batched names read keeps by it the set of addresses it
+ * was last given while the gate that holds it back is shut (`useIssueTree.ts`' `askedFor`). It
+ * keeps a set of addresses and never a names answer: a correction's marks are written into the
+ * answer the cache holds (`markCorrectedPost`), and a ref holding the answer itself would go on
+ * drawing it as it was kept, a deleted post's words among them, so the answer is read from the
+ * cache under the set it was last answered for (`useLastAnswered`). The Spec view's column
+ * (`spec-filter/SpecFilterBody.tsx`) keeps by it the last answer of its view read, which a Keep
+ * or a Change drops, until the next one lands; the decisions view's answer is kept by its own
+ * rule (`useDecisionsView`). The ref is written during render only with the value given in that
+ * render, so it never stands over a newer one.
+ */
+export function useLastAnswer<T>(value: T | undefined): T | undefined {
+  const last = useRef(value);
+  if (value !== undefined) last.current = value;
+  return last.current;
+}
+
+/** What the page holds of issue `key`'s loads beside the views' own queries, which no query state
+ *  says: whether a load of the issue is mounted, and the decisions view's answer a write's drop
+ *  took (`useDecisionsView`). */
+interface LoadHold {
+  /** How many loads of the issue are mounted (`resetViews`). */
+  loads: number;
+  /** Whether the last load of the issue ended and none has reset the views since: the answers
+   *  and the refusals the cache keeps of them are an earlier visit's (`loadEnded`). */
+  ended: boolean;
+  /** The decisions view's own: the answer it held as a write's own callback dropped it
+   *  (`dropViews`), for the read that drop starts, during a load or with none ever mounted; none
+   *  where the drop starts no read and owes none, and once a load resets the view or the last one
+   *  ends. */
+  kept: TreeAnswer | undefined;
+}
+
+/** Each client's load holds, by the issue's key (`LoadHold`). */
+const loadHolds = new WeakMap<QueryClient, Map<string, LoadHold>>();
+
+/** The load hold of issue `key`, entered in `loadHolds` the first time a load or a drop asks for
+ *  it. */
+function loadHoldOf(queryClient: QueryClient, key: string): LoadHold {
+  let byKey = loadHolds.get(queryClient);
+  if (byKey === undefined) {
+    byKey = new Map();
+    loadHolds.set(queryClient, byKey);
+  }
+  let hold = byKey.get(key);
+  if (hold === undefined) {
+    hold = { ended: false, kept: undefined, loads: 0 };
+    byKey.set(key, hold);
+  }
+  return hold;
+}
+
+/** Whether the last load of issue `key` has ended and none has reset its views since
+ *  (`LoadHold.ended`): what each view's answer and refusal the cache keeps are an earlier visit's,
+ *  which no reader takes - the page's tree (`useIssueTree.ts`), the role blocks a filter draws
+ *  from (`useTreeRead`) and the decisions view's readers (`useDecisionsView`) - from the next
+ *  load's first render on, before its reset drops them (`ViewReadProvider`). */
+export function loadEnded(queryClient: QueryClient, key: string): boolean {
+  return loadHolds.get(queryClient)?.get(key)?.ended === true;
+}
+
+/** The decisions view's answer the page holds for issue `key`, and how the view's own read
+ *  stands (`useDecisionsView`). */
+export interface DecisionsView {
+  /** The view's answer, read during this load of the issue: the one its query holds, and on the
+   *  Decisions view, from a write's drop of the view (`dropViews`) until its next answer lands -
+   *  while that read is out, and after it is refused - the answer the drop took. On every other
+   *  view a dropped view holds none, so the page draws and counts Conversation's read, which the
+   *  write reads again. Undefined before the view's first answer of the load, and while the last
+   *  load of the issue has ended (`loadEnded`). */
+  readonly answer: TreeAnswer | undefined;
+  /** Whether the view's own read stands refused (`standsFailed`): its query holds no answer, and
+   *  a read of it failed since it last held one. So it is refused while `answer` is the one a
+   *  write's drop took, and the Decisions view draws its failed read's line and Retry over the
+   *  rows that answer gives; the kept answer never hides the refusal. */
+  readonly refused: boolean;
+}
+
+/**
+ * The decisions view's answer the page holds for issue `key` (`DecisionsView`), the one rule
+ * every reader of that answer takes it by: the page's tree, which carries it on the issue's node
+ * (`useIssueTree.ts`, `TreeNode.views`) and so the tree the Decisions view is drawn over
+ * (`decisions-entries.ts`' `useDecisionsTree`), the view's entries, which read the view's refusal
+ * here (`useDecisionsEntries`), the decision a Keep or a Change looks for (`useDecisionReads`),
+ * and the header's count of what waits (`IssuePropertiesRow.tsx`). So on the Decisions view the
+ * Decisions control, the list and the header count one answer, also while a Keep's read of the
+ * view is out, and on every other view all three count Conversation's read.
+ *
+ * The answer is held only as long as it is this load's (`loadEnded`), and the answer a drop took
+ * only on the Decisions view, the one view that draws it while its read is out. The view is
+ * watched and never sent: `ViewReadProvider` sends it.
+ */
+export function useDecisionsView(key: string): DecisionsView {
+  const queryClient = useQueryClient();
+  const decisionsOpen = useOutlineChoice().preset === "decisions";
+  const read = useQuery({ ...viewQuery(key, "decisions"), enabled: false });
+  const hold = loadHolds.get(queryClient)?.get(key);
+  const ended = hold?.ended === true;
+  const answer = ended ? undefined : (read.data ?? (decisionsOpen ? hold?.kept : undefined));
+  const refused = !ended && standsFailed(read);
+  return useMemo(() => ({ answer, refused }), [answer, refused]);
+}
+
 /** The two reads of issue `key` a decision's Keep and Change look for their decision in
  *  (`DecisionActions.tsx`), in the order they look: first the read its row is drawn from - on the
  *  Decisions view the decisions view read, and in every other view the outline read the page
  *  holds (`OutlineChoice`) - then the other. Both are watched and never sent, since `useTreeRead`
  *  sends the outline read and `ViewReadProvider` the view: for a surface that holds the issue's
- *  key and not its reads. */
+ *  key and not its reads. The decisions view read is the answer the page holds of it
+ *  (`useDecisionsView`): a Keep or a Change drops the view (`dropViews`) as it settles and reads
+ *  it again, and the page keeps drawing the answer the drop took until the next one lands, so a
+ *  decision only that read holds keeps its controls meanwhile, and a refused Keep its
+ *  refusal. */
 export function useDecisionReads(
   key: string
 ): readonly [TreeAnswer | undefined, TreeAnswer | undefined] {
   const choice = useOutlineChoice();
   const outline = useQuery({ ...observedOutline(key, choice), enabled: false }).data;
-  const view = useQuery({ ...viewQuery(key, "decisions"), enabled: false }).data;
+  const view = useDecisionsView(key).answer;
   return choice.preset === "decisions" ? [view, outline] : [outline, view];
 }
 

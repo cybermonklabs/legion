@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -130,11 +128,7 @@ var nodePlacementOperations = []nodePlacementOperation{{
 // member or the code it cannot find.
 func TestNodePlacementRoutesMatchTheGeneratedContract(t *testing.T) {
 	t.Parallel()
-	root := filepath.Join("..", "..", "..", "..", "..")
-	encoded, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(OpenAPIDocumentPath)))
-	if err != nil {
-		t.Fatalf("read %s: %v", OpenAPIDocumentPath, err)
-	}
+	encoded := committedOpenAPI(t)
 	type parameter struct {
 		Name     string `json:"name"`
 		In       string `json:"in"`
@@ -245,20 +239,6 @@ func TestNodePlacementRoutesMatchTheGeneratedContract(t *testing.T) {
 const walkReachSpec = "A paragraph the next version removes.\n\n:::ask{#q1}\nWhich store do the writers take?\n:::\n\n" +
 	":::decision{#d1}\nKeep one store.\n:::\n\n:::decision{#d2}\nWrite through the ledger.\n:::\n"
 
-// decisionsQueryOf is the artifact id of the decisions query of the issue key.
-func decisionsQueryOf(t *testing.T, database *store.Store, key string) string {
-	t.Helper()
-	var id string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select a.id::text from artifacts a
-		join graph_nodes n on n.kind = $2 and n.id = a.ref_key and n.supertag = $3 and n.attributes->>$4 = $5
-		where a.issue_key = $1`,
-		key, graphstore.KindArtifact, graphstore.SupertagQuery, graphstore.AttributeQuery, graphstore.QueryDecisions).Scan(&id); err != nil {
-		t.Fatalf("read the decisions query of %s: %v", key, err)
-	}
-	return id
-}
-
 // TestThePatchRefusesAParentTheWalkDoesNotReach holds the move to R7's reach rule: it refuses,
 // with 409 PARENT_NOT_REACHED, a parent the walk of the issue it stands under does not reach,
 // naming the parent and why, and stores nothing, so the decisions query's newest version stays the
@@ -301,7 +281,7 @@ func TestThePatchRefusesAParentTheWalkDoesNotReach(t *testing.T) {
 			"actor": sessionActor(),
 		})))
 	decision := blockAddressOf(t, database, key, "d1")
-	decisions := decisionsQueryOf(t, database, key)
+	decisions := queryArtifactOf(t, database, key, graphstore.QueryDecisions)
 	// The create writes the decisions before the room's settlement opens the ask. Pin the
 	// baseline after that settlement's drain, so the only change left to test is the move.
 	if err := deps.Docs.SettleIssueDocuments(t.Context(), key); err != nil {
@@ -350,27 +330,13 @@ func TestThePatchRefusesAParentTheWalkDoesNotReach(t *testing.T) {
 	after := newestQueryVersion(t, database, decisions)
 	previous := before.markdown
 	if after.number > before.number {
-		previous = queryVersionMarkdown(t, database, decisions, after.number-1)
+		previous = storedVersionMarkdown(t, database, decisions, after.number-1)
 	}
 	t.Logf("the decisions query %s stands at version %d after the move, %d before it", decisions, after.number, before.number)
 	if after.markdown != previous {
-		at := 0
-		for at < len(after.markdown) && at < len(previous) && after.markdown[at] == previous[at] {
-			at++
-		}
-		t.Errorf("the version of %s written for the move of %s under %s differs from the version before it from byte %d", decisions, decision, second, at)
+		t.Errorf("the version of %s written for the move of %s under %s differs from the version before it from byte %d",
+			decisions, decision, second, renderAtVersionFirstDifference(after.markdown, previous))
 	}
-}
-
-// queryVersionMarkdown is the stored markdown of version number of the document artifactID.
-func queryVersionMarkdown(t *testing.T, database *store.Store, artifactID string, number int) string {
-	t.Helper()
-	var markdown string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
-		t.Fatalf("read version %d of %s: %v", number, artifactID, err)
-	}
-	return markdown
 }
 
 // --- TestAMoveUnderALensOfAParentIssueWaitsForThatIssuesLock ----------------------------------

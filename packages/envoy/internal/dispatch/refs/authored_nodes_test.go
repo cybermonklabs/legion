@@ -37,31 +37,11 @@ func writeAuthoredVersion(t *testing.T, tx pgx.Tx, artifact string, number int, 
 }
 
 // authoredBy is every authored_by tuple the log holds out of the block node address, in its
-// sequence order: its far end and the whole actor it records as who.
+// sequence order (graphstore.History): its far end and the whole actor it records as who.
 func authoredBy(t *testing.T, tx pgx.Tx, address string) []graphstore.Tuple {
 	t.Helper()
-	rows, err := tx.Query(context.Background(), `
-		select to_kind, to_id, who, asserted from graph_tuples
-		where from_kind = $1 and from_id = $2 and kind = $3
-		order by seq
-	`, BlockNodeKind, address, graphstore.TupleAuthoredBy)
+	held, err := graphstore.History(context.Background(), tx, BlockNodeKind, address, graphstore.TupleAuthoredBy)
 	if err != nil {
-		t.Fatalf("read the authored_by of %s: %v", address, err)
-	}
-	defer rows.Close()
-	var held []graphstore.Tuple
-	for rows.Next() {
-		var tuple graphstore.Tuple
-		var who []byte
-		if err := rows.Scan(&tuple.ToKind, &tuple.ToID, &who, &tuple.Asserted); err != nil {
-			t.Fatalf("scan an authored_by of %s: %v", address, err)
-		}
-		if err := json.Unmarshal(who, &tuple.Who); err != nil {
-			t.Fatalf("decode the who of an authored_by of %s: %v", address, err)
-		}
-		held = append(held, tuple)
-	}
-	if err := rows.Err(); err != nil {
 		t.Fatalf("read the authored_by of %s: %v", address, err)
 	}
 	return held
@@ -85,25 +65,18 @@ func requireAuthors(t *testing.T, tx pgx.Tx, what, address string, at time.Time,
 			t.Errorf("%s's authored_by %d is %s/%s (asserted %t) by %+v, want %s/%s by the whole actor %+v",
 				what, index+1, tuple.ToKind, tuple.ToID, tuple.Asserted, tuple.Who, kind, id, author)
 		}
-		var nodes int
-		if err := tx.QueryRow(ctx, `select count(*) from graph_nodes where kind = $1 and id = $2`, kind, id).Scan(&nodes); err != nil {
+		if _, found, err := graphstore.ReadNode(ctx, tx, kind, id); err != nil {
 			t.Fatalf("read the node of %s/%s: %v", kind, id, err)
+		} else if !found {
+			t.Errorf("%s's author %s/%s has no node, want the one its authored_by points at", what, kind, id)
 		}
-		if nodes != 1 {
-			t.Errorf("%s's author %s/%s has %d node(s), want the one its authored_by points at", what, kind, id, nodes)
-		}
 	}
-	var madeBy []byte
-	var madeAt time.Time
-	if err := tx.QueryRow(ctx, `select made_by, made_at from graph_nodes where kind = $1 and id = $2`, BlockNodeKind, address).Scan(&madeBy, &madeAt); err != nil {
-		t.Fatalf("read the node of %s: %v", what, err)
+	stored, found, err := graphstore.ReadNode(ctx, tx, BlockNodeKind, address)
+	if err != nil || !found {
+		t.Fatalf("read the node of %s: found %t, %v", what, found, err)
 	}
-	var maker model.Actor
-	if err := json.Unmarshal(madeBy, &maker); err != nil {
-		t.Fatalf("decode the made_by of %s: %v", what, err)
-	}
-	if !reflect.DeepEqual(maker, authors[0]) || !madeAt.Equal(at) {
-		t.Errorf("%s's node is made by %+v at %s, want the first author %+v at the version's own time %s", what, maker, madeAt, authors[0], at)
+	if !reflect.DeepEqual(stored.MadeBy, authors[0]) || !stored.MadeAt.Equal(at) {
+		t.Errorf("%s's node is made by %+v at %s, want the first author %+v at the version's own time %s", what, stored.MadeBy, stored.MadeAt, authors[0], at)
 	}
 	node, found, err := Node(ctx, tx, model.Actor{}, BlockNodeKind, address, false)
 	if err != nil || !found {
@@ -116,11 +89,11 @@ func requireAuthors(t *testing.T, tx pgx.Tx, what, address string, at time.Time,
 
 // A node records its authors by authored_by tuples, one per author of the version that first
 // holds it, in that version's own order, each through graphstore.AuthorFacts: its far end the
-// author's person or session node and its who the author's whole stored actor (T7 of
-// the issue-tree plan). That holds for an authored node of any document, here a
-// requirement of an issue's spec, and for every block of an issue room, where the version is that
-// of the block's own document and not the newest the room's pass covers. A paragraph of a
-// document that is no room records none. A later version by a third writer adds no author.
+// author's person or session node and its who the author's whole stored actor (T7 of the
+// issue-tree plan). That holds for an authored node of any document, here a requirement of an
+// issue's spec, and for every block of an issue room, where the version is that of the block's own
+// document and not the newest the room's pass covers. A paragraph of a document that is no room
+// records none. A later version by a third writer adds no author.
 func TestABlockRecordsEveryAuthorOfItsFirstVersion(t *testing.T) {
 	tx := windowFixture(t)
 	owner, service := "bob", "system:serviceaccount:legion:worker"
@@ -179,8 +152,8 @@ func TestABlockRecordsEveryAuthorOfItsFirstVersion(t *testing.T) {
 }
 
 // unrecordAuthors deletes every authored_by tuple out of the block node address, which leaves the
-// node, its row and its texts as a build before this one wrote them, or as the drain of
-// T6 of the issue-tree plan left a block it indexed: with no author recorded.
+// node, its row and its texts as a build before this one wrote them, or as the drain of T6 of the
+// issue-tree plan left a block it indexed: with no author recorded.
 func unrecordAuthors(t *testing.T, tx pgx.Tx, address string) {
 	t.Helper()
 	if tag, err := tx.Exec(context.Background(), `
@@ -232,9 +205,9 @@ func TestANodeWrittenBeforeItsAuthorsTakesThemAtTheNextPass(t *testing.T) {
 	requireAuthors(t, tx, "the room block written before its authors were recorded", treeRef+"#x", specAt, agent, person)
 }
 
-// A plan node's needs naming an issue (T5a's widened needs, T7 of the issue-tree plan) is
-// a pointer as any other is, which replaceBlockRefs appends: a needs tuple from the plan node to
-// the issue's own node, issue:<KEY>, beside the block_refs row that projects it.
+// A plan node's needs naming an issue (T5a's widened needs, T7 of the issue-tree plan) is a
+// pointer as any other is, which replaceBlockRefs appends: a needs tuple from the plan node to the
+// issue's own node, issue:<KEY>, beside the block_refs row that projects it.
 func TestAPlanNodesNeedsNamingAnIssueIsATupleToTheIssue(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
@@ -249,13 +222,7 @@ func TestAPlanNodesNeedsNamingAnIssueIsATupleToTheIssue(t *testing.T) {
 	at := writeAuthoredVersion(t, tx, document, 1, markdown, model.Actor{Kind: "user", ID: "alice"})
 	pointers := []Pointer{{Block: "t1", BlockType: "plan_task", Kind: "needs",
 		Target: text.Ref{Kind: "issue", IssueKey: "WIND-2", ID: "WIND-2"}, Targets: []string{"plan_task"}}}
-	_, won, write, _, err := IndexBlocks(ctx, tx, document, OneVersion(document, 1, at), markdown, blocks, nil, pointers, "", TypedFacts{})
-	if err != nil || !won {
-		t.Fatalf("index the plan: won %t, %v", won, err)
-	}
-	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-		t.Fatalf("append what the plan's index stated: %v", err)
-	}
+	indexAndCause(t, tx, document, OneVersion(document, 1, at), markdown, blocks, pointers...)
 	held, err := graphstore.CurrentOut(ctx, tx, BlockNodeKind, documentRef+"#t1", []string{"needs"})
 	if err != nil {
 		t.Fatalf("read the plan node's needs: %v", err)
@@ -271,12 +238,13 @@ func TestAPlanNodesNeedsNamingAnIssueIsATupleToTheIssue(t *testing.T) {
 	}
 }
 
-// indexAndCause runs one block index pass in the fixture's transaction and appends what it
-// stated, at the sentinel, as a caller with no event of its own does.
-func indexAndCause(t *testing.T, tx pgx.Tx, artifact string, versions Versions, markdown string, blocks []model.ArtifactBlock) {
+// indexAndCause runs one block index pass in the fixture's transaction, over the version's
+// pointers where it holds any, and appends what it stated, at the sentinel, as a caller with no
+// event of its own does.
+func indexAndCause(t *testing.T, tx pgx.Tx, artifact string, versions Versions, markdown string, blocks []model.ArtifactBlock, pointers ...Pointer) {
 	t.Helper()
 	ctx := context.Background()
-	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, "", TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, pointers, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index %s: won %t, %v", artifact, won, err)
 	}
@@ -348,7 +316,6 @@ func (d servingDocuments) ref(block string) text.Ref {
 // index pass in the fixture's transaction, with its cause appended at the sentinel.
 func (d servingDocuments) index(t *testing.T, tx pgx.Tx, name string, number int, requirements ...servingRequirement) {
 	t.Helper()
-	ctx := context.Background()
 	parts := make([]part, len(requirements))
 	var pointers []Pointer
 	for position, requirement := range requirements {
@@ -362,13 +329,7 @@ func (d servingDocuments) index(t *testing.T, tx pgx.Tx, name string, number int
 	markdown, blocks := documentOf(parts)
 	artifact := d[name].artifact
 	at := writeAuthoredVersion(t, tx, artifact, number, markdown, model.Actor{Kind: "user", ID: "alice"})
-	_, won, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, number, at), markdown, blocks, nil, pointers, "", TypedFacts{})
-	if err != nil || !won {
-		t.Fatalf("index version %d of the %s: won %t, %v", number, name, won, err)
-	}
-	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-		t.Fatalf("append what version %d of the %s stated: %v", number, name, err)
-	}
+	indexAndCause(t, tx, artifact, OneVersion(artifact, number, at), markdown, blocks, pointers...)
 }
 
 // requireUnder fails unless the block "<document>#<block>" names stands under the block parent
@@ -429,10 +390,10 @@ func TestTwoDocumentsThatServeEachOtherLeaveNoCycle(t *testing.T) {
 
 // A retarget of an authored node's serves over a store another release indexed the document into
 // since this one last stated it (standsAtVersion's stale) moves no part_of, as a retarget over a
-// store that is not stale moves none (D4 of the issue-tree plan): check c of the plan
-// serves the spec's r1 and stands under it; version 2 retargets it to r2 and c stays under r1; the
-// plan's statement then goes stale, as the release before leaves it, and the drain marks it owed,
-// and the pass over version 2 again states no part_of of c and leaves it under r1.
+// store that is not stale moves none (D4 of the issue-tree plan): check c of the plan serves the
+// spec's r1 and stands under it; version 2 retargets it to r2 and c stays under r1; the plan's
+// statement then goes stale, as the release before leaves it, and the drain marks it owed, and the
+// pass over version 2 again states no part_of of c and leaves it under r1.
 func TestARetargetOverAStaleStoreMovesNoAuthoredNode(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
@@ -445,20 +406,14 @@ func TestARetargetOverAStaleStoreMovesNoAuthoredNode(t *testing.T) {
 	serves := func(target string) []Pointer {
 		return []Pointer{{Block: "c", BlockType: "check", Kind: "serves", Target: documents.ref(target), Targets: []string{"requirement"}}}
 	}
-	index := func(what string, number int, at time.Time, target string) {
+	index := func(number int, at time.Time, target string) {
 		t.Helper()
-		_, won, write, _, err := IndexBlocks(ctx, tx, plan, OneVersion(plan, number, at), markdown, blocks, nil, serves(target), "", TypedFacts{})
-		if err != nil || !won {
-			t.Fatalf("%s: won %t, %v", what, won, err)
-		}
-		if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-			t.Fatalf("append what %s stated: %v", what, err)
-		}
+		indexAndCause(t, tx, plan, OneVersion(plan, number, at), markdown, blocks, serves(target)...)
 	}
-	index("the plan's version 1", 1, writeAuthoredVersion(t, tx, plan, 1, markdown, model.Actor{Kind: "user", ID: "bob"}), "spec#r1")
+	index(1, writeAuthoredVersion(t, tx, plan, 1, markdown, model.Actor{Kind: "user", ID: "bob"}), "spec#r1")
 	documents.requireUnder(t, tx, "plan#c", "spec#r1")
 	secondAt := writeAuthoredVersion(t, tx, plan, 2, markdown, model.Actor{Kind: "user", ID: "bob"})
-	index("the plan's version 2, retargeting c to r2", 2, secondAt, "spec#r2")
+	index(2, secondAt, "spec#r2")
 	documents.requireUnder(t, tx, "plan#c", "spec#r1")
 
 	if _, err := tx.Exec(ctx, `
@@ -470,7 +425,7 @@ func TestARetargetOverAStaleStoreMovesNoAuthoredNode(t *testing.T) {
 	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&mark); err != nil {
 		t.Fatalf("read the end of the tuple log: %v", err)
 	}
-	index("the pass over version 2 with the plan's statement stale", 2, secondAt, "spec#r2")
+	index(2, secondAt, "spec#r2")
 	var placed int
 	if err := tx.QueryRow(ctx, `
 		select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and seq > $4
@@ -484,8 +439,8 @@ func TestARetargetOverAStaleStoreMovesNoAuthoredNode(t *testing.T) {
 }
 
 // A requirement's From: line is the last line opening with "From:" outside a code span (R3 and R22
-// of the issue-tree spec, fromLine): words quoting the label in code name no source, a
-// fenced code block is code too, and a label inside a word is no label.
+// of the issue-tree spec, fromLine): words quoting the label in code name no source, a fenced code
+// block is code too, and a label inside a word is no label.
 func TestTheFromLineIsTheLastOneOutsideACodeSpan(t *testing.T) {
 	for _, test := range []struct{ name, body, line string }{
 		{"a From: line", ":::requirement{#r1}\nIt is sized.\nFrom: dispatch://WIND-1/comment/c1\n:::", "From: dispatch://WIND-1/comment/c1"},
@@ -514,9 +469,9 @@ func TestTheFromLineIsTheLastOneOutsideACodeSpan(t *testing.T) {
 
 // A read of a block node (Node) answers it made by the authors its node records, the who of each
 // authored_by it states now in their sequence order, and by the authors of the version that first
-// held it only where it states none (T7 of the issue-tree plan). A requirement first seen
-// at version 3 of a document whose versions 1 and 2 no block-aware build indexed has no first
-// version Dispatch knows, while its pass recorded version 3's author, bob.
+// held it only where it states none (T7 of the issue-tree plan). A requirement first seen at
+// version 3 of a document whose versions 1 and 2 no block-aware build indexed has no first version
+// Dispatch knows, while its pass recorded version 3's author, bob.
 func TestABlockIsMadeByTheAuthorsItsNodeRecords(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
@@ -542,12 +497,12 @@ func TestABlockIsMadeByTheAuthorsItsNodeRecords(t *testing.T) {
 
 // A block of an issue room moved from one fragment into another keeps the authors of the version
 // that first held it, and no read takes them from the document it stands in now (T7 and T12a of
-// the issue-tree plan). x is written in the spec's fragment at the spec's version 4,
-// which alice wrote, then moved into the Verification document's fragment at that document's
-// version 2, which carol wrote: the room's text rows of x record versions 4 and 2 under the tree,
-// and the lower is the Verification document's. x records alice, and a read of x answers alice. A
-// node of x with no author recorded, as a build before this one left a room node, takes none at
-// the next pass, rather than carol, and a read of it answers no maker.
+// the issue-tree plan). x is written in the spec's fragment at the spec's version 4, which alice
+// wrote, then moved into the Verification document's fragment at that document's version 2, which
+// carol wrote: the room's text rows of x record versions 4 and 2 under the tree, and the lower is
+// the Verification document's. x records alice, and a read of x answers alice. A node of x with no
+// author recorded, as a build before this one left a room node, takes none at the next pass,
+// rather than carol, and a read of it answers no maker.
 func TestARoomBlockMovedIntoAnotherFragmentKeepsItsFirstAuthors(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
@@ -596,4 +551,53 @@ func TestARoomBlockMovedIntoAnotherFragmentKeepsItsFirstAuthors(t *testing.T) {
 		t.Errorf("the moved x with no author recorded takes the authored_by %+v at the next pass, want none: no row says which document's version first held it", held)
 	}
 	madeBy("with no author recorded", []model.Actor{})
+}
+
+// A requirement of an issue room cut from one fragment and pasted with the same text into another
+// moves into the other fragment's document at a write that leaves the room's blocks to the
+// block-index reconciliation, as it does at the block index's own pass
+// (TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVersion): PlanAuthored
+// takes a block's document from the fragment that holds it in the version, as PlanBlocks does, and
+// the one its row names only as the document it was a block of. r1 stands in the spec's fragment at
+// the spec's version 4, then in the Verification document's fragment at that document's version 2:
+// its row records that version and its time as its change, its text is recorded at that version,
+// and the index the pass leaves holds it in the Verification document. A pass that took the row's
+// document first would keep the spec's version 4 and record no text of r1 at version 2.
+func TestADeferredPassRecordsARequirementMovedIntoAnotherFragmentAtItsNewDocumentsVersion(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	spec, _, verification, tree, _ := roomFixture(t, tx)
+	treeAt := writeStoredVersion(t, tx, tree, 1, "")
+	specAt := writeStoredVersion(t, tx, spec, 4, requirementMarkdown("r1"))
+	verificationAt := writeStoredVersion(t, tx, verification, 1, requirementMarkdown("r2"))
+	indexRoomWhole(t, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
+	}, renderRoomVersion(t, tree, roomFragment{spec, requirementMarkdown("r1")}, roomFragment{verification, requirementMarkdown("r2")}))
+	if got := blockChanges(t, tx, tree)["r1"]; got.version != 4 {
+		t.Fatalf("r1 changed at version %d after the room's own pass, want the spec's version 4, or this test proves nothing", got.version)
+	}
+
+	moved := requirementMarkdown("r2") + "\n" + requirementMarkdown("r1")
+	specNext := writeStoredVersion(t, tx, spec, 5, requirementMarkdown("r3"))
+	verificationNext := writeStoredVersion(t, tx, verification, 2, moved)
+	plan := planRoomDeferred(t, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 2, At: verificationNext},
+	}, renderRoomVersion(t, tree, roomFragment{spec, requirementMarkdown("r3")}, roomFragment{verification, moved}))
+
+	if document := plan.Held().blocks["r1"].document; document != verification {
+		t.Errorf("the index the pass leaves holds r1 in %s, want the Verification document %s", document, verification)
+	}
+	if got := blockChanges(t, tx, tree)["r1"]; got.version != 2 || !got.at.Equal(verificationNext) {
+		t.Errorf("r1 changed at version %d, %s, want the Verification document's version 2, %s", got.version, got.at, verificationNext)
+	}
+	var movedText, firstText string
+	if err := tx.QueryRow(ctx, `
+		select coalesce((select text from document_block_texts where artifact_id = $1::uuid and block_id = 'r1' and version = 2), ''),
+		       coalesce((select text from document_block_texts where artifact_id = $1::uuid and block_id = 'r1' and version = 4), '')
+	`, tree).Scan(&movedText, &firstText); err != nil {
+		t.Fatalf("read r1's text rows: %v", err)
+	}
+	if firstText == "" || movedText != firstText {
+		t.Errorf("r1's text at the Verification document's version 2 is %q, want its unchanged text %q", movedText, firstText)
+	}
 }

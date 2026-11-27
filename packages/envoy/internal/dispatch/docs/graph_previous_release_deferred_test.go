@@ -159,7 +159,6 @@ func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) 
 	// The drain wrote each list item's row and node, which the previous release never wrote: the
 	// document holds this build's whole render, each row naming a node of the store.
 	types := blockRowTypes(t, database, document)
-	t.Logf("after this build's drain the document holds block rows of %v by type", types)
 	if want := map[string]int{"bullet_list": 1, "list_item": deferredItems, "paragraph": deferredItems}; !maps.Equal(types, want) {
 		t.Errorf("after this build's drain the document holds block rows of %v by type, want %v", types, want)
 	}

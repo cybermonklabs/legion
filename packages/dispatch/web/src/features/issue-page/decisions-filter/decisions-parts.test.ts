@@ -359,7 +359,9 @@ test("an agent decision's reading stands under the decision's entry, and is no e
 
 // R3 under the Decisions view read: a decision past the pages of Conversation's read, which only
 // that read holds, carries the readings the read holds of it, as a decision the tree holds does,
-// and no reading is an entry of any part.
+// and no reading is an entry of any part. The parts are read from the tree that read builds
+// (`decisions-entries.ts`' `useDecisionsTree`), whose issue node carries the read's answer, so the
+// view's rows are the nodes that answer holds as its own (`presets.ts`' `ownNodes`).
 test("a decision only the Decisions view read holds carries its readings", () => {
   const reading = node({
     author: AGENT,
@@ -368,11 +370,14 @@ test("a decision only the Decisions view read holds carries its readings", () =>
     text: "The planner reads the decision as one rail for every width.",
     type: "reading",
   });
-  // The view read answers the decision as the route does, and the tree built from that answer
-  // carries the answer's id on the decision's node (`TreeNode.readId`).
-  const made = decision("d2");
+  // The view read answers the decision as one of its own nodes, as the route does, and the tree
+  // built from that answer carries the answer's id on the decision's node (`TreeNode.readId`).
+  const made = decision("d2", { role: "query" });
   const past = decisionNode("d2", { children: [reading], readId: made.id });
-  const root = issueTree([statement("s1")]);
+  const root = {
+    ...issueTree([statement("s1"), past]),
+    views: { decisions: treeAnswer([made]) },
+  };
   const parts = decisionsParts({
     asks: [],
     decisions: [],
@@ -381,7 +386,6 @@ test("a decision only the Decisions view read holds carries its readings", () =>
     reader: READER,
     root,
     view: presetView(root, "decisions", "", new Set<string>()).root,
-    viewRead: { answer: treeAnswer([made]), tree: issueTree([past]) },
   });
 
   expect(Object.values(idsOf(parts)).flat()).not.toContain(reading.id);
@@ -617,12 +621,15 @@ test("a decision the reader asked to change leaves the review list and carries t
       at: "2026-11-12T09:00:00Z",
       body: "Change asked, please.",
       by: READER_ACTOR,
-      editedAt: null,
       id: "c-new",
       path: `/issues/${KEY}/comments/c-new`,
     },
     standing: "change_requested",
   });
+  // The read answers no edit mark on the Change's node, so the change carries none: an absent
+  // mark is not known, never "not edited" (`decision-review.ts`' `ChangeComment`).
+  const asked = parts.yours[0];
+  expect(asked?.kind === "decision" ? asked.change : undefined).not.toHaveProperty("editedAt");
   // The one rule the count of what waits on the reader reads too.
   const isStatement = (reference: string) => /#b-s\d$/.test(reference);
   expect(
@@ -1213,15 +1220,13 @@ test("an overtaken open question stands with the open questions and counts in no
   expect(headingCount("open_questions", parts.open_questions)).toBe(1);
 });
 
-// R35, and INFRA-1196's architect on R2: a tie counts where its far end is a statement, and the
-// coverage read, which is no paged read, says which addresses name one, by the rule the review
-// list is read by everywhere (`coverageStatements`). Conversation's read is paged, so the tree
-// may hold no node of the statement a waiting decision is tied to: the decision stands in the
-// review list all the same, not at the foot, and its row draws the statement's line from the
-// coverage read's row of it (the architect, 13:39Z): its first line, from the server's reading
-// of its words where the read sent one, at the row's own address, named by the reading the body
-// publishes for it.
-test("a waiting decision whose tied statement only the coverage read holds stands in the review list and draws that statement from the coverage row", () => {
+/** The reads of a decision `waits` that waits, tied to `s-late`, a statement the coverage read
+ *  holds a row of, with its words and the server's reading of them (`tree`): `partsOver` reads
+ *  the parts of the tree that holds `children` with them. */
+function tiedToCoverage(): {
+  readonly partsOver: (children: readonly TreeNode[]) => DecisionsParts;
+  readonly tree: DisplayTree;
+} {
   const made = [decision("waits", { decision: { links: [shaped(specRef("s-late"))] } })];
   const tree = displayTree("The read's words for s-late. And more.");
   if (tree === undefined) throw new Error("the markdown engine has not loaded");
@@ -1242,15 +1247,32 @@ test("a waiting decision whose tied statement only the coverage read holds stand
     ],
     spec_artifact_id: SPEC_DOCUMENT.id,
   };
-  const parts = decisionsParts({
-    asks: [],
-    coverageStatement: coverageStatementOf(issueDetails(), coverage),
-    decisions: decisionsOf(made),
-    issueKey: KEY,
-    nodeIdOf,
-    reader: READER,
-    root: issueTree([decisionNode("waits")]),
-  });
+  return {
+    partsOver: (children) =>
+      decisionsParts({
+        asks: [],
+        coverageStatement: coverageStatementOf(issueDetails(), coverage),
+        decisions: decisionsOf(made),
+        issueKey: KEY,
+        nodeIdOf,
+        reader: READER,
+        root: issueTree(children),
+      }),
+    tree,
+  };
+}
+
+// R35, and INFRA-1196's architect on R2: a tie counts where its far end is a statement, and the
+// coverage read, which is no paged read, says which addresses name one, by the rule the review
+// list is read by everywhere (`coverageStatements`). Conversation's read is paged, so the tree
+// may hold no node of the statement a waiting decision is tied to: the decision stands in the
+// review list all the same, not at the foot, and its row draws the statement's line from the
+// coverage read's row of it (the architect, 13:39Z): its first line, from the server's reading
+// of its words where the read sent one, at the row's own address, named by the reading the body
+// publishes for it.
+test("a waiting decision whose tied statement only the coverage read holds stands in the review list and draws that statement from the coverage row", () => {
+  const { partsOver, tree } = tiedToCoverage();
+  const parts = partsOver([decisionNode("waits")]);
   expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
   expect(parts.review[0]).toMatchObject({ standing: "waiting_review" });
   expect(
@@ -1276,18 +1298,43 @@ test("a waiting decision whose tied statement only the coverage read holds stand
 
   // A statement the tree holds is drawn from its node, as before, and named by the page's names
   // read: the model gives it no reading of its own.
-  const held = decisionsParts({
-    asks: [],
-    coverageStatement: coverageStatementOf(issueDetails(), coverage),
-    decisions: decisionsOf(made),
-    issueKey: KEY,
-    nodeIdOf,
-    reader: READER,
-    root: issueTree([statement("s-late"), decisionNode("waits")]),
-  });
+  const held = partsOver([statement("s-late"), decisionNode("waits")]);
   expect(
     held.review[0]?.shapes.map(({ node, reading }) => ({ line: parentLinkWords(node), reading }))
   ).toEqual([{ line: "The page draws s-late.", reading: undefined }]);
+});
+
+// R35, R2: whether a tie names a statement and the words its "informs" line draws are one lookup.
+// Here the tree holds a node at the tied address that is no requirement - a criterion of the spec
+// - and the coverage read names a statement there: the tie names that statement, so the decision
+// stands in the review list, and its line draws the coverage read's words for it, at that row's
+// own address and named by the reading of those words, never the criterion's words.
+test("a tie whose address the tree holds a node of another kind at, and the coverage read a statement, draws the coverage statement and stands in the review list", () => {
+  const { partsOver, tree } = tiedToCoverage();
+  const criterion = node({
+    id: statement("s-late").id,
+    reference: specRef("s-late"),
+    text: "A criterion's own words at s-late.",
+    type: "criterion",
+  });
+  const parts = partsOver([criterion, decisionNode("waits")]);
+  expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
+  expect(
+    parts.review[0]?.shapes.map(({ node: words, reading }) => ({
+      line: parentLinkWords(words),
+      reading,
+      reference: words.reference,
+      type: words.type,
+    })),
+    "the informs line draws the words of the node the tree holds at the address, not the statement"
+  ).toEqual([
+    {
+      line: "The read's words for s-late.",
+      reading: { fallback: NODE_TYPE_NAMES.requirement, tree },
+      reference: specRef("s-late"),
+      type: "requirement",
+    },
+  ]);
 });
 
 // The tree draws from the reads that have answered: before the decisions view and the asks

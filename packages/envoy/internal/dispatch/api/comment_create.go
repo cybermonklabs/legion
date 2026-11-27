@@ -980,11 +980,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// route queue their writes on the ledger, in the order made, and Commit sends them as one
 	// batch. Write advice is read here, before the first write is queued, so its queries hold no
 	// transaction id, and counts the comment.created this comment appends (writeAdvice).
+	// An advice savepoint that could not be rolled back left tx aborted: the route answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, adviceAsks{}, *status, "comment.created", false,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// An anchor on a node's text is no mark of a document: it is resolved off the store, and the
 	// document anchor's write below is given none (R31).

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { CSSProperties, ReactNode } from "react";
+import { type ComponentProps, type CSSProperties, type ReactNode, useState } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
@@ -7,7 +7,7 @@ import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import type { PointMark } from "./current-point";
-import { useDocumentAdmissions } from "./document-admission";
+import { type DocumentAdmissions, useDocumentReadOnly } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import { isStatement, type TreeNode } from "./issue-tree";
 import { LensActContext, useLensAct } from "./lenses/LensMenu";
@@ -16,10 +16,13 @@ import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
+import { type AuthorKind, authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
-import { nodeEditable } from "./useNodeEditing";
+
+/** No admission read-only: what the rows' rule reads while the tree artifact's room admitted the
+ *  page to write, or has not answered (`TreeRows`' `treeAdmission`). */
+const NO_ADMISSION: DocumentAdmissions = new Map();
 
 /**
  * The rows of the issue's tree, drawn.
@@ -35,7 +38,6 @@ export function TreeRows({
   artifacts,
   context,
   coverageOut = false,
-  editing,
   focused,
   foldedMore = false,
   isClosed,
@@ -60,8 +62,6 @@ export function TreeRows({
    *  counts of what serves it are drawn in meanwhile (`NodeRow`'s `countsHeld`), so the counts
    *  arriving move no row. False unless the tree passes it. */
   coverageOut?: boolean;
-  /** The row the reader is editing in and the document its editor belongs to. */
-  editing: { readonly artifactId: string; readonly row: string } | undefined;
   /** The key of the row the focus is on: the row that holds the focus, or the one a press on
    *  another control of the page took it from, which keeps its focused look until that press has
    *  ended (`IssueTree.tsx`'s `useReleaseFocus`). */
@@ -74,6 +74,9 @@ export function TreeRows({
    *  read holds after the pages read, where it says, and the press. Undefined where its answer
    *  names none, and the control is not drawn. */
   more?: { readonly left: number | undefined; readonly onPress: () => void };
+  /** Gives the focus to one row, by its key (`rowKeyOf`) and its node, which the focus coming
+   *  into the row does: one function for every row, which each row calls with its own key, so
+   *  the tree makes it once and no row is given a new one (`NodeRow`'s `memo`). */
   onFocus: (row: string, node: TreeNode) => void;
   /** Reads the next page of the outline read's older comments, which the control above the
    *  first row does; undefined where no older comment remains or the tree is drawn from no
@@ -82,7 +85,8 @@ export function TreeRows({
   /** Draws the next page of a node's children, which the row that pages them does. */
   onPage: (row: PageRow) => void;
   /** Folds or unfolds one row, by its key (`rowKeyOf`), which a press on its fold control does:
-   *  the fold is the row's, so another row of the same node stays as it was. */
+   *  the fold is the row's, so another row of the same node stays as it was. One function for
+   *  every row, as `onFocus` is. */
   onToggle: (row: string, expanded: boolean | undefined) => void;
   /** Each row that carries the conversation's current point, by its key (`current-point.ts`'s
    *  `pointMarks`, R12): a row it holds no key of is not marked. */
@@ -97,8 +101,8 @@ export function TreeRows({
   threads: ReadonlyMap<string, ThreadMark>;
   /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
    *  `placesItself`): the outline's first row the page opens on and the row a zoom leaves the
-   *  reader on, each until the reader acts, and the row the reader is editing in, which the
-   *  editor's caret places as the reader writes. */
+   *  reader on, each until the reader acts. The row the reader is editing in places nothing
+   *  either, which that row sets for itself (`NodeRow`'s `useEditedRow`). */
   unplaced: string | undefined;
   /** The id of the node the tree is zoomed to, whose row is drawn open by definition, so it
    *  draws no fold control, whose press drew nothing. Absent where the tree is drawn from the
@@ -109,14 +113,21 @@ export function TreeRows({
   // every row rather than once a row: a name and a shape for every node, the page's own words
   // where the model holds no author.
   const agentText = useAgentText();
+  // Each author as one object, held across renders, so a row whose author is the same as at its
+  // last render is given the object it was given then (`heldAuthor`, `NodeRow`'s `memo`).
+  const [authors] = useState(() => new Map<string, RowAuthor>());
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
-  // What each document's room last admitted the page to, read once for every row: a row of a
-  // document its room admitted read-only takes no typing (`nodeEditable`).
-  const admissions = useDocumentAdmissions();
   // The room of the issue's tree read, read once for every row as Enter reads it
   // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
   const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  // The one admission no row reads for itself: the tree artifact's, which a node written into the
+  // issue is edited in and which is no row's document. A row of a document reads its own
+  // document's (`NodeRow`'s `useDocumentReadOnly`), so the rows' rule (`takesCaret`) is given the
+  // tree's entry alone, and a room's answer for a document draws no row but that document's.
+  const tree = room?.tree ?? undefined;
+  const treeReadOnly = useDocumentReadOnly(tree);
+  const treeAdmission = tree !== undefined && treeReadOnly ? new Map([[tree, true]]) : NO_ADMISSION;
   // The Lens act each row offers in Conversation and in Graph, whatever the focus, with every
   // node's invocations read once for all the rows: one value while the address stands and no
   // invocation of a lens changes (`useLensAct`).
@@ -158,25 +169,28 @@ export function TreeRows({
               {...(row.node.answer === undefined
                 ? {}
                 : { answerer: agentText.author(row.node.answer.by) })}
-              author={{
-                kind: authorKind(row.node.author),
-                name: agentText.author(row.node.author),
-                reader: isReader(row.node.author, reader),
-              }}
+              author={heldAuthor(
+                authors,
+                authorKind(row.node.author),
+                agentText.author(row.node.author),
+                isReader(row.node.author, reader)
+              )}
               context={context.has(row.node.id)}
               // Only a statement's row is given the coverage read's state, so the read answering
               // draws again no row it gives nothing to.
               countsHeld={coverageOut && isStatement(row.node)}
               {...(current === undefined ? {} : { current })}
               {...(place === undefined ? {} : { document: place.artifact })}
-              editable={nodeEditable(place, isClosed, admissions)}
+              // Each row reads its own document's room admission (`useDocumentReadOnly`) and
+              // whether it is being edited (`useEditedRow`), so neither draws every row again.
+              editable={!isClosed && place !== undefined}
               // Where the room is read, the row carries the typing cue wherever Enter puts a
               // caret, a criterion's row among them: a node written into the issue, such as a
-              // criterion, takes its place from the room rather than from a document.
+              // criterion, takes its place from the room rather than from a document, and is
+              // read against the tree artifact's admission (`treeAdmission`).
               {...(room === undefined
                 ? {}
-                : { editable: takesCaret(row.node, artifacts, room, isClosed, admissions) })}
-              {...(editing?.row === key ? { editing: editing.artifactId } : {})}
+                : { editable: takesCaret(row.node, artifacts, room, isClosed, treeAdmission) })}
               expanded={row.expanded}
               focused={focused === key}
               foldable={!(row.level === 1 && row.node.id === zoomRoot)}
@@ -186,8 +200,8 @@ export function TreeRows({
               key={key}
               level={row.level}
               node={row.node}
-              onFocus={() => onFocus(key, row.node)}
-              onToggle={() => onToggle(key, row.expanded)}
+              onFocus={onFocus}
+              onToggle={onToggle}
               ownAnswer={isReader(row.node.answer?.by, reader)}
               placesItself={unplaced !== key}
               {...(report?.row === key ? { report: report.line } : {})}
@@ -205,6 +219,27 @@ export function TreeRows({
       )}
     </>
   );
+}
+
+/** Who made a row's node, as the row draws it (`NodeRow`'s `author`). */
+type RowAuthor = ComponentProps<typeof NodeRow>["author"];
+
+/** The author of `kind` named `name`, `reader` whether that is the reader, as the one object
+ *  `held` holds for it: made the first time and the same at every later call for the same author,
+ *  so a row given its author again is given the object it was given before. */
+function heldAuthor(
+  held: Map<string, RowAuthor>,
+  kind: AuthorKind,
+  name: string,
+  reader: boolean
+): RowAuthor {
+  // Neither a kind nor the reader's flag holds a ":", so the name after them is read whole.
+  const key = `${kind}:${reader}:${name}`;
+  const author = held.get(key);
+  if (author !== undefined) return author;
+  const made = { kind, name, reader };
+  held.set(key, made);
+  return made;
 }
 
 /**

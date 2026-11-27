@@ -178,7 +178,7 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 		approved, version := parse(approvedText), parse(test.version)
 		for _, step := range []bool{true, false} {
 			input := carryInput{
-				approved: approved, approvedText: approvedText, version: version, agrees: true,
+				approved: approved, approvedText: approvedText, version: version,
 				answered: test.answered, decided: test.decided,
 			}
 			want := test.change

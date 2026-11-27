@@ -29,17 +29,6 @@ func textBlockOf(t *testing.T, database *store.Store, artifactID, typ, words str
 	return address, id
 }
 
-// headText is the head render of the document artifactID: the canonical markdown GET
-// /api/v1/artifacts/{id}/text answers.
-func headText(t *testing.T, handler http.Handler, artifactID string) string {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read the text of %s: status=%d body=%s", artifactID, response.Code, response.Body.String())
-	}
-	return decodeBody[artifactText](t, response).Markdown
-}
-
 // versionRender is the text GET /api/v1/artifacts/{id}/versions/{number}?download=true answers of
 // version number of the document artifactID: what the one renderer answers for that version.
 func versionRender(t *testing.T, handler http.Handler, artifactID string, number int) string {
@@ -55,11 +44,7 @@ func versionRender(t *testing.T, handler http.Handler, artifactID string, number
 // document artifactID.
 func blockToken(t *testing.T, handler http.Handler, artifactID, blockID string) string {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/blocks", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read the blocks of %s: status=%d body=%s", artifactID, response.Code, response.Body.String())
-	}
-	for _, block := range decodeBody[[]model.ArtifactBlock](t, response) {
+	for _, block := range listedBlocks(t, handler, artifactID) {
 		if block.ID == blockID {
 			return block.Token
 		}
@@ -72,11 +57,7 @@ func blockToken(t *testing.T, handler http.Handler, artifactID, blockID string) 
 // is address.
 func decisionOf(t *testing.T, handler http.Handler, key, address string) decisionEntry {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/decisions", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("read the decisions of %s: status=%d body=%s", key, response.Code, response.Body.String())
-	}
-	for _, entry := range decodeBody[issueDecisions](t, response).Entries {
+	for _, entry := range readIssueDecisions(t, handler, key).Entries {
 		if entry.Node.ID == address {
 			return entry
 		}
@@ -89,15 +70,7 @@ func decisionOf(t *testing.T, handler http.Handler, key, address string) decisio
 // `<kind>/<id>`, "" where it holds none.
 func textParentOf(t *testing.T, database *store.Store, address string) string {
 	t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), database.Pool, refs.BlockNodeKind, address, []string{refs.TupleTextParent})
-	if err != nil {
-		t.Fatalf("read the text_parent of %s: %v", address, err)
-	}
-	ends := make([]string, len(held))
-	for index, tuple := range held {
-		ends[index] = tuple.ToKind + "/" + tuple.ToID
-	}
-	return strings.Join(ends, ",")
+	return strings.Join(farEnds(t, database, refs.BlockNodeKind, address, refs.TupleTextParent), ",")
 }
 
 // lineWith is the first line of markdown that holds words, "" for none.
@@ -311,7 +284,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 		if problem := holds(after.markdown); problem != "" {
 			t.Errorf("%s: the new version of %s %s", what, key, problem)
 		}
-		if problem := holds(headText(t, rig.handler, artifactID)); problem != "" {
+		if problem := holds(documentMarkdown(t, rig.handler, artifactID)); problem != "" {
 			t.Errorf("%s: the head render of %s %s", what, key, problem)
 		}
 	}
@@ -400,7 +373,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			line := lineWith(markdown, "The second item of the moving list")
 			return len(line) - len(strings.TrimLeft(line, " "))
 		}
-		from := depth(headText(t, rig.handler, specID))
+		from := depth(documentMarkdown(t, rig.handler, specID))
 		textBefore := textParentOf(t, rig.database, second)
 		versioned(t, "the move of the list item "+second+" under "+first, specID, specRequest, func() { moved(t, second, first, nil) }, func(markdown string) string {
 			if at := depth(markdown); at <= from {
@@ -469,7 +442,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 		if now.number != version.number {
 			t.Errorf("the move of %s under the decision %s wrote version %d of the spec, want none", paragraph, td, now.number)
 		}
-		for name, text := range map[string]string{"newest version": now.markdown, "head render": headText(t, rig.handler, specID)} {
+		for name, text := range map[string]string{"newest version": now.markdown, "head render": documentMarkdown(t, rig.handler, specID)} {
 			held := containerText(text, "decision{#td")
 			if strings.Contains(held, "The paragraph the agent moves under the decision") {
 				t.Errorf("the %s of %s holds %s inside %s, want outside it", name, key, paragraph, td)
@@ -514,7 +487,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			paragraph, _ := textBlockOf(t, rig.database, row.document, "paragraph", row.words)
 			rig.quiet(t)
 			version := newestQueryVersion(t, rig.database, row.document).number
-			head := headText(t, rig.handler, row.document)
+			head := documentMarkdown(t, rig.handler, row.document)
 			token := blockToken(t, rig.handler, row.document, row.block)
 			var sum string
 			if row.block == "tc" {
@@ -525,7 +498,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			if now := newestQueryVersion(t, rig.database, row.document).number; now != version {
 				t.Errorf("row %s: the move of %s wrote version %d of %s, want none", row.typ, paragraph, now, row.document)
 			}
-			if now := headText(t, rig.handler, row.document); now != head {
+			if now := documentMarkdown(t, rig.handler, row.document); now != head {
 				t.Errorf("row %s: the move of %s changed the head render of %s to %q, want %q", row.typ, paragraph, row.document, now, head)
 			}
 			storedUnder(t, "row "+row.typ+": ", paragraph, block)

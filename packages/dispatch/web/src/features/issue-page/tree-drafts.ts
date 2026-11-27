@@ -7,6 +7,7 @@ import type {
   Ask,
   CheckBlock,
   CheckResult,
+  Decision,
   DisplayTree,
   IssueChild,
   IssueCoverage,
@@ -22,7 +23,7 @@ import type { ReferenceNameReading } from "../refs/reference-names";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { firstWordedBlock } from "../refs/tree-fragment";
-import { blockIdOfNode } from "./decision-review";
+import { blockIdOfNode, changeMayBeOlder } from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
   IssueTreeReads,
@@ -49,6 +50,7 @@ import {
 } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { storedReading } from "./stored-reading";
+import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
  * The outline's rules for the drafts `buildIssueTree` places (root R4), which the tree read
@@ -79,6 +81,9 @@ export interface Draft {
   author?: Actor;
   /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
   answer?: NodeAnswer;
+  /** Whether a Change of this decision may stand on a comment page the read has not loaded,
+   *  where it is drawn with no Change (`TreeNode.changeUnread`, `markChangeUnread`). */
+  changeUnread?: true;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`tree-read/tree-nodes.ts`);
    *  absent on every other draft, a statement of the spec drawn before that read answers among
@@ -675,6 +680,25 @@ export function deciderOf(
       : { id: end.id, kind: "session", origin: { session_title: title } };
   }
   return end.kind === "person" ? { id: end.id, kind: "user" } : undefined;
+}
+
+/** Marks `draft`, a decision, where it is drawn as waiting for review or kept with no Change while
+ *  a Change of it may stand on a comment page the tree read's `answer` does not hold yet
+ *  (`changeMayBeOlder`): its state then carries "+", the page's mark of a count with more to read
+ *  (R15), so a decision whose Change the page has not read does not read as unchanged. The
+ *  outline marks each decision node by it (`tree-read/tree-nodes.ts`' `draftDecision`), by the
+ *  members its `decision` answers. */
+export function markChangeUnread(
+  draft: Draft,
+  decision: Partial<Pick<Decision, "changed_at" | "kept">>,
+  answer: TreeAnswer | undefined
+): void {
+  if (
+    (draft.state === "waiting_review" || draft.state === "kept") &&
+    changeMayBeOlder(decision, answer)
+  ) {
+    draft.changeUnread = true;
+  }
 }
 
 /**

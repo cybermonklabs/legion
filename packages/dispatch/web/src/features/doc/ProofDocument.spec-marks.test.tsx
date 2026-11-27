@@ -168,9 +168,9 @@ function readOf(version: number | null): DocumentRead {
   };
 }
 
-function stubReads(readVersion: number | null, decisionsRead: IssueDecisions = decisions) {
+function stubReads(readVersion: number | null) {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(spec);
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead);
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisions);
   const getDocumentRead = spyOn(api, "getDocumentRead").mockResolvedValue(readOf(readVersion));
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(parts);
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue(blocks);

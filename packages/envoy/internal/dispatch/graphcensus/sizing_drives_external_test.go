@@ -87,9 +87,11 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Counts: changedByRunCounted(graphstore.KindIssue),
 	}, {
 		// An edit of the words of an ask alice asked, made for her run (editAsk), which restates the
-		// ask's node marked changed by the run: its changed_by_run.
+		// ask's node marked changed by the run: its changed_by_run. The decisions query prints the
+		// question's words, so the edit marks the issue's queries owed and the drain the route runs
+		// once it has committed appends a version of the decisions query (drainMark).
 		Name: "api/asks.go#editAsk, under a run", Database: r.database,
-		Sites: []string{"api/asks.go#editAsk"},
+		Sites: []string{"api/asks.go#editAsk", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks",
 				map[string]any{"question": "Which words does the run change?"}, "alice", http.StatusCreated)).ID
@@ -99,7 +101,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+ask,
 				map[string]any{"question": "Which words did the run change?"}, "alice", http.StatusOK)
 		},
-		Counts: changedByRunCounted(graphstore.KindAsk),
+		Counts: merged(changedByRunCounted(graphstore.KindAsk), versionCounted, queryVersionCounted),
 	}, {
 		// An edit of the words of a comment alice wrote, made for her run (editComment), which
 		// restates the comment's node marked changed by the run: its changed_by_run.
@@ -191,7 +193,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated)).ID
 		},
 		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+nodePath(graphstore.KindLens+"/"+chained, "pointers"), map[string]any{
+			r.request(t, http.MethodPost, nodeRoute(r.issue, graphstore.KindLens+"/"+chained, "pointers"), map[string]any{
 				"kind": graphstore.TupleTriggeredBy, "action": "append", "to": "dispatch://" + graphstore.KindLens + "/" + lens,
 			}, "alice", http.StatusOK)
 		},
@@ -202,7 +204,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Name: "api/reasoning_write.go#writeNodeState, a lens overtaken", Database: r.database,
 		Sites: []string{"api/reasoning_write.go#writeNodeState"},
 		Drive: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+nodePath(graphstore.KindLens+"/"+lens, "state"),
+			r.request(t, http.MethodPost, nodeRoute(r.issue, graphstore.KindLens+"/"+lens, "state"),
 				map[string]any{"state": graphstore.StateOvertaken}, "alice", http.StatusOK)
 		},
 		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindLens, graphstore.AttributeState}: {"node_state"}},
@@ -219,9 +221,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Name: "api/results.go#writeRecordedResult", Database: r.database,
 		Sites: []string{"api/results.go#writeRecordedResult", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
-			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
-				"name": "verification.md", "content": ":::check{#" + sizedCheck + " surface=\"cli\"}\nThe sizing counts every writer.\n:::\n",
-			}, "alice", http.StatusCreated)
+			r.uploaded(t, "verification.md", ":::check{#"+sizedCheck+" surface=\"cli\"}\nThe sizing counts every writer.\n:::\n")
 		},
 		Drive: func(t *testing.T) {
 			result = decoded[struct {
@@ -231,7 +231,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"negative_control": "Broke what the check proves and the run failed.", "failed": 1,
 			}, "alice", http.StatusCreated)).Result.ID
 		},
-		Counts: merged(resultCounted(), versionCounted, queryVersionCounted),
+		Counts: merged(graphcensus.ResultNodeCounted(), versionCounted, queryVersionCounted),
 	}, {
 		// alice's retraction of that result (writeCheckResultRetraction): its retracted value,
 		// which the term result_retraction counts, and the version of the Verification document
@@ -547,33 +547,15 @@ const sizedDaemonSession = "legion-daemon:SIZE"
 // conversion moves into the issue's room.
 const convertedAsk = "converted-ask"
 
-// anchorBlockCounted is a comment's anchored_in its anchor's block and, since it answers nothing,
-// its part_of to that same block (graphstore.AnchorTuples), stated or retracted, which the term
-// anchor_block counts.
-var anchorBlockCounted = map[graphcensus.StoredKind][]string{
-	{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
-	{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
-}
+// anchorBlockCounted is a comment's anchored_in its anchor's block and its part_of to that block,
+// which the term anchor_block counts, as the internal anchor pass drive counts them
+// (graphcensus.AnchorBlockCounted).
+var anchorBlockCounted = graphcensus.AnchorBlockCounted
 
 // changedByRunCounted is what a write made for a run appends out of the node of kind it changed:
 // its changed_by_run into the run, which the term interaction counts (store.WithRun).
 func changedByRunCounted(kind string) map[graphcensus.StoredKind][]string {
 	return map[graphcensus.StoredKind][]string{{kind, graphstore.TupleChangedByRun}: {graphstore.KindInteraction}}
-}
-
-// resultCounted is what a person's record of a result appends of the result's node
-// (graphstore.ResultFacts): its base attributes, its values, its part_of and its result_of its
-// check, and its authored_by, each counted by the term result.
-func resultCounted() map[graphcensus.StoredKind][]string {
-	counted := map[graphcensus.StoredKind][]string{}
-	for _, kind := range []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject,
-		graphstore.AttributeVerdict, graphstore.AttributeSurface, graphstore.AttributeRun, graphstore.AttributeObserved,
-		graphstore.AttributeCommit, graphstore.AttributeRole, graphstore.AttributeFailed, graphstore.AttributeSkipped,
-		graphstore.AttributeExcluded, graphstore.AttributeNegativeControl, graphstore.AttributeCheckVersion,
-		graphstore.AttributeCheckSHA256, graphstore.TuplePartOf, graphstore.TupleResultOf, graphstore.TupleAuthoredBy} {
-		counted[graphcensus.StoredKind{From: graphstore.KindResult, Kind: kind}] = []string{"result"}
-	}
-	return counted
 }
 
 // lensInvoked is the lens POST /api/v1/issues/{key}/lenses answers, by the id its address names,
@@ -583,11 +565,6 @@ type lensInvoked struct {
 	Findings []struct {
 		ID string `json:"id"`
 	} `json:"findings"`
-}
-
-// nodePath is the route path of one of a node's own routes, its store address one escaped segment.
-func nodePath(address, route string) string {
-	return "/nodes/" + url.PathEscape(address) + "/" + route
 }
 
 // uploaded uploads, as alice, a document of the rig's issue named name holding content, and

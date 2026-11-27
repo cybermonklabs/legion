@@ -76,37 +76,15 @@ var storeWriteCallSites = lockstep.StoreWriteCallSites()
 func TestEveryStoreWriteCallSiteIsListed(t *testing.T) {
 	found, raw := map[string][]string{}, map[string][]string{}
 	parsed := 0
-	err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != moduleRoot && skippedDirectory(path, entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		source, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
+	walkModuleSources(t, func(source []byte) bool {
 		// A file that names the store names it by its import path or is the store's own
 		// package, and both spell the word; a file that writes the store's tables itself spells
 		// one of their names, in whatever case its statement is written in. The rest of the
 		// module is never parsed.
 		lowered := bytes.ToLower(source)
-		if !bytes.Contains(source, []byte("graphstore")) &&
-			!bytes.Contains(lowered, []byte("graph_nodes")) && !bytes.Contains(lowered, []byte("graph_tuples")) {
-			return nil
-		}
-		relative, err := filepath.Rel(moduleRoot, path)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
+		return bytes.Contains(source, []byte("graphstore")) ||
+			bytes.Contains(lowered, []byte("graph_nodes")) || bytes.Contains(lowered, []byte("graph_tuples"))
+	}, func(relative string, source []byte) {
 		files := token.NewFileSet()
 		file, err := parser.ParseFile(files, relative, source, parser.SkipObjectResolution)
 		if err != nil {
@@ -119,11 +97,7 @@ func TestEveryStoreWriteCallSiteIsListed(t *testing.T) {
 		for site, statements := range rawStoreWritesIn(relative, files, file) {
 			raw[site] = append(raw[site], statements...)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("read the module's source under %s: %v", moduleRoot, err)
-	}
 	if parsed == 0 || len(found) == 0 {
 		t.Fatalf("read %d files naming graphstore or its tables and found %d store writers: the walk read nothing worth checking", parsed, len(found))
 	}

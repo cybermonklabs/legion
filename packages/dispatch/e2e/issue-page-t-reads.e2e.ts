@@ -1,12 +1,21 @@
 /** the rows count the tree and view reads the page sends the server and draw each filter from
  *  the view it answers */
 
+import { conversationItemId, eventItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
 import { coverageNotes, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { createIssueArtifact, getIssue, getIssueCoverage } from "./api";
+import {
+  createComment,
+  createIssueArtifact,
+  deleteComment,
+  getIssue,
+  getIssueCoverage,
+  putIssueState,
+} from "./api";
 import { seedNoChildren, seedWholeIssue } from "./issue-layout-seed";
 import { closeDetails, gotoIssue, issuePage, openDetails, phase, presetCount } from "./issue-page";
-import { nodeRow } from "./issue-page-g";
+import { focusRow, nodeRow } from "./issue-page-g";
 import { decisionsFoot } from "./issue-page-q";
 import { fixtureSeed, seedKeys, steadily } from "./issue-page-t";
 import {
@@ -50,7 +59,7 @@ import {
 } from "./issue-page-t-tree";
 import { decisionsViewServedGate, idReadsOf } from "./issue-page-u";
 import { expect, test } from "./test";
-import { expectLoadSettled, watchApiRequests } from "./traffic";
+import { type ApiRequest, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
  * Rows 2 and 3 of the rows that draw the new issue page from the tree read, each clause of theirs
@@ -62,6 +71,28 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // ---------------------------------------------------------------------------------------------
 // Row 2: what the first load and each filter send.
 // ---------------------------------------------------------------------------------------------
+/** Every read of an issue's whole comments list among `requests`. */
+function commentsListReads(requests: readonly ApiRequest[]): readonly ApiRequest[] {
+  return requests.filter(
+    (request) => request.method === "GET" && request.route === "/api/v1/issues/:id/comments"
+  );
+}
+
+/** Includes a pinned comment and a deleted post in the first load. */
+async function seedCommentsLoad(): ReturnType<typeof seedWholeIssue> {
+  const seeded = await seedWholeIssue();
+  const removed = await createComment(seeded.key, { body: "A post since deleted." });
+  await deleteComment(removed.id);
+  await putIssueState(seeded.key, {
+    dismissed: [
+      pinnedItemMarker(eventItemId({ id: seeded.pinnedEventId })),
+      pinnedItemMarker(conversationItemId("comment", seeded.comments.anchored)),
+    ],
+    pinned: true,
+    seq: 2,
+  });
+  return seeded;
+}
 
 // c-tree-requests, with the clause that the page's reads are refreshed by events, never by age:
 // a slot the stage mounts again past the app's 30 s `staleTime` sends no read of its own, shown
@@ -73,7 +104,7 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // socket's last frame is 2 to 10 s old, up to one 15 s heartbeat.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
   test.setTimeout(ROW_MS);
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
+  await phase(browser, seedCommentsLoad, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     // The seed's architecture source holds now what the server's own import pass would find, so
     // that pass sends no event the page answers with reads while this row counts them.
@@ -139,6 +170,12 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     // detail again for. The Plan re-press below holds to no read at all, so the presses are
     // counted only once every notice is sent, or held by the server (`editNoticesSent`).
     await editNoticesSent(seeded.key, traffic);
+    await pressFilter(page, traffic, "decisions");
+    await releaseFilter(page, "decisions");
+    expect(
+      commentsListReads(traffic.requests),
+      "the load, opening Details and pressing Decisions send no whole-issue comments read"
+    ).toEqual([]);
 
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
@@ -176,6 +213,37 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       if (late) expect(repressed, "a view pressed after 31 s sends no read").toEqual([]);
       await releaseFilter(page, filter);
     }
+    expect(
+      commentsListReads(traffic.requests),
+      "the load, Details and every filter send no whole-issue comments read"
+    ).toEqual([]);
+    // Once a document's editor opens on the stage, the margin in Details draws its comment cards
+    // beside it and sends one whole-issue comments read.
+    await pressFilter(page, traffic, "spec");
+    await openDetails(page);
+    await expectLoadSettled(traffic);
+    expect(commentsListReads(traffic.requests), "Details sends no comments read by itself").toEqual(
+      []
+    );
+    const specSlug =
+      issue.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id)?.slug ??
+      "spec";
+    const statement = await focusRow(page, blockNodeId(specSlug, seeded.requirements[0]));
+    await page.keyboard.press("Enter");
+    await expect(
+      statement.locator("[data-editor-box] .dispatch-doc"),
+      "Enter on a statement row did not open the spec's editor"
+    ).toBeVisible();
+    await expect
+      .poll(() => commentsListReads(traffic.requests).length, {
+        message: "opening a document's editor did not send one whole-issue comments read",
+      })
+      .toBe(1);
+    await expectLoadSettled(traffic);
+    expect(
+      commentsListReads(traffic.requests),
+      "opening a document's editor sent more than one whole-issue comments read"
+    ).toHaveLength(1);
   });
 });
 

@@ -367,7 +367,7 @@ func blockLinkArms(toKind string) []string {
 	}
 }
 
-// keyedTupleArm is graph_edges' tuple arm (migration 20261121034242) for the edges that end at
+// keyedTupleArm is graph_edges' tuple arm (migration 20261125163554) for the edges that end at
 // the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
 // node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
 // that name none. Such a row is the projection of the tuple of the node it names (node_kind and
@@ -392,7 +392,7 @@ func keyedTupleArm(blockKind string) string {
 					where live.kind = b.node_kind and live.id = b.node_address and live.state <> '` + graphstore.StateGone + `')`
 }
 
-// keyedMentionArm is graph_edges' tuple arm (migration 20261119100000_issue_tree_artifact_refs)
+// keyedMentionArm is graph_edges' tuple arm (migration 20261126050005_issue_tree_artifact_refs)
 // for a document's mention of the block k.node_id, of storage kind blockKind, where the document's
 // row names its node: the mentions tuple out of the document's node, read by its target through
 // graph_tuples_as_of_in, while it is the newest tuple of its relation and asserts (currentTuple),
@@ -418,7 +418,7 @@ func keyedMentionArm(blockKind string) string {
 
 // storeClass is true of the graph_tuples row alias while it is a relation graph_edges' tuple arm
 // answers from the tuples alone, with no projection row behind it (its store class, migrations
-// 20261116184707 and 20261117020856, as store.GraphEdgesView states it): storeArmPointers -
+// 20261126050001 and 20261126050002, as store.GraphEdgesView states it): storeArmPointers -
 // changed_by_run and each pointer graphstore.PointerKinds lists - out of any node but a finding of
 // a lens, storeArmPlacements and authored_by out of an interaction, a lens, a risk or a
 // constraint, and an issue's duplicate_of and filed_from.
@@ -462,7 +462,7 @@ func keyedFindingArm(blockKind string) string {
 // storeArmPointers are the relations keyedStoreArm reads out of a node of any kind: each pointer
 // graphstore.PointerKinds lists, read once, and changed_by_run. changed_by_run is listed because
 // the view's store class answers it from the tuples alone, out of any node, as it answers each
-// pointer (migration 20261121104002), and TupleKinds (backlink_counts.go) reads the store's own
+// pointer (migration 20261126050007), and TupleKinds (backlink_counts.go) reads the store's own
 // kinds from this list and storeArmPlacements. It is no pointer: a write made for a run appends a
 // changed_by_run out of each node it created or changed to the run's interaction (graphstore's
 // changedByRunMarks and queueChangedByRun, in the append QueueWrite and QueueCaused queue), and no
@@ -907,22 +907,28 @@ func Nodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (m
 }
 
 // ExcerptedNode is one node ExcerptedNodes resolves: the node, and the excerpt an edge at it
-// shows (excerptOf), nil for a node that has no text. AskKind is what a read of an issue's
-// conversation alone (ConversationNodes) answers beside each ask: the kind the ask's row holds
-// (asks.kind), `question`, or `approval` for a request of a document's approval. It is empty on
-// every other node and on every other read.
+// shows (excerptOf), nil for a node that has no text. Whole is the node's whole text where a read
+// of the node itself answers it whole (resolvedNode's wholeText: a run's words, spec requirement
+// r-interaction), read by the same loader and so behind the same predicate, and "" for every
+// other node: a read that answers nodes, as the tree read does, answers a run's words uncut, and
+// an edge at the run its excerpt. AskKind is what a read of an issue's conversation alone
+// (ConversationNodes) answers beside each ask: the kind the ask's row holds (asks.kind),
+// `question`, or `approval` for a request of a document's approval. It is empty on every other
+// node and on every other read.
 type ExcerptedNode struct {
 	Node    model.GraphNode
 	Excerpt *model.GraphExcerpt
+	Whole   string
 	AskKind string
 }
 
-// ExcerptedNodes is Nodes with each node's excerpt beside it, cut as an edge at the node cuts it:
-// a read that lists nodes rather than edges - the proposed nodes of an issue - answers each one
-// with the words a reader recognises it by. What it answers and what it leaves out is Nodes'. The
-// targets are addressed as the to side of an edge addresses them (TargetOf), so an artifact's id
-// is its ref_key, as in TargetNames; serverURL is the deployment the caller reads, whose
-// dashboard URLs each excerpt is cut around as references (excerptOf).
+// ExcerptedNodes is Nodes with each node's excerpt beside it, cut as an edge at the node cuts it,
+// and a run's whole words beside its excerpt (Whole): a read that lists nodes rather than edges -
+// the proposed nodes of an issue, the tree read - answers each one with the words a reader
+// recognises it by. What it answers and what it leaves out is Nodes'. The targets are addressed as
+// the to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key, as in
+// TargetNames; serverURL is the deployment the caller reads, whose dashboard URLs each excerpt is
+// cut around as references (excerptOf).
 func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]ExcerptedNode, error) {
 	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
@@ -930,7 +936,11 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []T
 	}
 	nodes := make(map[Target]ExcerptedNode, len(resolved))
 	for key, node := range resolved {
-		nodes[Target{Kind: key[0], ID: key[1]}] = ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)}
+		excerpted := ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)}
+		if node.wholeText {
+			excerpted.Whole = node.text
+		}
+		nodes[Target{Kind: key[0], ID: key[1]}] = excerpted
 	}
 	return nodes, nil
 }
@@ -1096,14 +1106,14 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		entry, known := nodeRegistry[kind]
-		if !known || entry.load == nil {
+		load := nodeRegistry[kind].load
+		if load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
 			// longer exists is. A kind the registry resolves no nodes of is omitted the same way.
 			continue
 		}
-		if err := entry.load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
+		if err := load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
 			return nil, err
 		}
 	}
@@ -1790,7 +1800,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 	return rows.Err()
 }
 
-// commentReplyParent is the parent of a comment that answers something (this issue's spec R8):
+// commentReplyParent is the parent of a comment that answers something (R8 of the issue-tree spec):
 // coalesce(answers, reply_to, ask_id), the comment it answers, else its thread's head, else its
 // ask, each addressed under the comment's own owner (itemParent); nil for a comment that answers
 // nothing. The block a reply names (replies_to_block) is never its parent: a reply to a comment's

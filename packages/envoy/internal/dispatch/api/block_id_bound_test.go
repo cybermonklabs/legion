@@ -450,15 +450,14 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 // A converted issue's document whose reference key is past the store's address bound - 2600 bytes,
 // which the head's uploads still create - stays its own room, as every document is on main, and so
 // does a short-named document no role names, while a role document of the same issue, its plan,
-// joins the issue's room (documentJoinsIssueRoom, R5 of this branch's spec): what keeps a document
+// joins the issue's room (documentJoinsIssueRoom, R5 of the issue-tree spec): what keeps a document
 // out of the room is the part it plays, never the length of its name.
 func TestALongNamedDocumentStaysItsOwnRoomWhileARoleDocumentJoinsTheIssues(t *testing.T) {
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Long and short names", "Context paragraph.\n")
-	var tree string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select id::text from artifacts where issue_key = $1 and kind = 'tree'`, issue.Key).Scan(&tree); err != nil {
-		t.Fatalf("read the issue's tree: %v", err)
+	tree, err := issueTreeOf(context.Background(), database.Pool, issue.Key)
+	if err != nil || tree == "" {
+		t.Fatalf("issue %s holds the tree %q (%v), want the tree it was born with", issue.Key, tree, err)
 	}
 	long := randomBlockID(t, 2600-len(issue.Key+"/-md")) + ".md"
 	for _, test := range []struct {

@@ -162,6 +162,11 @@ var nodeKinds []string
 // reads to pick the comparison of each node's own kind (authorIsOfRow).
 var credentialComparedKinds []string
 
+// fromAddressKinds is every node kind of nodeRegistry whose ids the from side of an edge spells
+// otherwise than `graph_nodes` keys them (nodeVisibility.fromAddress), sorted: the kinds whose
+// rewrite VisibleEnd applies to a from side.
+var fromAddressKinds []string
+
 // registrySQL is the SQL the predicates over a node whose kind is a column splice from the
 // registry's own lists, rendered once the registry is built (deriveRegistryLists) rather than on
 // every call of those predicates, which every read of the graph makes. Every kind this package
@@ -174,7 +179,7 @@ var registrySQL struct {
 	// credentialCompared is credentialComparedKinds as the literals of an `in` list
 	// (authorIsOfRow).
 	credentialCompared string
-	// storedRewrites is the `when` arm of storedKindSQL's case for each entry the store keys
+	// storedRewrites is the `when` arm of StoredKindSQL's case for each entry the store keys
 	// under another kind, empty where no entry is.
 	storedRewrites string
 }
@@ -248,10 +253,12 @@ func init() {
 
 // deriveRegistryLists sets what is read off nodeRegistry once it is built: the kinds it resolves
 // (nodeKinds), the kinds whose predicate compares the whole credential (credentialComparedKinds),
-// and the SQL rendered from them (registrySQL).
+// the kinds whose from-side ids it rewrites (fromAddressKinds), and the SQL rendered from them
+// (registrySQL).
 func deriveRegistryLists() {
 	nodeKinds = registryKinds(func(entry nodeKind) bool { return entry.load != nil })
 	credentialComparedKinds = registryKinds(func(entry nodeKind) bool { return entry.visibility.compares == comparesCredential })
+	fromAddressKinds = registryKinds(func(entry nodeKind) bool { return entry.visibility.fromAddress != nil })
 	var rewrites strings.Builder
 	for _, kind := range VisibilityKinds() {
 		if stored := nodeRegistry[kind].visibility.storedKind; stored != "" {
@@ -347,21 +354,17 @@ func StoredKindOf(kind string) string {
 	return kind
 }
 
-// storedKindSQL is StoredKindOf over a kind that is the SQL kindExpr rather than a literal: the
-// kind expression itself where no entry is stored under another kind, and a case over the
-// entries that are otherwise (registrySQL.storedRewrites). A node already named by its stored
-// kind - a finding as the store's block - passes through it unchanged.
-func storedKindSQL(kindExpr string) string {
+// StoredKindSQL is StoredKindOf over a kind that is the SQL kindExpr rather than a literal, for a
+// statement of this package or another: the kind expression itself where no entry is stored under
+// another kind, and a case over the entries that are otherwise (registrySQL.storedRewrites), so a
+// finding of a lens named lens_block reads as the store's block. A node already named by its
+// stored kind - a finding as the store's block - passes through it unchanged.
+func StoredKindSQL(kindExpr string) string {
 	if registrySQL.storedRewrites == "" {
 		return kindExpr
 	}
 	return `(case ` + kindExpr + registrySQL.storedRewrites + ` else ` + kindExpr + ` end)`
 }
-
-// StoredKindSQL is storedKindSQL for a statement of another package: the kind the store keys the
-// node whose kind is the SQL kindExpr by, a finding of a lens named lens_block read as the
-// store's block.
-func StoredKindSQL(kindExpr string) string { return storedKindSQL(kindExpr) }
 
 // artifactStoreAddress is the ref_key of the artifact whose uuid expr names.
 func artifactStoreAddress(expr string) string {
@@ -602,7 +605,7 @@ func (k NodeKinds) gate() (bind, inSQL bool) {
 // VisibleEnd is the predicate over an end of an edge, whose node kind is a column rather than a
 // literal: one read of `graph_nodes` keyed on that column and on the id beside it, with the
 // address rewrites the registry declares applied per kind, the kind read as the store keys it
-// (storedKindSQL: an edge's lens_block is the store's block), and the comparison of the kind of
+// (StoredKindSQL: an edge's lens_block is the store's block), and the comparison of the kind of
 // the row it reads (authorIsOfRow). kinds is what the read knows the column can hold (NodeKinds):
 // an end that can be a node of a standing kind is held to not stale (staleOfKindSQL), as
 // VisibleKind holds one, and any other end is not tested at all. byRefKey says the ids are the
@@ -623,12 +626,8 @@ func visibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param s
 	address := idExpr
 	if !byRefKey {
 		var rewrites strings.Builder
-		for _, kind := range VisibilityKinds() {
-			rewrite := nodeRegistry[kind].visibility.fromAddress
-			if rewrite == nil {
-				continue
-			}
-			rewrites.WriteString(` when '` + kind + `' then ` + rewrite(idExpr))
+		for _, kind := range fromAddressKinds {
+			rewrites.WriteString(` when '` + kind + `' then ` + nodeRegistry[kind].visibility.fromAddress(idExpr))
 		}
 		if rewrites.Len() > 0 {
 			address = `case ` + kindExpr + rewrites.String() + ` else ` + idExpr + ` end`
@@ -638,7 +637,7 @@ func visibleEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param s
 	if kinds.mayBeStanding() {
 		stale = ` and not ` + staleOfKindSQL(kindExpr, idExpr)
 	}
-	visible := visibleWhere(storedKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param))
+	visible := visibleWhere(StoredKindSQL(kindExpr), address, authorIsOfRow(`visible_node`, param))
 	if gated {
 		visible = authorOnlyGate(kindExpr, idExpr, visible)
 	}
@@ -661,7 +660,7 @@ func gatedEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param str
 // VisibleNode is the predicate of a node whose kind is a column of the read's own query rather
 // than a literal - the far end of a tuple, say: kindExpr and idExpr are its kind and its id, as
 // `graph_nodes` holds them or as the graph addresses them, which differ only for a finding of a
-// lens (storedKindSQL). It is the predicate of the node's own kind, with that kind's comparison
+// lens (StoredKindSQL). It is the predicate of the node's own kind, with that kind's comparison
 // (authorIsOfRow), and false for a node whose kind the registry does not hold, as VisibleKind
 // refuses one, so a node of a kind a newer build adds counts for nothing here until its entry
 // does. A block's kind is read off its id (graphstore.AddressKind): a finding of a lens is a
@@ -671,7 +670,7 @@ func gatedEnd(kinds NodeKinds, kindExpr, idExpr string, byRefKey bool, param str
 // standing kind is not (staleOfKindSQL), as VisibleKind holds one.
 func VisibleNode(kindExpr, idExpr, param string) string {
 	return VisibilityMarker + `the row's own kind */(` + graphstore.AddressKindSQL(kindExpr, idExpr) + ` in (` +
-		registrySQL.kinds + `) and ` + visibleWhere(storedKindSQL(kindExpr), idExpr, authorIsOfRow(`visible_node`, param)) +
+		registrySQL.kinds + `) and ` + visibleWhere(StoredKindSQL(kindExpr), idExpr, authorIsOfRow(`visible_node`, param)) +
 		` and not ` + staleOfKindSQL(kindExpr, idExpr) + `)`
 }
 
@@ -679,7 +678,7 @@ func VisibleNode(kindExpr, idExpr, param string) string {
 // the node, as alias, on kindExpr and idExpr as the store keys them, rather than a second probe of
 // the same row: the same test of the row, with the comparison of the row's own kind
 // (authorIsOfRow), true where the join found no row, as VisibleNode reads a node the store holds
-// no row for. kindExpr is a kind as the store keys it, never lens_block (storedKindSQL), so the
+// no row for. kindExpr is a kind as the store keys it, never lens_block (StoredKindSQL), so the
 // join's row is the one VisibleNode would probe. A walk that joins each node's row for its state
 // binds it (PlanOrder's readPlanTree), where the second probe of 3,000 nodes' rows cost the walk
 // a quarter of its time.

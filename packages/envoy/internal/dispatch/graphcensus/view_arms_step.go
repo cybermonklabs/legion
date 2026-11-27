@@ -194,14 +194,9 @@ func projectionNamed(name string) (projection, bool) {
 	return projection{}, false
 }
 
-// rowQueryer is what reads one row: a pool or a transaction.
-type rowQueryer interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // viewDefinition is graph_edges as pg_get_viewdef prints it in its pretty form, which
 // ViewArmsStanding reads.
-func viewDefinition(ctx context.Context, q rowQueryer) (string, error) {
+func viewDefinition(ctx context.Context, q graphstore.Queryer) (string, error) {
 	var definition string
 	if err := q.QueryRow(ctx, `select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
 		return "", fmt.Errorf("read the definition of graph_edges: %w", err)
@@ -213,7 +208,7 @@ func viewDefinition(ctx context.Context, q rowQueryer) (string, error) {
 // arms and none of the tuple arm's joins to their tables (ViewArmsStanding answers none). A process
 // reads it before it serves and sets refs.SetFourArmsDeleted from it, so a process that boots after
 // another process's step deleted the arms counts as the view answers from its first request.
-func ViewArmsGone(ctx context.Context, q rowQueryer) (bool, error) {
+func ViewArmsGone(ctx context.Context, q graphstore.Queryer) (bool, error) {
 	definition, err := viewDefinition(ctx, q)
 	if err != nil {
 		return false, err
@@ -221,12 +216,12 @@ func ViewArmsGone(ctx context.Context, q rowQueryer) (bool, error) {
 	return len(ViewArmsStanding(definition)) == 0, nil
 }
 
-// ViewArmsFollowInterval is how often a process reads again whether graph_edges holds the four old
+// viewArmsFollowInterval is how often a process reads again whether graph_edges holds the four old
 // arms (FollowViewArms).
-const ViewArmsFollowInterval = time.Minute
+const viewArmsFollowInterval = time.Minute
 
 // FollowViewArms keeps refs.SetFourArmsDeleted to the view the database holds, for the life of the
-// process: about every ViewArmsFollowInterval (duty.RunJittered) it reads the view's definition
+// process: about every viewArmsFollowInterval (duty.RunJittered) it reads the view's definition
 // again (ViewArmsGone) and sets the flag from it, whichever way the view moved - another process's
 // step deleted the arms, or a migration of another build stated the view again with them. A read
 // that fails is logged and changes nothing; the next one tries again.
@@ -242,7 +237,7 @@ const ViewArmsFollowInterval = time.Minute
 // written in that interval, which the view no longer answers (viewArmsUnmarked), is counted by
 // that process until its next read, at most one interval later.
 func FollowViewArms(ctx context.Context, pool *store.Pool, logger *slog.Logger) {
-	duty.RunJittered(ctx, ViewArmsFollowInterval, func() bool { return false }, func(ctx context.Context, _ time.Time) {
+	duty.RunJittered(ctx, viewArmsFollowInterval, func() bool { return false }, func(ctx context.Context, _ time.Time) {
 		gone, err := ViewArmsGone(ctx, pool)
 		if err != nil {
 			if ctx.Err() == nil {

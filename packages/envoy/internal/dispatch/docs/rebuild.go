@@ -169,15 +169,8 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if markdown == nil {
 		// The version's markdown is the server's own, not the caller's, so an element this build
 		// does not know in it is newer content, as every read of the document answers it, not
-		// invalid markdown.
-		parsed, parseErr := pmdoc.ParseRendering(latest.markdown)
-		if newer := documentSchemaError(parseErr); errors.Is(newer, ErrDocNewerContent) {
-			return RebuildReport{}, VersionResult{}, newer
-		}
-		// uploadedInput copies parsed, so the close's states written into tree below leave
-		// stored as the version holds it.
-		tree, err = uploadedInput(parsed, parseErr)
-		stored = parsed
+		// invalid markdown (readBackVersion).
+		tree, stored, err = readBackVersion(latest.markdown)
 	} else {
 		if !open {
 			return RebuildReport{}, VersionResult{}, ErrIssueClosed
@@ -383,17 +376,29 @@ func rebuildRoomSeeds(ctx context.Context, tx pgx.Tx, room string, layout roomLa
 		case document == artifactID:
 			seeds[index], held[index] = tree, stored
 		case latest[index].markdown != "":
-			parsed, parseErr := pmdoc.ParseRendering(latest[index].markdown)
-			if newer := documentSchemaError(parseErr); errors.Is(newer, ErrDocNewerContent) {
-				return nil, nil, newer
-			}
-			if seeds[index], err = uploadedInput(parsed, parseErr); err != nil {
+			if seeds[index], held[index], err = readBackVersion(latest[index].markdown); err != nil {
+				if errors.Is(err, ErrDocNewerContent) {
+					return nil, nil, err
+				}
 				return nil, nil, fmt.Errorf("read back the latest version of %s, a document of room %s: %w", document, room, err)
 			}
-			held[index] = parsed
 		}
 	}
 	return seeds, held, nil
+}
+
+// readBackVersion is what a rebuild seeds from a stored version's markdown: tree, the markdown
+// read back (pmdoc.ParseRendering) as an upload's input (uploadedInput), and stored, the read-back
+// itself, which the seed holds as the version holds it. uploadedInput copies the read-back, so the
+// close's states written into tree leave stored as it was. An element this build does not know is
+// newer content (ErrDocNewerContent), as every read of the document answers it.
+func readBackVersion(markdown string) (tree, stored *pmdoc.Node, err error) {
+	parsed, parseErr := pmdoc.ParseRendering(markdown)
+	if newer := documentSchemaError(parseErr); errors.Is(newer, ErrDocNewerContent) {
+		return nil, nil, newer
+	}
+	tree, err = uploadedInput(parsed, parseErr)
+	return tree, parsed, err
 }
 
 // The causes and next steps of the rebuild refusals liveRebuildRefusal builds.

@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  memo,
   type ReactNode,
   type RefObject,
   useId,
@@ -47,7 +48,9 @@ import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { standingParts } from "./decisions-filter/entry-standing";
+import { useDocumentReadOnly } from "./document-admission";
 import { useDocumentStage } from "./document-stage";
+import { useEditedRow } from "./edited-row";
 import { chipName } from "./first-line";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
@@ -121,8 +124,14 @@ import { indentOf } from "./tree-fold";
  * them, part V's Verification view and part J's Spec view - passes `tabStops`, and every control
  * the row draws keeps its place in the tab order instead, so a reader on the keyboard alone Tabs
  * to each (R9).
+ *
+ * A row is drawn again only where a prop it is given changed (`memo`), so a read or a move of the
+ * focus draws the rows it changes and no other: the tree hands every row props that keep their
+ * identity while the row's own data does - its `author` from one object per author, one
+ * `onFocus` and one `onToggle` for every row, which the row calls with its own key, and its
+ * `node` kept while a read builds an equal one (`TreeRows.tsx`, `IssueTree.tsx`).
  */
-export function NodeRow({
+export const NodeRow = memo(function NodeRow({
   answerer,
   author,
   context,
@@ -130,7 +139,6 @@ export function NodeRow({
   current,
   document,
   editable = false,
-  editing,
   expanded,
   focused,
   foldable = true,
@@ -173,14 +181,15 @@ export function NodeRow({
    *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
    *  is no block of a document of this issue. */
   document?: Artifact;
-  /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
-   *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
-   *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
+  /** Whether the row's node is a block of a document the page may let the reader type in - the
+   *  issue is open and the node has a document - which the row reads with what its document's
+   *  room admitted (`useDocumentReadOnly`) to carry `data-editable`, for a view that lets the
+   *  reader edit its words in place and draws such a row its own way: part I's outline passes
+   *  it, and its styles draw the cue that the row takes typing (decision 323). False unless the
    *  view passes it. */
+  // A node written into the issue, such as a criterion, has no document: the outline passes
+  // whether the issue's tree artifact, which Enter edits it in, takes typing (`TreeRows.tsx`).
   editable?: boolean;
-  /** The document this row's own text lives in, while the reader is editing it here: its
-   *  editor is drawn in place of the row's words and the caret is in this node's block. */
-  editing?: string;
   /** `true` when its children are drawn, `false` when it holds children the reader folded, and
    *  undefined for a node that holds none. */
   expanded?: boolean;
@@ -200,16 +209,22 @@ export function NodeRow({
    *  past the sixth level (`indentOf`). */
   level: number;
   node: TreeNode;
-  onFocus: () => void;
-  onToggle: () => void;
+  /** Called as the focus comes to the row or into it, with the row's key (`rowKey`) and its
+   *  node: one call for every row of the tree, so the row's own props stay the same. */
+  onFocus: (row: string, node: TreeNode) => void;
+  /** Called as the reader presses the row's fold control, with the row's key (`rowKey`) and
+   *  whether its children are drawn (`expanded`): one call for every row of the tree, as
+   *  `onFocus` is. */
+  onToggle: (row: string, expanded: boolean | undefined) => void;
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
    *  every row does but three of the outline's: its first row as the page opens on it with no
    *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
    *  it draws, each of which stays where it stands until the reader acts, and the row the reader
-   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
-   *  All three are `IssueTree.tsx`'s to set. */
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes
+   *  and which sets this for itself (`useEditedRow`). The first two are `IssueTree.tsx`'s to
+   *  set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -228,6 +243,12 @@ export function NodeRow({
   threadRead?: ThreadMark;
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
+  // The document this row's own text lives in while the reader is editing it here: its editor is
+  // drawn in place of the row's words and the caret is in this node's block. The tree publishes
+  // the edited row alone (`EditedRowContext`), so only this row hears Enter.
+  const editing = useEditedRow(rowKey);
+  const readOnly = useDocumentReadOnly(document?.id);
+  const takesTyping = editable && !readOnly;
   const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
@@ -242,7 +263,14 @@ export function NodeRow({
   const oneLine = expanded === false;
   const ids = rowNameIds(useId());
 
-  const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
+  // The row being edited places nothing of its own: the editor keeps its caret on screen as the
+  // reader writes, and grows the row.
+  const press = useRowOnScreen(
+    row,
+    focused,
+    BELOW_WHAT_STAYS,
+    editing === undefined && placesItself !== false
+  );
 
   const depth = indentOf(level);
   // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place.
@@ -273,7 +301,7 @@ export function NodeRow({
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
       data-current-point={current}
-      data-editable={editable ? "" : undefined}
+      data-editable={takesTyping ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -282,7 +310,7 @@ export function NodeRow({
       data-node-state={node.state}
       data-node-type={node.type}
       data-row-key={rowKey}
-      onFocus={onFocus}
+      onFocus={() => onFocus(rowKey, node)}
       onPointerDown={press}
       ref={row}
       role="treeitem"
@@ -296,7 +324,7 @@ export function NodeRow({
           current={current}
           expanded={expanded}
           foldable={foldable}
-          onToggle={onToggle}
+          onToggle={() => onToggle(rowKey, expanded)}
           tabStops={tabStops}
           tone={tone}
         />
@@ -449,7 +477,7 @@ export function NodeRow({
       </div>
     </div>
   );
-}
+});
 
 /** One faint guide per indented level, `depth` of them, each at the middle of that level's
  *  bullet (the prototype's `.tn > .kids`, 9 px into a level 23 px wide, and 8 px into one 17 px
@@ -492,8 +520,7 @@ const BULLET_BOX =
  * of the row, and that stands on a line of its own under the tag's where they do not, the name
  * wrapping at a space where it is wider than the margin, and the time after its last word. The
  * margin's line wraps by itself (`flex-wrap`): no script measures a row to decide it. The tag and
- * the time never break, so the margin is never narrower than either of them; a lens's tag, its
- * kind's words as their author wrote them, wraps inside the margin instead (`KindTag`).
+ * the time never break, so the margin is never narrower than either of them.
  *
  * A phone class is `max-[761px]:`, not `max-[760px]:`: Tailwind writes an arbitrary `max-[N]`
  * as `(width < N)`, so only 761 draws 760 px itself as a phone, as the prototype's query and the
@@ -810,13 +837,14 @@ export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
  * column as wide as its lines, at every width (`NODE_ROW_LAYOUT`): the author and the time are
  * one piece of the first line, after the tag, which stands on a line of its own under the tag's
  * where the three do not fit in the column, with the whole name and the time after it; no part
- * of the margin is ever cut. A lens's tag is its kind's words whole, so it wraps inside that
- * column, with its shape beside its first line (`KindTag`). Where `tagTo` is given, the tag is a
- * link that opens the node in its own view (R9), out of the tab order unless `tabStops` holds:
- * `f` steps to it and Enter follows it. `id` names it in the row's name, after the words
- * (`rowNameIds`). After the state, on that line, stand the node's marks - proposed or
- * overtaken, then reserved for its author - each by a word and a shape (`NodeMarks`), on a line
- * of their own where the node has no state.
+ * of the margin is ever cut. Where `tagTo` is given, the tag is a link that opens the node in its
+ * own view (R9), out of the tab order unless `tabStops` holds: `f` steps to it and Enter follows
+ * it. `id` names it in the row's name, after the words (`rowNameIds`).
+ * A lens's tag is its kind's words whole, so it wraps inside that column or line, with its shape
+ * beside its first line (`KindTag`).
+ * After the state, on that line, stand the node's marks - proposed or overtaken, then reserved
+ * for its author - each by a word and a shape (`NodeMarks`), on a line of their own where the
+ * node has no state.
  */
 export function RowMargin({
   author,
@@ -884,13 +912,6 @@ export function RowMargin({
       : undefined;
   const otherIssueHref =
     otherIssue === undefined ? undefined : referenceHref({ key: otherIssue, kind: "issue" });
-  // An ordinary tag is one line held at its whole width (`shrink-0`), so the margin is never
-  // narrower than it. A lens's tag wraps its kind's words inside the margin (`KindTag`), so it
-  // keeps the default `flex-shrink: 1` and narrows with the margin, down to its shape and the
-  // widest piece of its words: a flex item that does not shrink keeps its flex base size, here
-  // the one-line `max-content` width of words that run to 129 characters, which reaches past the
-  // margin's two fifths of the row, and past the row.
-  const tagWidth = node.lens?.kind === undefined ? " shrink-0" : "";
   return (
     <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="" id={id}>
       <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
@@ -907,7 +928,7 @@ export function RowMargin({
         )}
         {UNTYPED[node.type] === true ? null : (
           <span
-            className={`inline-flex${tagWidth} items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
+            className={`inline-flex shrink-0 items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
             data-node-tag=""
           >
             {/* A `requirement` block of a document other than the spec is no statement: it says
@@ -1011,6 +1032,10 @@ export function RowMargin({
                     </span>
                   </>
                 )}
+                {/* A decision whose Change may stand on a comment page the read has not loaded
+                    says so as a count with more to read does (R15), rather than read as
+                    unchanged (`TreeNode.changeUnread`). */}
+                {node.changeUnread === true ? <span data-change-unread="">+</span> : null}
               </span>
             </span>
           )}
@@ -1030,9 +1055,8 @@ export function RowMargin({
  *  `requirement` block of a document other than the spec, which is no statement. */
 function KindTag({ node }: { node: TreeNode }): ReactNode {
   // A lens's tag is its kind's words, which run as long as the author wrote them: they wrap
-  // inside the margin's column, `whitespace-normal` over the tag's own `whitespace-nowrap`, in a
-  // tag that narrows with that column (`RowMargin`), and the shape stands at the top, beside
-  // their first line.
+  // inside the margin's column, `whitespace-normal` over the tag's own `whitespace-nowrap`, and
+  // the shape stands at the top, beside their first line.
   const kindTag = node.lens?.kind === undefined ? undefined : lensChipWords(node.lens.kind).words;
   if (kindTag !== undefined) {
     return (

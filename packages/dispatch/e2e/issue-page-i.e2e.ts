@@ -1994,14 +1994,23 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
     ).toBe(true);
     await page.mouse.move(boxMiddle.x, boxMiddle.y);
     await page.mouse.wheel(0, (placed?.y ?? 0) + (placed?.height ?? 0) / 2 - boxMiddle.y);
-    /** The middle of the table where the page draws it, and whether the table is what the page
-     *  draws there. */
+    /** The middle of the part of the table the box draws on the screen, and whether the table is
+     *  what the page draws there: the box holds its height to the room the row has
+     *  (`holdEditorAtBlock`), so a table taller than that runs on inside the box, where it is
+     *  clipped, and the row's actions stand over the spot the table's own centre would be. */
     const tableMiddle = () =>
       table.evaluate((drawn) => {
         const at = drawn.getBoundingClientRect();
+        const clip = drawn.closest("[data-editor-box]")?.getBoundingClientRect();
+        const top = Math.max(at.top, clip?.top ?? at.top, 0);
+        const bottom = Math.min(at.bottom, clip?.bottom ?? at.bottom, window.innerHeight);
         const x = at.left + at.width / 2;
-        const y = at.top + at.height / 2;
-        return { onTop: document.elementFromPoint(x, y)?.closest("table") === drawn, x, y };
+        const y = (top + bottom) / 2;
+        return {
+          onTop: bottom > top && document.elementFromPoint(x, y)?.closest("table") === drawn,
+          x,
+          y,
+        };
       });
     // The box scrolls smoothly, so the table's middle is read until two reads find it in the
     // same place, with the table drawn there.

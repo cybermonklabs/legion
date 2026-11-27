@@ -44,6 +44,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -115,6 +116,9 @@ type Options struct {
 	// Grants is the broker's own reads, in production a *requests.Machine: the grant behind a
 	// connection, its values, the policy version and the airlock's rules.
 	Grants GrantSource
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 	// CA signs the certificate of each bound host.
 	CA *Authority
 	// Idle is BROKER_AIRLOCK_IDLE_SECONDS: how long one connection may go with no byte in
@@ -214,6 +218,7 @@ type Options struct {
 // live grant.
 type Server struct {
 	grants GrantSource
+	hold   *hold.Gate
 	ca     *Authority
 	idle   time.Duration
 	watch  time.Duration
@@ -281,7 +286,8 @@ type Server struct {
 
 	// values is each grant's real values, read once per grant on this pod and held until the
 	// reread of one of its names drops it (DropName) or a minted value nears its expiry
-	// (grantValues, mintAgainBefore).
+	// (grantValues, mintAgainBefore); a grant's whole entry leaves by the one rule valuesFor's doc
+	// states, once the grant's end has passed.
 	valuesMu sync.Mutex
 	values   map[string]*grantValues
 
@@ -336,6 +342,7 @@ type decryptedKey struct{}
 func New(o Options) *Server {
 	s := &Server{
 		grants:        o.Grants,
+		hold:          o.Hold,
 		ca:            o.CA,
 		idle:          o.Idle,
 		watch:         o.Watch,
@@ -506,7 +513,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // serveProxy is the whole of the outer server: a proxy request, a credential that proves a live
-// grant, and then either a tunnel or a bound host.
+// grant of a person Dispatch does not hold, and then either a tunnel or a bound host.
 func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// A request that is neither CONNECT nor an absolute-URL proxy request is somebody treating
 	// this port as an ordinary web server. It serves nothing of its own, not even a health
@@ -538,6 +545,13 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 			// The broker's own refusal of this grant, in its own words (grantRefusal).
 			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
 		}
+		return
+	}
+	// The person the grant's session acts for, asked of the hold before anything else of the
+	// request is read: a connection a held person opens is refused, a tunnel no less than a bound
+	// host, and so is each of their plain requests (holdRefusal).
+	if status, code, why := s.holdRefusal(r.Context(), grant.Operator); status != 0 {
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, status, code, why)
 		return
 	}
 	// Every dial below this point is made for this grant, and the lines it writes name it
@@ -693,6 +707,34 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	}
 	s.log.Error("airlock proxy: a grant could not be read", "read", read, "error", err)
 	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
+}
+
+// holdUnreadable is the message of the line a check of the hold that decided nothing logs, with
+// the gate's own error, which no answer carries (holdRefusal, carryRefusal).
+const holdUnreadable = "airlock proxy: whether Dispatch holds a person could not be read"
+
+// holdRefusal is the status, the code and the words a request is refused with when the person
+// its grant's session acts for (requests.AirlockConnection's Operator) is one the hold refuses,
+// by the gate's Verdict (hold.Verdict.Refusal), and zero for a person it serves and for a grant
+// whose enrollment names no person - a pod's own, a machine's own session. A held person is 403
+// MEMBERSHIP_HELD. Every kind that decides nothing is 503 HOLD_UNCHECKABLE, a held answer the
+// broker could not keep among them, since the broker could serve that person in a later outage of
+// Dispatch. A request reads it after the connection read and before any value of the grant, so a
+// held person's request reaches neither the values this pod holds nor the store's.
+//
+// The 503 names the failure by its kind in fixed words (hold.Verdict.Words) and never in the
+// gate's own words, which hold a Postgres error's database user, name and address when the broker
+// could not read or keep an answer, as grantRefusal's 503 holds none of the read's: those words go
+// to the log.
+func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, string) {
+	if person == "" {
+		return 0, "", ""
+	}
+	v := s.hold.Decide(ctx, person)
+	if v.Kind != hold.Served && v.Kind != hold.Held {
+		s.log.Error(holdUnreadable, "person", person, "error", v.Err)
+	}
+	return v.Refusal()
 }
 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked

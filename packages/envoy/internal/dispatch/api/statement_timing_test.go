@@ -63,8 +63,9 @@ const (
 //     with its plan: on a database at this release's schema that reading is the after side, and
 //     on one migrated from the release before it the same three readings are the before side,
 //     which is what the after side is compared with. That older database also has no
-//     document_search (20261101182447), so this release's text of the five document-arm
-//     statements cannot run on it: there each of the five is measured as its before text alone,
+//     node_search (20261125160000_issue_tree_node_search), which this release's text of the five
+//     document-arm statements reads, so that text cannot run on it: there each of the five is
+//     measured as its before text alone,
 //     under the name it carries here - a pair's name for the three gated whole, and a Report's
 //     name for the two related statements that are gated on the arm they share.
 //

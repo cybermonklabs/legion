@@ -2,14 +2,13 @@ import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Comment, IssueDetails, MessageRead } from "../../api/types";
+import type { IssueAskThreadRow, IssueDetails, MessageRead } from "../../api/types";
 import type { PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
-import type { IssueTreeReads, TreeNode } from "./issue-tree";
+import type { TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
   type IssueTreeView,
-  issueCommentsQuery,
   issueMessagesQuery,
   type NamesFailure,
   useIssueTree,
@@ -68,9 +67,9 @@ export interface OutlineReads {
   readonly coverageOut: boolean;
   /** The line of each read the tree's rows come from that stands failed (`standsFailed`), and
    *  the names' line while it stands (`IssueTreeView.namesFailure`), in the order the reads are
-   *  given: the five reads (`reads`), and the names last, as the tree reads them last
-   *  (`useIssueTree`). A tree read refused before it first answered draws a line of its own
-   *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). Empty while no line stands. */
+   *  given: the four reads beside the tree read (`reads`), and the names last, as the tree reads
+   *  them last (`useIssueTree`). A tree read refused before it first answered draws a line of
+   *  its own (`tree-read/view-read.tsx`'s `TreeReadFailed`). Empty while no line stands. */
   readonly failed: readonly FailedRead[];
   /** The names' line alone while it stands (`IssueTreeView.namesFailure`), the last of `failed`:
    *  one line in the outline's words with its Retry, which a view the stage draws in the
@@ -84,14 +83,14 @@ export interface OutlineReads {
   /** What the page publishes of its batched names read (`IssueTreeView.published`), which the
    *  outline hands its rows in the render that draws them (`IssueTree`'s `published`). */
   readonly published: PublishedReferences;
-  /** The reads of the issue's conversation, each undefined until it has answered, which tell a
-   *  turn the outline leaves out (`useAddressFallback`), and whether each of the five reads the
-   *  tree is built from beside the tree read - the coverage, the results, the asks, the comments
-   *  and the messages - holds its answer (`held`). Every decision is a node of the tree read, so
-   *  no decisions read is among them. */
+  /** The reads of the issue's conversation beside the tree read, each undefined until it has
+   *  answered: the asks with their threads and the messages, which tell a turn the outline leaves
+   *  out (`useAddressFallback`); and whether each of the four reads the tree is built from beside
+   *  the tree read - the coverage, the results, the asks and the messages - holds its answer
+   *  (`held`). Every decision is a node of the tree read, so no decisions read is among them, and
+   *  the comments are the tree read's own. */
   readonly reads: {
-    readonly asks: IssueTreeReads["asks"];
-    readonly comments: readonly Comment[] | undefined;
+    readonly asks: readonly IssueAskThreadRow[] | undefined;
     readonly held: boolean;
     readonly messages: readonly MessageRead[] | undefined;
   };
@@ -99,7 +98,7 @@ export interface OutlineReads {
    *  holding its answer (`IssueTreeView.blocksHeld`). */
   readonly readsHeld: boolean;
   /** Whether every read the tree's rows come from has answered, with its data or with its
-   *  failure: the five reads here and the tree read (`TreeRead.pending`). It is what the page's
+   *  failure: the four reads here and the tree read (`TreeRead.pending`). It is what the page's
    *  first focus waits on, since until then a read still out can draw rows above the row it would
    *  land on, and a failed read answers too, where `readsHeld` would wait for ever. */
   readonly readsSettled: boolean;
@@ -126,18 +125,19 @@ export const NO_FAILED_READS: readonly FailedRead[] = [];
 const TREE_READ_LINE = "tree";
 
 /** The key the line of a read rows come from is drawn under (`FailedRead.key`). */
-export type ReadKey = ReturnType<typeof fiveReads>[number]["line"] | typeof TREE_READ_LINE;
+export type ReadKey = ReturnType<typeof besideReads>[number]["line"] | typeof TREE_READ_LINE;
 
 /** The key a view tells the line of the document `id`'s blocks by (`useTellsAddressDrawn`): the
  *  tree read's line for every document, whichever read holds its blocks (`TreeRead.blocksOf`). */
 export const blocksKey = (_id: string): ReadKey => TREE_READ_LINE;
 
-/** The five reads the tree is built from beside the tree read, in the order they are given, each
+/** The four reads the tree is built from beside the tree read, in the order they are given, each
  *  under the key and with the freshness `useIssueTree` reads it by, so they cost no request of
  *  their own; and the key each one's line is drawn under, what it says, and whether the questions
  *  come from it (`failedLines`). Every decision is a node of the tree read, so no decisions read
- *  is among them. */
-function fiveReads(key: string) {
+ *  is among them, and the comments are the tree read's own, so they have no read and no line
+ *  here. */
+function besideReads(key: string) {
   return [
     {
       bringsQuestions: false,
@@ -156,12 +156,6 @@ function fiveReads(key: string) {
       line: "asks",
       message: STATE_LINES.asks_unreadable,
       query: { ...issueAskThreadsQuery(key), ...EVENT_FRESH },
-    },
-    {
-      bringsQuestions: false,
-      line: "comments",
-      message: STATE_LINES.comments_unreadable,
-      query: { ...issueCommentsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
@@ -243,8 +237,9 @@ function useNamesLine(namesFailure: NamesFailure | undefined): readonly FailedRe
  * (`NO_FAILED_READS`) while none does.
  *
  * Whether every read the tree is built from holds its answer (`readsHeld`): the tree read, which
- * answers every node (`blocksHeld`), and the five reads here, read under the keys `useIssueTree`
- * reads them by, so they cost no request of their own; no document's blocks are read. A read that
+ * answers every node and every comment (`blocksHeld`), and the four reads here, read under the
+ * keys `useIssueTree` reads them by, so they cost no request of their own; no document's blocks
+ * are read. A read that
  * stands failed holds nothing either (`standsFailed`): the page cannot say what it would have
  * held, so the outline says that the read failed (`failed`). One whose refresh failed holds the
  * answer it had, which its rows are drawn from, and says nothing. The names' line stands while
@@ -271,7 +266,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     root,
   } = useIssueTree(issue);
   const key = issue.key;
-  const five = fiveReads(key);
+  const beside = besideReads(key);
   const own = useQueries({
     combine: (
       answers
@@ -281,24 +276,23 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
       reads: OutlineReads["reads"];
       settled: boolean;
     } => {
-      const [coverage, , asks, comments, messages] = answers;
+      const [coverage, , asks, messages] = answers;
       return {
         coverageOut: coverage.isPending && coverage.errorUpdateCount === 0,
         failed: failedLines(answers, (index) => ({
-          bringsQuestions: five[index].bringsQuestions,
-          key: five[index].line,
-          message: five[index].message,
+          bringsQuestions: beside[index].bringsQuestions,
+          key: beside[index].line,
+          message: beside[index].message,
         })),
         reads: {
           asks: asks.data,
-          comments: comments.data,
           held: answers.every((answer) => answer.data !== undefined),
           messages: messages.data,
         },
         settled: answers.every((answer) => !answer.isPending),
       };
     },
-    queries: queriesOf(five),
+    queries: queriesOf(beside),
   });
   const names = useNamesLine(namesFailure);
   const failed = useMemo(

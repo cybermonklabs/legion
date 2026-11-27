@@ -1122,8 +1122,8 @@ test("the reading keeps every row, proposed and overtaken ones included", () => 
 type CoverageRow = NonNullable<IssueCoverage["requirements"]>[number];
 
 /** The coverage read's row for the statement `blockId` of the spec, which one check serves, as
- *  the server answers it for a live statement no result proves, paired with the statement's node
- *  by the address `statementNode` gives that node, with whatever the case changes about it. */
+ *  the server answers it for a live statement no result proves, with whatever the case changes
+ *  about it. */
 function coverageRow(blockId: string, extra: Partial<CoverageRow> = {}): CoverageRow {
   return {
     block_id: blockId,
@@ -1137,61 +1137,25 @@ function coverageRow(blockId: string, extra: Partial<CoverageRow> = {}): Coverag
   };
 }
 
-// The coverage read closes a statement's row only where the statement, or a node above it in its
-// walk, is overtaken by a state of its own (`coverage_tuples.go`). A question written as an
-// `:::ask` block is overtaken by its ask's node, which stands in no statement's walk, so the row
-// of a statement under that question comes unproven and not closed, though the page closes that
-// statement with its question, which puts it out of the counts. The covered count leaves it out
-// at any depth of the view: it is neither covered nor one of the statements that count is out of.
-// Here the question stands under a live statement, and the question and its statement are
-// `closed` as the page's `closeOvertaken` closes an overtaken node and each node under it.
-test("the covered count leaves out a statement under an overtaken question whose coverage row is not closed", () => {
-  const passed = passing("c-one");
-  const asked = {
-    ...statementNode("r2", "A later question took this one's place."),
-    closed: true as const,
-  };
-  const question = node({
-    children: [asked],
-    id: blockNodeId(SPEC_SLUG, "q1"),
-    type: "ask",
-    ...OVERTAKEN,
-  });
-  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed), question]);
-  const view = verificationView([first]);
-  const coverage = {
-    ...coverageRead([]),
-    requirements: [coverageRow("r1"), coverageRow("r2")],
-  };
-
-  expect(issueCovered(coverage)).toEqual({ covered: 2, kind: "count", total: 2 });
-  expect(issueCovered(countedCoverage(coverage, view))).toEqual({
-    covered: 1,
-    kind: "count",
-    total: 1,
-  });
-});
-
 // The coverage read answers every statement of the spec, the ones the view has not loaded among
-// them, and marks a proposed statement's row `proposed` and the row of one at or under a node
-// overtaken by a state of its own `closed`. The covered count leaves out each such row, though
-// the view holds no statement of it to read.
-test("the covered count leaves out a row the coverage read marks proposed or closed, whose statement the view does not hold", () => {
-  const passed = passing("c-one");
-  const view = verificationView([
-    statementNode("r1", "The page draws the checks.", [checkNode(passed)]),
-  ]);
-
+// them, and marks a proposed statement's row `proposed` and the row of one at or under an
+// overtaken node `closed`, a question written as an `:::ask` block being overtaken by its ask's
+// node (`coverage_tuples.go`). The covered count leaves out each such row, though a check serves
+// it, so it is neither covered nor one of the statements that count is out of; a read that marks
+// no row so is counted whole.
+test("the covered count leaves out each row the coverage read marks proposed or closed, though a check serves it", () => {
   for (const marked of [
     coverageRow("r2", { coverage: "proposed", state: "proposed" }),
     coverageRow("r3", { coverage: "closed" }),
   ]) {
     const coverage = { ...coverageRead([]), requirements: [coverageRow("r1"), marked] };
     expect(issueCovered(coverage)).toEqual({ covered: 2, kind: "count", total: 2 });
-    expect(issueCovered(countedCoverage(coverage, view))).toEqual({
+    expect(issueCovered(countedCoverage(coverage))).toEqual({
       covered: 1,
       kind: "count",
       total: 1,
     });
   }
+  const live = { ...coverageRead([]), requirements: [coverageRow("r1"), coverageRow("r2")] };
+  expect(issueCovered(countedCoverage(live))).toEqual({ covered: 2, kind: "count", total: 2 });
 });
