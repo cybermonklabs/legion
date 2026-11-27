@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -608,7 +609,14 @@ func requireNoCensusDifference(t *testing.T, what string, report *StoreReport) {
 //   - its part_of to a1 once the copy's copied_from is retracted reads one too, until the document
 //     owes a settlement (doc_settlements_pending), the write that claims a copy;
 //   - throughout, a reading g2 in a copy whose address is past the store's bound, which is no node
-//     to state a copied_from, in a third document, reads no difference.
+//     to state a copied_from, in a third document, reads no difference. That document's block
+//     index stands at version 1, stated by this build's pass, and g2's node is the one that pass
+//     writes: a reading hung on the ask's node, which the typed-node pass makes it only while the
+//     ask its copy shows holds an answer (refs' DecisionFacts), so that ask holds one, with a rank
+//     in its document's band, as every block the index places holds (refs' planBlockValues). So
+//     the census reads g2 in every kind of the blocks, block_rank, block_type and block_text
+//     among them, and g1 in none of those three: g1's document still owes its block index by this
+//     release's mark (store_owed_at, which the backfill set).
 func TestTheCensusReadsAReadingInACopyAsTheCopysChildOnlyWhereTheCopyNamesItsAsk(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -634,6 +642,15 @@ func TestTheCensusReadsAReadingInACopyAsTheCopysChildOnlyWhereTheCopyNamesItsAsk
 	source := document("asks")
 	// The long document's ref_key leaves room for g2's address and none for longID's.
 	long := document(strings.Repeat("l", graphstore.MaxAddressBytes-100-len("CORE-1/")))
+	// Its block index stands at version 1 as this build's pass leaves a document it indexed
+	// (refs.RevisionFenceStatement). Without that row g2's row is one no pass of this build's rule
+	// stated, which block_text counts unstated, and the census refuses that kind for checking no row.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule)
+		values ($1::uuid, 1, 1, 1, $2)
+	`, long.artifactID, refs.BlockIndexMarkingRule); err != nil {
+		t.Fatalf("stand the long document's block index at version 1: %v", err)
+	}
 	longID := "a" + strings.Repeat("x", 199)
 	asked := map[string]string{}
 	for _, block := range []struct{ id, question string }{{"a1", "Which transport?"}, {"a2", "Which region?"}, {longID, "Which shelf?"}} {
@@ -645,6 +662,18 @@ func TestTheCensusReadsAReadingInACopyAsTheCopysChildOnlyWhereTheCopyNamesItsAsk
 			t.Fatalf("write the ask of block %.20s: %v", block.id, err)
 		}
 		asked[block.id] = ask
+	}
+	// The ask longID's copy shows is answered on its row as the answer route writes one, so the
+	// backfill states its node answered (asks.AnswerFacts), as the reading g2 in that copy needs.
+	shelf := "The second shelf."
+	answer, err := json.Marshal(model.AskAnswer{User: "bob", Selected: []string{}, Text: &shelf, At: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("encode bob's answer: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update asks set state = 'answered', answer = $2::jsonb where id = $1::uuid
+	`, asked[longID], answer); err != nil {
+		t.Fatalf("answer the ask of block %.20s: %v", longID, err)
 	}
 	if _, err := Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill the asks: %v", err)
@@ -677,6 +706,9 @@ func TestTheCensusReadsAReadingInACopyAsTheCopysChildOnlyWhereTheCopyNamesItsAsk
 		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], true),
 		tie(longReading, refs.TupleInDocument, graphstore.KindArtifact, long.refKey, true),
 		tie(longReading, graphstore.TuplePartOf, graphstore.KindAsk, asked[longID], true),
+		// The rank the block index gives the one block it places under a parent, in the band of a
+		// document of an issue that is no spec, Verification or plan (refs' rankBlocks).
+		tie(longReading, refs.AttributeRank, graphstore.KindValue, rank.Between(string(refs.RankBandOther), string(refs.RankBandOther+1)), true),
 	})
 	if _, err := database.Pool.Exec(ctx, `
 		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt,
