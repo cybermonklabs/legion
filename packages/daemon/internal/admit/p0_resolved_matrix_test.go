@@ -683,7 +683,7 @@ func capReadings(t *testing.T, pool *pgxpool.Pool, admission *Admission, candida
 		if !found {
 			t.Fatalf("%s stands in no waiting line, want it waiting for a row", candidate)
 		}
-		canMove = admission.lineCanMove(issues, lineHoldsOf(facts, slots, line, dropped), nil, rows, nil)
+		canMove = admission.lineCanMove(issues, lineHoldsOf(issues, facts, slots, line, dropped), nil, rows, nil)
 	})
 	return lets, canMove
 }

@@ -704,7 +704,7 @@ func lineMoves(t *testing.T, pool *pgxpool.Pool, admission *Admission) bool {
 		if err != nil {
 			t.Fatalf("read the trees at work: %v", err)
 		}
-		moves = admission.lineCanMove(issues, lineHoldsOf(facts, slots, line, dropped), working, rows, nil)
+		moves = admission.lineCanMove(issues, lineHoldsOf(issues, facts, slots, line, dropped), working, rows, nil)
 	})
 	return moves
 }

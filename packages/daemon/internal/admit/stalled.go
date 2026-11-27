@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -68,7 +69,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // Two rules say whether an issue of the tree is held by something the daemon knows of, and each
 // is written once: lineHolds.waitsByDesign, the ladder of the daemon's own waits, which holds a
 // tree back only while the project's line can still move, save its second clause,
-// waitsForItsChecks, and lineHolds.waitsOnWorkOutsideItsTree. That clause and that wait are the
+// lineHolds.waitsForItsChecks, and lineHolds.waitsOnWorkOutsideItsTree. That clause and that wait are the
 // two that hold a tree back whether or not the line can move, and each is one function both
 // readers call: everyIssueWaitsByDesign asks all of
 // them of every member of a quiet tree, and lineCanMove asks the ladder of every slot holder. A
@@ -264,7 +265,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// taken once here and handed to the walk of every tree of the pass, beside the two waits that
 	// silence whatever it says (an issue in verifying, lineHolds.waitsOnWorkOutsideItsTree). Its
 	// claim term reads the trees R6 counts at work, the set step 2 built if it built one.
-	holds := lineHoldsOf(facts, slots, line, dropped)
+	holds := lineHoldsOf(issues, facts, slots, line, dropped)
 	if working == nil {
 		if working, err = a.workingTrees(ctx, tx, issues, facts, claims, now); err != nil {
 			return err
@@ -568,19 +569,29 @@ type lineHolds struct {
 	// children it waits on, each with whether the daemon has released it, which
 	// waitsOnWorkOutsideItsTree reads as it reads a children-first wait.
 	startedWaits map[string]record.ChildWait
+	// inWorkflow is the project's issues the workflow still runs, by key (record.InWorkflow): a
+	// child of a close's wait that is among them is one the daemon released, which
+	// waitsForItsChecks reads.
+	inWorkflow map[string]struct{}
 }
 
 // lineHoldsOf puts by key what the caller handed over. It is built once per pass, at step 4 of
 // tellStalledTrees and at no earlier step, so a pass the measure ends above builds none of it;
-// it costs one map write for each entry of the line, each slot row and each row the walk left
-// behind, and it reads no record and asks the ladder nothing again.
-func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.LineEntry,
+// it costs one map write for each entry of the line, each slot row, each row the walk left
+// behind and each issue the workflow runs, and it reads no record and asks the ladder nothing
+// again.
+func lineHoldsOf(issues []record.Issue, facts record.LineFacts, slots []record.Slot, line []record.LineEntry,
 	dropped []record.HeldIssue,
 ) lineHolds {
 	holds := lineHolds{line: make(map[string]record.LineEntry, len(line)),
 		holders: make(map[string]struct{}, len(slots)),
 		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates, lifecycles: facts.Lifecycles,
-		childWaits: facts.ChildWaits, startedWaits: facts.StartedParentWaits}
+		childWaits: facts.ChildWaits, startedWaits: facts.StartedParentWaits, inWorkflow: make(map[string]struct{}, len(issues))}
+	for _, issue := range issues {
+		if record.InWorkflow(issue) {
+			holds.inWorkflow[issue.Key] = struct{}{}
+		}
+	}
 	for _, entry := range line {
 		holds.line[entry.Issue.Key] = entry
 	}
@@ -605,7 +616,8 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     waits (record.KeepsSlot, the ruling on dispatch://INFRA-1909), and once answered it
 //     stands in the line as well, so neither membership says anything of why it stands still;
 //  2. an issue whose work merged and whose close waits (phase.Verifying) waits by design
-//     wherever it stands and whether or not the project's line can move: no role works that
+//     wherever it stands and whether or not the project's line can move, save where its close
+//     waits on an open child the daemon has not released (waitsForItsChecks): no role works that
 //     phase and it holds none of the cap's slots (record.PhaseKeepsSlot), and what ends the wait
 //     is a check of its goal, its production check, a defect, an open next change or an issue
 //     beneath it — a report or a departure, and never a worker of its tree or a slot of its
@@ -643,7 +655,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if issue.AwaitingPerson() {
 		return true
 	}
-	if waitsForItsChecks(issue) {
+	if h.waitsForItsChecks(issue) {
 		return true
 	}
 	if entry, waits := h.line[issue.Key]; waits {
@@ -660,14 +672,34 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // goal: an issue in `verifying`, which the merge put there and which no role works. It is a wait
 // by design that holds its tree back whether or not the project's line can move, as
 // waitsOnWorkOutsideItsTree is: nothing the line does moves it, and only a check's result or the
-// next change it starts ends it. It is written here, in one function, because both readers ask
-// it — waitsByDesign, as the one clause of its ladder that stands outside the line's liveness,
-// and everyIssueWaitsByDesign, which asks it of every member before it asks the ladder at all
-// (dispatch://INFRA-2560 R5, cybermonklabs/legion#5558). Two copies of this one rule is how the
-// first fix for a root waiting in verifying came to reach only the case where the line could
-// move.
-func waitsForItsChecks(issue record.Issue) bool {
-	return issue.Phase == phase.Verifying
+// next change it starts ends it. One case is not: a close that waits on an open Dispatch child the
+// daemon has not released (record.StoredWait.OpenChildren, a child the workflow does not run).
+// Releasing that child is the tree's own work, which nothing but its architect does, exactly as
+// for a children-first wait on such a child (waitsOnWorkOutsideItsTree, the architect's ruling on
+// cybermonklabs/legion#3715), so that issue is answered false and its tree is told. A stored wait
+// this release cannot read is answered false too: the controller is told rather than nothing
+// said. It is written here, in one function, because both readers ask it — waitsByDesign, as the
+// one clause of its ladder that stands outside the line's liveness, and everyIssueWaitsByDesign,
+// which asks it of every member before it asks the ladder at all (dispatch://INFRA-2560 R5,
+// cybermonklabs/legion#5558). Two copies of this one rule is how the first fix for a root waiting
+// in verifying came to reach only the case where the line could move.
+func (h lineHolds) waitsForItsChecks(issue record.Issue) bool {
+	if issue.Phase != phase.Verifying {
+		return false
+	}
+	if len(issue.CloseWait) == 0 {
+		return true
+	}
+	var stored record.StoredWait
+	if err := json.Unmarshal(issue.CloseWait, &stored); err != nil {
+		return false
+	}
+	for _, child := range stored.OpenChildren {
+		if _, released := h.inWorkflow[child.Key]; !released {
+			return false
+		}
+	}
+	return true
 }
 
 // waitsOnWorkOutsideItsTree says whether issue is a started issue that gave its slot back and
@@ -885,7 +917,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // (record.TreeQuiet.AtWork, which the caller asks before this walk).
 func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHolds, canMove bool) bool {
 	for _, issue := range members {
-		if waitsForItsChecks(issue) || holds.waitsOnWorkOutsideItsTree(issue) || canMove && holds.waitsByDesign(issue) {
+		if holds.waitsForItsChecks(issue) || holds.waitsOnWorkOutsideItsTree(issue) || canMove && holds.waitsByDesign(issue) {
 			continue
 		}
 		// Nothing of the daemon's holds this issue: it has stopped, and so has its tree.
