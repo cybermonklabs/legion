@@ -9,6 +9,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { useReportAdmission } from "./document-admission";
 import { DocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
+import { useMarkComposePlace } from "./text-comments/composer-store";
 
 /**
  * One document's editor, on that document's own stage (`document-stage.tsx`).
@@ -59,6 +60,9 @@ export function StagedDocument({
 }): ReactNode {
   const user = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const reportAdmission = useReportAdmission();
+  // Where the editor's selection bar and its chord open their composer: the column of comments on
+  // text, beside the block's node, wherever the page draws one (R5, R6).
+  const composePlace = useMarkComposePlace();
   const box = useRef<HTMLDivElement>(null);
   // Whether the editor is made, and so the room has answered: `ProofDocument` hands it over as it
   // is made and takes it back as it is torn down.
@@ -98,6 +102,7 @@ export function StagedDocument({
         ) : (
           <ProofDocument
             artifact={artifact}
+            composePlace={composePlace}
             highlight={undefined}
             highlightTerm={undefined}
             isClosed={isClosed}

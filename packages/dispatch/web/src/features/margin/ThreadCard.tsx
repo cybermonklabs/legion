@@ -39,6 +39,7 @@ import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
 import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
+import { EMPTY_AGENTS } from "../refs/agent-registry";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { PostBody, PostPreview } from "../refs/PostBody";
@@ -125,6 +126,13 @@ export interface ThreadCardProps {
    *  for when that reply ends. */
   hideReplyComposer?: boolean;
   expanded: boolean;
+  /** The card stands open for as long as it is drawn, as the margin of comments on text draws each
+   *  thread (INFRA-5706, R4): the host passes `expanded` with a toggle that does nothing, and the
+   *  card draws no control that would collapse it. Its reply composer is the thread's standing
+   *  box (`MentionComposer`'s `standing`): it offers no Cancel reply, and it takes no focus for
+   *  itself, neither as it mounts nor as a read draws the card again, so a card drawn beside the
+   *  page moves neither the reader's focus nor the page's scroll. */
+  fixedOpen?: boolean;
   hovered: boolean;
   isClosed: boolean;
   onAction(id: string, action: MarginItemAction): void;
@@ -143,6 +151,20 @@ export interface ThreadCardProps {
    *  reply the reader left - the Conversation's Expand thread. A card with none draws a Reply of
    *  its own beside the line. */
   reopenControl?: string;
+  /** The quoted words the card draws first, in place of its root's whole quote: the margin of
+   *  comments on text cuts them to one line (INFRA-5706, R4). A suggestion's diff still strikes
+   *  through the whole quote, the words that Accept replaces. With none, the card draws the whole
+   *  quote, as it always has. */
+  quoteLine?: string;
+  /** `false` draws no Resolve and no Reopen: a thread whose root is a message, which no route of a
+   *  message resolves, or a reply with a quote, whose resolution nobody could undo, since the
+   *  server reopens a thread's root alone (INFRA-5706, R4). */
+  rootActions?: boolean;
+  /** `false` hands the reply composer no agents, so it reads no list of them for its mention
+   *  picker, until the host passes `true`: the margin of comments on text draws every reply
+   *  composer from the load and reads the list only once the reader uses one (INFRA-5706, R9).
+   *  With none, the reply composer reads the list as it mounts, as it always has. */
+  replyAgents?: boolean;
   /** Names the reply composer's send and the thread the held-send store holds it for, so the
    *  reply composer that mounts whenever the card expands shows a reply still out, or its refusal
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
@@ -204,12 +226,14 @@ function CommentBody({
   artifactSlug,
   comment,
   owner,
+  quoteLine,
   showOrphan,
   showReference,
 }: {
   artifactSlug: string | undefined;
   comment: ThreadComment;
   owner: MarginOwner;
+  quoteLine?: string;
   showOrphan: boolean;
   showReference: boolean;
 }): ReactNode {
@@ -246,6 +270,59 @@ function CommentBody({
           </Link>
         </p>
       );
+  }
+  // A thread rooted in a reply that quotes words of the post it answers keeps no document version
+  // to open: once those words left that post's text (`reply_block.removed`), the notice says the
+  // text changed, with no link (INFRA-5706, R4). No root of today's margin is such a reply.
+  if (showOrphan && orphanNotice === null && anchor?.orphaned && comment.reply_block?.removed) {
+    orphanNotice = <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>;
+  }
+  // A card that cuts its quote line (`ThreadCardProps.quoteLine`) draws that line in its quote,
+  // while a suggestion's diff strikes through the whole quote, the words Accept replaces.
+  if (quoteLine !== undefined && anchor !== null && quoteLine !== anchor.quote) {
+    if (suggestion === null) {
+      return (
+        <CommentBody
+          artifactSlug={artifactSlug}
+          comment={{ ...comment, anchor: { ...anchor, quote: quoteLine } }}
+          owner={owner}
+          showOrphan={showOrphan}
+          showReference={showReference}
+        />
+      );
+    }
+    return (
+      <>
+        <blockquote className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}>
+          {/* The words the anchor quotes, cut to one line: the reading list's `anchor-quote`. */}
+          {quoteLine}
+        </blockquote>
+        {orphanNotice}
+        <div className="space-y-1 font-mono text-xs">
+          <SuggestionDiff clamp={false} quote={anchor.quote} suggestion={suggestion} />
+          {comment.body === "Suggested replacement." ? null : (
+            <div className={`font-sans ${textSecondaryOnSurface}`}>
+              <PostBody
+                deleted={deleted}
+                markdown={comment.body}
+                source={textSourceOf("comment", comment.id, comment.issue_key)}
+                surface="margin-comment-body"
+                tree={comment.body_tree}
+              />
+            </div>
+          )}
+        </div>
+        <p
+          className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}
+        >
+          <span>
+            <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+            <EditedMark at={comment.edited_at} deleted={deleted} />
+          </span>
+          {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
+        </p>
+      </>
+    );
   }
   return (
     <>
@@ -364,6 +441,7 @@ export function ThreadCard({
   composerClassName,
   hideReplyComposer = false,
   expanded,
+  fixedOpen = false,
   hovered,
   isClosed,
   onAction,
@@ -377,7 +455,10 @@ export function ThreadCard({
   pendingAction,
   pulseOrphanBlock = true,
   renderDeliveries,
+  quoteLine,
   reopenControl,
+  replyAgents = true,
+  rootActions = true,
   replyMutationKey,
   thread,
   viewerLogin,
@@ -460,6 +541,14 @@ export function ThreadCard({
         Edit
       </button>
     ) : null;
+  // A message thread's reply writes a message in that thread (`in_reply_to`), as a thread on text
+  // rooted in a message takes one (INFRA-5706, R4).
+  const messageReply =
+    thread.kind === "message"
+      ? {
+          replyTo: { actor: root.author, excerpt: "", id: root.id, parentKind: "message" as const },
+        }
+      : {};
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -478,6 +567,7 @@ export function ThreadCard({
     expanded && rootDeleted === null ? (
       <div className="contents" hidden={hideReplyComposer}>
         <MentionComposer
+          agents={replyAgents ? undefined : EMPTY_AGENTS}
           box="margin-thread-reply"
           closed={isClosed}
           finishing={terminalSuggestion}
@@ -491,6 +581,8 @@ export function ThreadCard({
           owner={composerOwner(owner)}
           replyParent={root}
           replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+          standing={fixedOpen}
+          {...messageReply}
         />
       </div>
     ) : null;
@@ -613,6 +705,7 @@ export function ThreadCard({
                   artifactSlug={artifactSlug}
                   comment={root}
                   owner={owner}
+                  quoteLine={quoteLine}
                   showOrphan
                   showReference={showReference}
                 />
@@ -626,6 +719,7 @@ export function ThreadCard({
                   <button
                     className={`font-medium ${linkText} ${linkHoverText}`}
                     onClick={() => onAction(root.id, "reopen")}
+                    hidden={!rootActions}
                     type="button"
                   >
                     Reopen
@@ -634,6 +728,7 @@ export function ThreadCard({
                   <button
                     className={`font-medium ${linkText} ${linkHoverText}`}
                     onClick={() => onAction(root.id, "resolve")}
+                    hidden={!rootActions}
                     type="button"
                   >
                     Resolve

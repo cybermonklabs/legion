@@ -373,13 +373,22 @@ function attempt(
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
   // and occurrence, where the server writes the mark; a statement by its words alone, which the
   // server finds in the document, and never by its row, the page's own (`StatementAnchor`).
+  // A block's anchor names its block as well, where the composer knows it, and an item's names
+  // its node, its quote and its occurrence in place of a document.
   const selection: AnchorInput | undefined =
     anchor === undefined
       ? statement === undefined
         ? undefined
         : { artifact: statement.artifact, quote: statement.quote }
       : anchor.mark_id === undefined
-        ? { artifact: anchor.artifact, occurrence: anchor.occurrence, quote: anchor.quote }
+        ? anchor.node === undefined
+          ? {
+              artifact: anchor.artifact,
+              ...(anchor.block_id === undefined ? {} : { block_id: anchor.block_id }),
+              occurrence: anchor.occurrence,
+              quote: anchor.quote,
+            }
+          : { node: anchor.node, occurrence: anchor.occurrence, quote: anchor.quote }
         : { artifact: anchor.artifact, mark_id: anchor.mark_id };
   if (kind === "ask") {
     const input = {
@@ -400,6 +409,15 @@ function attempt(
       {
         body: plan.body,
         in_reply_to: replyTo.id,
+        // A reply to one block of the message names the block, the words it quotes and which
+        // match of them in the block the reader selected (INFRA-5703's reply quote).
+        ...(replyTo.quoted === undefined
+          ? {}
+          : {
+              in_reply_to_block: replyTo.quoted.block,
+              occurrence: replyTo.quoted.occurrence,
+              quote: replyTo.quoted.quote,
+            }),
         ...(replyTo.thread === undefined
           ? {}
           : { delivery: plan.delivery, target: replyTo.thread.target }),
@@ -422,6 +440,14 @@ function attempt(
       : replyTo.parentKind === "ask"
         ? { ask_id: replyTo.id }
         : { reply_to: replyTo.id }),
+    // A reply to one block of the post names the block and the words it quotes, as above.
+    ...(replyTo?.quoted === undefined
+      ? {}
+      : {
+          occurrence: replyTo.quoted.occurrence,
+          quote: replyTo.quoted.quote,
+          reply_to_block: replyTo.quoted.block,
+        }),
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
     ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };

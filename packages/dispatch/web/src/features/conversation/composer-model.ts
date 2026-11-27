@@ -31,7 +31,9 @@ export type ComposerKind = "ask" | "comment" | "suggestion";
 export type ComposerAnchor =
   | {
       readonly artifact: string;
+      readonly block_id?: never;
       readonly mark_id: string;
+      readonly node?: never;
       readonly occurrence?: never;
       /** The words the editor read on each side of `quote`, in the block it wrote the mark in, and
        *  how many readings of those words that block held, as it reported when the selection bar made
@@ -44,13 +46,37 @@ export type ComposerAnchor =
       readonly quote: string;
     }
   | {
-      readonly artifact: string;
+      /** No document: the words are the text of an item of its own that no document holds - a
+       *  lens, a finding, a risk, a constraint or a result - named by its node (INFRA-1253's node
+       *  anchor). The send leaves `artifact` out, and a reference in the comment is read in the
+       *  issue's spec, as `draftSource` reads it. */
+      readonly artifact?: never;
+      readonly block_id?: never;
       readonly mark_id?: never;
+      /** The node the words are in, by its store address; the send names it, the quote and the
+       *  quote's occurrence in the node's text. */
+      readonly node: string;
+      readonly occurrence: number;
+      readonly placement?: never;
+      readonly quote: string;
+    }
+  | {
+      readonly artifact: string;
+      /** The block of the document the words are in, by its id, where the composer knows it: the
+       *  new issue page's composer opened on words a row draws of one block. The server then finds
+       *  the quote in that block alone. */
+      readonly block_id?: string;
+      readonly mark_id?: never;
+      readonly node?: never;
       readonly occurrence: number;
       /** The server anchors a quote-anchored comment itself, so there is no mark to write again. */
       readonly placement?: never;
       readonly quote: string;
     };
+
+/** The anchors a document gives, a mark the editor wrote or a quote of one block: every member but
+ *  the node anchor, which names no document. The margin of a document holds these alone. */
+export type DocumentComposerAnchor = Exclude<ComposerAnchor, { readonly node: string }>;
 
 /** Why a compose's mark could not be written again after the server refused its send for a mark
  *  the document does not hold, in the reader's words, kept with the mark it answers: the composer
@@ -74,6 +100,15 @@ export interface ReplyTarget {
   readonly parentKind: "ask" | "comment" | "message";
   /** Canonical targets carried by a comment parent, prefilled as editable @ mentions. */
   readonly mentions?: readonly { readonly target: string; readonly title: string }[];
+  /** Where the reply answers one block of the post, the words of it the reader selected
+   *  (INFRA-5703's reply quote): the block by its id (`reply_to_block`, `in_reply_to_block`), the
+   *  words as its plain text reads them, and which match of them in that block they are. Absent
+   *  on a reply to the whole post. */
+  readonly quoted?: {
+    readonly block: string;
+    readonly occurrence: number;
+    readonly quote: string;
+  };
   /** Kept while old targeted-message threads remain readable; S2 writes comments only. */
   readonly thread?: {
     readonly delivery: DeliveryCapability;

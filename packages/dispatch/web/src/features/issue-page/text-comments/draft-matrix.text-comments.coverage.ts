@@ -1,0 +1,385 @@
+/**
+ * The draft matrix's coverage list, comments on text (INFRA-1503): each composer census item that
+ * `draft-matrix.text-comments.test.tsx` answers for, held to one of its tests or to one of the
+ * numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
+ */
+import { answers, type CoverageEntry, cells } from "../../../__tests__/composer-census/coverage";
+
+/** The hosts as the matrix file's titles name them. */
+const COLUMN = "selection composer";
+const SHEET = "selection composer, below 1024 px";
+const REPLY = "text thread reply";
+const REPLY_SHEET = "text thread reply, below 1024 px";
+
+/** The moves as the matrix file's titles name them. */
+const ESCAPED = "Escape, then opened again";
+const OTHER_WORDS = "opened on other words, then back";
+const NARROWED = "the window narrows below 1024 px, then widens";
+const VIEW = "another view, then back";
+const ISSUE = "issue left, then back";
+const RELOADED = "the page reloaded, then back";
+
+/** The tests of one row of the matrix file: `host` making `move`, in each state. */
+const row = (host: string, move: string) => cells(`${host} · ${move}`);
+
+/** The selection composer's mount, as the census names it. */
+const MOUNT = "SelectionComposer <MentionComposer mutationKey={sendName}>";
+
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
+const REASONS = {
+  1: "1. `IssueOutline` draws a failed or a loading line in place of its slots while the read of the issue fails or is pending (`issue.isError`, `issue.data === undefined`), and a sheet's row reads no issue then (`useStageIssue`), which ends the column, the sheet and every composer of this part as leaving the issue does; what the page draws again on recovery is what the issue-left rows draw again on return.",
+  2: "2. `IssuePage` draws today's page in place of the outline when the reader's stored page choice says so (`useIssuePageChoice`), which ends every composer of this part as leaving the issue does; choosing the outline again draws the page afresh, as the issue-left rows' returns do.",
+  3: "3. An address that parses as no issue draws the not-found page in place of `IssueOutline` (`route === undefined`), so no composer of this part is drawn there, and going there from an issue is leaving the issue, the issue-left rows.",
+  4: "4. The composer draws `MentionComposer` only while it has where to send: the write of the node its words are in and what that write names (`useSendTarget`), which it takes from the view while the view draws the node and keeps from where it last drew it. A mount that never met its node drawn, or whose node takes no write any more, has none, and closes at once with its draft kept under its send name, as Escape closes it; the composer opened again on the same words holds that draft, as the Escape rows read it.",
+  5: "5. The composer's owner, anchor and reply target are the write of the node its words are in (`sendTargetOf`): the node is drawn when its words are selected, the composer reads it then and keeps it while the view no longer draws the node (`useSendTarget`'s `last`), and a node's issue, document, block and author never change, so none of them moves while the composer is mounted; other words are another composer, the other-words rows.",
+  6: "6. The address's search names the item an address of R8 lands on (`?node=`), which the column reads only to give that item the focus and mark it in its thread's card (`outlineItemRoute`, `currentReply`); it moves no composer's address and ends no mount.",
+  7: "7. A sheet's `node` and `parent` are the node of the row it stands in and the node that row is drawn under, which the row site hands it once for its row: a node drawn under several parents has its threads and its composer in its stored parent's row alone, and another node or another parent is another row with a sheet of its own, so neither moves a composer within one. On this base the Spec view's rows mount the sheet (part J, gate G6): a statement and a row that is no statement hand it their node, and a decision's cell the node it draws the decision as; each other row site mounts it at its own part's gate.",
+  8: "8. The reply an address names is marked in its thread's card (`currentReplyId`, `aria-current`) and takes the focus; that moves no address and ends no mount.",
+  9: "9. A thread on text's card is fixed open (`fixedOpen`, with `expanded` and a toggle that does nothing, R4): it draws no control that collapses it, so its reply is drawn for as long as its card is.",
+  10: "10. A card's thread is the thread its card is keyed by: a read again gives it a new reply, a resolution or an edit, never another root, and its reply always answers its thread's root under its thread's reply send name (`marginReplySendKey`), so it moves no address.",
+  11: "11. A thread's card is drawn once per thread of the nodes the view draws, keyed by its thread's root, which is the thread's own name and never changes; a thread that leaves the list unmounts its card, which the another-view rows make, and its reply is held under its thread's reply send name.",
+  12: "12. `host` holds what every card of one column or sheet shares (`useThreadCardHost`): the issue's writes on its comments, the edit in progress and the reader. Its owner is the issue, which changes only with the issue, the issue-left rows; the rest moves no address and ends no mount.",
+  13: "13. `fixedOpen` is the host's and never changes under a drawn card: the column and the sheet of comments on text draw every card fixed open, and the margin, the Conversation and the phone sheet pass none, so `standing={fixedOpen}` moves no reply composer to another box while it is mounted. A standing inline reply keeps its unsent draft under its thread's reply send name as an inline reply does (`keptNames` in `useKeptDrafts.ts`), which the text thread reply rows read.",
+  14: "14. A thread's kind is its root's (`Thread.kind`): a thread on text rooted in a message is of the kind `message`, and its reply answers that message (`in_reply_to`) under its thread's reply send name for as long as its card is drawn. A read again never gives a card another root (reason 10), and every other thread sets no kind, so the spread moves no address and ends no mount.",
+  15: "15. The selection composer's kind is the kind a block's editor's selection bar or its chord chose - a comment, a suggestion or an ask - for the mark it opened the composer on (`words.mark`, through the column's place, `useMarkComposePlace`), and `comment` for every selection the page's own control opens it on. The composer draws no switch of its kind, and another action of the bar writes another mark, which is other words and another composer (`wordsKeyOf` names the mark, `key={wordsKeyOf(request)}`), so a reader cannot change the kind while the composer is mounted.",
+  16: "16. On the new issue page Details draws the margin's own content - its tabs, its compose and every card of the document's editor - only while no column of comments on text takes a block's editor's composes (`EditorCards` in `slots/details.tsx`, `useMarkComposePlace`). The column offers that place for as long as it is mounted, and it mounts and unmounts only with the page's slots, in the commit that mounts or unmounts Details' fill (`IssueOutline`), so a reader cannot change it under a mounted margin composer; and while it stands, the editor's selection bar and its chord open their composer in the column (reason 15), so the margin holds no compose of that editor for Details to draw.",
+  17: "17. The Spec view draws one row for each node it keeps - each statement in its run beside the run's decision cell, under its group, and each other row after them (`groups.map`, `group.runs.map`, `run.statements.map`, `others.map`) - with that node's sheet inside it. A node the view stops drawing, as a read or the words filter leaves it out, takes its row and its sheet off the page, as another view takes the statement's row off the page: the composer keeps its draft under the send name of its words, and a thread's reply under its thread's reply send name, which the another-view rows read, and each is drawn again on its draft wherever the node's row stands next.",
+  18: "18. The Spec view keys a group by its parent or its first statement, a run by its first statement, and a row by its node (`key`). A read that groups the statements otherwise keys a group or a run anew, which draws its rows and their sheets again at the same nodes. A composer open on a node's words is the page's (`useTextComposer`, held beside the query client), not the sheet's, so the sheet drawn again draws it again on its draft, held under the send name of its words, as a composer moved from the column to a sheet at the same address is drawn again on its draft (the narrowing rows); a reply's draft waits under its thread's reply send name the same way.",
+  19: "19. A Spec view row's props other than its node - its run's decision and the rule its cell names a node by, its group, its statement, and its row's state (`rowProps`: editable, editing, focus, tab stop, report) - and the props the slot hands the view - the issue, its reader, the tree and the view of it, the Contents' request, the node an address reveals and the address's acts - say what a row draws and where the focus is. The sheet in a row reads that row's node alone (`NodeThreads`' `node`), and the issue only from the page's read of the address (`useStageIssue`), so none of them moves a composer's address or ends its mount. Where one changes which node a cell draws, as a read that gives a run another decision does, the cell's sheet is that node's (reason 7), and the composer open on the first node waits as reason 17 says.",
+  20: "20. A decision's cell draws a sheet only where a decision shaped its run (`sheetNode`): a run that no decision shaped draws no node's words, so no selection opens a composer on it and no thread stands by it. A read that gives the run a decision draws its sheet, and one that takes the decision away ends that sheet as reason 17 says of a row the view stops drawing.",
+  21: "21. The Spec view's `paned` form draws the issue's three sentences above its rows below 1024 px and leaves them to the Contents pane from 1024 px (`CONTENTS_PANE_QUERY`): it draws or ends no row, and no composer stands in it. At that same width the column and a row's sheet trade the threads and a composer (`NodeThreads`' `wide`), which the narrowing rows make.",
+} as const;
+
+export const coverage: readonly CoverageEntry[] = [
+  // The selection composer's own lines.
+  ...answers(
+    `SelectionComposer | ${MOUNT} | address prop | mutationKey={sendName}`,
+    row(COLUMN, OTHER_WORDS),
+    row(SHEET, OTHER_WORDS),
+    row(COLUMN, ISSUE),
+    row(SHEET, ISSUE)
+  ),
+  ...answers(
+    `SelectionComposer | ${MOUNT} | address prop | owner={{ issueKey: target.issue, kind: "issue" }}`,
+    { reason: REASONS[5] }
+  ),
+  ...answers(
+    `SelectionComposer | ${MOUNT} | address prop | anchor={target.address.anchor}`,
+    row(COLUMN, OTHER_WORDS),
+    row(SHEET, OTHER_WORDS),
+    { reason: REASONS[5] }
+  ),
+  ...answers(`SelectionComposer | ${MOUNT} | address prop | replyTo={target.address.replyTo}`, {
+    reason: REASONS[5],
+  }),
+  ...answers(`SelectionComposer | ${MOUNT} | address prop | kind={words.mark?.kind ?? "comment"}`, {
+    reason: REASONS[15],
+  }),
+  // Details draws no card of the editor while the column takes the editor's composes.
+  ...answers(
+    "EditorCards | MarginComposerSlot | conditional | (useMarkComposePlace() === undefined) ? …",
+    { reason: REASONS[16] }
+  ),
+  ...answers(
+    "EditorCards | CommentsTab | conditional | (useMarkComposePlace() === undefined) ? …",
+    { reason: REASONS[16] }
+  ),
+  ...answers(`SelectionComposer | ${MOUNT} | conditional | !(target === null) ? …`, {
+    reason: REASONS[4],
+  }),
+  ...answers(
+    `SelectionComposer | ${MOUNT} | lifetime | <MentionComposer mutationKey={sendName}>`,
+    row(COLUMN, RELOADED)
+  ),
+  // The column draws the composer.
+  ...answers(
+    "Column | SelectionComposer | conditional | !(request === undefined) ? …",
+    row(COLUMN, ESCAPED)
+  ),
+  ...answers(
+    "Column | SelectionComposer | key | <SelectionComposer key={wordsKeyOf(request)}>",
+    row(COLUMN, OTHER_WORDS)
+  ),
+  ...answers("Column | SelectionComposer | address prop | issue={issue}", row(COLUMN, ISSUE)),
+  ...answers("Column | SelectionComposer | address prop | view={view}", row(COLUMN, VIEW)),
+  ...answers(
+    "Column | SelectionComposer | address prop | words={request}",
+    row(COLUMN, OTHER_WORDS)
+  ),
+  // The sheet draws the composer.
+  ...answers(
+    "SheetBody | SelectionComposer | conditional | !(request === undefined) ? …",
+    row(SHEET, ESCAPED)
+  ),
+  ...answers(
+    "SheetBody | SelectionComposer | key | <SelectionComposer key={wordsKeyOf(request)}>",
+    row(SHEET, OTHER_WORDS)
+  ),
+  ...answers("SheetBody | SelectionComposer | address prop | issue={issue}", row(SHEET, ISSUE)),
+  ...answers("SheetBody | SelectionComposer | address prop | view={view}", row(SHEET, VIEW)),
+  ...answers(
+    "SheetBody | SelectionComposer | address prop | words={request}",
+    row(SHEET, OTHER_WORDS)
+  ),
+  // The cards of the threads, whose reply is `ThreadCard`'s.
+  ...answers(
+    "TextThreadCard | ThreadCard | address prop | <ThreadCard {...(currentReplyId === undefined ? {} : { currentReplyId })}>",
+    { reason: REASONS[8] }
+  ),
+  ...answers("TextThreadCard | ThreadCard | address prop | expanded", { reason: REASONS[9] }),
+  ...answers("TextThreadCard | ThreadCard | address prop | fixedOpen", { reason: REASONS[9] }),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | standing={fixedOpen}",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | {...messageReply}",
+    { reason: REASONS[14] }
+  ),
+  ...answers("TextThreadCard | ThreadCard | address prop | owner={host.owner}", row(REPLY, ISSUE)),
+  ...answers(
+    "TextThreadCard | ThreadCard | address prop | replyMutationKey={replyKey}",
+    row(REPLY, NARROWED),
+    row(REPLY, VIEW),
+    row(REPLY_SHEET, VIEW)
+  ),
+  ...answers("TextThreadCard | ThreadCard | address prop | thread={card}", { reason: REASONS[10] }),
+  ...answers(
+    "Column | TextThreadCard | address prop | <TextThreadCard {...(currentReply?.thread === thread.thread.key ? { currentReplyId: currentReply.id } : {})}>",
+    { reason: REASONS[8] }
+  ),
+  ...answers("Column | TextThreadCard | key | <div key={thread.thread.key}>", {
+    reason: REASONS[11],
+  }),
+  ...answers("Column | TextThreadCard | conditional | drawn by placed.map(…)", row(REPLY, VIEW)),
+  ...answers("Column | TextThreadCard | address prop | host={host}", { reason: REASONS[12] }),
+  ...answers("Column | TextThreadCard | address prop | thread={thread}", { reason: REASONS[10] }),
+  ...answers("SheetBody | TextThreadCard | key | <TextThreadCard key={thread.thread.key}>", {
+    reason: REASONS[11],
+  }),
+  ...answers(
+    "SheetBody | TextThreadCard | conditional | drawn by threads.map(…)",
+    row(REPLY_SHEET, VIEW)
+  ),
+  ...answers("SheetBody | TextThreadCard | address prop | host={host}", { reason: REASONS[12] }),
+  ...answers("SheetBody | TextThreadCard | address prop | thread={thread}", {
+    reason: REASONS[10],
+  }),
+  // The column, from 1024 px.
+  ...answers(
+    "TextMargin | Column | early return | if (!wide || (view.threads.size === 0 && composer.request === undefined)) return …",
+    row(COLUMN, NARROWED),
+    row(COLUMN, ESCAPED),
+    row(REPLY, NARROWED)
+  ),
+  ...answers(
+    "TextMargin | Column | form | if (!wide || (view.threads.size === 0 && composer.request === undefined)) return …",
+    row(COLUMN, NARROWED),
+    row(REPLY, NARROWED)
+  ),
+  ...answers(
+    "TextMargin | Column | address prop | composer={composer}",
+    row(COLUMN, ESCAPED),
+    row(COLUMN, OTHER_WORDS)
+  ),
+  ...answers(
+    "TextMargin | Column | address prop | issue={issue}",
+    row(COLUMN, ISSUE),
+    row(REPLY, ISSUE)
+  ),
+  ...answers(
+    "TextMargin | Column | address prop | view={view}",
+    row(COLUMN, VIEW),
+    row(REPLY, VIEW)
+  ),
+  ...answers(
+    "TextMargin | Column | address prop | address={address}",
+    row(COLUMN, VIEW),
+    row(REPLY, VIEW)
+  ),
+  ...answers(
+    "TextMargin | Column | address prop | route={route}",
+    row(COLUMN, VIEW),
+    row(REPLY, VIEW),
+    row(COLUMN, ISSUE),
+    row(REPLY, ISSUE)
+  ),
+  ...answers("TextMargin | Column | address prop | search={search}", { reason: REASONS[6] }),
+  // The sheet, below 1024 px.
+  ...answers(
+    "Sheet | SheetBody | early return | if (threads.length === 0 && request === undefined) return …",
+    row(SHEET, ESCAPED),
+    row(REPLY_SHEET, VIEW)
+  ),
+  ...answers("Sheet | SheetBody | address prop | issue={issue}", row(SHEET, ISSUE)),
+  ...answers(
+    "Sheet | SheetBody | address prop | request={request}",
+    row(SHEET, ESCAPED),
+    row(SHEET, OTHER_WORDS)
+  ),
+  ...answers(
+    "Sheet | SheetBody | address prop | view={view}",
+    row(SHEET, VIEW),
+    row(REPLY_SHEET, VIEW)
+  ),
+  ...answers("Sheet | SheetBody | address prop | threads={threads}", row(REPLY_SHEET, VIEW)),
+  ...answers(
+    "NarrowSheet | Sheet | early return | if (stage === undefined) return …",
+    row(SHEET, ISSUE),
+    { reason: REASONS[1] }
+  ),
+  ...answers("NarrowSheet | Sheet | address prop | issue={stage.issue}", row(SHEET, ISSUE)),
+  ...answers(
+    "NarrowSheet | Sheet | address prop | preset={stage.preset}",
+    row(SHEET, VIEW),
+    row(REPLY_SHEET, VIEW)
+  ),
+  ...answers("NarrowSheet | Sheet | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers(
+    "NarrowSheet | Sheet | address prop | <Sheet {...(parent === undefined ? {} : { parent })}>",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "NodeThreads | NarrowSheet | early return | if (wide) return …",
+    row(COLUMN, NARROWED),
+    row(REPLY, NARROWED)
+  ),
+  ...answers(
+    "NodeThreads | NarrowSheet | form | if (wide) return …",
+    row(COLUMN, NARROWED),
+    row(REPLY, NARROWED)
+  ),
+  ...answers("NodeThreads | NarrowSheet | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers(
+    "NodeThreads | NarrowSheet | address prop | <NarrowSheet {...(parent === undefined ? {} : { parent })}>",
+    { reason: REASONS[7] }
+  ),
+  // The Spec view's rows draw the sheet (part J, G6), up to the view's slot.
+  ...answers("Statement | NodeThreads | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers("OtherRow | NodeThreads | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers("DecisionCell | NodeThreads | address prop | node={{ id: sheetNode }}", {
+    reason: REASONS[7],
+  }),
+  ...answers("DecisionCell | NodeThreads | conditional | !(sheetNode === undefined) ? …", {
+    reason: REASONS[20],
+  }),
+  ...answers('Group | DecisionCell | key | <div key={run.statements[0]?.node.id ?? ""}>', {
+    reason: REASONS[18],
+  }),
+  ...answers("Group | DecisionCell | conditional | drawn by group.runs.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("Group | DecisionCell | address prop | decision={run.decision}", {
+    reason: REASONS[19],
+  }),
+  ...answers("Group | DecisionCell | address prop | nodeIdOf={nodeIdOf}", { reason: REASONS[19] }),
+  ...answers('Group | Statement | key | <div key={run.statements[0]?.node.id ?? ""}>', {
+    reason: REASONS[18],
+  }),
+  ...answers("Group | Statement | conditional | drawn by group.runs.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("Group | Statement | conditional | drawn by run.statements.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("SpecFilterBody | Statement | key | <Statement key={statement.node.id}>", {
+    reason: REASONS[18],
+  }),
+  ...answers(
+    'SpecFilterBody | Statement | key | <Group key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}>',
+    { reason: REASONS[18] }
+  ),
+  ...answers("SpecFilterBody | Statement | conditional | drawn by groups.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers(
+    "SpecFilterBody | Statement | address prop | <Statement {...rowProps(statement.node)}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers("SpecFilterBody | Statement | address prop | statement={statement}", {
+    reason: REASONS[19],
+  }),
+  ...answers("SpecFilterBody | OtherRow | key | <OtherRow key={node.id}>", {
+    reason: REASONS[18],
+  }),
+  ...answers("SpecFilterBody | OtherRow | conditional | drawn by others.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("SpecFilterBody | OtherRow | address prop | <OtherRow {...rowProps(node)}>", {
+    reason: REASONS[19],
+  }),
+  ...answers("SpecFilterBody | OtherRow | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers(
+    'SpecFilterBody | Group | key | <Group key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}>',
+    { reason: REASONS[18] }
+  ),
+  ...answers("SpecFilterBody | Group | conditional | drawn by groups.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("SpecFilterBody | Group | address prop | group={group}", { reason: REASONS[19] }),
+  ...answers("SpecFilterBody | Group | address prop | nodeIdOf={nodeIdOf}", {
+    reason: REASONS[19],
+  }),
+  ...answers("SpecFilterBody | - | form | (paned) ? …", { reason: REASONS[21] }),
+  ...answers(
+    "ViewSpecSlot | SpecFilterBody | address prop | <SpecFilterBody {...(acts === undefined ? {} : { addressActs: acts })}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers(
+    "ViewSpecSlot | SpecFilterBody | address prop | <SpecFilterBody {...(request === undefined ? {} : { request })}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers(
+    "ViewSpecSlot | SpecFilterBody | address prop | <SpecFilterBody {...(revealed === undefined ? {} : { reveal: revealed })}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | issue={issue}", {
+    reason: REASONS[19],
+  }),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | reader={viewer}", {
+    reason: REASONS[19],
+  }),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | root={root}", { reason: REASONS[19] }),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | view={view.root}", {
+    reason: REASONS[19],
+  }),
+  // The page above the column, up to its root.
+  ...answers(
+    "IssueOutline | TextMargin | address prop | <TextMargin {...props}>",
+    row(COLUMN, VIEW),
+    row(COLUMN, ISSUE),
+    row(REPLY, VIEW),
+    row(REPLY, ISSUE)
+  ),
+  ...answers("IssueOutline | TextMargin | early return | if (issue.isError) return …", {
+    reason: REASONS[1],
+  }),
+  ...answers("IssueOutline | TextMargin | early return | if (issue.data === undefined) return …", {
+    reason: REASONS[1],
+  }),
+  ...answers(
+    "ProvidersSlot | TextMargin | key | <FocusedNodeProvider key={issue.key}>",
+    row(COLUMN, ISSUE),
+    row(REPLY, ISSUE)
+  ),
+  ...answers(
+    "IssueOutlinePage | IssueOutline | key | <IssueOutline key={route.key}>",
+    row(COLUMN, ISSUE),
+    row(SHEET, ISSUE),
+    row(REPLY, ISSUE)
+  ),
+  ...answers(
+    "IssueOutlinePage | IssueOutline | address prop | route={route}",
+    row(COLUMN, VIEW),
+    row(COLUMN, ISSUE),
+    row(REPLY, VIEW),
+    row(REPLY, ISSUE)
+  ),
+  ...answers("IssueOutlinePage | IssueOutline | conditional | !(route === undefined) ? …", {
+    reason: REASONS[3],
+  }),
+  ...answers(
+    'IssuePage | IssueOutlinePage | conditional | (useIssuePageChoice()[0] === "outline") ? …',
+    { reason: REASONS[2] }
+  ),
+];

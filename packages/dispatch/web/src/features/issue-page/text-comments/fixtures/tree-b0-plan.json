@@ -1,0 +1,570 @@
+{
+  "gate": "B0",
+  "pagination": "the first page of the read, as on load",
+  "read": {
+    "comments_before": null,
+    "converted": true,
+    "cursor": null,
+    "documents": null,
+    "issue": "key",
+    "nodes": [
+      {
+        "attributes": {
+          "project": "MRG",
+          "state": "live",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "converted": true,
+        "documents": null,
+        "id": "key",
+        "kind": "issue",
+        "made_at": "instant-001",
+        "parent": null,
+        "placement_seq": null,
+        "plan": {
+          "cycle": false,
+          "done": {
+            "cycle": false,
+            "needs": [
+              {
+                "half": "start",
+                "id": "key",
+                "kind": "issue"
+              },
+              {
+                "id": "key/tree#t-margin",
+                "kind": "block"
+              },
+              {
+                "half": "done",
+                "id": "child",
+                "kind": "issue"
+              },
+              {
+                "half": "done",
+                "id": "crossIssueChild",
+                "kind": "issue"
+              }
+            ],
+            "position": 6,
+            "size": null
+          },
+          "needs": [],
+          "position": null,
+          "size": null,
+          "start": {
+            "cycle": false,
+            "needs": [],
+            "position": 0,
+            "size": null
+          }
+        },
+        "rank": null,
+        "role": "context",
+        "state": "live",
+        "supertag": "issue",
+        "text": "Read comments beside their words",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Read comments beside their words",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        },
+        "tree": "treeArtifactId",
+        "view_of": null,
+        "visibility": "project"
+      },
+      {
+        "attributes": {
+          "placement": "authored",
+          "project": "MRG",
+          "state": "live",
+          "text_rank": "4U",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "block_id": "t-margin",
+        "document": {
+          "artifact_id": "planArtifactId",
+          "position": 0,
+          "slug": "plan-md"
+        },
+        "id": "key/tree#t-margin",
+        "kind": "block",
+        "made_at": "instant-004",
+        "no_conversation": true,
+        "parent": {
+          "first_line": "A reader finds the first note and the last marker in order.",
+          "id": "key/tree#r-s2",
+          "kind": "block",
+          "supertag": "requirement"
+        },
+        "placement_seq": 1,
+        "plan": {
+          "cycle": false,
+          "needs": [
+            {
+              "half": "start",
+              "id": "key",
+              "kind": "issue"
+            }
+          ],
+          "position": 1,
+          "size": null
+        },
+        "rank": "4U",
+        "role": "query",
+        "state": "live",
+        "supertag": "plan_task",
+        "text": ":::plan_task{#t-margin serves=\"dispatch://key/spec#b-r-s2\"}\nBuild the column and keep the column beside the text.\n:::",
+        "text_tree": {
+          "content": [
+            {
+              "attrs": {
+                "blockId": "t-margin",
+                "serves": ["dispatch://key/spec#b-r-s2"]
+              },
+              "content": [
+                {
+                  "content": [
+                    {
+                      "text": "Build the column and keep the column beside the text.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                }
+              ],
+              "type": "plan_task"
+            }
+          ],
+          "type": "doc"
+        },
+        "visibility": "project"
+      },
+      {
+        "attributes": {
+          "project": "MRG",
+          "state": "live",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "converted": true,
+        "documents": null,
+        "id": "child",
+        "issue": "child",
+        "kind": "issue",
+        "made_at": "instant-005",
+        "parent": {
+          "first_line": "Read comments beside their words",
+          "id": "key",
+          "kind": "issue",
+          "supertag": "issue"
+        },
+        "placement_seq": null,
+        "plan": {
+          "cycle": false,
+          "done": {
+            "cycle": false,
+            "needs": [
+              {
+                "half": "start",
+                "id": "child",
+                "kind": "issue"
+              }
+            ],
+            "position": 3,
+            "size": null
+          },
+          "needs": [],
+          "position": null,
+          "size": null,
+          "start": {
+            "cycle": false,
+            "needs": [
+              {
+                "half": "start",
+                "id": "key",
+                "kind": "issue"
+              }
+            ],
+            "position": 2,
+            "size": null
+          }
+        },
+        "rank": null,
+        "read_only": true,
+        "role": "context",
+        "state": "live",
+        "supertag": "issue",
+        "text": "Keep child issue titles readable",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Keep child issue titles readable",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        },
+        "tree": "child.treeArtifactId",
+        "view_of": "key",
+        "visibility": "project"
+      },
+      {
+        "attributes": {
+          "project": "MRG",
+          "state": "live",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "converted": true,
+        "documents": null,
+        "id": "crossIssueChild",
+        "issue": "crossIssueChild",
+        "kind": "issue",
+        "made_at": "instant-006",
+        "parent": {
+          "first_line": "Read comments beside their words",
+          "id": "key",
+          "kind": "issue",
+          "supertag": "issue"
+        },
+        "placement_seq": null,
+        "plan": {
+          "cycle": false,
+          "done": {
+            "cycle": false,
+            "needs": [
+              {
+                "half": "start",
+                "id": "crossIssueChild",
+                "kind": "issue"
+              }
+            ],
+            "position": 5,
+            "size": null
+          },
+          "needs": [],
+          "position": null,
+          "size": null,
+          "start": {
+            "cycle": false,
+            "needs": [
+              {
+                "half": "start",
+                "id": "key",
+                "kind": "issue"
+              }
+            ],
+            "position": 4,
+            "size": null
+          }
+        },
+        "rank": null,
+        "read_only": true,
+        "role": "context",
+        "state": "live",
+        "supertag": "issue",
+        "text": "Read a parent's statement from its child",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Read a parent's statement from its child",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        },
+        "tree": "crossIssueChild.treeArtifactId",
+        "view_of": "key",
+        "visibility": "project"
+      },
+      {
+        "anchor": {
+          "artifact_id": "planArtifactId",
+          "block_id": "planTaskComment.anchorBlock",
+          "mark_id": "planTaskComment",
+          "orphaned": false,
+          "quote": "column",
+          "version": 1
+        },
+        "attributes": {
+          "project": "MRG",
+          "state": "live",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "id": "planTaskComment",
+        "kind": "comment",
+        "made_at": "instant-007",
+        "parent": {
+          "first_line": "Build the column and keep the column beside the text.",
+          "id": "key/tree#t-margin",
+          "kind": "block",
+          "supertag": "plan_task"
+        },
+        "placement_seq": null,
+        "rank": null,
+        "role": "context",
+        "state": "live",
+        "supertag": "comment",
+        "text": "Keep the column in view while reading the task.",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Keep the column in view while reading the task.",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        },
+        "visibility": "project"
+      },
+      {
+        "attributes": {},
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "block_id": "b1",
+        "id": "comment/planTaskComment#b1",
+        "kind": "comment_block",
+        "made_at": "instant-007",
+        "parent": {
+          "first_line": "Keep the column in view while reading the task.",
+          "id": "planTaskComment",
+          "kind": "comment",
+          "supertag": "comment"
+        },
+        "placement_seq": null,
+        "rank": null,
+        "role": "context",
+        "state": "live",
+        "supertag": "comment_block",
+        "text": "Keep the column in view while reading the task.",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Keep the column in view while reading the task.",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        },
+        "visibility": "project"
+      },
+      {
+        "attributes": {
+          "state": "live",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          }
+        ],
+        "id": "alice",
+        "kind": "person",
+        "made_at": "instant-002",
+        "parent": null,
+        "placement_seq": null,
+        "rank": null,
+        "role": "context",
+        "state": "live",
+        "supertag": "person",
+        "text": "",
+        "visibility": "project"
+      },
+      {
+        "attributes": {
+          "state": "live",
+          "visibility": "project"
+        },
+        "author": [
+          {
+            "id": "issue-layout-planner",
+            "kind": "session",
+            "origin": {
+              "session_title": "Planner (issue layout)"
+            }
+          }
+        ],
+        "id": "issue-layout-planner",
+        "kind": "session",
+        "made_at": "instant-003",
+        "parent": null,
+        "placement_seq": null,
+        "rank": null,
+        "role": "context",
+        "state": "live",
+        "supertag": "session",
+        "text": "",
+        "title": "Planner (issue layout)",
+        "visibility": "project"
+      }
+    ],
+    "tree": "treeArtifactId",
+    "tuples": [
+      {
+        "from": {
+          "id": "key/tree#t-margin",
+          "kind": "block"
+        },
+        "kind": "authored_by",
+        "to": {
+          "id": "alice",
+          "kind": "person"
+        }
+      },
+      {
+        "from": {
+          "id": "child",
+          "kind": "issue"
+        },
+        "kind": "child_of",
+        "to": {
+          "id": "key",
+          "kind": "issue"
+        }
+      },
+      {
+        "from": {
+          "id": "crossIssueChild",
+          "kind": "issue"
+        },
+        "kind": "child_of",
+        "to": {
+          "id": "key",
+          "kind": "issue"
+        }
+      },
+      {
+        "from": {
+          "id": "planTaskComment",
+          "kind": "comment"
+        },
+        "kind": "authored_by",
+        "to": {
+          "id": "alice",
+          "kind": "person"
+        }
+      }
+    ],
+    "version": null,
+    "view": "plan",
+    "view_of": null
+  },
+  "recordedOn": "296d5d0c29bb1b4362261e594ea69e92ecb0bfe7",
+  "skipped": [
+    {
+      "gate": "REPLY_QUOTE",
+      "item": "postQuotedReply"
+    },
+    {
+      "gate": "REPLY_QUOTE",
+      "item": "postQuotedReplyFollowup"
+    },
+    {
+      "gate": "REPLY_QUOTE",
+      "item": "askQuotedReply"
+    },
+    {
+      "gate": "REPLY_QUOTE",
+      "item": "messageQuotedReply"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "constraint"
+    },
+    {
+      "gate": "TREE_ARTIFACT_ANCHOR",
+      "item": "conversationBlock"
+    },
+    {
+      "gate": "TREE_ARTIFACT_ANCHOR",
+      "item": "criterion"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "finding"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "lens"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "result"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "risk"
+    }
+  ],
+  "view": "plan"
+}

@@ -263,6 +263,8 @@ export const keptAnchor = shape.either(
     ),
     quote: shape.string,
   }),
+  // A node anchor names no document: the node, and the quote in its text (`ComposerAnchor`).
+  shape.record({ node: shape.string, occurrence: shape.number, quote: shape.string }),
   shape.record({ artifact: shape.string, occurrence: shape.number, quote: shape.string })
 );
 
@@ -289,6 +291,11 @@ export const keptReplyTo = shape.record({
     shape.array(shape.record({ target: shape.string, title: shape.string }))
   ),
   parentKind: shape.oneOf("ask", "comment", "message"),
+  // The block of the post a reply answers and the words of it the reader selected, where it
+  // answers one block (`ReplyTarget.quoted`).
+  quoted: shape.optional(
+    shape.record({ block: shape.string, occurrence: shape.number, quote: shape.string })
+  ),
   thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
   to: shape.optional(shape.string),
 });

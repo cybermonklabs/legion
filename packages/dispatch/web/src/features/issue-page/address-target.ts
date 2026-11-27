@@ -38,6 +38,7 @@ import {
 import type { TreeNode } from "./issue-tree";
 import { answerHolds } from "./presets";
 import { useFollowing } from "./slots/following";
+import { useThreadReveal } from "./text-comments/thread-address";
 import { lastHeldOf } from "./tree-drafts";
 import { nextTreeCursor } from "./tree-read/tree-nodes";
 import { type TreeAnswer, viewQuery } from "./tree-read/tree-read";
@@ -82,6 +83,11 @@ export function useAddressTarget(
   }, [targetDocument, targetId, targetKind]);
   const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
   const named = useMemo(() => namedBy(reveal), [reveal]);
+  // An item of a thread on text is no row, so no chain above names it: the node its thread stands
+  // by is what the address lands on (R8, `text-comments/thread-address.ts`).
+  const onText = useThreadReveal(root, target, reveal);
+  const onTextNamed = useMemo(() => namedBy(onText), [onText]);
+  if (onText !== undefined) return { named: onTextNamed, reveal: onText, target };
   return { named, reveal, target };
 }
 

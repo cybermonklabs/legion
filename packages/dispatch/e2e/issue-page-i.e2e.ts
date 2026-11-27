@@ -4195,7 +4195,7 @@ test("a comment's address followed from a link while the reader is zoomed elsewh
 // same on their own page is in that room too, and the first one's row draws the second one's
 // caret. What is typed is stored, and keys pressed before the caret has reached the statement
 // edit the statement or nothing. Escape gives the same row the focus, and a second Escape leaves
-// the outline. A comment's row holds no document's text, and the key says so at the row.
+// the outline. A comment's row holds no document's text, and Enter puts the read-only caret there.
 // SLOW(>=2s): the whole issue seeded and loaded, a second reader's context loading it too, both
 // carets put in the spec's live room, two reloads or more reading what was stored, and Enter
 // pressed on a page slowed four times, with Delete pressed until the caret is in the statement.
@@ -4325,15 +4325,49 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
     ).toBe(true);
     await page.keyboard.press("Escape");
 
-    // A comment's row holds no document's text: Enter puts no caret, and the row says so.
+    // A comment's row holds no document's text, and is read-only in the room: Enter puts the
+    // read-only caret at the start of its words (R6), and the row says nothing of having no text.
     const comment = seeded.comments.threads[0] ?? "";
+    const commentWords = rowWords(nodeRow(page, comment).first());
     await focusRow(page, comment);
     await page.keyboard.press("Enter");
     await expect(
-      nodeRow(page, comment).first().locator("[data-row-report]"),
-      "Enter on a comment's row did not say it has no text"
-    ).toHaveText(KEY_REPORTS.no_text);
-    expect(await caretInNode(page), "Enter on a comment put a caret somewhere").toBe(false);
+      commentWords,
+      "Enter on a comment's row put no caret in its words"
+    ).toHaveAttribute("contenteditable", "true");
+    await expect(commentWords, "the comment's caret asks for a screen keyboard").toHaveAttribute(
+      "inputmode",
+      "none"
+    );
+    await expect(
+      commentWords,
+      "the comment's caret does not say its words are read-only"
+    ).toHaveAttribute("aria-readonly", "true");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter on a comment put the focus in no caret" })
+      .toBe(true);
+    await expect
+      .poll(
+        () =>
+          commentWords.evaluate((words) => {
+            const selection = window.getSelection();
+            const anchor = selection?.anchorNode ?? null;
+            if (selection === null || anchor === null || !words.contains(anchor)) {
+              return "a selection outside the comment's words";
+            }
+            if (!selection.isCollapsed) return `the selection "${selection.toString()}"`;
+            const before = document.createRange();
+            before.setStart(words, 0);
+            before.setEnd(anchor, selection.anchorOffset);
+            return before.toString();
+          }),
+        { message: "the comment's caret is not collapsed at the start of its words" }
+      )
+      .toBe("");
+    await expect(
+      issuePage(page).getByText(KEY_REPORTS.no_text),
+      "Enter on a comment's row said it has no text to put the caret in"
+    ).toHaveCount(0);
   } finally {
     await context.close();
   }

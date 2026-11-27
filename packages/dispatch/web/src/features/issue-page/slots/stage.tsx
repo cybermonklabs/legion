@@ -3,13 +3,13 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { focusOnDocument } from "../../shell/roving";
-import { ChildrenSection } from "../children-section";
 import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { ChildrenInStage } from "../text-comments/ChildrenAboveRow";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { ViewReadProvider } from "../tree-read/view-read";
 import { BodySlot, ReaderActsWatch } from "./body";
@@ -61,12 +61,20 @@ import { ViewVerificationSlot } from "./view-verification";
  *
  * Above the slot, after those sentences, stand the issue's children, a section of their own that
  * opens and closes (`children-section.tsx`), in every view that draws an outline read (R14).
+ * Where the page's root draws them above the row of the stage and the column of comments on text
+ * from 1024 px (`childrenAbove`, R2 of INFRA-5706), the stage draws them below 1024 px alone
+ * (`ChildrenInStage`).
  */
 export function StageSlot({
+  childrenAbove = false,
   filled = SLOT_FILLED,
   views = VIEW_SLOTS,
   ...props
 }: SlotProps & {
+  /** Whether the page's root draws the issue's children above the row of the stage and the
+   *  column of comments on text from 1024 px (`ChildrenAboveRow`), so the stage draws them below
+   *  1024 px alone: false where none is given, as for a stage drawn alone in a test. */
+  readonly childrenAbove?: boolean;
   /** Whether each slot's own part has filled it: `SLOT_FILLED` where none is given, and a
    *  view's slot set filled in a test, as that view's part will set it. */
   readonly filled?: SlotsFilled;
@@ -124,7 +132,7 @@ export function StageSlot({
         {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
         <ThreeThingsAbove {...props} view={View !== undefined} />
         {/* The issue's children, above the slot's first row (R14). */}
-        <ChildrenSection {...props} />
+        <ChildrenInStage {...props} above={childrenAbove} />
         {View === undefined ? (
           <StageBox>
             <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />

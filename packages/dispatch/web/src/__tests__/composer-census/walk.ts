@@ -375,6 +375,7 @@ function handedTo(
     return undefined;
   }
   if (ts.isArrowFunction(child) || ts.isFunctionExpression(child)) return undefined;
+  if (drawsProvider(walk.program, current, child, comp)) return undefined;
   const callee = text(current.expression);
   const key = callKey(walk.program, current, comp);
   const wrapper = key === undefined ? undefined : CALL_WRAPPERS[key];
@@ -390,6 +391,47 @@ function handedTo(
       ? ""
       : `, or add ${key} to CALL_WRAPPERS in composer-census/walk.ts with why it draws what it is handed unchanged`;
   return `${callee}(…) is handed what holds the composer, and is no function the census reads (draw it through a component or a helper the census reads${allow})`;
+}
+
+/** Whether `call` is a context's provider written as a call, `createElement(Context.Provider,
+ *  { value }, ...children)` from `react`, as a module with no JSX writes `<Context.Provider>`,
+ *  with `child` among the children it is handed. The census reads it as it reads that element
+ *  (`drawsAsItIs`): a provider draws its children as it is handed them, in its own place, so
+ *  what it is handed mounts and unmounts with the call's place, as with no provider there. Only
+ *  that form is read: the provider of a context `createContext` made, handed its props as an
+ *  object written there whose every property is named and none is `key`, since a key that
+ *  changes there ends every mount below it, and a spread could hold one. Any other
+ *  `createElement` call stays unread (`handedTo`), so `react#createElement` is no
+ *  `CALL_WRAPPERS` entry: it would read every one as drawing what it is handed unchanged. */
+function drawsProvider(
+  program: Program,
+  call: ts.CallExpression,
+  child: ts.Node,
+  comp: Comp
+): boolean {
+  if (callKey(program, call, comp) !== "react#createElement") return false;
+  if (call.arguments.indexOf(child as ts.Expression) < 2) return false;
+  const [type, props] = call.arguments;
+  if (
+    type === undefined ||
+    !ts.isPropertyAccessExpression(type) ||
+    type.name.text !== "Provider" ||
+    !ts.isIdentifier(type.expression)
+  ) {
+    return false;
+  }
+  if (props === undefined || !ts.isObjectLiteralExpression(props)) return false;
+  const named = props.properties.every(
+    (property) =>
+      (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+      ts.isIdentifier(property.name) &&
+      property.name.text !== "key"
+  );
+  if (!named) return false;
+  const context = resolveLocal(program, modOf(program, call), type.expression.text);
+  const decl = declOf(program, context);
+  const init = decl !== undefined && ts.isVariableDeclaration(decl) ? decl.initializer : undefined;
+  return init !== undefined && calleeName(init) === "createContext";
 }
 
 /** Follows what a call of a registered function is handed, its argument `index`, into each

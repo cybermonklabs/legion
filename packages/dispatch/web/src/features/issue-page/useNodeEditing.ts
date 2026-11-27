@@ -32,6 +32,7 @@ import {
 import { useOutlineWriter } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { trackPress } from "./press-focus";
+import { caretOnEnter } from "./text-comments/read-only-caret";
 import { rowSelectorOf } from "./tree-focus";
 
 /** The editor the page draws for an edited row, as the row takes it: its ProseMirror view, which
@@ -363,6 +364,14 @@ export function useNodeEditing({
       }
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
+        // The row of a node read-only in the room - an ask, a comment, a message, a lens, a
+        // finding, a risk, a constraint or a result - takes a caret that moves and selects in its
+        // text and types nothing (R6, `read-only-caret.ts`); a row that draws none of its text
+        // still has nothing to put a caret in. Enter is taken on the row itself
+        // (`useTreeKeymap`'s `tree-edit`), so the row is the element that holds the focus.
+        const focused = document.activeElement;
+        const drawn = focused?.matches(rowSelectorOf(row)) === true ? focused : null;
+        if (caretOnEnter(drawn, node.type)) return;
         onReport(KEY_REPORTS.no_text);
         return;
       }

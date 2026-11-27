@@ -10,6 +10,7 @@ import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { TEXT_THREADS_ATTRIBUTE } from "./text-comments/attributes";
 import { type DrawnRow, type PageRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 
@@ -242,6 +243,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
    *  finished with is pressed no longer, so while `?` reads the bindings this is false. */
   const scrollsABlock = (): boolean => {
     const event = pressing.current;
+    // A key pressed in a node's sheet of threads is the browser's, so a reply typed there does not
+    // move the tree's focus.
+    if (
+      event !== null &&
+      event.eventPhase !== Event.NONE &&
+      event.target instanceof Element &&
+      event.target.closest(`[${TEXT_THREADS_ATTRIBUTE}]`) !== null
+    ) {
+      return true;
+    }
     return (
       event !== null &&
       event.eventPhase !== Event.NONE &&

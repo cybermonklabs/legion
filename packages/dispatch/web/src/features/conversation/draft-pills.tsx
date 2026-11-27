@@ -59,6 +59,9 @@ export function draftSource(
   if (replyTo?.parentKind === "comment") {
     return { id: replyTo.id, issue: owner.issueKey, kind: "comment" };
   }
+  if (anchor?.node !== undefined) {
+    return { needsSpecOf: owner.issueKey };
+  }
   if (replyTo === null && anchor !== undefined) {
     return { id: anchor.artifact, issue: owner.issueKey, kind: "artifact" };
   }

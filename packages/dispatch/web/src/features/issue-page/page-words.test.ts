@@ -932,6 +932,7 @@ test("the join adds each file's keys after the table's own, nested as the table 
 // A part's file that the join does not read fails here. So does a part that has no file.
 test("each open part of the page has its own words file, which the join reads", () => {
   const letters = ["J", "L", "M", "N", "R", "S", "T", "U", "W", "X", "Y", "Z"];
+  letters.push("MARGIN");
   const expected = letters.map((letter) => `page-words-${letter.toLowerCase()}.ts`);
   const read: readonly string[] = WORD_FILES.map(({ file }) => file);
   expect(read).toEqual(expected);

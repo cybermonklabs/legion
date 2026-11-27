@@ -622,6 +622,9 @@ export function VerificationFilterBody({
                 total={issue.statements.length}
               />
             </div>
+            {/* The table's step by the width of the stage's column, while the column of comments
+                on text is drawn (`TABLE_IN_COLUMN`): drawn ahead of the table it reaches. */}
+            <i aria-hidden="true" className={TABLE_IN_COLUMN} hidden />
             <div className={TABLE} data-verification-table="">
               <Headings />
               {shown.map((statement) => (
@@ -930,6 +933,49 @@ const STATEMENT_COLUMNS =
  *  at 760 px and below the result stands under the check's words. */
 const CHECK_COLUMNS =
   "grid min-w-0 grid-cols-[minmax(0,1fr)] min-[761px]:grid-cols-[minmax(0,58%)_minmax(0,42%)]";
+
+/**
+ * The table's step by the width of the stage's column, while the column of comments on text is
+ * drawn beside the main column (INFRA-5706's R2, decision 472): below a column of 656 px - the
+ * narrowest at which part W's head draws the table, at 768 px of window, measured there - the
+ * cards of the phone step, and the table from 656 px. Each is a container variant that takes
+ * back, on the element it reaches, what the table form adds from 761 px of window up: the frame
+ * round the table (its border, corners, fill and clip), with the cards 8 px apart; each row's
+ * band, so that a row is a card of its own again, 1 px round it with 8 px corners and a
+ * statement's left edge 4 px; the head row; the two grids' columns; and the second column a loose
+ * check's cells stand in. Each names more attributes than the class it takes back, so it wins
+ * over that class wherever both apply. With no column the classes apply nothing, and the view
+ * keeps its window steps: each is read only under the stage's attribute
+ * (`text-comments/TextMargin.tsx`'s `TEXT_MARGIN_ATTRIBUTE`).
+ *
+ * They stand on an element drawn in the tree between the issue's row and the table, which reaches
+ * the table and its rows as its later sibling, so no class of the table's own elements changes,
+ * the body's one child is still its tree, and the tree's first child the issue's row. The first
+ * makes the element around the body the container they are measured against, only while the
+ * table is drawn: that element is the stage's column, as wide as the main column inside its
+ * insets, which is the width 656 px is of, where the body is 1180 px wide or 48 px narrower than
+ * the column. The body keeps that measure of its window step, with 22 px above it, since part V's
+ * row reads it from 761 px of window up, whether a column of comments on text is drawn or not
+ * (`e2e/issue-page-v.e2e.ts`).
+ */
+const TABLE_IN_COLUMN = [
+  "[*:has(>[data-verification-body]_&)]:in-data-[text-margin]:@container",
+  // The frame: no border, corners, fill or clip, and the cards 8 px apart.
+  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:gap-2",
+  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:overflow-visible",
+  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:rounded-none",
+  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:border-0",
+  "in-data-[text-margin]:[&~[data-verification-table]]:@max-[656px]:bg-[color:unset]",
+  "in-data-[text-margin]:[&~[data-verification-table]>[data-verification-head]]:@max-[656px]:hidden",
+  // Each row a card: 1 px round it with 8 px corners, and a statement's left edge 4 px.
+  "in-data-[text-margin]:[&~[data-verification-table]>[data-node-row]]:@max-[656px]:rounded-[8px]",
+  "in-data-[text-margin]:[&~[data-verification-table]>[data-node-row]]:@max-[656px]:border",
+  "in-data-[text-margin]:[&~[data-verification-table]>[data-node-row][data-verification-card]]:@max-[656px]:border-l-4",
+  // One column in each grid, a row's and a check's, with a loose check's cells in it.
+  "in-data-[text-margin]:[&~[data-verification-table]_[data-node-row]]:@max-[656px]:grid-cols-[minmax(0,1fr)]",
+  "in-data-[text-margin]:[&~[data-verification-table]_[data-verification-loose]>div]:@max-[656px]:grid-cols-[minmax(0,1fr)]",
+  "in-data-[text-margin]:[&~[data-verification-table]_[data-verification-loose]>div]:@max-[656px]:col-start-auto",
+].join(" ");
 
 /** One cell of the table, in the prototype's `.vt td`. */
 const CELL = "min-w-0 px-3 py-[11px]";

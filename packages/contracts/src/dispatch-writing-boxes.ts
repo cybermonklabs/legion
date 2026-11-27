@@ -369,7 +369,10 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "margin-composer",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/margin/CommentsTab.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/margin/CommentsTab.tsx",
+      "packages/dispatch/web/src/features/issue-page/text-comments/SelectionComposer.tsx",
+    ],
     issueRows: true,
     reach: "Comment",
     write: "comment",
@@ -392,6 +395,21 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Question",
     write: "ask",
   },
+  // The new issue page's composer opened on words of a message (INFRA-5706), which writes a reply
+  // in that message's thread naming the block the words are in. `MentionComposer` computes this
+  // write for the message reply target the composer hands it, and the row says what it is: a pair
+  // no reader reaches at this base.
+  {
+    box: "margin-composer",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/text-comments/SelectionComposer.tsx"],
+    issueRows: true,
+    reach: "Comment",
+    reason:
+      "Words of a message take the control only from gate G4 (INFRA-5703's reply quote) of INFRA-5706; until then no reader reaches it.",
+    write: "message-reply",
+  },
   {
     box: "margin-comment-edit",
     covered: true,
@@ -409,6 +427,20 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: true,
     reach: "Reply",
     write: "comment",
+  },
+  // The same reply box under a thread on text rooted in a message (INFRA-5706), which writes a
+  // message in that thread. `MentionComposer` computes this write for the message reply target
+  // the card hands it, and the row says what it is: a pair no reader reaches at this base.
+  {
+    box: "margin-thread-reply",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/margin/ThreadCard.tsx"],
+    issueRows: true,
+    reach: "Reply",
+    reason:
+      "A message thread on text, whose card writes a message reply here, is read only from gate G4 (INFRA-5703's reply quote) of INFRA-5706; until then no reader reaches it.",
+    write: "message-reply",
   },
   // The document itself: the body a reader edits, where the picker is hosted by the editor
   // rather than by the shared field (`@legion/proof-editor`'s `src/reference-picker.ts`). A
