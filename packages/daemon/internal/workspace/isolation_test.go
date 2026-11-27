@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -402,7 +404,11 @@ func TestNoJJCommandReadsALegacyConfigurationTheTreePlanted(t *testing.T) {
 		t.Fatal(err)
 	}
 	beside := filepath.Join(ws.Dir, ".jj", "workspace-config.toml")
-	if err := os.WriteFile(filepath.Join(ws.Dir, ".jj", "workspace-config-id"), []byte(strings.Repeat("ab", 10)), 0o644); err != nil {
+	// The id is random, as jj's own are: the config home every test shares keeps a directory per
+	// id, and a fixed one would be a directory this test's next run, or another test, could read.
+	id := make([]byte, 10)
+	_, _ = rand.Read(id)
+	if err := os.WriteFile(filepath.Join(ws.Dir, ".jj", "workspace-config-id"), []byte(hex.EncodeToString(id)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(beside, planted, 0o644); err != nil {
