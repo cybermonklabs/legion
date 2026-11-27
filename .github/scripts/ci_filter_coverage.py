@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from audited_scripts import command_for
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
 from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
@@ -2744,36 +2745,33 @@ TAG_RUN_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 TAG_RUN_FLAGS = (re.compile(r"(?<![\w-])-tags\b"), re.compile(r"(?<![\w-])-run\b"))
 
 
-def step_script_text(document: dict, job: dict, step: dict) -> str:
-    """What a run: step runs, as text: its run:, and, where that run: is one line whose first word
-    is a file of this repository read from the step's own directory, that script's text after it.
-    So a check of the go test lines a step runs sees those of a step that hands them to a script
-    (envoy-infra-go's natslive step runs packages/envoy/infra/scripts/natslive.sh) rather than
-    finding none: read from the run: alone, such a step runs no tagged go test, and neither side of
-    TAG_RUNS could see it."""
+def step_go_lines(document: dict, job: dict, step: dict) -> list:
+    """The lines of `go test` a step runs, as this rule reads them: its run:'s own lines, or, for
+    a run: that is one line naming a script AUDITED_SCRIPTS reads with an argument list that entry
+    lists, the lines of that entry's reading (audited_scripts.command_for). So a step that hands
+    its go tests to a script (envoy-infra-go's natslive step runs
+    packages/envoy/infra/scripts/natslive.sh) is read as the commands a person read out of that
+    script and pinned by its SHA-256, which is the one reading go-test-step-expansion.py makes
+    too; read from such a run: alone the step runs no go test at all, and neither side of this
+    rule could see it. No script is read here: what a script runs depends on its control flow,
+    which a line-by-line reading cannot see (go-test-step-expansion.py's header says so)."""
     run = str(step.get("run", ""))
-    lines = [line for line in script_lines(run) if line.strip()]
-    if len(lines) == 1:
-        first = lines[0].split()[0]
-        path = Path(step_workdir(document, job, step)) / first
-        if path.is_file():
-            return f"{run}\n{path.read_text()}"
-    return run
+    reading = command_for(step_workdir(document, job, step), run)
+    return script_lines(run if reading is None else reading)
 
 
 def tag_run_steps(documents: dict) -> list:
-    """Every run: step of ci.yaml and the workflows it calls whose script holds a line running
-    `go test` with both -tags and
-    -run, as (the workflow file, the job, the step). Read with script_lines, so a comment is no
-    trigger and both
-    flags must be on the go test line itself, as every such step of ci.yaml writes them; a step
-    whose run: is a script is read through that script (step_script_text)."""
+    """Every run: step of ci.yaml and the workflows it calls that runs `go test` with both -tags
+    and -run, as (the workflow file, the job, the step). Read with script_lines, so a comment is
+    no trigger, and both flags must be on the go test line itself, as every such step of ci.yaml
+    writes them; a step whose run: names an audited script is read through that script's entry
+    (step_go_lines)."""
     found = []
     for path, document in documents.items():
         for name, job in (document.get("jobs") or {}).items():
             for step in (job or {}).get("steps") or []:
                 if any(TAG_RUN_TEST.search(line) and all(flag.search(line) for flag in TAG_RUN_FLAGS)
-                       for line in script_lines(step_script_text(document, job or {}, step))):
+                       for line in step_go_lines(document, job or {}, step)):
                     found.append((path, name, step))
     return found
 
@@ -2790,7 +2788,11 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
     a failure of its own, and
     so is a stale entry - one naming a filter the changes job does not have, a job its own
     workflow does
-    not have, a step that job does not have, or a step whose run: holds no -run. The tagged job
+    not have, a step that job does not have, or a step that runs no `go test` with a -run on it.
+    What a step runs is its run:, or, for a run: that is one line naming a script
+    AUDITED_SCRIPTS reads, that entry's reading of the script (step_go_lines); both sides of the
+    rule read it that way, and both look for the -run on a `go test` line, never elsewhere in the
+    text. The tagged job
     and its step are looked for in the file the entry's `workflow` names; the job that runs the
     untagged tests is looked for in every document of the set, since it may hold its steps in a
     called file of its own. Returns the
@@ -2823,10 +2825,10 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
             problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names step \"{entry.step}\" of "
                                                                       f"job {entry.job}, which is not one run: step of it; update or remove the entry"))
             continue
-        # The step's own run: and, for a step that runs a script, that script's lines, without
-        # comments: a -run the script's header mentions selects nothing.
-        ran = script_lines(step_script_text(documents.get(entry.workflow) or {}, job, steps[0]))
-        if not any("-run" in line for line in ran):
+        # The go test lines the step runs, read as tag_run_steps reads them: the -run must be on a
+        # go test line, so a --dry-run in a script's own echo, or a -run in its header, is none.
+        ran = step_go_lines(documents.get(entry.workflow) or {}, job, steps[0])
+        if not any(TAG_RUN_TEST.search(line) and TAG_RUN_FLAGS[1].search(line) for line in ran):
             problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names {where}, which passes no "
                                                                       f"-run, so it runs the package's untagged tests itself; drop the entry"))
             continue

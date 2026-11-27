@@ -94,13 +94,8 @@ jobs:
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/testpg/testpg.go Image
       - name: Live tests of envoy-infra against nats-server (natslive)
-        # What each of core, seed and gcp adds under the natslive tag, one go test per package,
-        # the three at once: scripts/natslive.sh says how and why, with the measurements. A script
-        # and not this run: block, so that .github/scripts/go-test-step-expansion.py reads it as
-        # every other step's go test is read - through its AUDITED_SCRIPTS entry, pinned by the
-        # script's SHA-256, as envoy-infra-build's unit step runs scripts/race-unit.sh - and its
-        # reader stays as strict for the other steps as it was.
-        run: scripts/natslive.sh
+        # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
+        run: scripts/natslive.sh ./core ./seed ./gcp
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -267,10 +267,14 @@
 #      passes both `-tags` and `-run` must be named by an entry, matched by the file it is in and
 #      by its job and step name, and one no entry names fails naming that file, the job and the
 #      step, so a tag step added without an entry, or an entry deleted while its step stays, is
-#      held too. Nor can the table go stale: an entry naming a filter the changes job does not
-#      have, a job the file the entry names does not have (the job that runs the untagged tests
-#      may be in any of those files, since it keeps its caller in ci.yaml), a step that job does
-#      not have, or a step whose run: holds no -run is a failure of its own.
+#      held too. What a step runs is its run:, or, where that run: is one line naming a script
+#      audited_scripts.AUDITED_SCRIPTS reads with an argument list that entry lists, the go test
+#      commands of that entry's reading, which a person made and the script's SHA-256 pins; no
+#      script is read line by line. Nor can the table go stale: an entry naming a filter the
+#      changes job does not have, a job the file the entry names does not have (the job that runs
+#      the untagged tests may be in any of those files, since it keeps its caller in ci.yaml), a
+#      step that job does not have, or a step that runs no `go test` carrying a -run is a failure
+#      of its own.
 #  16. a `go test -race` build of a .github/workflows/ci-caches.yaml job ci_job_reads.py's
 #      RACE_FILLS names whose packages are not that entry's lane, in its order: the daemon's
 #      DAEMON_RACE_FILL_JOB against DAEMON_RACE_PACKAGES, and the envoy race lane's

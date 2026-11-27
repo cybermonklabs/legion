@@ -231,7 +231,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
   for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh ci_ts_listing.py; do
+    go_build_tags.py ci-filters-generate.sh ci_ts_listing.py audited_scripts.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
@@ -3106,36 +3106,53 @@ replace "$root/.github/workflows/ci.yaml" "        run: go build ./..." \
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
-# A step whose run: is a script of the repository is read through that script, on both sides of
-# the rule: envoy-infra-go's natslive step runs packages/envoy/infra/scripts/natslive.sh, whose
-# go test lines carry -tags and -run, and read from the run: alone such a step runs no tagged go
-# test at all. The script's own comments select nothing.
-tagged_script() { # tagged_script <root> <the go test line the script runs>
-  mkdir -p "$1/scripts"
-  printf '#!/bin/sh\n# a header that mentions -run selects nothing\n%s\n' "$2" >"$1/scripts/live.sh"
-  chmod +x "$1/scripts/live.sh"
-  replace "$1/.github/workflows/ci.yaml" "        run: go build ./..." "        run: scripts/live.sh"
+# A step whose run: names a script audited_scripts.AUDITED_SCRIPTS reads is read through that
+# entry's reading of the script, on both sides of the rule: envoy-infra-go's natslive step runs
+# packages/envoy/infra/scripts/natslive.sh, whose reading holds the go test lines that carry
+# -tags and -run, and read from the run: alone such a step runs no go test at all. These cases
+# use that real entry - its module and its argument list - so no reading is planted and the path
+# under test is the one CI takes; no script file is needed, since nothing here reads one.
+audited_step() { # audited_step <root> <the run: line>
+  replace "$1/.github/workflows/ci.yaml" "        run: go build ./..." \
+    "        run: $2
+        working-directory: packages/envoy/infra"
 }
-echo "case: a step that runs a script passing -run, named by an entry"
-root=$(fixture tag-run-script)
-tagged_script "$root" 'go test -tags live -count=1 -run TestLive ./...'
+echo "case: a step whose run: names an audited script is read through that entry"
+root=$(fixture tag-run-audited)
+audited_step "$root" 'scripts/natslive.sh ./core ./seed ./gcp'
 tag_run "$root" "$entry"
 run_check "$root"
-check "the entry stands: no refusal of its -run" \
+check "passes" "$(is "$status" 0)"
+check "and its entry is not called stale" \
   "$(is "$(grep -c 'which passes no -run' <<<"$out" || true)" 0)"
-echo "case: a step that runs a script passing -run, which TAG_RUNS does not name"
-root=$(fixture tag-run-script-undeclared)
-tagged_script "$root" 'go test -tags live -count=1 -run TestLive ./...'
+echo "case: a step whose run: names an audited script, which TAG_RUNS does not name"
+root=$(fixture tag-run-audited-undeclared)
+audited_step "$root" 'scripts/natslive.sh ./core ./seed ./gcp'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step, read through its script" "$(contains "$out" 'image step "Build"')"
-echo "case: a step that runs a script passing no -run, named by an entry"
-root=$(fixture tag-run-script-no-run-flag)
-tagged_script "$root" 'go test -tags live -count=1 ./...'
+check "names the step and the table it must be declared in" \
+  "$(contains "$out" 'no TAG_RUNS entry of .github/scripts/ci_job_reads.py names it')"
+echo "case: a step whose run: names an audited script with an argument list no entry reads"
+root=$(fixture tag-run-audited-other-arguments)
+audited_step "$root" 'scripts/natslive.sh ./core'
 tag_run "$root" "$entry"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step: a -run in the script's comment is no -run" \
+check "names the step: with no reading of that run:, it runs no go test the rule can see" \
+  "$(contains "$out" 'TAG_RUNS names image step "Build", which passes no -run, so it runs the package.s untagged tests itself')"
+# The -run both sides look for is on a `go test` line, never elsewhere in the step's text: a
+# `--dry-run` in an echo is no selection, and a step that runs its package's tests whole needs no
+# entry.
+echo "case: a --dry-run in a step's own echo is no -run"
+root=$(fixture tag-run-dry-run-word)
+replace "$root/.github/workflows/ci.yaml" "        run: go build ./..." \
+  "        run: |
+          echo \"pass --dry-run to preview\"
+          go test -tags live -count=1 ./..."
+tag_run "$root" "$entry"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step: its go test selects nothing, so it runs the untagged tests itself" \
   "$(contains "$out" 'TAG_RUNS names image step "Build", which passes no -run, so it runs the package.s untagged tests itself')"
 
 # A job that calls a reusable workflow keeps its gate in ci.yaml and gives its steps away, so a

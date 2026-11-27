@@ -670,14 +670,14 @@ edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
 go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked. The
-# step runs the three at once through INFRA_NATSLIVE_RUN_SCRIPT, which says how; the step is
-# pinned to that one line, and go-test-step-expansion.py's AUDITED_SCRIPTS pins the script's own
-# text by its SHA-256
+# step runs the three at once through scripts/natslive.sh, which takes them as its arguments, so
+# the pin below holds the step's packages as it held them when the step ran them itself; the
+# script's own text is pinned by its SHA-256 in audited_scripts.AUDITED_SCRIPTS, and both readers
+# of what this step runs take that entry's reading
 # (.github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests).
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
-INFRA_NATSLIVE_RUN_SCRIPT = f"{INFRA}/scripts/natslive.sh"
-INFRA_NATSLIVE_SCRIPT = "scripts/natslive.sh"
+INFRA_NATSLIVE_SCRIPT = f"scripts/natslive.sh {' '.join(INFRA_NATSLIVE_PACKAGES)}"
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
