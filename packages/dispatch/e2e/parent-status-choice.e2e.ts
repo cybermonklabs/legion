@@ -10,6 +10,7 @@ import {
   patchIssue,
 } from "./api";
 import { mouseDrag } from "./board-drag";
+import { listTrigger, pickFromList } from "./filters";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -384,10 +385,12 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     // The board above left Board as alice's view of the project; the issues table is its List.
     await page.getByRole("button", { name: "List", exact: true }).click();
     const looseSelect = page.getByRole("checkbox", { name: `Select ${loose.key}`, exact: true });
-    const epicPick = page.getByRole("combobox", { name: "Move to epic", exact: true });
+    // The selection bar's Move to epic is the shared single pick, which names each epic by its
+    // title (INFRA-3135's R3).
+    const epicPick = listTrigger(page, "Move to epic");
     const moveButton = page.getByRole("button", { name: "Move", exact: true });
     await looseSelect.check();
-    await epicPick.selectOption(epic.key);
+    await pickFromList(epicPick, epic.title);
     await moveButton.click();
     const intoWork = page.getByRole("dialog", { name: `Move ${epic.key} into work too?` });
     const intoWorkChanges = intoWork.getByRole("list", { name: "Changes" }).getByRole("listitem");
@@ -416,7 +419,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
 
     // Again, and confirmed: `epic` is in progress with `loose` under it.
     await expect(looseSelect).toBeChecked();
-    await epicPick.selectOption(epic.key);
+    await pickFromList(epicPick, epic.title);
     await moveButton.click();
     await expect(intoWorkChanges).toHaveText(changeLines);
     await intoWork.getByRole("button", { name: "Move into work too", exact: true }).click();

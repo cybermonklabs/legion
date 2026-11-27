@@ -24,7 +24,6 @@ import {
   controlRow,
   displayChoice,
   filterPicker,
-  listOf,
   listTrigger,
   openDisplayMenu,
   pickFromList,
@@ -155,20 +154,21 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     const second = await context.newPage();
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
-    const priority = listTrigger(second, `Priority of ${target.key}`);
-    // The list's trigger is held to the priority the seed gave the issue before the edit picks
-    // the other of P0 and P1, so the trigger read is one the page has drawn rather than a first
-    // empty value.
-    const before = `P${target.priority}`;
-    await expect(priority).toHaveAccessibleName(`Priority of ${target.key} ${before}`);
-    const next = before === "P0" ? "P1" : "P0";
-    await pickFromList(priority, next);
+    const priority = second.getByRole("combobox", { name: `Priority of ${target.key}` });
+    // The select is held to the priority the seed gave the issue before the edit picks the other
+    // of 0 and 1, so the select read is one the page has drawn rather than a first empty value.
+    const before = String(target.priority ?? "");
+    await expect(priority).toHaveValue(before);
+    const next = before === "0" ? "1" : "0";
+    await priority.selectOption(next);
     await expect
       .poll(() => getIssue(target.key).then((issue) => issue.priority))
-      .toBe(Number(next.slice(1)));
+      .toBe(Number(next));
     await expect(
-      listTrigger(page.locator(`[data-issue-row="${target.key}"]`), `Priority of ${target.key}`)
-    ).toHaveAccessibleName(`Priority of ${target.key} ${next}`);
+      page
+        .locator(`[data-issue-row="${target.key}"]`)
+        .getByRole("combobox", { name: `Priority of ${target.key}` })
+    ).toHaveValue(next);
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(targetSelection).toBeChecked();
     expect(
@@ -2185,11 +2185,11 @@ test("picker keeps a pick on screen: the priority on the project table, over a l
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("project", "CORE"));
     await page.goto("/projects/CORE");
-    const picker = listTrigger(page, `Priority of ${issue.key}`);
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
+    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
 
-    await pickFromList(picker, "P1");
-    await expect.poll(() => shown.values.at(-1)).toBe("P1");
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A rename of another issue, straight to the server: its live event has the table read the
@@ -2203,10 +2203,10 @@ test("picker keeps a pick on screen: the priority on the project table, over a l
     expectReadWhileHeld(reads, held, renamedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "P1",
+      "1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
+    await expect(picker).toHaveValue("1");
   } finally {
     await context.close();
   }
@@ -2240,11 +2240,11 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
       .getByRole("checkbox", { name: "Priority" })
       .check();
     await page.keyboard.press("Escape");
-    const picker = listTrigger(table, `Priority of ${issue.key}`);
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
+    const picker = table.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
 
-    await pickFromList(picker, "P1");
-    await expect.poll(() => shown.values.at(-1)).toBe("P1");
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A status move of the item's other issue, straight to the server: its live event has the
@@ -2260,10 +2260,10 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
     expectReadWhileHeld(reads, held, movedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "P1",
+      "1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
+    await expect(picker).toHaveValue("1");
   } finally {
     await context.close();
   }
@@ -2297,11 +2297,11 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
       .getByRole("checkbox", { name: "Priority" })
       .check();
     await page.keyboard.press("Escape");
-    const picker = listTrigger(table, `Priority of ${issue.key}`);
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
+    const picker = table.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
 
-    await pickFromList(picker, "P1");
-    await expect.poll(() => shown.values.at(-1)).toBe("P1");
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A status move of the table's other issue, straight to the server, to another status the
@@ -2317,10 +2317,10 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     expectReadWhileHeld(reads, held, movedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "P1",
+      "1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
+    await expect(picker).toHaveValue("1");
   } finally {
     await context.close();
   }
@@ -2362,13 +2362,12 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/issues/${issue.key}`);
     const picker = pagePicker(page, `Assignee of ${issue.key}`);
-    await expect(picker).toHaveAccessibleName(`Assignee of ${issue.key} bob`);
+    await expect(picker).toHaveValue("bob");
 
     // Its people are read once the reader reaches for the control.
     await picker.focus();
-    await picker.click();
-    await listOf(picker).getByRole("option", { exact: true, name: "alice" }).click();
-    await expect(picker).toHaveAccessibleName(`Assignee of ${issue.key} alice`);
+    await picker.selectOption("alice");
+    await expect(picker).toHaveValue("alice");
     await expect.poll(() => held.sent.length).toBe(1);
     // The picker leaves the screen with its save still out, and the work under the item is read
     // from the server, which still holds bob.
