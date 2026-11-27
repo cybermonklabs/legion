@@ -3405,8 +3405,9 @@ DATABASE_URL=postgres://... envoy-dispatch census
 The census is one `repeatable read, read only` transaction over the migrations this binary carries that the database has not applied:
 every migration whose version `schema_migrations` does not record, the rule the runner applies them by (a database without that table records none, so everything is pending).
 For each it prints the tables the migration locks above ACCESS SHARE (`pgmigrate.CensusTables`), with each table's total size, its row count and the sessions holding locks on it;
-the transactions open longer than a minute anywhere in the database, and those whose age it cannot see (another role's without `pg_read_all_stats`, any with `track_activities` off, or a WAL sender's), which it tells from a session in no transaction by the virtual transaction id every transaction locks;
+the transactions open longer than a minute anywhere in the database, and those whose age it cannot see (another role's without `pg_read_all_stats`, any with `track_activities` off, or a WAL sender's), which it tells from a session in no transaction by the virtual transaction id every transaction locks, leaving out every session in state `idle`;
 and the count the migration's own census answers.
+An `idle` session holds no client transaction, yet it can show an `xact_start`: an idle-time interrupt (a shared-invalidation catchup, or a `NOTIFY` it handles while it waits for its client) runs a transaction of its own, which Postgres stamps with the start of the session's last client statement, however long ago that was.
 Postgres reads `pg_stat_activity` once per transaction and serves that copy until the transaction ends, while `pg_locks` is read anew each time, so before each read of lock holders and of long transactions the census discards that copy (`pg_stat_clear_snapshot()`), and it measures a transaction's age at that read (`clock_timestamp()`), not at its own start.
 The transaction gives `session_authorization`, `role` and `search_path` the values that `reset` gives them, as the runner does for each migration ("Database migrations" above), so a name resolves for the census as it resolves for the runner.
 Those tables are:
@@ -3698,7 +3699,7 @@ It refuses:
     An enabled event trigger does not take the admission away either, since an `insert` and an `update` fire none.
     A migration that writes rows of such a table any other way is refused with what is not bounded (`…, and lock table is not one`, `…, and an insert of 1,001 rows, above the 1,000 a bounded write may hold, is not one`), and one that writes none of its rows and is not exempt above is refused on the size alone;
 
-- a session holding a lock on a touched table whose transaction has been open at least a minute (`pgmigrate.CensusLongTransaction`):
+- a session holding a lock on a touched table whose transaction has been open at least a minute (`pgmigrate.CensusLongTransaction`), in any state but `idle`:
   the migration would give up on that lock during the rollout;
 
 - a session holding a lock on a touched table whose transaction's age the census cannot see.
@@ -3707,8 +3708,8 @@ It refuses:
   A session with `track_activities` off shows its state as `disabled` and no `xact_start` to every role, so it refuses too, and the refusal says so.
   Postgres never shows a WAL sender's `xact_start`, to any role, and a `replication=database` connection runs SQL, so it can hold a lock in a transaction of any age:
   a holder that shows no `xact_start` and a state other than `idle` refuses, of the census's own role too, and the refusal names its state.
-  Only an `idle` holder with no `xact_start` passes:
-  `pg_stat_activity` read it between transactions, in the query that read its lock, so the transaction holding that lock began or ended within that query.
+  Every `idle` holder passes, with an `xact_start` or without:
+  `pg_stat_activity` read it between transactions, in the query that read its lock, so the transaction holding that lock began or ended within that query, and an `xact_start` it shows is an idle-time interrupt's stamp (above), not the age of a transaction.
   A session caught at a statement's start or end reads `active` with no `xact_start` and refuses too, spuriously and only at that instant, so the census taken again passes it;
 
 - an autovacuum worker holding a lock on a touched table, only when Postgres will not cancel it for the migration.

@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch census` no longer refuses a lock holder in state `idle` for the age its
+  `xact_start` shows, and no longer lists a session in state `idle` among the transactions open
+  longer than a minute. An idle session holds no client transaction, yet Postgres can show an
+  `xact_start` for it: an idle-time interrupt (a shared-invalidation catchup, or a `NOTIFY` the
+  session handles while it waits for its client) runs a transaction of its own, which Postgres
+  stamps with the start of the session's last client statement, however long ago that was, so a
+  session idle for an hour read as a transaction an hour old. Every `idle` holder now passes, with
+  an `xact_start` or without, as one without passed before. A session `idle in transaction`,
+  `idle in transaction (aborted)`, or in a state the census cannot see is listed and judged as
+  before.
+time: 2026-11-26T22:50:00.000000000Z
+custom:
+    Issue: pr2230
