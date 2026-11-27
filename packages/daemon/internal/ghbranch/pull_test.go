@@ -43,6 +43,67 @@ func TestOpenPullRequestAnswersTheOneThatIsOpen(t *testing.T) {
 	}
 }
 
+// Every read that has only a branch takes each open pull request on it
+// (dispatch://INFRA-5910/spec#b-d1: "A push, which carries a branch and no number, applies to each
+// open pull request on that branch, and so does each read that has only a branch"). This is
+// ghbranch's part of the inventory of those reads, row b11 of the plan's decision 20; the
+// workflow's (b1 to b5), the daemon's (b6 to b9) and the API's (b10) hold a test of this name in
+// their own packages. OpenPullRequest reads the open pull requests of its head by the head alone
+// once GitHub refuses the open with 422, "A pull request already exists", which GitHub answers
+// for a head that has an open pull request onto the base asked for. legion/ACME-1 holds two open
+// pull requests: #1 onto main and #2, opened after it, onto legion/ACME-1-ci-base, as
+// INFRA-1276's branch held theorem-labs/agent-infra#3654 onto main and the draft #3955 onto
+// legion/INFRA-1276-ci-base. Both are read, and neither takes the place of the other: an open onto
+// main answers #1, and an open onto legion/ACME-1-ci-base answers #2, the open pull request on
+// that head whose base is the base the open asked for, in whichever order GitHub lists them:
+// newest first, its order when the list names none, and oldest first.
+//
+// The fault it catches is the fallback taking the first open pull request GitHub lists on the head
+// whatever its base (githubrest.Client.OpenPullRequestOn): listed newest first, the open onto main
+// answers #2, the draft onto the other base, and its caller records that as the pull request it
+// opened.
+func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
+	t.Parallel()
+	const head, otherBase = "legion/ACME-1", "legion/ACME-1-ci-base"
+	pull := func(number int, base string) string {
+		return fmt.Sprintf(`{"number":%d,"state":"open","base":{"ref":%q},"head":{"ref":%q,"sha":"e","repo":{"full_name":"acme/widgets"}}}`, number, base, head)
+	}
+	for _, order := range []struct {
+		name   string
+		listed []string
+	}{
+		{"newest first", []string{pull(2, otherBase), pull(1, "main")}},
+		{"oldest first", []string{pull(1, "main"), pull(2, otherBase)}},
+	} {
+		t.Run("b11 the open pull request of the head onto the base asked for, listed "+order.name, func(t *testing.T) {
+			api := githubtest.Server(t, githubtest.Spec{Token: "installation-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/pulls":
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					fmt.Fprintf(w, `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for acme:%s."}]}`, head)
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls":
+					if query := r.URL.Query(); query.Get("head") != "acme:"+head || query.Get("state") != "open" {
+						t.Errorf("listed pull requests by %q, want the open ones on acme:%s", r.URL.RawQuery, head)
+					}
+					fmt.Fprint(w, "["+strings.Join(order.listed, ",")+"]")
+				default:
+					githubtest.Unexpected(t, w, r)
+				}
+			}})
+			for _, ask := range []struct {
+				base string
+				want int
+			}{{"main", 1}, {otherBase, 2}} {
+				got, err := OpenPullRequest(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), head, ask.base, "ACME-1: e", "Dispatch: ACME-1", nil)
+				if err != nil || got != ask.want {
+					t.Errorf("OpenPullRequest of %s onto %s = %d, %v; want #%d, the open pull request of %s onto %s: GitHub lists #1 onto main and #2 onto %s %s",
+						head, ask.base, got, err, ask.want, head, ask.base, otherBase, order.name)
+				}
+			}
+		})
+	}
+}
+
 // A pull request's title and body are published on GitHub as a created ref's name is, so a text
 // the rules the caller hands OpenPullRequest match is refused before anything is sent: with the
 // fixture's rules (leakguardtest), a body naming the fixture's invented host asks GitHub for
