@@ -72,7 +72,7 @@ func TestAnEventLogThatEchoesTheBearerPrintsItInNoDecodersOutput(t *testing.T) {
 				_ = json.NewEncoder(w).Encode([]map[string]any{row.event(r.Header.Get("Authorization"))})
 			}))
 			defer server.Close()
-			events, err := dispatch.New(server.URL, echoedToken).EventsAfter(context.Background(), "LEGION-9", 0)
+			events, err := dispatch.New(server.URL, dispatch.BearerTransport(echoedToken, nil)).EventsAfter(context.Background(), "LEGION-9", 0)
 			printed := []string{fmt.Sprint(err)}
 			unread := 0
 			if len(events) > 0 {

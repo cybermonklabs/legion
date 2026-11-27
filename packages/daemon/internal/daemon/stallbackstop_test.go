@@ -59,7 +59,7 @@ type backstopRig struct {
 // the deployment switching the backstop off for that role.
 func newBackstopRig(t *testing.T) *backstopRig {
 	t.Helper()
-	sup, rt := newPluginSupervisor(t, api.DaemonAPIVersion, true)
+	sup, rt := newPluginSupervisor(t, api.DaemonAPIVersion(), true)
 	rig := &backstopRig{t: t, sup: sup, rt: rt, rows: map[string][]record.OutboxPayload{}}
 	cfg := config.Config{
 		Project: "legion",
@@ -166,7 +166,7 @@ func (r *backstopRig) claim(role claim.Role, issue string, silent time.Duration,
 	c := supervise.Claim{
 		Token: token, Project: project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		State: supervise.StateWorking, Session: "ses_" + string(role), SessionFile: "/sessions/" + string(role) + ".jsonl",
-		PluginContract: api.DaemonAPIVersion, Locator: pluginTestLocator(token),
+		PluginContract: api.DaemonAPIVersion(), Locator: pluginTestLocator(token),
 		Pending: &supervise.Delivery{ID: "delivery-" + string(role), Task: "work the phase",
 			QueuedAt: at.Add(-time.Hour), DeliveredAt: at.Add(-time.Hour), ConfirmedAt: at.Add(-time.Hour)},
 		Step: supervise.StepRecord{TurnStartedAt: at},
@@ -901,7 +901,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	t.Parallel()
 	rig := newBackstopRig(t)
 	limiter := pacedWakes()
-	rig.sup.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	rig.sup.deps.WakePace = wakePaceOf(limiter)
 	// The burst's one token is spent before the sweep, so the backstop's own relaunch is parked
 	// rather than run where it is raised (supervise's reserveWake).
 	for range testWakeBurst {

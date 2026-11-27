@@ -60,11 +60,11 @@ const (
 
 // CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
 // fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
-// from a pod's feed, a local `git clone` that hard-links objects where possible, then jj's import
-// of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by `jj git
-// clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more than about
-// two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a sandbox slows
-// it at all.
+// from a pod's feed, a shared local `git clone` that copies no object (feedClone), then jj's
+// import of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by
+// `jj git clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more
+// than about two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a
+// sandbox slows it at all.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
@@ -223,9 +223,16 @@ type Workspace struct {
 
 // pinnedGitConfig is git configuration every process provisioning starts reads last, after the
 // shared clone's and after the command's own: no hook runs, wherever the clone's hooks directory
-// or its core.hooksPath points. git would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so
-// no process provisioning starts inherits it.
-var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}}
+// or its core.hooksPath points, and no git starts git's automatic maintenance, whatever the
+// clone's own gc.auto, gc.autoPackLimit or maintenance.auto say. Every git fetch, the one jj
+// starts included, otherwise starts `git maintenance run --auto --detach`, whose `git gc --auto`
+// outlives the fetch and takes the clone's ref locks, HEAD's among them, while jj is still
+// exporting the refs that fetch moved: jj gives up on such a lock and fails the provision
+// (#5349). git 2.51 made that maintenance let go of the locks, and the image's git
+// is older. So no process provisioning starts holds a lock of the clone once it has returned. git
+// would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so no process provisioning starts
+// inherits it.
+var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "0"}, {"maintenance.auto", "false"}}
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote
@@ -844,9 +851,9 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
-	// own error: no clone this code makes borrows objects from the feed (clone.go makes a plain
-	// local clone), so the connectivity scan that once diagnosed a clone whose borrowed history had
-	// gone had no case left and was deleted with the disk that carried such a clone (INFRA-80).
+	// own error. A pod's clone borrows the feed's objects through its alternates (feedClone), and no
+	// connectivity scan stands here to diagnose a clone whose borrowed history went: Fetch never
+	// removes or replaces a feed it finds present (ownFeedRepository), so that history does not go.
 	// Its error leaves the process and nothing decides on its stderr, so the error prints the
 	// stderr as the credential shows it (remote.shown).
 	fetch := []string{"git", "fetch"}

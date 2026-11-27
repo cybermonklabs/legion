@@ -279,7 +279,11 @@ for the accounts the profile its command names lists, each an account of the sec
 private key, as the PEM GitHub gives or its base64, is `DISPATCH_APP_PEM_B64`. The review App's id
 is the listener's `ENVOY_REVIEWER_APP_ID` and Dispatch's `DISPATCH_REVIEWER_APP_ID`; set both,
 because with `DISPATCH_REVIEWER_APP_ID` unset Dispatch's CI reconcile pass records no `tester` or
-`architect` check run. Store the private keys where `github_apps.<role>` and
+`architect` check run. The id of the App that writes `legion-verdict` is the listener's
+`ENVOY_VERDICT_APP_ID` and Dispatch's `DISPATCH_VERDICT_APP_ID`; set both to one value, because
+the listener leaves that App's check suites out of the CI record and Dispatch's CI reconcile pass
+would otherwise write the App's completed suite back, which publishes a settled head a second
+time. Store the private keys where `github_apps.<role>` and
 Dispatch read them, delete the files, then install every App from
 `https://github.com/apps/<slug>/installations/new` on the same repositories.
 
@@ -337,8 +341,10 @@ Dispatch read them, delete the files, then install every App from
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
   500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
-  booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
+  at a time and runs no lane, and a larger probe could keep the daemon from booting on a full
+  pool. Its 500m was set while the probe also ran a TLS check of the image's clients, which it no
+  longer makes, and is kept until its other checks are audited and measured. A pool with no room
+  even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
@@ -497,7 +503,8 @@ What each part is for:
   in its `PI_CONFIG_FILES`, after the operator's own and the role's own, and at least one is
   required while the mode is not `off`.
   `instructions` is optional and names one markdown file on the daemon's own disk, which the daemon
-  reads at boot and appends to such a role's system prompt after the deployment's own instructions.
+  reads at boot, and again at each launch, and appends to such a role's system prompt after the
+  deployment's own instructions.
   Both keys take absolute paths, and under `runtime: kubernetes` each overlay must be a file one of
   the operator's pod mounts carries.
   The draw is made once, when the tree's lifecycle row is first created, and is kept on the tree's
@@ -511,8 +518,8 @@ What each part is for:
   nothing, so its own first open draws it like any other new tree.
   The launch follows the record, not the mode: a tree the daemon drew into the memory group keeps
   its overlays and its instructions while the block still names them, whatever the mode is now, so
-  `mode: off` stops new draws and takes memory from no tree already running with it, and taking
-  the files away is removing them from the block.
+  `mode: off` gives every new tree no arm and takes memory from no tree already running with it,
+  and taking the files away is removing them from the block.
   That is why the overlay rules — the Kubernetes mount check, the readability check at boot, and
   the refusal of a block that names overlays while `worker_backends` puts an issue role on Claude
   Code — hold whatever the mode is.
@@ -540,8 +547,13 @@ What each part is for:
 
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
   once.
-  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
-  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `mode` is `off`, `on` or `random`, and `off` is the default.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the
+  mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their
+  weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
@@ -558,8 +570,9 @@ What each part is for:
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
   a role of a unit drawn into it names where the experiment reaches that role,
-  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
-  appends to that role's system prompt, and `plan`, how the issues drawn into it are done (below).
+  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot, and
+  again at each launch, and appends to that role's system prompt, and `plan`, how the issues drawn
+  into it are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   A role of a drawn unit that the experiment reaches names each arm's `config_files` in its
@@ -569,7 +582,7 @@ What each part is for:
   The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
   names one, the mode in force and the instant; the launch then follows that record and not the
   mode, so moving a mode to `off`
-  stops new draws and takes nothing from a unit already running.
+  gives every new unit no arm and takes nothing from a unit already running.
   Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
   carries, and the day a project declares an arm with overlay files every live issue pod of the
   deployment is replaced, since a role cannot read a file its pod does not mount
@@ -682,7 +695,10 @@ What each part is for:
   `gated_steps`.
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
-  secret.
+  secret. The daemon reads it at boot, and again before every launch, so an edit reaches the next
+  launch with no restart; a role already running keeps what it launched with. An edit that leaves
+  the file missing, unreadable or blank stops no launch: launches carry the text last read, and
+  the daemon logs a warning naming the file.
 - **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
   issue whose work keeps going back. Each entry carries `name`, its own and named once in the
   file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
@@ -701,11 +717,10 @@ What each part is for:
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
   hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
-  `prompt_file` at boot, as it reads `instructions`, so an edited file reaches the workers at the
-  next start of the daemon and the daemon does not come up while one of them is missing,
-  unreadable or blank. A file that names no `hooks:` key runs one shipped hook: `work-back`, over
-  any move, every 5 of them, to the implementer, the tester and the reviewer. `hooks: []` runs
-  none.
+  `prompt_file` at boot, so an edited file reaches the workers at the next start of the daemon and
+  the daemon does not come up while one of them is missing, unreadable or blank. A file that names
+  no `hooks:` key runs one shipped hook: `work-back`, over any move, every 5 of them, to the
+  implementer, the tester and the reviewer. `hooks: []` runs none.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
 - **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
@@ -1030,10 +1045,10 @@ answer. A pre-registration states seven things.
    to widen — more projects, or a larger weight — or not to run.
 
 5. **The date it stops.** A calendar date, fixed before the first draw. On that date read the
-   outcome and set `mode: off`, which stops new draws and leaves every unit already drawn running
-   as it was. Reading the numbers early and stopping because they look good is how a null result
-   becomes a positive one, so if you will look early, say in the pre-registration what an early
-   look may and may not decide.
+   outcome and set `mode: off`, which gives every new unit no arm and leaves every unit already
+   drawn running as it was. Reading the numbers early and stopping because they look good is how a
+   null result becomes a positive one, so if you will look early, say in the pre-registration what
+   an early look may and may not decide.
 
 6. **That the analysis groups by tree.** The issues of one tree are not independent draws: they
    share a repository, a spec, an architect and each other's work, so two issues of one tree
@@ -1076,16 +1091,21 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 
 ## Secrets and files
 
-- **The operator token** authenticates `legion controller start`, `legion claims` and
-  `legion issue status <issue> <status>` from an operator's shell. Make one long random string in a
-  file only you can read:
+- **The operator token** authenticates `legion controller start`, `legion claims`,
+  `legion project`, `legion intake` and `legion issue status <issue> <status>` from an operator's
+  shell. Make one long random string in a file only you can read:
 
   ```sh
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token
   ```
 
 - **The Dispatch and Envoy tokens** go in the files `dispatch_token_file` and `envoy_token_file`
-  name. The daemon hands each pod its own copy; no pod reads your files.
+  name. The daemon hands each pod its own copy; no pod reads your files. With
+  `dispatch_token_broker: true` in place of `dispatch_token_file`, the daemon trades its own pod
+  identity at the secrets broker for a Dispatch token of its own, each role trades its pod's
+  identity for one of its own session, and a launch into a pod that carries that identity carries
+  no Dispatch token
+  ([The daemon's own Dispatch credential](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 - **The providers Secret**, `legion-<project>-providers` in the namespace (`<project>` lowercased
   with everything but letters and digits removed, `legion-widgets-providers` here), holds, under
   `session_store: postgres`, the key `session_dsn_secret` names, with the session database's
@@ -1417,17 +1437,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
   waiting line: 2
-    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
-    WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back, and it takes the free slots before the issues at P1 that have not started.
+    WIDGETS-15 2 of 2, starting: It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank, and 1 issue at P1 whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
   admission.held: none
   memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
   plan-length: 4 issues — 2 control (random), 2 long (random)
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
-  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
+  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-17T10:15:02Z
   merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
-  agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none
@@ -1435,6 +1455,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-dispatch: 0 waiting
   consumer legion-go-WIDGETS-github: 3 waiting, oldest 2s
   consumer legion-go-WIDGETS-wake: 0 waiting
+  intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
+  intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
@@ -1444,11 +1466,18 @@ Closing the terminal leaves the project without one, and the daemon logs
   trees that run whether or not any issue of theirs holds one.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
-  daemon promotes them: the issues whose work came back first, oldest first by the moment it
-  came back, and then the issues that have not started, by the Dispatch rank of each issue's
-  tree root and then its own. Each line gives the issue's key, its place in the line, the part
+  daemon promotes them: by Dispatch priority first, P0, P1, P2 and P3 and then the issues with no
+  priority, each issue at its own priority, else at its tree root's; and within one priority the
+  issues whose work came back first, oldest first by the moment it came back, and then the issues
+  that have not started, by the Dispatch rank of each issue's tree root and then its own. A
+  priority changed in Dispatch moves the issue at the next admission pass, and priority takes no
+  slot back from work that runs. The order is strict and nothing ages: while a higher priority
+  has an issue that can take a slot, no issue of a lower one, and none with no priority, reaches
+  a free slot, however long it has waited; an entry that waits on another issue is passed over,
+  as Waiting says. Each line gives the issue's key, its place in the line, the part
   it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
-  the issue in the line and when, where it stands among the issues of its own part, and whether
+  the issue in the line and when, the priority it waits at and where that priority came from,
+  where it stands among the issues of its own priority and part, and whether
   it waits for a free slot or already holds its admission slot and resumes whatever the cap
   says. The block names ten issues at most and then `and <N> more`, because a busy deployment
   queues hundreds of them; `--json` carries the sentence of every waiting issue. It reads
@@ -1498,12 +1527,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read
-  `assignments` for a measurement: a declared experiment that is not `memory` appears nowhere
-  else.
+  `assignments` for a measurement: no other field of an issue in the state names its answer for
+  a declared experiment that is not `memory`.
+  Dispatch holds that answer too where the draw put the issue in the experiment's group, by an arm
+  that sets `plan`: each step record of the issue names the experiment and the variant, so
+  `dispatch steps --issue <KEY>` prints `Experiment <experiment>: variant <variant>.` above its
+  runs, the issue's **Steps** tab shows that line, and `dispatch plans --project <KEY>` ends the
+  issue's line with `variant <experiment>/<variant>`.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
-  answered and the published line still names — each standing
+  answered and the published line still names — each standing within its priority,
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
@@ -1540,15 +1574,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   round read longest ago, although the read is the only moment the line prints — the wait an
   operator acts on is the one a head has sat through.
 
-  The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
-  seen the start of and no end of: how many, and each by issue and role with the tool, the call id
-  the stream's start and end frames pair by, and when the daemon received that start (`none` when
-  no agent is in one). It is the shape a stalled turn leaves behind, which is what
-  `worker_stall_backstop_hours` above acts on, so a call that has been open for hours is the one
-  to look at. The call's arguments are in no column of this surface or any other: the daemon keeps
-  their length and a fingerprint alone, because a shell command routinely holds a credential. The
-  project controller's claim is on no issue and so on no part of this line; `legion claims list`
-  prints each claim's open call in the same shape, in its last column, the controller's included.
+  The `agents in a tool call` line names every working claim whose agent is in a tool call the
+  daemon has seen the start of and no end of: how many, and each by issue and role with the tool,
+  the call id the stream's start and end frames pair by, and when the daemon received that start
+  (`none` when no agent is in one). A retired or suspended claim keeps the call it was last in on
+  its record, and the line leaves it out, since no turn of that claim is in flight. It is the
+  shape a stalled turn leaves behind, which is what `worker_stall_backstop_hours` above acts on,
+  so a call that has been open for hours is the one to look at. The call's arguments are in no
+  column of this surface or any other: the daemon keeps their length and a fingerprint alone,
+  because a shell command routinely holds a credential. The project controller's claim is on no
+  issue and so on no part of this line; `legion claims list` prints each claim's open call in the
+  same shape, in its last column, the controller's included.
   A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
   once when a message is steered into the turn) is an ended call here while its process runs on:
   `none` says no agent is parked in a call, not that nothing runs on its machine.
@@ -1585,7 +1621,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   many messages wait for the consumer, delivered and not yet handled or not yet delivered, the
   events the daemon will acknowledge without acting on included, and how long ago the oldest of
   them was stored (`oldest unknown` when that message could not be read). A message is handled
-  once the daemon acknowledged it, or terminated it as poison; a message put back to retry is not.
+  once the daemon acknowledged it, or terminated it once it gave the message up; a message put
+  back to retry is not.
   `STALLED: none handled for <d>` ends the line when messages wait and the daemon has handled
   none of that consumer's for 60 seconds, since the last it handled (named) or, before the first,
   since the daemon started. `unavailable: <error>` names what NATS did not answer in time (two
@@ -1595,8 +1632,21 @@ Closing the terminal leaves the project without one, and the daemon logs
   [GitHub events wait](/legion/legion/troubleshooting/#github-events-wait) says what each means
   and what to check.
 
+  The `intake give-ups` lines count, for each durable consumer, the messages the daemon gave up on
+  that no replay or discard has closed, with the newest stream sequence among them: that sequence
+  is the `--through-seq` with which `legion intake replay` and `legion intake discard` take all of
+  them ([below](#replay-or-discard-a-message-the-intake-gave-up)). Under them each of the ten
+  newest give-ups has a line: its record's id, which `--give-up` takes, its consumer, subject and
+  stream sequence, when the daemon gave it up, after how many deliveries and why, and the first
+  line of its last error. With none open the one line reads `intake give-ups: none`.
+  [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
+  says what each reason means and what to do.
+
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
+  `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
+  issue the workflow does not record, and absent, with the `priority` of each member of the line
+  below, for a caller below contract 250),
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
@@ -1611,8 +1661,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `part`, `returned` for an issue whose work came back or `starting` for one that has not
   started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
   issue that gave its slot back to wait on another issue,
-  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `partPlace` and
-  `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
+  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `priority`, the
+  priority that placed the issue in the line, its own, else its tree root's (0 for P0 to 3 for P3, or
+  null for an issue that waits after P3); `partPlace` and
+  `partLength`, its place among the issues of its own priority and part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
   Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
@@ -1651,6 +1703,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and
   `unavailable`, present only when a NATS read failed),
+  `intakeGiveUps` (`consumers`, each consumer with an open give-up as `name`, `open` and
+  `newestSeq`, and `newest`, the 50 open give-ups given up last, latest first, each with `id`,
+  `consumer`, `subject`, `streamSeq`, `storedAt`, `eventId`, null for a message that did not
+  decode, `deliveries`, `gaveUpAt`, `reason` and the first 300 characters of `lastError`; both
+  lists empty, never null, while none is open),
   `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`,
   `hooks` with each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file` but never its
   words, and the rest as the daemon runs them — with every credential, credential source and credential
@@ -1688,3 +1745,37 @@ legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-fil
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
 its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
 architect.
+
+## Replay or discard a message the intake gave up
+
+The daemon gives up on a message whose handling keeps failing, keeps it whole and tells the
+controller; [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
+says when, how to find the cause, and when to replay and when to discard. From an operator's
+shell, two commands act on those records, as the controller does through its `legion` tool's
+`replay_give_up` and `discard_give_up`:
+
+```sh
+legion intake replay  --config legion.yaml --operator-token-file operator-token --give-up 412
+legion intake replay  --config legion.yaml --operator-token-file operator-token --consumer legion-go-WIDGETS-dispatch --through-seq 48213
+legion intake discard --config legion.yaml --operator-token-file operator-token --give-up 412 --reason 'the payload is not JSON, so no release can apply it'
+```
+
+Each takes `--operator-token-file` (required), `--config`, `--port`, and one selection:
+`--give-up <id>`, one record by the id `legion state` lists, or `--consumer <name>` with
+`--through-seq <seq>`, every open record of that consumer at or below that stream sequence. The
+newest sequence on the consumer's `intake give-ups` line takes all of them. A command that names
+neither selection, both, or only one of `--consumer` and `--through-seq` exits 2 and sends
+nothing.
+
+- **`legion intake replay`** prints one line for each record it took,
+  `<id> <consumer> seq <n>: <outcome>`, with the error after a `failed` one, then
+  `remaining <n>`. It exits 1 when a record failed.
+- **`legion intake discard`** also takes `--reason <text>` (required). It prints
+  `discarded <id>` for each record it closed, or `discarded none`.
+
+What each outcome does to its record, how many records one call takes, what `remaining` counts
+and how a replay undoes a wrong discard are in
+[A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up).
+
+A refusal of the daemon, such as `409 GIVE_UP_CLOSED` for a discard of a closed record, is printed
+with its status and sentence, and the command exits 1.

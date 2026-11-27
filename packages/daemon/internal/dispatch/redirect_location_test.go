@@ -52,7 +52,7 @@ func TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError(t *testing.T) {
 		{"followed", func(credential string) string { return redirectstest.To(target, bare(credential)) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := dispatch.New(redirectstest.Echo(t, "Authorization", c.location), token).EventsAfter(context.Background(), "LEGION-9", 0)
+			_, err := dispatch.New(redirectstest.Echo(t, "Authorization", c.location), dispatch.BearerTransport(token, nil)).EventsAfter(context.Background(), "LEGION-9", 0)
 			if err == nil {
 				t.Fatal("EventsAfter answered no error")
 			}
@@ -70,7 +70,7 @@ func TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError(t *testing.T) {
 			fmt.Fprint(w, `[]`)
 		}))
 		defer server.Close()
-		if _, err := dispatch.New(server.URL, token).EventsAfter(context.Background(), "LEGION-9", 0); err != nil {
+		if _, err := dispatch.New(server.URL, dispatch.BearerTransport(token, nil)).EventsAfter(context.Background(), "LEGION-9", 0); err != nil {
 			t.Fatalf("a plain 200 = %v, want it read", err)
 		}
 	})

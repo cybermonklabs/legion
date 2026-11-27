@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +84,99 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	testwait.Eventually(t, "the held root releases on the quiet stream's idle ticker", func() bool { return !admission.Held() })
 	cancel()
 	<-done
+}
+
+// A Dispatch event whose handling fails every time pins the Dispatch consumer's ack floor below
+// the boot's target, and the hold on the listing behind it with it, until the intake gives the
+// event up at its bound and terminates it once the give-up commits: the floor's move past it is
+// what releases the hold, and pollHoldRelease reads only that position. The consumers here give a
+// message up after 3 deliveries and 300 ms, so the release comes within a second; every look at a
+// released hold finds the give-up committed, since the floor moves only once the message is
+// terminated after that commit.
+func TestPollHoldReleaseReleasesOnceTheEventThatPinnedTheFloorIsGivenUp(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	conn := testnats.Connect(t, workflowNATS(t))
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	const giveUpDeliveries = 3
+	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
+		Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, Logger: log,
+		NakDelay: 10 * time.Millisecond, NakDelayCap: 40 * time.Millisecond, GiveUpDeliveries: giveUpDeliveries, GiveUpAfter: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(record.NewStore(), engine, 1, "LEGION", log)
+	// The engine, but for the pinned event, whose every handling fails as a defect's would.
+	const pinned = "LEGION-301"
+	var failures atomic.Int64
+	failing := applyFunc(func(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+		if issue, ok := fact.(intake.DispatchIssue); ok && issue.Key == pinned {
+			failures.Add(1)
+			return intake.Result{}, errors.New("the pinned event's handling fails every time")
+		}
+		return engine.Apply(ctx, tx, fact)
+	})
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutIssue(ctx, tx, record.Issue{
+			Key: "LEGION-300", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "edge", Tree: "LEGION-300", Phase: phase.Admitted,
+			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
+		})
+	}); err != nil {
+		t.Fatalf("seed root: %v", err)
+	}
+	repo := "acme/widgets"
+	ack, err := js.Publish(ctx, "notifications.dispatch.issue."+pinned+".issue.updated",
+		retainedIssueEnvelope(t, pinned, 401, 3, "todo", map[string]string{"kind": "user", "id": "a-person"}, &repo))
+	if err != nil {
+		t.Fatalf("publish the pinned event: %v", err)
+	}
+	// The boot's listing is held until the consumer's floor reaches the pinned event.
+	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+		{Key: "LEGION-300", ResolvedRepo: "acme/widgets", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
+	}, int64(ack.Sequence), intake.DispatchConsumerPosition{})
+	if !admission.Held() {
+		t.Fatal("Held() = false after seeding a behind record, want it held")
+	}
+
+	run, cancel := context.WithCancel(ctx)
+	consumed := make(chan error, 1)
+	go func() { consumed <- consumers.Run(run, failing, admission) }()
+	w := &workflowRuntime{
+		pool: pool, admission: admission, handlers: []intake.Handler{failing, admission},
+		dispatchProject: "LEGION", bootID: "test-boot", log: log,
+		holdPollInterval: 20 * time.Millisecond, consumers: consumers,
+	}
+	polled := make(chan struct{})
+	go func() { w.pollHoldRelease(run); close(polled) }()
+	t.Cleanup(func() {
+		cancel()
+		<-polled
+		if err := <-consumed; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	})
+
+	testwait.Eventually(t, "the hold releases once the pinned event is given up", func() bool {
+		if admission.Held() {
+			return false
+		}
+		var reason string
+		if err := pool.QueryRow(ctx, `select coalesce(give_up_reason, '') from intake_failures where consumer = $1 and stream_seq = $2`,
+			"legion-go-LEGION-dispatch", int64(ack.Sequence)).Scan(&reason); err != nil || reason != string(record.GiveUpBound) {
+			t.Fatalf("the hold released with the pinned event's record at reason %q (%v), want it given up at its bound before the release", reason, err)
+		}
+		return true
+	})
+	if calls := failures.Load(); calls < giveUpDeliveries {
+		t.Fatalf("the pinned event was handled %d times before its give-up, want at least the %d deliveries of the bound", calls, giveUpDeliveries)
+	}
 }
 
 // A failed DispatchPosition read must be retried by the poll on its own schedule, logged, never
@@ -296,6 +390,9 @@ func (d *pilotDispatch) PutStep(context.Context, string, string, dispatch.StepWr
 func (d *pilotDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *pilotDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *pilotDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -371,6 +468,9 @@ func (d *filteringDispatch) PutStep(context.Context, string, string, dispatch.St
 	return nil
 }
 func (d *filteringDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *filteringDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *filteringDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
@@ -523,11 +623,11 @@ func (f *failingPositionReader) DispatchPosition(context.Context) (intake.Dispat
 	return f.position, nil
 }
 
-// Non-blocking: a Dispatch event whose transaction always fails pins the ack floor forever (the
-// consumer sets no MaxDeliver), so the hold never releases and, before this, nothing in the log
-// said why. Once a hold has persisted past a bound, the poll warns on its own schedule — never
-// releasing on the strength of the timer, only naming what it is still waiting for: the target,
-// the current ack floor, and the stream sequence stuck behind it.
+// Non-blocking: a Dispatch event whose transaction always fails holds the ack floor below it until
+// the intake gives it up, no sooner than an hour after its first failure, so the hold does not
+// release before then, and this warning is the line that says why. Once a hold has persisted past
+// a bound, the poll warns on its own schedule — never releasing on the strength of the timer,
+// only naming what it is still waiting for: the target and the current ack floor.
 func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)

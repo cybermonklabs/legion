@@ -35,7 +35,8 @@ import (
 // observe — Dispatch writes, publishes, Spawn calls, the rows left, the log — never on time.
 
 // runLanes starts runner.Run on clock and waits for its boot sweep to arm the first sweep timer,
-// so every row a test writes after it is one the boot sweep never saw. It returns the stop that
+// for the runner's own interval (sweepInterval), so every row a test writes after it is one the
+// boot sweep never saw. It returns the stop that
 // cancels Run and waits for it to return, run at cleanup too; the stop first runs every release
 // given, since a lane blocked in a gated call would hold Run's join forever.
 func runLanes(t *testing.T, runner *outbox, clock *heldClock, releases ...func()) func() {
@@ -59,7 +60,7 @@ func runLanes(t *testing.T, runner *outbox, clock *heldClock, releases ...func()
 	}
 	t.Cleanup(stop)
 	testwait.Eventually(t, "Run armed its sweep", func() bool {
-		live, _ := clock.armed(outboxLease)
+		live, _ := clock.armed(runner.sweepInterval())
 		return live == 1
 	})
 	return stop
@@ -210,6 +211,9 @@ func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.Step
 func (d *postingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *postingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *postingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -284,6 +288,9 @@ func (d *laneBoard) ApprovedVersionBefore(context.Context, string, int) (int, er
 func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
 func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *laneBoard) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *laneBoard) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
@@ -995,6 +1002,36 @@ func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T
 	clock.advance(outboxLease)
 	fireSweep(t, clock)
 	testwait.Eventually(t, "the row ran after its lease lapsed", func() bool {
+		return client.count() == 1 && outboxRows(t, pool) == 0
+	})
+}
+
+// An outbox given a sweep interval of its own (sweepEvery, which a whole daemon takes from
+// overrides.outboxSweep) arms each sweep for that interval, and the sweep it fires finds a lapsed
+// lease as the daemon's would: a whole-daemon test that lets a lease lapse behind the daemon waits
+// that interval for the row, not outboxLease of the wall clock.
+func TestRunSweepsAtTheOutboxsOwnInterval(t *testing.T) {
+	t.Parallel()
+	const every = 5 * time.Second
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	clock := microClock()
+	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), sweepEvery: every}
+	runLanes(t, runner, clock)
+	if _, armed := clock.armed(outboxLease); armed != 0 {
+		t.Fatalf("sweep timers armed for outboxLease = %d, want none: the outbox names an interval of its own", armed)
+	}
+
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), clock.Now()))
+	if _, err := pool.Exec(context.Background(), "update outbox set lease_token = 'a-runner-that-died', lease_until = $1", clock.Now().Add(every/2)); err != nil {
+		t.Fatalf("leave a lease nobody holds on the row: %v", err)
+	}
+	clock.advance(every)
+	if fired := clock.fire(every); fired != 1 {
+		t.Fatalf("sweep timers fired = %d, want the one Run armed", fired)
+	}
+	testwait.Eventually(t, "the row ran at the sweep after its lease lapsed", func() bool {
 		return client.count() == 1 && outboxRows(t, pool) == 0
 	})
 }

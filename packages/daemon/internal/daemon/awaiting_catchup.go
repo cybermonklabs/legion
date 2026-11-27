@@ -100,7 +100,7 @@ const (
 // own admission pass — no pass decides whether it waits on a person, and none resumes it once
 // answered, until the catch-up applies its window and releases it, which the same boot does. It
 // keeps its place in the waiting line while held,
-// among the issues whose work came back, oldest first, so the cost is the boot's reads
+// within its priority, among the issues whose work came back, oldest first, so the cost is the boot's reads
 // and a pass of latency, not a lost turn, and that is what buys the hold.
 func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, slotted map[string]struct{}) bool {
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
@@ -444,10 +444,11 @@ func (w *workflowRuntime) bindGateRequest(ctx context.Context, root catchUpRoot,
 // root is released as it stands, its cursor where it was (catchUpWithRetries). An event of a type
 // the catch-up does not read is passed over before it is decoded (an issue's own events are the
 // boot listing's), and one the decoder refuses is logged and passed over for good: the live
-// consumer terminates it as poison. An event whose fact fails to apply — a handler's error, or
-// the database's (its transaction or its commit) — is logged, and the rest of the window is still
-// applied, so one event never stops a root's catch-up, but the event is not passed over: the
-// live consumer retries such an event until it applies, and the cursor stops just below it
+// consumer gives it up at its first delivery and terminates it. An event whose fact fails to
+// apply — a handler's error, or the database's (its transaction or its commit) — is logged, and
+// the rest of the window is still applied, so one event never stops a root's catch-up, but the
+// event is not passed over: the live consumer retries such an event until it applies or the
+// intake gives it up at its bound and keeps it for a replay, and the cursor stops just below it
 // (catchUpRoot), so the next boot reads it again. That matters once an outage outlasts the
 // notification stream's retention, when the event log is the only place the event is still
 // held. An event that fails at every boot keeps the cursor below it, so each boot reads the

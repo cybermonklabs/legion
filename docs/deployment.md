@@ -720,6 +720,19 @@ provider_keys:
   claim's other secret files and pruned with them, and Oh My Pi is passed that file's path as
   `--append-system-prompt <path>`, Claude Code as `--append-system-prompt-file <path>`, so no
   prompt travels as one argument and none is bounded by the 131,072 bytes Linux allows one.
+- **An edited instructions file needs no restart.** The daemon reads the deployment's
+  `instructions` and each declared arm's `instructions` at boot, and again before every launch,
+  into its own copy under the state directory, so the next launch carries the edit. A role already
+  running keeps the prompt it launched with until its next launch, and an edit replaces no pod.
+  A file an edit leaves missing, unreadable or blank, which boot refuses, stops no launch of a
+  running daemon: each launch carries the text the daemon last read, and the daemon logs one WARN
+  line for each refusal, naming the file and the refusal (`legion daemon launches with the
+  instructions it last read: …`; a copy it cannot replace is the same line at ERROR), then one INFO
+  line once the file reads again (`legion daemon read an edited instructions file: …`, or
+  `legion daemon reads an instructions file again …` when it holds the text the daemon kept). Under
+  Kubernetes the daemon must read the file from a directory mount: the kubelet never refreshes a
+  file mounted by `subPath`. Naming another file, or a file for the first time, is a change of
+  `legion.yaml`, which still needs a restart.
 - **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`
   (`memory: {mode: random, config_files: [/etc/legion-memory/memory.yml], instructions: /etc/legion-daemon/memory-instructions.md}`).
@@ -734,7 +747,8 @@ provider_keys:
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with
   no block gets, `on` gives every new tree one, and `random` draws a fair coin for each new tree.
   `config_files` are the Oh My Pi overlays a memory-group tree's panes name, and `instructions` the
-  one markdown file the daemon reads at boot and appends to their prompt; both are absolute paths.
+  one markdown file the daemon reads at boot, and again at each launch, and appends to their
+  prompt; both are absolute paths.
   The draw is made once, when the tree's lifecycle row is first created, and is kept on the tree's
   root issue record with the mode it was drawn under and the time of the draw.
   A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its root
@@ -753,8 +767,8 @@ provider_keys:
   `instructions` appends nothing.
   The launch follows the record, not the mode:
   a tree the daemon drew into the memory group keeps its overlays and its instructions while the
-  block still names them, whatever the mode is now, so `mode: off` stops new draws and takes
-  memory from no tree already running with it.
+  block still names them, whatever the mode is now, so `mode: off` gives every new tree no arm and
+  takes memory from no tree already running with it.
   Taking the files away is removing them from the block.
   The loader refuses a `mode` that is no word of the three, and a mode other than `off` that names
   no `config_files`.
@@ -772,8 +786,13 @@ provider_keys:
   (`experiments: {plan-length: {mode: random, unit: issue, variants: [{name: long, config_files: [/etc/legion-experiments/plan-length.yml]}, {name: control}]}}`).
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
   once.
-  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
-  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `mode` is `off`, `on` or `random`, and `off` is the default.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the
+  mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their
+  weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
@@ -783,8 +802,9 @@ provider_keys:
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a pane
-  of a unit drawn into it names, `instructions`, one markdown file the daemon reads at boot and
-  appends to that pane's prompt, and `plan`, how the issues drawn into it are done (below).
+  of a unit drawn into it names, `instructions`, one markdown file the daemon reads at boot, and
+  again at each launch, and appends to that pane's prompt, and `plan`, how the issues drawn into it
+  are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   **The order a pane's `PI_CONFIG_FILES` names them in** is the operator's files

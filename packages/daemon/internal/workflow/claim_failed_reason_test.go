@@ -348,16 +348,17 @@ func TestAWorkerDiedsReasonCarriesNoLineTheRoleWrote(t *testing.T) {
 	}
 }
 
-// The supervisor's sentence for a run of refused turns ends in the provider's message as the
-// role's own plugin posted it, which can hold a line break and run to a mebibyte. The two notices
-// with no failure record carry it on one line, its line break written as " / ", cut at the bound
-// the pod end is cut to, quoted, and followed after its closing quote by the mark that says it
-// was cut, so the reason is one line of a size this package chose and a reader sees both where
-// the provider's text ends and that it was cut. A held phase whose fact names a cause carries the
-// sentence whole in its failure record's `detail`, as before, and none of it in its reason. The
-// negative controls are deathReason writing the sentence as it came, as it did at b7085e21: both
-// reasons read over two lines and 2000 runes past the bound; and writing it cut but unquoted, as
-// it did at 8a30be78, where nothing showed where the provider's text ended and the mark began.
+// The failure an earlier daemon wrote for a run of refused turns ends in the provider's message
+// as the role's own plugin posted it, which can hold a line break and run to a mebibyte. The two
+// notices with no failure record carry it on one line, its line break written as " / ", cut at
+// the bound the pod end is cut to, quoted, and followed after its closing quote by the mark that
+// says it was cut, so the reason is one line of a size this package chose and a reader sees both
+// where the provider's text ends and that it was cut. A held phase whose fact names a cause
+// carries the sentence whole in its failure record's `detail`, as before, and none of it in its
+// reason. The negative controls are deathReason writing the sentence as it came, as it did at
+// b7085e21: both reasons read over two lines and 2000 runes past the bound; and writing it cut but
+// unquoted, as it did at 8a30be78, where nothing showed where the provider's text ended and the
+// mark began.
 func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 	const head = "the provider refused 3 turns in a row: request rejected"
 	const forged = "forged: the role is fine"
@@ -621,11 +622,14 @@ func TestARoleThatWorksNoPhaseKeepsTheReasonItsPathBuilds(t *testing.T) {
 
 // The worker-died a production check's look sends when the checking role's claim fails is a
 // worker-died like the others, and its reason is bounded and kept to one line as theirs is (the
-// round-23 decision on R5, dispatch://INFRA-2009): it carries the supervisor's sentence, which
-// for a run of refused turns holds the provider message the role's own plugin posts, of up to a
-// mebibyte over any number of lines. The case fails the tester of a closed child whose look is
-// open, with a sentence of two lines and two thousand bytes. The negative control is the path at
-// dd846980, which wrote the sentence whole after "production check look 1 lost its tester: ".
+// round-23 decision on R5, dispatch://INFRA-2009): it carries the supervisor's sentence, which in
+// a failure an earlier daemon wrote for a run of refused turns holds the provider message the
+// role's own plugin posts, of up to a mebibyte over any number of lines. The case fails the tester
+// of a closed child whose look is open, with a sentence of two lines and two thousand bytes. The
+// negative control is the path at dd846980, which wrote the sentence whole after "production
+// check look 1 lost its tester: ". After the sentence the reason names the cause and the look
+// that retries the claim (checkRoleFailedReason), words of the daemon's own of a bounded length,
+// so the bound is held on what comes before them.
 func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
 	const forged = "forged: the role is fine"
 	sentence := "the provider refused 3 turns in a row: request rejected\n" + forged + " " + strings.Repeat("y", 2000)
@@ -644,7 +648,14 @@ func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
 	if strings.Contains(reason, "\n") {
 		t.Errorf("the look's worker-died reads over %d lines, want one: %.200q", strings.Count(reason, "\n")+1, reason)
 	}
-	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(reason)) > limit {
-		t.Errorf("the look's worker-died is %d runes, want no more than %d: the sentence and its cut mark, quoted", len([]rune(reason)), limit)
+	head, tail, ok := strings.Cut(reason, "; its cause is provider_error; look 2 retries the claim at ")
+	if !ok {
+		t.Fatalf("the look's worker-died reads %q, want the cause and the next look after the sentence", reason)
+	}
+	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(head)) > limit {
+		t.Errorf("the look's worker-died is %d runes before its cause, want no more than %d: the sentence and its cut mark, quoted", len([]rune(head)), limit)
+	}
+	if len([]rune(tail)) > 200 {
+		t.Errorf("the look's worker-died's next look reads %d runes, want a bounded sentence of the daemon's own: %q", len([]rune(tail)), tail)
 	}
 }

@@ -22,7 +22,7 @@ func TestADispatchRefusalIsReadFromItsCodeAsItCame(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"INVALID_TRANSITION","error":"read the workflow at https://dispatch.example/docs#transitions"}`))
 	}))
 	t.Cleanup(server.Close)
-	_, err := New(server.URL, dispatchToken).GetIssue(context.Background(), "an-issue")
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "an-issue")
 	var refusal *Error
 	if !errors.As(err, &refusal) || !refusal.Code.Equal("INVALID_TRANSITION") {
 		t.Fatalf("a refusal coded INVALID_TRANSITION beside a URL = %#v, want Dispatch's code", err)
@@ -64,7 +64,7 @@ func TestADispatchRefusalsCodeIsReadAsItCameBesideARequestThatQuotesIt(t *testin
 			{"quoted", "the last write was refused: " + c.code + ", so it is posted again"},
 		} {
 			t.Run(c.code+"/"+row.name, func(t *testing.T) {
-				err := New(server.URL, dispatchToken).PostMessage(context.Background(), "LEGION-9", row.message)
+				err := New(server.URL, BearerTransport(dispatchToken, nil)).PostMessage(context.Background(), "LEGION-9", row.message)
 				if !c.decided(err) {
 					t.Errorf("Dispatch's %d %s to a message %q = %v, want it decided on Dispatch's code as it came", c.status, c.code, row.message, err)
 				}
@@ -103,7 +103,7 @@ func TestADispatchRefusalsSentenceIsReadAsItCame(t *testing.T) {
 				_, _ = w.Write([]byte(c.body))
 			}))
 			t.Cleanup(server.Close)
-			_, err := New(server.URL, c.token).GetIssue(context.Background(), "an-issue")
+			_, err := New(server.URL, BearerTransport(c.token, nil)).GetIssue(context.Background(), "an-issue")
 			if !c.decided(err) {
 				t.Errorf("Dispatch's %d %s = %v, want it decided on its sentence as it came", c.status, c.body, err)
 			}

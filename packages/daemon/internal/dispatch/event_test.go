@@ -46,7 +46,7 @@ func TestAnEventReadsAlikeFromTheLogAndTheStream(t *testing.T) {
 				`"actor":{"kind":"session","id":"legion-daemon:LEGION"}` + tc.createdAt + `,"payload":` + payload + `}`
 			want := Event{ID: 41, IssueKey: "LEGION-9", Seq: 3, Actor: Actor{Kind: "session", ID: "legion-daemon:LEGION"}, Notify: &notify,
 				Type: "ask.opened", CreatedAt: tc.want, Payload: json.RawMessage(payload)}
-			served, err := New(servedPage(t, "["+raw+"]"), dispatchToken).EventsAfter(context.Background(), "LEGION-9", 0)
+			served, err := New(servedPage(t, "["+raw+"]"), BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-9", 0)
 			if err != nil || len(served) != 1 || !reflect.DeepEqual(served[0], want) {
 				t.Fatalf("EventsAfter = %+v, %v; want the one event %+v", served, err, want)
 			}
@@ -86,7 +86,7 @@ func TestAnEventThatDoesNotReadIsRefusedWithoutItsText(t *testing.T) {
 			served: []string{"JSON string"}, streamed: []string{"JSON string"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := New(servedPage(t, "["+tc.event+"]"), token).EventsAfter(context.Background(), "LEGION-9", 0)
+			_, err := New(servedPage(t, "["+tc.event+"]"), BearerTransport(token, nil)).EventsAfter(context.Background(), "LEGION-9", 0)
 			oauth2calltest.RequireNoPiece(t, "dispatch.event-log/"+tc.name, fmt.Sprint(err), token)
 			for _, name := range tc.served {
 				if err == nil || !strings.Contains(err.Error(), name) {

@@ -3,12 +3,12 @@
 // ServiceAccount token (POST /v1/launcher-credentials/token), which no person approves, holding the
 // key the launcher credential is bound to in process memory only, logs in again before that
 // credential expires, and enrolls a pod's key under it — authenticating each enrollment call with a
-// launcher proof signed by the key. Revoke tears the enrollment down when the pod is gone. The one
-// route it calls with a bearer is the pod-session registration (RegisterPodSession), whose class
-// authenticates a service by that same ServiceAccount token. No key, no token, no launcher
-// credential id, and no grant or brokered secret value ever goes into an error, a log line, or the
-// daemon's state; the pod's own `agent-secrets` client handles brokered secret values with the
-// pod's own key.
+// launcher proof signed by the key. Revoke tears the enrollment down when the pod is gone. The two
+// routes it calls with a bearer are the pod-session registration (RegisterPodSession) and its
+// release (ReleasePodSessions), whose class authenticates a service by that same ServiceAccount
+// token. No key, no token, no launcher credential id, and no grant or brokered secret value ever
+// goes into an error, a log line, or the daemon's state; the pod's own `agent-secrets` client
+// handles brokered secret values with the pod's own key.
 package cipher
 
 import (
@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -192,9 +193,19 @@ func (e *APIError) Error() string {
 // POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent —
 // the caller retries once the daemon's next token login wins a credential — and neither is an
 // expired pod token, which the pod's current token replaces under the same key (TokenExpired), nor
-// a registrar the broker does not yet list (RegistrarNotListed).
+// a registrar the broker does not yet list (RegistrarNotListed). A 404 or a 405 is permanent here;
+// RouteUnserved tells it apart for a caller that reads it otherwise.
 func (e *APIError) Permanent() bool {
 	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired() && !e.RegistrarNotListed()
+}
+
+// RouteUnserved is the broker answering 404 or 405: it serves no route of that path and method,
+// which a broker of a build before the route answers, and so does one with no OAuth provider,
+// which mounts no /v1/oauth/ route; while the broker rolls to a build that has it, one replica of
+// several may answer so. Only a route the broker always serves once it has it reads so
+// (ReleasePodSessions'): a 404 of a route that names a row, such as Revoke's, is about that row.
+func (e *APIError) RouteUnserved() bool {
+	return e.Status == http.StatusNotFound || e.Status == http.StatusMethodNotAllowed
 }
 
 // TokenExpired is the broker refusing the pod token presented because it has expired
@@ -213,9 +224,10 @@ func (e *APIError) RegistrarNotListed() bool {
 
 // IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
 // (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
-// or at a later generation than sent (*SupersededError), or one named with no key
-// (*MissingThumbprintError). A transport failure, a 5xx, a 429, an expired pod token and a daemon
-// with no credential yet are all transient.
+// or at a later generation than sent (*SupersededError), one named with no key
+// (*MissingThumbprintError), or a release past one call's bounds (*ReleaseTooLargeError). A
+// transport failure, a 5xx, a 429, an expired pod token and a daemon with no credential yet are all
+// transient.
 func IsPermanent(err error) bool {
 	var permanent interface{ Permanent() bool }
 	return errors.As(err, &permanent) && permanent.Permanent()
@@ -707,10 +719,10 @@ func (*MissingThumbprintError) Permanent() bool { return true }
 // SupersededError is a registration of Pod under Session written at generation Sent and answered
 // at generation Answered, a later one: the broker holds a registration it took at that generation
 // and kept. Foreign is whether Answered is above Latest, the claim's current generation
-// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim registered
-// the session, or another service login wrote the row; otherwise a later process of this claim
-// registered the session since. Its message names the pod, the session and the generations, never
-// a token.
+// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim of this
+// daemon registered the session, or another process of the daemon's account wrote the row;
+// otherwise a later process of this claim registered the session since. Its message names the
+// pod, the session and the generations, never a token.
 type SupersededError struct {
 	Pod, Session           string
 	Sent, Answered, Latest int64
@@ -727,8 +739,92 @@ func (e *SupersededError) Error() string {
 // Permanent is true: this process's generation never rises, so no later write of it is taken.
 func (*SupersededError) Permanent() bool { return true }
 
+// maxReleasedSessions and maxReleaseBodyBytes are the broker's bounds of one release
+// (ReleasePodSessions): the most entries its session list may hold, counted as sent (envoy's
+// maxReleasedSessions), and the longest body the broker reads (envoy's maxJSONBodyBytes). A claim
+// holds at most 2,048 names (supervise.MaxHeldNamesPerClaim) of at most 255 bytes
+// (claim.MaxSessionNameBytes), about half a MiB as JSON, so one call carries every name a release
+// frees under both.
+const (
+	maxReleasedSessions = 4096
+	maxReleaseBodyBytes = 1 << 20
+)
+
+// podSessionReleaseBody is POST /v1/oauth/exchange/pod-sessions/release's body: the session names
+// whose registrations by this daemon the broker releases.
+type podSessionReleaseBody struct {
+	Sessions []string `json:"sessions"`
+}
+
+// ReleasePodSessions is POST /v1/oauth/exchange/pod-sessions/release: it tells the broker that the
+// daemon releases names, so that from the release's commit on the broker refuses every exchange
+// under each of them that a registration this daemon wrote admitted. It is sent as
+// RegisterPodSession sends its call: the daemon's own projected ServiceAccount token as the
+// Authorization bearer, read from TokenFile at the call, and no launcher proof. The caller stops
+// every write of the names first, since a registration write after the release makes that
+// registration live again.
+//
+// It sends nothing for a list of more than maxReleasedSessions entries, or whose body is longer
+// than maxReleaseBodyBytes, and answers a *ReleaseTooLargeError naming the bound, permanent; nor
+// for a token file it cannot read. It answers nil only for a 200 whose sessions is the number of
+// distinct names sent: the broker released every one, whether or not a registration of this
+// daemon's held it. A 200 with another count, or none, is an answer it cannot read and an error.
+// Any other answer is an *APIError carrying the broker's code (a 404 or a 405 is a broker with no
+// such route, RouteUnserved), and a transport failure is a plain error; none releases anything,
+// and a repeat of the call after any of them is safe.
+func (c *Client) ReleasePodSessions(ctx context.Context, names []string) error {
+	if len(names) > maxReleasedSessions {
+		return &ReleaseTooLargeError{Bound: fmt.Sprintf("it names %d sessions, more than the %d one release carries", len(names), maxReleasedSessions)}
+	}
+	body, err := json.Marshal(podSessionReleaseBody{Sessions: names})
+	if err != nil {
+		return err
+	}
+	if len(body) > maxReleaseBodyBytes {
+		return &ReleaseTooLargeError{Bound: fmt.Sprintf("its body is %d bytes, longer than the %d the broker reads", len(body), maxReleaseBodyBytes)}
+	}
+	token, err := c.serviceToken()
+	if err != nil {
+		return fmt.Errorf("agent-secrets release: %w", err)
+	}
+	status, answered, cut, err := c.send(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", body, answerBytes, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return refusal(status, answered, cut)
+	}
+	var answer struct {
+		Sessions *int `json:"sessions"`
+	}
+	if err := answered.Decode(&answer); err != nil {
+		return fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
+	}
+	if sent := len(slices.Compact(slices.Sorted(slices.Values(names)))); answer.Sessions == nil || *answer.Sessions != sent {
+		counted := "no count of sessions"
+		if answer.Sessions != nil {
+			counted = fmt.Sprintf("%d sessions", *answer.Sessions)
+		}
+		return fmt.Errorf("broker answered %d releasing %s, where the daemon sent %d distinct names: an answer it cannot read, so it takes no name as released", status, counted, sent)
+	}
+	return nil
+}
+
+// ReleaseTooLargeError is a release ReleasePodSessions sends nothing for: past one of the broker's
+// bounds of one call, which Bound names.
+type ReleaseTooLargeError struct{ Bound string }
+
+func (e *ReleaseTooLargeError) Error() string {
+	return "the release of the pod sessions is not sent: " + e.Bound
+}
+
+// Permanent is true: the same names are past the same bound however often they are sent.
+func (*ReleaseTooLargeError) Permanent() bool { return true }
+
 // doProof signs a launcher proof over this call with the held credential's key and sends it as
-// the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes
+// the Proof header — never Authorization, which only the pod-session routes read. It takes
 // no lock: a renewal proves the same key again, so the broker keeps the credential's id and key
 // and a proof in flight during one stays valid. With no live credential it wakes the login loop
 // and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
@@ -893,24 +989,33 @@ func (c *Client) noCredentialError() error {
 // their answers comes near it, and a longer one is cut there.
 const answerBytes = 1 << 16
 
-// do sends one broker call and reads its answer through oauth2call.ReadAnswer: its first limit
-// bytes, and whether the bound cut it, which a caller that must tell a whole answer from one cut
-// short reads (Carried), and so does refusal, which quotes a body that is not the contract's shape.
-// The answer comes back whole, which its caller decodes as its contract's shape or not
-// (Answer.Decode): the decode's error names the member that did not decode and quotes no value,
-// since the broker's answer, or a stand-in's, can echo the call's token into a field the decoder
-// quotes, a time's among them. A read that fails is an error. A refusal is decided on as it came
-// and prints as the rule reads it, with every credential the call carried redacted, since the
-// broker's words, or a stand-in's, can echo the call's token, and every caller prints a refusal
-// (refusal).
+// do sends one broker call with body encoded as JSON, nil for none, and reads its answer as send
+// does.
 func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, oauth2call.Answer, bool, error) {
-	var payload io.Reader
+	var encoded []byte
 	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if encoded, err = json.Marshal(body); err != nil {
 			return 0, oauth2call.Answer{}, false, err
 		}
-		payload = bytes.NewReader(encoded)
+	}
+	return c.send(ctx, method, path, encoded, limit, mutate)
+}
+
+// send sends one broker call whose JSON body is already encoded, nil for none, and reads its
+// answer through oauth2call.ReadAnswer: its first limit bytes, and whether the bound cut it,
+// which a caller that must tell a whole answer from one cut short reads (Carried), and so does
+// refusal, which quotes a body that is not the contract's shape. The answer comes back whole,
+// which its caller decodes as its contract's shape or not (Answer.Decode): the decode's error
+// names the member that did not decode and quotes no value, since the broker's answer, or a
+// stand-in's, can echo the call's token into a field the decoder quotes, a time's among them. A
+// read that fails is an error. A refusal is decided on as it came and prints as the rule reads
+// it, with every credential the call carried redacted, since the broker's words, or a stand-in's,
+// can echo the call's token, and every caller prints a refusal (refusal).
+func (c *Client) send(ctx context.Context, method, path string, body []byte, limit int, mutate func(*http.Request)) (int, oauth2call.Answer, bool, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
 	if err != nil {

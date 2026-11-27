@@ -16,7 +16,7 @@ import (
 // (oauth2call.StatusLine), and none of the phrase the server wrote. Captures
 // dispatch.status-line/no-words.
 func TestARefusalWithNoWordsNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
-	_, err := New(oauth2calltest.StatusLineServer(t, http.StatusBadGateway, "", ""), dispatchToken).GetIssue(context.Background(), "an-issue")
+	_, err := New(oauth2calltest.StatusLineServer(t, http.StatusBadGateway, "", ""), BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "an-issue")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("get issue error = %T %v, want *dispatch.Error", err, err)

@@ -279,9 +279,10 @@ func wantContains(t *testing.T, err error, wants ...string) {
 }
 
 // okLine is the OK line an image prints when every probe passed, confirming contract, the
-// prompt-named agents' models resolved, the capability list checked, model fallback off.
+// prompt-named agents' models resolved, the capability list checked, model fallback off, and an
+// Oh My Pi omp/18.18.6 whose help lists --session-id.
 func okLine(contract int) string {
-	return bootprobe.OKLine("/opt/omp/bin/omp", contract, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off")
+	return bootprobe.OKLine("/opt/omp/bin/omp", contract, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken)
 }
 
 // Role references whose encoding the image's Decode refuses would fail the probe pod, and the
@@ -438,7 +439,7 @@ func TestProbeImageRefusesAProbePodThatDoesNotStart(t *testing.T) {
 func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
 	g := newProbeRig(t, nil)
 	g.with(func() {
-		g.log = "worker TLS probe failed: curl cannot verify refusal of the AAA chain: unavailable (probe deadline)"
+		g.log = "legion probe-image: capability eval-python is missing: omp setup python --check --json: context deadline exceeded"
 	})
 	phases := make(chan string, 2)
 	probe := probeOptions(t)
@@ -467,7 +468,7 @@ func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
 			Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
 		}}}
 	})
-	wantContains(t, <-result, "curl cannot verify refusal of the AAA chain", "probe deadline")
+	wantContains(t, <-result, "capability eval-python is missing", "context deadline exceeded")
 }
 
 // A passing probe reports what its OK line said of the image: the model-fallback mark, as the
@@ -478,7 +479,7 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 			g := newProbeRig(t, nil)
 			g.succeeds("probe-image: capability eval-js: present (Oh My Pi is its JavaScript runtime, and the launch probes ran it)\n" +
 				"probe-image: capability model-fallback: reported (the daemon reports it from the image probe's read at boot, or the plugin gate's under tmux)\n" +
-				bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, mark) + "\n")
+				bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, mark, "omp/18.18.6", bootprobe.SessionIDFlagTaken) + "\n")
 
 			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
 
@@ -487,6 +488,97 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 			}
 			if report.ModelFallback != mark {
 				t.Errorf("report.ModelFallback = %q, want %q", report.ModelFallback, mark)
+			}
+		})
+	}
+}
+
+// ompLine is okLine(3) with the omp-version mark version and the omp-session-id mark sessionID.
+func ompLine(version, sessionID string) string {
+	return bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", version, sessionID)
+}
+
+// lineBeforeTheOmpMarks is the OK line of an image whose legion predates the omp-version and
+// omp-session-id marks: every mark the probe otherwise requires, and neither of those two.
+const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=off daemon-api-version=3"
+
+// Under an exchange audience every new Oh My Pi role starts with --session-id, so the probe passes
+// only an image whose OK line says its Oh My Pi takes it: a help that lists no such flag, a help
+// the probe could not read, and an older image's line, which carries neither omp mark, are each
+// refused once, naming what the line says of the image's Oh My Pi (its version, or that its legion
+// reports none), the flag, the setting, why the setting needs the flag, and both remedies.
+func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *testing.T) {
+	why := []string{
+		"runtime.kubernetes.agent_secrets.exchange_audience is set, so the daemon starts each new Oh My Pi role with --session-id <id> and resumes one by its recorded file with --resume <id>, " +
+			"and an Oh My Pi without the flag stops at it (unknown flag: --session-id), so no role would start",
+		"use a worker image built with an Oh My Pi that takes --session-id (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351) and a legion that reports it, " +
+			"or unset runtime.kubernetes.agent_secrets.exchange_audience — log tail: probe-image: OK",
+	}
+	for _, testCase := range []struct {
+		name, log string
+		want      string
+	}{
+		{"a help that lists no --session-id", ompLine("omp/18.18.6", bootprobe.SessionIDFlagAbsent),
+			"Succeeded, but its Oh My Pi, omp/18.18.6, does not take --session-id (omp-session-id=absent: its help lists no such flag)"},
+		{"a help the probe could not read", ompLine("omp/18.18.6", bootprobe.SessionIDFlagUnread),
+			"Succeeded, but the probe could not read whether its Oh My Pi, omp/18.18.6, takes --session-id (omp-session-id=unread: the log tail says why)"},
+		{"a help and a version the probe could not read", ompLine(bootprobe.OmpVersionUnread, bootprobe.SessionIDFlagUnread),
+			"Succeeded, but the probe could not read whether its Oh My Pi, whose version the probe could not read, takes --session-id"},
+		{"an older image's OK line, with neither mark", lineBeforeTheOmpMarks,
+			"Succeeded, but its legion CLI predates the omp-session-id mark and reports no Oh My Pi version, so nothing shows that its Oh My Pi takes --session-id"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			g := newProbeRig(t, nil, exchangeKeyed())
+			g.succeeds(testCase.log + "\n")
+
+			err := g.probe(probeOptions(t))
+
+			wantContains(t, err, append([]string{"worker image sha256:" + testDigestHex + " failed its probe: pod " + probeSandboxName + " " + testCase.want}, why...)...)
+			if n := g.creates.Load(); n != 1 {
+				t.Errorf("ran the probe %d times for a definitive answer, want once", n)
+			}
+		})
+	}
+}
+
+// An image whose Oh My Pi takes --session-id passes under an exchange audience, and the pass's log
+// line carries what the line says of that Oh My Pi. With no exchange audience nothing starts a role
+// with the flag, so the mark is never judged: a help that lists no such flag passes, under an
+// enrollment with no exchange audience as with none, and so does an older image's line with
+// neither mark, whose pass logs none.
+func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testing.T) {
+	for _, testCase := range []struct {
+		name               string
+		option             rigOption
+		log                string
+		version, sessionID string
+	}{
+		{"--session-id taken under an exchange audience", exchangeKeyed(), ompLine("omp/18.18.6", bootprobe.SessionIDFlagTaken), "omp/18.18.6", bootprobe.SessionIDFlagTaken},
+		{"no --session-id and no agent secrets", withOptions(func(*Options) {}), ompLine("omp/18.18.6", bootprobe.SessionIDFlagAbsent), "omp/18.18.6", bootprobe.SessionIDFlagAbsent},
+		{"no --session-id under an enrollment with no exchange audience", withOptions(func(o *Options) {
+			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+		}), ompLine("omp/18.18.6", bootprobe.SessionIDFlagAbsent), "omp/18.18.6", bootprobe.SessionIDFlagAbsent},
+		{"an older image's OK line, with neither mark, and no exchange audience", withOptions(func(*Options) {}), lineBeforeTheOmpMarks, "", ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			logged := &lockedLog{}
+			g := newProbeRig(t, nil, testCase.option, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+			g.succeeds(testCase.log + "\n")
+
+			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+
+			if err != nil {
+				t.Fatalf("ProbeImage = %v, want a pass", err)
+			}
+			if report.ModelFallback != "off" {
+				t.Errorf("report.ModelFallback = %q, want off", report.ModelFallback)
+			}
+			passed := fmt.Sprintf("model-fallback=off omp-version=%s omp-session-id=%s log=", testCase.version, testCase.sessionID)
+			if testCase.version == "" {
+				passed = `model-fallback=off omp-version="" omp-session-id="" log=`
+			}
+			if !strings.Contains(logged.String(), passed) {
+				t.Errorf("log = %s, want the pass's line carrying %q", logged.String(), passed)
 			}
 		})
 	}
@@ -526,11 +618,11 @@ func TestProbeImageRefusesWhatTheProbePodAnswered(t *testing.T) {
 				"legion probe-image: capability browser is missing: /nonexistent/chromium (PUPPETEER_EXECUTABLE_PATH) --version: fork/exec /nonexistent/chromium: no such file or directory")
 		}, []string{"Failed (container probe terminated", "exit code 1", "capability browser is missing"}},
 		{"a build-time probe's result", func(g *probeRig) {
-			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsSkipped, bootprobe.CapabilitiesAll, "off"))
+			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsSkipped, bootprobe.CapabilitiesAll, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken))
 		},
 			[]string{"without resolving the prompt-named agents' models (its OK line's agent-models mark: skipped, where the daemon's probe requires resolved)"}},
 		{"a probe that left the browser row unchecked", func(g *probeRig) {
-			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesBrowserSkipped, "off"))
+			g.succeeds(bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesBrowserSkipped, "off", "omp/18.18.6", bootprobe.SessionIDFlagTaken))
 		},
 			[]string{"Succeeded without checking the whole capability list (its OK line's capabilities mark: browser-skipped, where the daemon's probe requires checked)"}},
 		{"a CLI that predates the discovery-on pod lane", func(g *probeRig) {
@@ -750,21 +842,21 @@ func TestProbeImageRetriesAPodTheKubeletFailed(t *testing.T) {
 	}
 }
 
-// A probe pod whose `legion probe-image` exited 75 with its no-verdict line ran checks its limits
-// or its deadline stopped short of an answer, and none that failed: that says nothing of the
+// A probe pod whose `legion probe-image` exited 75 with its no-verdict line ran checks its
+// deadline stopped short of an answer, and none that failed: that says nothing of the
 // image, so the attempt is transient, logged naming what had no verdict, and the next attempt's
 // pod, which passes, passes the probe. The exit code and the line are written out, not read from
 // bootprobe, so the test also runs on a daemon that predates them, which refuses the first pod.
 func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
-	const run = "its 40s limit ended it after 40.0s: signal: killed"
+	const noVerdict = "capability browser: not checked"
 	logged := &lockedLog{}
 	g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
 	var pods atomic.Int32
 	g.finishes(func(p *corev1.Pod) {
 		if pods.Add(1) == 1 {
 			g.with(func() {
-				g.log = "probe-image: TLS client aws emSign: no verdict (" + run + ")\n" +
-					"legion probe-image: worker probe has no verdict: aws emSign: " + run + "\n"
+				g.log = "probe-image: capability browser: unanswered (not checked: context deadline exceeded)\n" +
+					"legion probe-image: worker probe has no verdict: " + noVerdict + "\n"
 			})
 			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 75, Reason: "Error"}},
@@ -785,7 +877,7 @@ func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
 	if n := g.creates.Load(); n != 2 {
 		t.Errorf("ran the probe %d times, want the attempt with no verdict and the one that passed", n)
 	}
-	want := "pod " + probeSandboxName + " exited 75 with no verdict: aws emSign: " + run
+	want := "pod " + probeSandboxName + " exited 75 with no verdict: " + noVerdict
 	if !strings.Contains(logged.String(), "boot probe failed transiently") || !strings.Contains(logged.String(), want) {
 		t.Errorf("the attempt with no verdict was not logged as a transient failure saying %q:\n%s", want, logged.String())
 	}
@@ -793,17 +885,16 @@ func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
 }
 
 // Attempts that each exit 75 (bootprobe.NoVerdictExit) spend the daemon's six (bootprobe.Image),
-// and the probe then ends naming the last attempt's pod and every TLS run and step its no-verdict
+// and the probe then ends naming the last attempt's pod and every step its no-verdict
 // line names, with the log after them: what the operator reads of a probe that never reached a
 // verdict.
 func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(t *testing.T) {
-	const noVerdict = "aws emSign: its 40s limit ended it after 40.0s: signal: killed; " +
-		"chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated; " +
+	const noVerdict = "capability lsp: not checked; capability browser: not checked; " +
 		"role overlays: implementer: signal: terminated"
 	g := newProbeRig(t, nil)
 	g.with(func() {
-		g.log = "probe-image: TLS client aws emSign: no verdict (its 20s limit ended it after 20.0s: signal: killed)\n" +
-			"probe-image: TLS client aws emSign: no verdict (its 40s limit ended it after 40.0s: signal: killed)\n" +
+		g.log = "probe-image: capability lsp: unanswered (not checked: context deadline exceeded)\n" +
+			"probe-image: capability browser: unanswered (not checked: context deadline exceeded)\n" +
 			bootprobe.NoVerdictPrefix + noVerdict + "\n"
 	})
 	g.finishes(func(p *corev1.Pod) {
@@ -817,7 +908,7 @@ func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(
 	err := g.probe(p)
 
 	wantContains(t, err, "the worker image probe never completed within its retry budget (6 attempts): pod "+probeSandboxName+
-		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: TLS client aws emSign: no verdict")
+		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: capability lsp: unanswered")
 	if n := g.creates.Load(); n != 6 {
 		t.Errorf("ran the probe %d times, want the retry's 6", n)
 	}
@@ -828,13 +919,13 @@ func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(
 // attempt. The exit code decides, not the log: a no-verdict line beside the failure leaves it a
 // refusal.
 func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
-	const failed = "legion probe-image: worker TLS probe failed: aws accepts the emSign chain: exit 0"
+	const failed = "legion probe-image: capability browser is missing: chromium is not on PATH, and PUPPETEER_EXECUTABLE_PATH names no executable"
 	for _, testCase := range []struct {
 		name string
 		log  string
 	}{
 		{"a failure", failed},
-		{"a failure beside a no-verdict line", bootprobe.NoVerdictPrefix + "chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated\n" + failed},
+		{"a failure beside a no-verdict line", bootprobe.NoVerdictPrefix + "role overlays: implementer: signal: terminated\n" + failed},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			g := newProbeRig(t, nil)

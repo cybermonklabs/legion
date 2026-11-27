@@ -56,6 +56,10 @@ func New(rate, burst int, jitter func(interval time.Duration) time.Duration) *Li
 	return l
 }
 
+// Interval is what one wake costs at this limiter's rate, time.Minute / rate: the least spacing
+// between two releases at a burst of one, before jitter. Zero is the pacing off.
+func (l *Limiter) Interval() time.Duration { return l.interval }
+
 // Reserve returns the moment this wake may run, given the caller's own now: now itself while the
 // rate is unspent — a fresh limiter, a burst still open, or a queue that has been idle long enough
 // for the bucket to refill — and otherwise one interval plus a part of one after the release

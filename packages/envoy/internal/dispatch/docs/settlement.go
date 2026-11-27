@@ -686,13 +686,14 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
 // the ask writes queued before it.
 //
-// caused holds, by an event's place in events, a write of the node and tuple store that event is
-// the cause of (graphstore.Uncaused): the version's block index, or the follow of an ask the
-// settlement opened. Its append is queued right after the event's and its stamp, naming the
-// event's id as the id sequence left it (graphstore.LatestEvent), so nothing between the two
-// appends another event. A held write is read when the step runs, in the write phase, so one an
-// earlier step fills then (createAskBlock) is read as that step left it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int]*graphstore.Uncaused) error {
+// caused holds, by an event's place in events, the writes of the node and tuple store that event
+// is the cause of (graphstore.Uncaused), in the order they are stated: the version's block index,
+// or the node of an ask the settlement opened and its author's follow. Their appends are queued
+// right after the event's and its stamp, naming the event's id as the id sequence left it
+// (graphstore.LatestEvent), so nothing between the two appends another event. A held write is
+// read when the step runs, in the write phase, so one an earlier step fills then (createAskBlock)
+// is read as that step left it.
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int][]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -705,7 +706,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
-			if stated := caused[index]; stated != nil {
+			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
@@ -868,18 +869,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 				return settleDone, st.abandon(err)
 			}
 		}
-		// A person's version opens or moves on the document's edit notice, under the owner lock
-		// this settlement took first (lockArtifactOwner above): the sweep takes the two in that
-		// order too (sendEditNotice). A closed issue's version opens none, and deletes in that
-		// same order the notice a person's version opened before the close, due or held
-		// (holdEditNotice): neither a reopen inside its quiet time nor the first notice after the
-		// reopen, which would start from that row's from_version (openEditNotice), carries the
-		// edits this version saves.
-		if st.issueClosed {
-			if err := writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room); err != nil {
-				return settleDone, st.abandon(err)
-			}
-		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
+		// A person's version opens or moves on the document's edit notice, and a closed issue's
+		// deletes it (settledEditNotice).
+		if err := s.settledEditNotice(ctx, tx, room, st.issueClosed, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		// A document body cites nodes whose rows carry a backlink count, so the version event
@@ -896,12 +888,12 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		// What this settlement's block index stated waits for that event: its id is the cause
 		// every node and tuple of the pass carries, and it exists only once the event's insert has
 		// run, so it is stated right after it (appendEvents).
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int]*graphstore.Uncaused{0: &result.blocks}); err != nil {
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	// The follows of the asks this settlement opened wait for those asks' ask.opened events, each
-	// stated right after its own (followsByEvent).
+	// The nodes and the follows of the asks this settlement opened wait for those asks' ask.opened
+	// events, each stated right after its own (followsByEvent).
 	follows, err := st.reconciliation.followsByEvent(st.reconciliation.events)
 	if err != nil {
 		return settleDone, st.abandon(err)
@@ -960,4 +952,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		s.sweepUnrecordedMarks(room, st.versioned)
 	}
 	return settleDone, settleOutcome{}
+}
+
+// settledEditNotice is what a settlement's version does to the document's edit notice, under the
+// owner lock the settlement took first: the sweep takes the two in that order too
+// (sendEditNotice). A person's version on an open issue opens or moves on the notice
+// (recordEditNotice). A closed issue's version opens none, and deletes in that same order the
+// notice a person's version opened before the close, due or held (holdEditNotice): neither a
+// reopen inside its quiet time nor the first notice after the reopen, which would start from that
+// row's from_version (openEditNotice), carries the edits this version saves. The version a joined
+// transaction writes as the settlement would (SettleVersion) does the same, and a snapshot's,
+// whose closedIssue is false.
+func (s *Service) settledEditNotice(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, version int, authors []model.Actor, latest *model.Actor) error {
+	if closedIssue {
+		return writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room)
+	}
+	return s.recordEditNotice(ctx, tx, room, version, authors, latest)
 }

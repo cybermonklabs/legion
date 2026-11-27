@@ -36,7 +36,7 @@ func TestAPlanBlockDispatchCannotCutIsRefusedWithoutItsText(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := New(server.URL, bearer).PlanDocument(context.Background(), "plan-6", 3)
+			_, err := New(server.URL, BearerTransport(bearer, nil)).PlanDocument(context.Background(), "plan-6", 3)
 
 			if err == nil || !strings.Contains(err.Error(), "document plan-6 at version 3") {
 				t.Fatalf("PlanDocument = %v, want a refusal naming plan-6 at version 3", err)

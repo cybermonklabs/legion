@@ -785,7 +785,11 @@ no second object either. Only a failure of the id map itself stops a run, since 
 resume would write everything again. A refusal is data, not a failure: a 413, a 400
 `CAP_EXCEEDED` or any other non-2xx answer is counted by route and error code, and every object
 it left unwritable that the map does not already hold is counted as skipped — so what a run
-reports as skipped is what the plan still lacks, and the run goes on.
+reports as skipped is what the plan still lacks, and the run goes on. A write that landed with no
+answer to give (`409 KEY_COMMITTED`, or a replayed 2xx reading `ANSWER_NOT_KEPT`) is no refusal:
+the run reads what it made back from its route's own list (the project's issues, the issue's
+documents or comments) by its title, name or body, records it and counts it written. Only one
+that read finds nothing is counted, as `LANDED_UNREAD`.
 
 **The map is a table of `public`, and every statement of this package names the schema of every
 Dispatch table it reads.** Postgres's default `search_path` is `"$user", public`, so a schema
@@ -1434,7 +1438,10 @@ mapped to its local one in `public.loadtest_replay_ids` as it goes, so a killed 
   each kind. Largest in the 2026-10-26 bundle: a padding edit of 623,266 bytes (a 623,138-byte
   version change), a restore of 637,584 bytes, a replay upload of 665,020 bytes.
 - **Comments.** Every open thread in creation order, and every resolved thread a window event
-  refers to (created, then resolved). The other resolved threads are not recreated.
+  refers to (created, then resolved). The other resolved threads are not recreated. A comment
+  its author deleted since is served by every event without its body, so it is written with a
+  placeholder body (`deletedPostBody`) and keeps its place; one deleted before 22:55 stays live
+  in the seed, since 35efd326 has no delete route (`comments_deleted` in `bundle.meta.json`).
 - **Anchors** (`chooseAnchor`). Most logged blocks no longer exist in today's block maps, so an
   anchor lands by the first rule that applies. `bundle.meta.json`'s `anchor_rules` counts the
   state's and the window's anchors by rule:
@@ -1654,8 +1661,16 @@ one action of one kind:
 | markdown artifact created | `doc-create` | `POST /issues/{key}/artifacts` with its `created-docs/` version 1 |
 | file artifact created, file version | `file-create`, `file-version` | multipart `POST /issues/{key}/artifacts` with deterministic bytes of the logged size |
 | comment resolved | `resolve` | `POST /comments/{id}/resolve` |
+| comment deleted | `comment-delete` | `DELETE /comments/{id}` as its author |
+| message deleted | `message-delete` | `DELETE /messages/{id}` as its author; a message no planned write creates (one written before the window: the seed writes none) is not sent (`unseeded_message`) |
 | ask opened, answered, resolved; issue claimed | `ask-open`, `ask-answer`, `ask-resolve`, `claim` | `POST /issues/{key}/asks`; `GET /asks/{id}` -> `POST /asks/{id}/answer` as the answering person (`X-Dispatch-User`, with the ask's `edited_at`); `POST /asks/{id}/resolve`; `POST /issues/{key}/claim` |
 | `child.status`, `comment.anchor_refreshed`, `comment.reopened`, `issue.closed` beside its `issue.updated`, `message.delivery`/`accepted`, `user_state.*` | not sent | derived by the server |
+
+A comment or a message its author deleted since is served by every event of it without its body
+(`deleted_at` and `deleted_by` in its place), and Dispatch refuses a post with an empty body (`400
+INVALID_COMMENT`, `400 INVALID_MESSAGE`), so its create is sent with a placeholder body
+(`deletedPostBody`), counted by event type in `deleted_bodies`; the post keeps its place, and its
+delete is sent where the window holds it.
 
 All paths are under `/api/v1`. The client keeps each document's text (the build's own text, below;
 its own edits; the created documents), so an upload sends the current text with no read. Every edit

@@ -622,7 +622,8 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 // two costs: a GitHub clock more than answerSkew ahead makes a review submitted before the
 // completion read as the reviewer's answer, and tell again; an answer submitted within answerSkew
 // of the completion reads as delivered late, and tells only when the round's stuck cause or head
-// changes (stuckAs).
+// changes (stuckAs). The same two clocks meet where a review is placed against the raise of the
+// reviewer's entry (earlierRound), which takes a review submitted within answerSkew of it.
 const answerSkew = 10 * time.Second
 
 // byReviewer says whether review is the reviewer's own review-App session, not merely a review the
@@ -818,7 +819,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// a review the review App submitted: no other author's review ever reaches the compare.
 	var reviewerClaim claim.Token
 	var reviewerSession string
-	if e.byReviewApp(fact.Author) {
+	byApp := e.byReviewApp(fact.Author)
+	if byApp {
 		reviewerClaim, reviewerSession, err = e.reviewersClaim(ctx, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
@@ -836,6 +838,16 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// delivered before it, or an outsider's review, cannot make the decision look old.
 	state := strings.ToLower(fact.State)
 	decides := fact.Decides()
+	// A deciding review of an earlier round than the one the reviewer's row stands at decides
+	// nothing, and nothing of it is written: no refusal, no order (earlierRound).
+	if decides {
+		if why := earlierRound(fact, reviewer, byApp); why != "" {
+			e.logOnCommit(ctx, "workflow: a review of an earlier round decides nothing: "+why, "issue", issue.Key, "pull_request", pr.Number,
+				"author", fact.Author, "state", state, "submitted_at", fact.SubmittedAt, "footer_entry", fact.LegionEntry(),
+				"entry", reviewer.Entry, "entry_raised_at", reviewer.EntryRaisedAt)
+			return intake.Result{}, nil
+		}
+	}
 	// refused is why a review the round's rules otherwise count was refused the round at the head
 	// the record holds now (RefusedAtThisHead). It is kept on the reviewer's row below, since nothing
 	// else would say why the round has no decision. A refusal that stands at every head
@@ -948,11 +960,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 // review of an earlier entry - submitted before a re-admission and applied after it, however
 // late, or before a carried hand-over's promotion and applied after it - names a number the row
 // has left and moves nothing, and the first review of a new generation reads the whole change. No
-// time is compared: a review's submission time is GitHub's clock and an entry's is the daemon's,
-// and nothing orders the two. A row that the entry upgrade filled (20261111225552_phase_entry) can
-// hold no task, and a review of that round moves nothing. Where the commit stays, the cost is a
-// next round that reads more: from an older commit, or the whole change. Who decides the round is
-// not changed by any of this.
+// time is compared here: a review's submission time is GitHub's clock and an entry's is the
+// daemon's, so the entry the footer names is what says whether the review read the round that
+// stands. A row that the entry upgrade filled (20261111225552_phase_entry) can hold no task, and a
+// review of that round moves nothing. Where the commit stays, the cost is a next round that reads
+// more: from an older commit, or the whole change. Who decides the round is not changed by any of
+// this; a review of an earlier round decides nothing by a rule of its own (earlierRound), which
+// compares those two clocks within answerSkew, and which review applies before this.
 func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseRow) string {
 	switch named := review.LegionEntry(); {
 	case reviewer.EntryTask == "":
@@ -961,6 +975,38 @@ func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseR
 		return "its footer names no entry"
 	case named != reviewer.Entry:
 		return fmt.Sprintf("its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry)
+	}
+	return ""
+}
+
+// earlierRound is why review, a deciding review, is of an earlier round than the one reviewer's
+// row stands at, and "" when it is not: it was submitted more than answerSkew before the row's
+// entry was raised (record.PhaseRow.EntryRaisedAt) - by a person, on that time alone; by the review
+// App (byApp), only when its footer also names an entry, and not the row's (LegionEntry). Such a
+// review reaches the daemon after the round it decided ended - delivered late, or replayed from a
+// message the intake gave up on, however late - and taking it would decide, or record a refusal
+// in, a round nobody reviewed it for. review drops it before it writes anything.
+//
+// The times are GitHub's clock (the submission) and the daemon's (the raise), which answerSkew
+// already bounds for the reviewer's answer to its completion (reviewersAnswer), so a review
+// submitted within answerSkew of the raise is taken. A review with no submission time, and a row
+// with no raise time, are never of an earlier round by this rule. A review-App review whose footer
+// names no entry, or names the row's, decides as before whatever its time; and one that names an
+// earlier entry but was submitted after the raise decides too: that is the reviewer's review of
+// the round that stands after a carried hand-over's promotion raised the entry in the middle of
+// it. A late review of an earlier round whose GitHub time runs ahead of the daemon's clock is
+// taken by the same rule, and decides only when its footer names the pull request's current head
+// (refusesRound).
+func earlierRound(review intake.PullRequestReview, reviewer record.PhaseRow, byApp bool) string {
+	if review.SubmittedAt.IsZero() || reviewer.EntryRaisedAt.IsZero() || !review.SubmittedAt.Before(reviewer.EntryRaisedAt.Add(-answerSkew)) {
+		return ""
+	}
+	if !byApp {
+		return fmt.Sprintf("it was submitted at %s, before entry %d was raised at %s", review.SubmittedAt, reviewer.Entry, reviewer.EntryRaisedAt)
+	}
+	if named := review.LegionEntry(); named != 0 && named != reviewer.Entry {
+		return fmt.Sprintf("its footer names entry %d and it was submitted at %s, before entry %d was raised at %s",
+			named, review.SubmittedAt, reviewer.Entry, reviewer.EntryRaisedAt)
 	}
 	return ""
 }
@@ -1105,7 +1151,7 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
 // (record.MergeState.Mergeable), or once the pull request has merged at that head: a merged pull
 // request has nothing left to merge, GitHub answers `unknown` for it for good, and the daemon
-// never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
+// never reads its state again (mergeStateOwed), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
 // (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the base is
@@ -1343,7 +1389,7 @@ func told(row record.PhaseRow, r round) bool {
 }
 
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
-// when the fact owes that read (askMergeStateFor, Config.ReadMergeState): the round the fact has
+// when the fact owes that read (mergeStateOwed, Config.ReadMergeState): the round the fact has
 // just been applied to leaves waiting on GitHub's answer for the head (round.waitsOnMergeState),
 // or the fact moves the head of an issue in implementing through merging, which a conflict with
 // the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
@@ -1364,9 +1410,12 @@ func told(row record.PhaseRow, r round) bool {
 // (daemon's mergeStateLadder), and the next fact of the issue asks again.
 //
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
-// walks the open pull requests recorded on the base once, and asks for each read inside that
-// walk (basePush), since the record it overwrites as it goes is what tells a redelivered push
-// from a first delivery.
+// walks the open pull requests recorded on the base once, and asks for their reads as one batch
+// inside that walk (basePush, Config.ReadBaseMergeStates), since the record it overwrites as it
+// goes is what tells a redelivered push from a first delivery.
+//
+// It reads the pull request's row alone (pullRequestRow, pullRequestRowByBranch): it writes
+// nothing of the record and reads none of what it remembers of its settled heads.
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if e.cfg.ReadMergeState == nil {
 		return nil
@@ -1376,21 +1425,21 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	kind := classify.MergeStateFactOther
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestSynchronized:
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.Push:
 		// The push moves no head of the record: its synchronize, from GitHub or from the per-issue
 		// read (daemon's followHead), is the fact that moves the head, and the one a head move is
 		// read for. So the push asks only as a review or a settlement does, for a round it leaves
 		// waiting on GitHub, and one push to a branch asks for no ladder beside its synchronize's.
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 	case intake.PullRequestChecks:
-		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
-		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).
@@ -1401,49 +1450,47 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || pr == nil {
 		return err
 	}
-	return e.askMergeStateFor(ctx, tx, pr, kind)
+	owed, err := e.mergeStateOwed(ctx, tx, pr, kind)
+	if err != nil || !owed {
+		return err
+	}
+	key := pr.Issue
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	return nil
 }
 
-// askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
-// one of the gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of
-// an issue in implementing or a phase after it, a base push of an issue in a phase after it) or by
-// the
-// third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
-// head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
-// for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
-// push reaches this from its handler's walk rather than through that switch (basePush), and that
-// walk is the one caller that names classify.MergeStateFactBasePush. A pull request that is not
-// open is read for nothing: it merges nothing until a reopen, which asks again, and its round
-// waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one), so the test of
-// its state here saves the store reads below.
-func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) error {
-	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
-		return nil
+// mergeStateOwed says whether a fact of kind fact owes a read of pr's merge state, by one of the
+// gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of an issue in
+// implementing or a phase after it, a base push of an issue in a phase after it) or by the third,
+// which the gate does not hold: the issue's review round waiting on GitHub's answer for the head
+// (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read for. It
+// is the one decision both askMergeState, for a fact of one pull request, and basePush, for
+// each pull request on a pushed base, read by. A pull request that is not open is owed nothing:
+// it merges nothing until a reopen, which asks again, and its round waits on no answer
+// (classify.RoundWaitsOnMergeState holds only for an open one), so the test of its state here
+// saves the store reads below.
+func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) (bool, error) {
+	if pr.State != record.PullRequestOpen {
+		return false, nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
-		return err
+		return false, err
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
-		return err
+		return false, err
 	}
-	owed := classify.MergeStateReadOwed(*issue, w.Line, fact)
-	if !owed {
-		// The round's own answer matters only where the fact and the phase owe no read: every
-		// phase a round can wait on GitHub in already owes one on a head move or a base push.
-		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-		if err != nil {
-			return err
-		}
-		owed = e.reviewRound(*issue, reviewer, pr).waitsOnMergeState
+	if classify.MergeStateReadOwed(*issue, w.Line, fact) {
+		return true, nil
 	}
-	if !owed {
-		return nil
+	// The round's own answer matters only where the fact and the phase owe no read: every phase
+	// a round can wait on GitHub in already owes one on a head move or a base push.
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	if err != nil {
+		return false, err
 	}
-	key := issue.Key
-	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
-	return nil
+	return e.reviewRound(*issue, reviewer, pr).waitsOnMergeState, nil
 }
 
 // recordPass counts task one more pass through its steps from the one a move back goes to, which

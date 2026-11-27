@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,11 +34,17 @@ func servedLog(t *testing.T, log ...json.RawMessage) []dispatch.Event {
 		_, _ = fmt.Fprint(w, "["+strings.Join(page, ",")+"]")
 	}))
 	defer server.Close()
-	events, err := dispatch.New(server.URL, "dispatch-token").EventsAfter(context.Background(), "LEGION-755", 0)
+	events, err := dispatch.New(server.URL, dispatch.BearerTransport("dispatch-token", nil)).EventsAfter(context.Background(), "LEGION-755", 0)
 	if err != nil {
 		t.Fatalf("read the served log: %v", err)
 	}
 	return events
+}
+
+// payloadlessLogEvent is an event of type typ at seq, written by a person, with no payload field.
+func payloadlessLogEvent(seq int, typ string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":"LEGION-755","seq":%d,"type":%q,"actor":{"kind":"user","id":"user-1"},"notify":true,"created_at":"2026-10-14T17:00:%02dZ"}`,
+		seq, seq, typ, seq))
 }
 
 // issueLogEvent is an issue.created or issue.updated event whose issue carries labels.
@@ -155,16 +162,84 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 	}
 }
 
-// A log the daemon cannot read names no setter it can act on: an issue event whose payload does
-// not decode is an error naming its position, so the consumer delivers the fact again rather than
-// treating the label as nobody's. An event that does not decode at all is refused by the read
-// itself (dispatch.Client.EventsAfter).
+// A deleted post's events are read from the log masked - its comment.created or message.created
+// carries deleted_at and deleted_by and no body (Dispatch's attachPostMarks) - and an author
+// corrects a post with comment.edited, comment.deleted, message.edited and message.deleted. None
+// of them is an issue event, so a log that holds them names the setter the same log without them
+// names: here the session that labelled the issue, though a person's posts and their corrections
+// stand before that label and between it and the person's later edit that keeps it.
+func TestLabelSetterPassesOverDeletedPostsAndCorrections(t *testing.T) {
+	const deleted = `"deleted_at":"2026-10-14T17:30:00Z","deleted_by":{"kind":"user","id":"user-1"}`
+	posts := func(seq int) []json.RawMessage {
+		return []json.RawMessage{
+			logEvent(seq, "comment.created", "user", `{"id":"c-1","issue_key":"LEGION-755",`+deleted+`}`),
+			logEvent(seq+1, "message.created", "user", `{"id":"m-1","issue_key":"LEGION-755",`+deleted+`}`),
+			logEvent(seq+2, "comment.edited", "user", `{"id":"c-2","issue_key":"LEGION-755","body":"Looks right now.","edited_at":"2026-10-14T17:30:00Z"}`),
+			logEvent(seq+3, "comment.deleted", "user", `{"id":"c-1","issue_key":"LEGION-755","body":"",`+deleted+`}`),
+			logEvent(seq+4, "message.edited", "user", `{"id":"m-2","issue_key":"LEGION-755","body":"Still green.","edited_at":"2026-10-14T17:30:00Z"}`),
+			logEvent(seq+5, "message.deleted", "user", `{"id":"m-1","issue_key":"LEGION-755","body":"",`+deleted+`}`),
+		}
+	}
+	created := issueLogEvent(1, "issue.created", "user")
+	labelled := issueLogEvent(8, "issue.updated", "session", "legion")
+	kept := issueLogEvent(15, "issue.updated", "user", "legion", "docs")
+	bare, err := LabelSetter(servedLog(t, created, labelled, kept))
+	if err != nil || bare != "session" {
+		t.Fatalf("LabelSetter of the issue's own events = %q, %v; want the session that labelled it", bare, err)
+	}
+	withPosts := slices.Concat([]json.RawMessage{created}, posts(2), []json.RawMessage{labelled}, posts(9), []json.RawMessage{kept})
+	got, err := LabelSetter(servedLog(t, withPosts...))
+	if err != nil {
+		t.Fatalf("LabelSetter of the log with the deleted posts and corrections: %v", err)
+	}
+	if got != bare {
+		t.Fatalf("LabelSetter of the log with the deleted posts and corrections = %q, want %q, as without them", got, bare)
+	}
+}
+
+// The intake's walk of the event log (walkIssueEvents, main's #4590) reads a deleted post's
+// events as every read of the log serves them - a comment.created or message.created with
+// deleted_at and deleted_by and no body - and the author's corrections of its posts. It reads no
+// post's body, so none of them is an error: the walk passes over each and gives the issue's own
+// events alone, and no deleted post is ever a message the intake fails on and gives up on.
+func TestWalkIssueEventsPassesOverADeletedPostsEventsWithNoError(t *testing.T) {
+	const deleted = `"deleted_at":"2026-10-14T17:30:00Z","deleted_by":{"kind":"user","id":"user-1"}`
+	events := []json.RawMessage{
+		issueLogEvent(1, "issue.created", "user"),
+		logEvent(2, "message.created", "user", `{"id":"m-1","issue_key":"LEGION-755",`+deleted+`}`),
+		logEvent(3, "comment.created", "user", `{"id":"c-1","issue_key":"LEGION-755",`+deleted+`}`),
+		logEvent(4, "message.deleted", "user", `{"id":"m-1","issue_key":"LEGION-755","body":"",`+deleted+`}`),
+		logEvent(5, "message.edited", "user", `{"id":"m-2","issue_key":"LEGION-755","body":"Still green.","edited_at":"2026-10-14T17:30:00Z"}`),
+		issueLogEvent(6, "issue.updated", "session", "legion"),
+	}
+	var given []int64
+	for event, err := range walkIssueEvents(servedLog(t, events...)) {
+		if err != nil {
+			t.Fatalf("walkIssueEvents over a log holding a deleted post's events: %v", err)
+		}
+		given = append(given, event.Seq)
+	}
+	if !slices.Equal(given, []int64{1, 6}) {
+		t.Fatalf("walkIssueEvents gave the events at %v, want the issue's own, at 1 and 6", given)
+	}
+}
+
+// A log the daemon cannot read names no setter it can act on: LabelSetter returns the walk's error
+// (TestWalkIssueEventsRefusesAnEventItCannotDecode), naming the event's position, here for an
+// issue event with no payload, one whose payload is not an issue and a later one whose labels are
+// not a list, so the consumer delivers the fact again rather than treating the label as nobody's.
+// An event that does not decode at all is refused by the read itself (dispatch.Client.EventsAfter).
 func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		events []json.RawMessage
 		want   string
 	}{
+		{
+			name:   "an issue event with no payload",
+			events: []json.RawMessage{issueLogEvent(1, "issue.created", "user", "legion"), payloadlessLogEvent(2, "issue.updated")},
+			want:   "decode Dispatch issue payload of event 2 of 2",
+		},
 		{
 			name:   "an issue event whose payload is not an issue",
 			events: []json.RawMessage{logEvent(1, "issue.created", "user", `"a string"`)},
