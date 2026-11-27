@@ -131,7 +131,10 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader, fakeGit, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
+		if _, err := os.Stat("/work/plant/standin-slow-once"); err == nil {
+			t.Logf("PLANT standin-slow-once fired: run %d's git sleeps 2 s in its own run, past its %s Timeout", runs, timeout)
+		}
+		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho $$ >" + shellprefix.Literal(leader) + "\nif [ -e /work/plant/standin-slow-once ]; then rm -f /work/plant/standin-slow-once; sleep 2; fi\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
@@ -276,7 +279,10 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 		dir := t.TempDir()
 		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
 		reaped := watchReaped(leader, within)
-		script := testexec.MarkStart(`"$2"`) + "\n" + `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\n" + testexec.MarkNow(`"$3"`) + "\nexit 3"
+		if _, err := os.Stat("/work/plant/standin-slow-once"); err == nil {
+			t.Logf("PLANT standin-slow-once fired: run %d's command sleeps 2 s in its own run, past its %s budget", runs, budget)
+		}
+		script := testexec.MarkStart(`"$2"`) + "\n" + `echo $$ >"$1"; if [ -e /work/plant/standin-slow-once ]; then rm -f /work/plant/standin-slow-once; sleep 2; fi; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\n" + testexec.MarkNow(`"$3"`) + "\nexit 3"
 
 		calledBoot := testexec.SinceBoot(t)
 		started := time.Now()
