@@ -2926,7 +2926,7 @@ base and so with a new `base_sha` and its own run. So no entry merges with a pac
 change in it reaches unrun. Measured against the alternative, the group's commit against main as it
 stood when the group started: over the landing merge groups of the last 50 pull requests merged by
 2026-11-26 that touch packages/envoy or packages/daemon, that change held a median 154.5 files (every
-entry ahead in the queue) and the selection then saved a median 1.7 of the legs' job-minutes, where
+entry ahead in the queue) and the selection then saved a median 2.8 of the legs' job-minutes, where
 the entry's own change saves what the pull request's does. While CI_MERGE_GROUP_SELECTS is anything
 else, a merge group's selected legs jobs run every leg with every package, as before. The switch
 changes which packages run inside a legs job the changes job selected, and nothing else: the
@@ -2935,23 +2935,23 @@ changes job selects a merge group's jobs over `merge_group.base_sha` whatever it
 **What it saves.** Over those 50 pull requests, from their own changes (today's import graph,
 go-legs.yaml and `//ci:` lines; each file's base and head content from the pull request's own
 commits; the legs' minutes from #5668's run 45843582069, which ran every leg of the six jobs, and
-the package seconds go-legs.yaml holds): the legs run a median 26.2% of the package-seconds per
-pull-request run (40.7% over all 50), a median 107.6 of 176.7 legs job-minutes are saved, and the
-legs' wall drops by a median 4.6 minutes in envoy-go, 1.4 in daemon-go, 1.3 in envoy-go-race, 9.7
-in envoy-go-race-api and 9.3 in envoy-go-race-docs. Over the 100 merge-group runs 45726988798 to
-45750874776, each from its own entry's change: a median 18.7% of the package-seconds (mean 24.7%);
+the package seconds go-legs.yaml holds): the legs run a median 28.5% of the package-seconds per
+pull-request run (41.9% over all 50), a median 82.5 of 176.7 legs job-minutes are saved, and the
+legs' wall drops by a median 4.5 minutes in envoy-go, 1.4 in daemon-go, 1.3 in envoy-go-race and
+9.3 in envoy-go-race-docs, and by none in daemon-go-race or envoy-go-race-api, whose one long leg
+most changes reach. Over the 100 merge-group runs 45726988798 to 45750874776, each from its own
+entry's change: a median 18.7% of the package-seconds (mean 24.7%);
 30 of the 600 legs-job runs run every package (a script a job's legs run, a go.mod change beyond
 its requirements, a base whose go-legs.yaml had no such job yet), and envoy-go starts no leg in 35
 of them, envoy-go-race-api in 77 and envoy-go-race-docs in 68.
 
-Of the 159 (package, failing run) pairs in those 50 pull requests' own runs, 145 were selected by
-the change at that run's head, 5 are packages no legs job runs, and 9 were not selected, none by a
+Of the 159 (package, failing run) pairs in those 50 pull requests' own runs, 147 were selected by
+the change at that run's head, 5 are packages no legs job runs, and 7 were not selected, none by a
 change that reaches it: 3 are tests that failed in other pull requests' runs as well (bus's
 TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry in #5244's and #5502's groups,
-cmd/listener's relay tests in #5523's); 6 failed where the change compiles none of the package and
-no `//ci:` line of it names a changed file (#3125, #5398, #5444, #5445, whose change was testnats's
-while dispatch/docs, which did not compile testnats at that head either, failed, and twice #4565,
-whose entry changed a daemon test and the worker image while envoy's testcleanup failed).
+cmd/listener's relay tests in #5523's); 4 failed where the change compiles none of the package and
+no `//ci:` line of it names a changed file (#3125, #5398, #5444 and #5445, whose change was
+testnats's while dispatch/docs, which did not compile testnats at that head either, failed).
 
 ## The envoy-infra module, its own workspace and its live tests
 
