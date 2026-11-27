@@ -563,14 +563,18 @@ func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []str
 }
 
 // hostIsolation is the environment a binary runAgentSecrets runs gets over the test process's own,
-// before the test's extraEnv: a home, a config, a state and a runtime directory of its own, and
-// no sign-in store, machine identity or helper socket, as the harness of startCall gives them. So
-// a developer's own sign-in (`agent-secrets login`), settings file, machine cache or helper on the
-// machine running the tests is no source a test's command takes; a test that wants one names it
-// in extraEnv.
+// before the test's extraEnv: a home, a config, a state and a runtime directory of its own, no
+// sign-in store, machine identity or helper socket, as the harness of startCall gives them, and no
+// HTTP proxy. So a developer's own sign-in (`agent-secrets login`), settings file, machine cache,
+// helper or proxy on the machine running the tests is no source or route a test's command takes:
+// a proxy answers for a broker address that does not resolve or refuses the connection, in its
+// own words. The test process keeps its proxy, because a test that builds a binary runs the go
+// command in its environment, which may need the proxy to download modules. A test that wants one
+// names it in extraEnv.
 func hostIsolation(t *testing.T) []string {
 	t.Helper()
-	env := []string{"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY=", "AGENT_SECRETS_HELPER_SOCK="}
+	env := []string{"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY=", "AGENT_SECRETS_HELPER_SOCK=",
+		"HTTPS_PROXY=", "https_proxy=", "HTTP_PROXY=", "http_proxy="}
 	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
 		env = append(env, name+"="+shortTempDir(t))
 	}
