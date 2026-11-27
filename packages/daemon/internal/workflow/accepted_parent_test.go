@@ -167,6 +167,68 @@ func TestCloseRootIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	assertPhase(t, pool, phase.Done)
 }
 
+// close_root answers the two questions of the close of a tree that started no phase as the rest of
+// the close does. A root's merge refuses it (CLOSE_AFTER_MERGE) only where this generation's work
+// merged: a root re-run at admitted keeps the snapshot of an earlier generation's merge, which no
+// clear touches, and read from that snapshot alone its architect's close was refused with the false
+// reason that the checks of its goal close it, though no check of this generation ever will. And a
+// child beneath the root that waits in verifying holds the close (D10, OpenBeneath): the close
+// lingers the tree, and that child's checks and next change have still to happen in it. The
+// control is the same root on its own open next change, which its merge does refuse.
+func TestCloseRootReadsThisGenerationsMergeAndAChildInVerifying(t *testing.T) {
+	t.Parallel()
+	closeNow := func(t *testing.T, pool *pgxpool.Pool, id string) intake.Result {
+		t.Helper()
+		result, err := intake.ApplyFact(context.Background(), pool, "api", id, intake.CloseRoot{Issue: "LEGION-208", Reason: "moot"},
+			testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+		if err != nil {
+			t.Fatalf("apply %s: %v", id, err)
+		}
+		return result
+	}
+	rerunRoot := func(t *testing.T, nextChange uint64) *pgxpool.Pool {
+		t.Helper()
+		pool := migratedPool(t)
+		seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+			Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U",
+			NextChange: nextChange})
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			_, err := record.NewStore().PutMergeSnapshot(context.Background(), tx, "LEGION-208", record.Merge{Number: 41, Head: "abc", SHA: "def",
+				Base: "main", Repo: "sjawhar/legion"})
+			return err
+		})
+		return pool
+	}
+	t.Run("a root re-run after an earlier merge closes", func(t *testing.T) {
+		t.Parallel()
+		pool := rerunRoot(t, 0)
+		if result := closeNow(t, pool, "close-rerun"); result.Refusal != nil {
+			t.Fatalf("close_root of a root re-run after an earlier generation's merge = %+v, want it closed: nothing of this generation merged", result.Refusal)
+		}
+		assertPhase(t, pool, phase.Done)
+	})
+	t.Run("control: a root on its own next change is refused", func(t *testing.T) {
+		t.Parallel()
+		pool := rerunRoot(t, 2)
+		if result := closeNow(t, pool, "close-change"); result.Refusal == nil || result.Refusal.Code != "CLOSE_AFTER_MERGE" {
+			t.Fatalf("close_root of a root whose next change is open = %+v, want 409 CLOSE_AFTER_MERGE", result.Refusal)
+		}
+		assertPhase(t, pool, phase.Admitted)
+	})
+	t.Run("a child beneath in verifying holds the close", func(t *testing.T) {
+		t.Parallel()
+		pool := migratedPool(t)
+		seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+			Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
+		seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Verifying, "testing")
+		if result := closeNow(t, pool, "close-verifying"); result.Refusal == nil || result.Refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" ||
+			!strings.Contains(result.Refusal.Message, "LEGION-209") {
+			t.Fatalf("close_root with a child beneath in verifying = %+v, want 409 SIGNOFF_CHILD_IN_WORKFLOW naming LEGION-209", result.Refusal)
+		}
+		assertPhase(t, pool, phase.Admitted)
+	})
+}
+
 // A6. A person's move of an issue to todo beneath an ancestor the daemon has already accepted is
 // recorded and held at admitted, and the architect is told why. The chain is walked past a
 // parent already done, so a grandchild under a done parent is held by whichever issue above it
