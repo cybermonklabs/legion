@@ -11,6 +11,7 @@ package proxy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -33,6 +34,8 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // intermediateLifetime is the life a pod asks for its intermediate, Infisical Agent Proxy's
@@ -219,10 +222,6 @@ func intermediateCSR(key *ecdsa.PrivateKey, names []string) ([]byte, error) {
 // request and the request id deduplicates nothing. It answers the certificate and its chain,
 // issuer first and root last.
 func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x509.Certificate, error) {
-	endpoint := p.Endpoint
-	if endpoint == "" {
-		endpoint = privateCAEndpoint
-	}
 	random := make([]byte, 6)
 	if _, err := rand.Read(random); err != nil {
 		return nil, nil, err
@@ -238,12 +237,20 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 	if err != nil {
 		return nil, nil, err
 	}
+	// The resource is joined onto the endpoint (urljoin.Join), which keeps the endpoint's path and
+	// query, and each segment of the pool's name is escaped (url.PathEscape), so none of it reads
+	// to the join as a query, a fragment or an escape. An endpoint Join cannot use fails in fixed
+	// words: it can carry user information and a query (BROKER_PROXY_TEST_CA_URL), and url.Parse's
+	// error quotes it whole.
+	asked, err := urljoin.Join(cmp.Or(p.Endpoint, privateCAEndpoint), "v1/"+escapedSegments(p.Name)+"/certificates?"+query.Encode())
+	if err != nil {
+		return nil, nil, errors.New("the pool's endpoint (BROKER_PROXY_TEST_CA_URL) is not an absolute URL with a host (the URL is not printed)")
+	}
 	ctx, cancel := context.WithTimeout(ctx, intermediateRequestTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(endpoint, "/")+"/v1/"+p.Name+"/certificates?"+query.Encode(), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, asked.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.New("the pool's certificates URL does not parse (the URL is not printed)")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.Token != nil {
@@ -290,6 +297,15 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 		}
 	}
 	return cert, chain, nil
+}
+
+// escapedSegments is name, a resource name, with each of its segments escaped (url.PathEscape).
+func escapedSegments(name string) string {
+	segments := strings.Split(name, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // onePEMCertificate is the one PEM certificate text holds.
