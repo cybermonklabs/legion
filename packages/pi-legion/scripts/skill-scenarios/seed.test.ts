@@ -1353,10 +1353,11 @@ describe("case-world Dispatch", () => {
   test("writes a case's block references as Dispatch writes them", async () => {
     expect(
       seed.dispatchBlockRefs(
-        'serves="dispatch://ACME-12/spec#r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/artifact/plan-md@v3#step-1 dispatch://ACME-12/ask/a1'
+        'serves="dispatch://ACME-12/spec#r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/ask/a1',
+        "ACME-12"
       )
     ).toBe(
-      'serves="dispatch://ACME-12/spec#b-r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/artifact/plan-md@v3#b-step-1 dispatch://ACME-12/ask/a1'
+      'serves="dispatch://ACME-12/spec#b-r1" dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/ask/a1'
     );
     const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
     if (!p05) throw new Error("missing P05");
@@ -1372,6 +1373,90 @@ describe("case-world Dispatch", () => {
     await seed.seedCaseDispatch(dir);
     const uploaded = dispatch.calls.find(({ path }) => path === "/api/v1/issues/ACME-12/artifacts");
     expect(String(uploaded?.body?.content)).toContain('serves="dispatch://ACME-12/spec#b-r1"');
+  });
+
+  // Catches: a check or a plan task that names a block by its bare id (`serves="r1"`,
+  // `needs="t1"`), which the real Dispatch refuses (400 INVALID_MARKDOWN: a pointer is a canonical
+  // block reference), so the skill-use and real-daemon Jobs seeded no world; and a rewrite that
+  // reaches a quoted value, another attribute or block, prose or fenced code, or a reference
+  // already canonical, or that leaves a pin before the fragment (`plan-md@v3#b-step-1`).
+  test("writes each bare id of a check's or a plan task's pointers as the reference Dispatch writes", async () => {
+    const authored = [
+      ":::requirement{#r1}",
+      "The reader retries.",
+      ":::",
+      "",
+      ':::check{#k1 serves="r1 dispatch://ACME-12/spec#r2 dispatch://ACME-12/spec#b-r3 dispatch://ACME-12/artifact/decisions-md@v3#d1" surface="cli" run="go test ./... -run r1" negative_control="A check that serves r1 alone fails."}',
+      "It serves r1.",
+      ":::",
+      "",
+      ':::plan_task{#t2 serves="r1" needs="t1 dispatch://ACME-12/artifact/plan-md@v3#step-1"}',
+      "After t1.",
+      ":::",
+      "",
+      ':::callout{#c1 serves="r1"}',
+      "Not a pointer of a check or a plan task.",
+      ":::",
+      "",
+      "```md",
+      ':::check{#k9 serves="r9"}',
+      "```",
+      "",
+      'Prose with serves="r1" needs="t1".',
+    ].join("\n");
+    const written = (needs: string) =>
+      authored
+        .replace(
+          'serves="r1 dispatch://ACME-12/spec#r2 dispatch://ACME-12/spec#b-r3 dispatch://ACME-12/artifact/decisions-md@v3#d1"',
+          'serves="dispatch://ACME-12/spec#b-r1 dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/spec#b-r3 dispatch://ACME-12/artifact/decisions-md#b-d1@v3"'
+        )
+        .replace(
+          ':::plan_task{#t2 serves="r1" needs="t1 dispatch://ACME-12/artifact/plan-md@v3#step-1"}',
+          `:::plan_task{#t2 serves="dispatch://ACME-12/spec#b-r1" needs="${needs} dispatch://ACME-12/artifact/plan-md#b-step-1@v3"}`
+        );
+    expect(seed.dispatchBlockRefs(authored, "ACME-12", "plan-md")).toBe(
+      written("dispatch://ACME-12/artifact/plan-md#b-t1")
+    );
+    expect(seed.dispatchBlockRefs(authored, "ACME-12", "spec")).toBe(
+      written("dispatch://ACME-12/spec#b-t1")
+    );
+    // A comment or an ask is no document, so a bare `needs` names no block of one.
+    expect(seed.dispatchBlockRefs(authored, "ACME-12")).toBe(written("t1"));
+
+    // The refused input as the seed uploads it: each document under its own slug.
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05) throw new Error("missing P05");
+    const world = structuredClone(p05.world);
+    const verification = world.dispatch.documents[0];
+    if (!verification) throw new Error("P05 has no Verification document");
+    const check = verification.body.replace("{#k1 ", '{#k1 serves="r1" ');
+    const plan = [
+      ':::plan_task{#t1 serves="r1"}',
+      "First.",
+      ":::",
+      "",
+      ':::plan_task{#t2 serves="r1" needs="t1"}',
+      "After t1.",
+      ":::",
+      "",
+    ].join("\n");
+    verification.body = check;
+    world.dispatch.documents.push({ name: "plan.md", body: plan });
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await seed.seedCaseDispatch(dir);
+    const uploads = dispatch.calls
+      .filter(({ path }) => path === "/api/v1/issues/ACME-12/artifacts")
+      .map(({ body }) => [body?.name, body?.content]);
+    expect(uploads).toEqual([
+      ["verification.md", check.replace('serves="r1"', 'serves="dispatch://ACME-12/spec#b-r1"')],
+      [
+        "plan.md",
+        plan
+          .replaceAll('serves="r1"', 'serves="dispatch://ACME-12/spec#b-r1"')
+          .replace('needs="t1"', 'needs="dispatch://ACME-12/artifact/plan-md#b-t1"'),
+      ],
+    ]);
   });
 
   // Catches: P02's task names its tester's comment as `dispatch://ACME-41/comment/c-1`, the case's

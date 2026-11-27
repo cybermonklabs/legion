@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -434,6 +435,82 @@ type teardownEffectsWorld struct {
 			MergeCommit       string
 		}
 	}
+}
+
+var (
+	// teardownEffectsTypedOpener is the opening line of a typed block: at most three spaces, three
+	// colons or more, the block's name, `{`, the attributes, and the `}` that ends the line (pmdoc's
+	// ParseTypedDirectiveOpen).
+	teardownEffectsTypedOpener = regexp.MustCompile(`^( {0,3}:{3,}([A-Za-z0-9_-]+)\{)(.*)\}$`)
+	// teardownEffectsCodeFence is the opening line of a fenced code block: at most three spaces,
+	// then three backticks or more, or three tildes or more.
+	teardownEffectsCodeFence = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
+	// teardownEffectsAttribute is, in a typed block's attributes, a quoted value, which is skipped
+	// whole, or an attribute with a value: the whitespace before it, its name and its value. A
+	// quoted value holds no `"`, so no text in the value of an attribute is read as another one.
+	teardownEffectsAttribute = regexp.MustCompile(`"[^"]*"|(^|\s)([A-Za-z0-9_-]+)="([^"]*)"`)
+	// teardownEffectsBareID is a block id that a pointer names alone (`r1`), in the grammar of the
+	// ids seed.ts dispatchBlockRefs writes in a reference. No reference percent-encodes one.
+	teardownEffectsBareID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
+	// teardownEffectsSlugGap is a run of the characters that a document slug does not keep.
+	teardownEffectsSlugGap = regexp.MustCompile(`[^a-z0-9]+`)
+)
+
+// teardownEffectsBarePointers is body, the text of the case's document name, as the replay writes
+// it on the issue key: each bare id of a pointer of a check or a plan task (`serves="r1"`,
+// `needs="t1"`) is written as the reference Dispatch writes to that block, as lane R's seed writes
+// it (seed.ts dispatchBlockRefs). Dispatch refuses any other pointer (400 INVALID_MARKDOWN). A
+// `serves` points at a requirement of key's spec (specBlock). A `needs` points only at a block of
+// its own document, under the slug Dispatch gives a new document of name (artifactSlug in
+// packages/envoy/internal/dispatch/api/artifacts.go). Only an opening line outside fenced code is
+// read, and in it only those pointers. Every other entry, attribute and line is left as it is.
+func teardownEffectsBarePointers(key, name, body string) string {
+	slug := strings.Trim(teardownEffectsSlugGap.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	if slug == "" {
+		slug = "artifact"
+	}
+	spec := func(id string) string { return specBlock(key, id) }
+	own := func(id string) string { return "dispatch://" + key + "/artifact/" + slug + "#b-" + id }
+	pointers := map[string]map[string]func(string) string{
+		"check":     {"serves": spec},
+		"plan_task": {"serves": spec, "needs": own},
+	}
+	lines := strings.Split(body, "\n")
+	fence := ""
+	for i, line := range lines {
+		if fence != "" {
+			rest := strings.TrimRight(line, " \t")
+			run := strings.TrimLeft(rest, " ")
+			if len(rest)-len(run) <= 3 && len(run) >= len(fence) && strings.Trim(run, fence[:1]) == "" {
+				fence = ""
+			}
+			continue
+		}
+		if opened := teardownEffectsCodeFence.FindStringSubmatch(line); opened != nil {
+			fence = opened[1]
+			continue
+		}
+		opener := teardownEffectsTypedOpener.FindStringSubmatch(line)
+		if opener == nil || pointers[opener[2]] == nil {
+			continue
+		}
+		attributes := teardownEffectsAttribute.ReplaceAllStringFunc(opener[3], func(written string) string {
+			attribute := teardownEffectsAttribute.FindStringSubmatch(written)
+			target, ok := pointers[opener[2]][attribute[2]]
+			if !ok {
+				return written
+			}
+			entries := strings.Split(attribute[3], " ")
+			for j, entry := range entries {
+				if teardownEffectsBareID.MatchString(entry) {
+					entries[j] = target(entry)
+				}
+			}
+			return attribute[1] + attribute[2] + `="` + strings.Join(entries, " ") + `"`
+		})
+		lines[i] = opener[1] + attributes + "}"
+	}
+	return strings.Join(lines, "\n")
 }
 
 // teardownEffectsPull is one pull request of the scratch GitHub, as the case's world gives it
@@ -1656,5 +1733,55 @@ func TestTeardownEffectsControlRecords(t *testing.T) {
 	}
 	if want := map[string]string{"P05 good 2": "open []", "P05 bad 4": "open []", "P10 good 1": "edit [77]"}; !maps.Equal(github, want) {
 		t.Fatalf("the example's GitHub actions read as %v, want %v", github, want)
+	}
+}
+
+// Catches: a starting document whose check or plan task names a block by its bare id
+// (`serves="r1"`, `needs="t1"`), which the real Dispatch refuses (400 INVALID_MARKDOWN), so the
+// replay could not write the case's starting state; and a rewrite that reaches a reference, a
+// quoted value, another attribute or block, prose or fenced code, or a `needs` outside the
+// document's own slug.
+func TestTeardownEffectsBarePointers(t *testing.T) {
+	t.Parallel()
+	authored := strings.Join([]string{
+		":::requirement{#r1}",
+		"The reader retries.",
+		":::",
+		"",
+		`:::check{#k1 serves="r1 dispatch://ACME-12/spec#b-r2 dispatch://ACME-12/spec#b-r3@v2" surface="cli" run="go test ./... -run r1" negative_control="A check that serves r1 alone fails."}`,
+		"It serves r1.",
+		":::",
+		"",
+		`:::plan_task{#t1 serves="r1"}`,
+		"First.",
+		":::",
+		"",
+		`:::plan_task{#t2 serves="r1" needs="t1 dispatch://ACME-12/artifact/plan-md#b-t0"}`,
+		"After t1.",
+		":::",
+		"",
+		`:::callout{#c1 serves="r1"}`,
+		"Not a pointer of a check or a plan task.",
+		":::",
+		"",
+		"```md",
+		`:::check{#k9 serves="r9"}`,
+		"```",
+		"",
+		`Prose with serves="r1" needs="t1".`,
+	}, "\n")
+	want := strings.NewReplacer(
+		`{#k1 serves="r1 `, `{#k1 serves="dispatch://ACME-12/spec#b-r1 `,
+		`{#t1 serves="r1"}`, `{#t1 serves="dispatch://ACME-12/spec#b-r1"}`,
+		`{#t2 serves="r1" needs="t1 `, `{#t2 serves="dispatch://ACME-12/spec#b-r1" needs="dispatch://ACME-12/artifact/plan-md#b-t1 `,
+	).Replace(authored)
+	if got := teardownEffectsBarePointers("ACME-12", "plan.md", authored); got != want {
+		t.Errorf("plan.md as the replay writes it:\n%s\nwant:\n%s", got, want)
+	}
+	if got := teardownEffectsBarePointers("ACME-12", "plan.md", want); got != want {
+		t.Errorf("plan.md written once more:\n%s\nwant it unchanged:\n%s", got, want)
+	}
+	if got, want := teardownEffectsBarePointers("ACME-12", "Plan v2.md", `:::plan_task{#t2 needs="t1"}`), `:::plan_task{#t2 needs="dispatch://ACME-12/artifact/plan-v2-md#b-t1"}`; got != want {
+		t.Errorf("a needs of Plan v2.md reads %s, want %s", got, want)
 	}
 }

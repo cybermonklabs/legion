@@ -91,7 +91,15 @@
 //                                          asks, results and complete event log (with seed cursor)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Actor, ArtifactBlock, Ask, AskOption, DispatchEvent } from "@legion/contracts";
+import {
+  type Actor,
+  type ArtifactBlock,
+  type Ask,
+  type AskOption,
+  type DispatchEvent,
+  formatBlockReference,
+  parseCanonicalBlockReference,
+} from "@legion/contracts";
 import { z } from "zod";
 import {
   answerAsk,
@@ -933,13 +941,104 @@ async function caseEvents(issue: string): Promise<DispatchEvent[]> {
 
 /** `text` with each block reference written as Dispatch writes one: a case names a block by its
  * id (`dispatch://ACME-12/spec#r1`, the block `:::requirement{#r1}`), and Dispatch refuses any
- * reference but `#b-<id>` (`dispatch://ACME-12/spec#b-r1`) in a block's attribute. A reference
- * already in that form, and any other text, is left as it is. */
-export function dispatchBlockRefs(text: string): string {
-  return text.replace(
-    /(dispatch:\/\/[A-Z][A-Z0-9]*(?:-\d+)?\/(?:spec|artifact\/[A-Za-z0-9._-]+)(?:@v\d+)?)#(?!b-)([A-Za-z0-9][A-Za-z0-9-]*)/g,
-    "$1#b-$2"
+ * reference but `#b-<id>` (`dispatch://ACME-12/spec#b-r1`) in a block's attribute. The pointers of
+ * each typed block are then written as typedBlockPointers writes them. `issue` is the case's
+ * issue. `document` is the slug of the document the text is written as (`spec` for the issue's
+ * spec), and undefined for the text of a comment or an ask. A reference already in that form, and
+ * any other text, is left as it is. */
+export function dispatchBlockRefs(text: string, issue: string, document?: string): string {
+  return typedBlockPointers(
+    text.replace(
+      /(dispatch:\/\/[A-Z][A-Z0-9]*(?:-\d+)?\/(?:spec|artifact\/[A-Za-z0-9._-]+)(?:@v\d+)?)#(?!b-)([A-Za-z0-9][A-Za-z0-9-]*)/g,
+      "$1#b-$2"
+    ),
+    issue,
+    document
   );
+}
+
+/** The slug Dispatch gives a new document `name` on an issue that holds no other document of that
+ * slug (artifactSlug in packages/envoy/internal/dispatch/api/artifacts.go): its ASCII letters and
+ * digits in lower case, each run of other characters one `-`, no `-` at either end, and
+ * `artifact` when nothing is left. */
+function documentSlug(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug === "" ? "artifact" : slug;
+}
+
+/** The pointer attributes that a case writes with bare ids, as `<typed block>.<attribute>`
+ * (pmdoc's schema/blocks.json). A `serves` points at a requirement of the issue's spec. A `needs`
+ * points only at a block of its own document (its `scope`). */
+const BARE_POINTERS: Record<string, true> = {
+  "check.serves": true,
+  "plan_task.serves": true,
+  "plan_task.needs": true,
+};
+/** The opening line of a typed block: at most three spaces, three colons or more, the block's
+ * name, `{`, the attributes, and the `}` that ends the line (pmdoc's ParseTypedDirectiveOpen). */
+const TYPED_OPENER = /^( {0,3}:{3,}([A-Za-z0-9_-]+)\{)(.*)\}$/;
+/** The opening line of a fenced code block: at most three spaces, then three backticks or more,
+ * or three tildes or more. */
+const CODE_FENCE = /^ {0,3}(`{3,}|~{3,})/;
+/** In a typed block's attributes: a quoted value, which is skipped whole, or an attribute with a
+ * value, whose name and value are the two groups. A quoted value holds no `"`, so no text in the
+ * value of an attribute is read as another attribute. */
+const POINTER = /"[^"]*"|(?<=^|\s)([A-Za-z0-9_-]+)="([^"]*)"/g;
+/** A block id that a pointer names alone (`r1`), in the id grammar of the reference migration in
+ * dispatchBlockRefs. */
+const BARE_ID = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+/** A reference whose pin stands before its fragment (`…/plan-md@v3#b-step-1`): the document, the
+ * pin and the block id. */
+const PIN_BEFORE_FRAGMENT =
+  /^(dispatch:\/\/[^\s#@]+)@v([1-9][0-9]*)#(?:b-)?([A-Za-z0-9][A-Za-z0-9-]*)$/;
+
+/** `text` with each pointer of BARE_POINTERS on the opening line of a typed block written as
+ * Dispatch writes a pointer (pointerEntry). Dispatch refuses any other pointer (400
+ * INVALID_MARKDOWN). Only an opening line outside fenced code is read, and in it only those
+ * pointers. Every other line, attribute and entry is left as it is. */
+function typedBlockPointers(text: string, issue: string, document: string | undefined): string {
+  let fence: string | undefined;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (fence !== undefined) {
+        const rest = line.replace(/^ {0,3}/, "").replace(/[ \t]+$/, "");
+        if (rest.length >= fence.length && rest === fence.charAt(0).repeat(rest.length))
+          fence = undefined;
+        return line;
+      }
+      fence = CODE_FENCE.exec(line)?.[1];
+      const opener = fence === undefined ? TYPED_OPENER.exec(line) : null;
+      if (opener === null) return line;
+      const [, head = "", block = "", attributes = ""] = opener;
+      const write = (whole: string, name?: string, value?: string): string => {
+        if (value === undefined || BARE_POINTERS[`${block}.${name}`] !== true) return whole;
+        const home = name === "needs" ? document : "spec";
+        const entries = value.split(" ").map((entry) => pointerEntry(entry, issue, home));
+        return `${name}="${entries.join(" ")}"`;
+      };
+      return `${head}${attributes.replace(POINTER, write)}}`;
+    })
+    .join("\n");
+}
+
+/** One entry of a pointer as formatBlockReference writes it. A block id alone (`r1`) names that
+ * block of `home`, a document of `issue` (`dispatch://ACME-12/spec#b-r1`), and is left as it is
+ * where `home` is undefined. A reference pinned before its fragment
+ * (`dispatch://ACME-12/artifact/plan-md@v3#b-step-1`) takes the pin after the fragment
+ * (`dispatch://ACME-12/artifact/plan-md#b-step-1@v3`). Any other entry, and one that would be no
+ * canonical reference (parseCanonicalBlockReference), is left as it is. */
+function pointerEntry(entry: string, issue: string, home: string | undefined): string {
+  if (home !== undefined && BARE_ID.test(entry))
+    return formatBlockReference({ issue, document: home, block: entry });
+  const pinned = PIN_BEFORE_FRAGMENT.exec(entry);
+  if (pinned === null) return entry;
+  const [, document = "", pin = "", block = ""] = pinned;
+  const reference = parseCanonicalBlockReference(`${document}#b-${block}`);
+  return reference === undefined ? entry : formatBlockReference({ ...reference, pin });
 }
 
 /** `text` with each reference to a comment or an ask of `key` by the case's own id
@@ -1000,7 +1099,7 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
               : `Reserved key ${expected}`,
           ...(own
             ? {
-                spec: dispatchBlockRefs(issue.spec),
+                spec: dispatchBlockRefs(issue.spec, issue.key, "spec"),
                 parent: issue.parent,
                 repo: world.github?.repository,
               }
@@ -1015,7 +1114,11 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
   if (parent && parent[0] !== project) await createThrough(...parent, false);
   await createThrough(project, number, true);
   for (const { name, body } of documents)
-    await createIssueArtifact(issue.key, { name, content: dispatchBlockRefs(body) }, seed);
+    await createIssueArtifact(
+      issue.key,
+      { name, content: dispatchBlockRefs(body, issue.key, documentSlug(name)) },
+      seed
+    );
   // The case names its comments and asks by its own ids; Dispatch gives each one its own id.
   const ids = new Map<string, string>();
   const steps: Step[] = [
@@ -1039,7 +1142,7 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
       write: async () => {
         const created = await createComment(
           issue.key,
-          { body: dispatchBlockRefs(comment.body) },
+          { body: dispatchBlockRefs(comment.body, issue.key) },
           author(comment.author)
         );
         ids.set(`comment/${comment.id}`, created.id);
@@ -1051,7 +1154,7 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
         const opened = await createAsk(
           issue.key,
           {
-            question: dispatchBlockRefs(ask.question),
+            question: dispatchBlockRefs(ask.question, issue.key),
             options: ask.options.map((label) => ({ label })),
           },
           author(ask.author)

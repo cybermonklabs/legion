@@ -235,7 +235,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		}
 	} else {
 		for _, doc := range world.Dispatch.Documents {
-			r.document(doc.Name, doc.Body)
+			r.document(doc.Name, teardownEffectsBarePointers(key, doc.Name, doc.Body))
 		}
 		for _, handoff := range world.Dispatch.Handoffs {
 			r.handoff(handoff.Phase, handoff.Author, r.mapBody(handoff.Body))
