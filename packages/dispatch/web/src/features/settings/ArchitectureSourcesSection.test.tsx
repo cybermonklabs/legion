@@ -8,6 +8,7 @@ import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArchitectureSource, Project } from "../../api/types";
@@ -555,7 +556,7 @@ test("the sources' box takes tabindex -1 while a source is listed, and none whil
     });
     const listedBox = page.section
       .getByRole("table", { name: "Architecture sources" })
-      .closest('[data-control="table-shell"]');
+      .closest(TABLE_SHELL);
     expect(listedBox?.getAttribute("tabindex")).toBe("-1");
     page.restore();
     const none = sourceServer([]);
@@ -563,7 +564,7 @@ test("the sources' box takes tabindex -1 while a source is listed, and none whil
     await page.section.findByText("No architecture sources yet.");
     const emptyBox = page.section
       .getByRole("table", { name: "Architecture sources" })
-      .closest('[data-control="table-shell"]');
+      .closest(TABLE_SHELL);
     expect(emptyBox?.hasAttribute("tabindex")).toBe(false);
   } finally {
     page.restore();

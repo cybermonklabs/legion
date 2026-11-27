@@ -21,7 +21,7 @@ import { writesOf } from "../writes/write-store";
 import {
   IssuePriorityLine,
   PRIORITY_TRIGGER_AFTER_CHIP,
-  priorityTriggerName,
+  savingPriorityTriggerName,
 } from "./IssuePriorityLine";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -533,10 +533,7 @@ test.each([
       </MemoryRouter>
     );
     const q = within(view.container);
-    const savingName = priorityTriggerName("CORE-9", advances.length === 0, {
-      ANSWER_LINES,
-      CONTROL_LABELS,
-    });
+    const savingName = savingPriorityTriggerName("CORE-9", { ANSWER_LINES, CONTROL_LABELS });
     /** The trigger by `named`, with what it draws and whether it is held. */
     const read = (named: string) => {
       const trigger = q.getByRole<HTMLButtonElement>("button", { name: named });

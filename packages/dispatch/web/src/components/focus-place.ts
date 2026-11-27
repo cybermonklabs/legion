@@ -89,6 +89,19 @@ export function focusableIn(container: Element): HTMLElement[] {
   );
 }
 
+/** The first control the focus can reach inside `container` (`focusableIn`) that `accept` takes,
+ *  else undefined. It stops at that control rather than listing every one, as a panel's least
+ *  height reads only its first row (`AnchoredPanel`'s `leastHeight`). */
+export function firstFocusableIn(
+  container: Element,
+  accept: (control: HTMLElement) => boolean
+): HTMLElement | undefined {
+  for (const element of container.querySelectorAll<HTMLElement>(FOCUSABLE)) {
+    if (element.closest("[hidden]") === null && accept(element)) return element;
+  }
+  return undefined;
+}
+
 /** A ref that focuses its element once, as it enters the page: React calls a ref callback again
  *  only when the callback itself is a new one, so this single function never pulls the focus back
  *  on a later render, after the reader has moved it on (the issue title's editor). */
@@ -405,7 +418,8 @@ function isMarked(row: Element): boolean {
  *  the Inbox in the element that holds its list column, the project List inside its section. */
 function markedListAround(bar: Element): Element | null {
   const marked: Element[] = [];
-  for (const mark of document.querySelectorAll(MARK)) {
+  // A marked row's own mark is ticked, so only a ticked mark can name one.
+  for (const mark of document.querySelectorAll(`${MARK}:checked`)) {
     const row = mark.closest(ROW_SELECTOR);
     if (row !== null && isMarked(row)) marked.push(row);
   }
@@ -1119,9 +1133,32 @@ export const ARM_ON_PRESS = {
   onKeyDownCapture: armOnPress,
 } as const;
 
-/** The press a write began under, as every hold over that write takes it (`holdHandOff`): the
- *  press armed as the write began (`pressOfWrite`), else null. */
-export type WritePress = ArmedPress | null;
+/** The key a write's handle on its press holds that press under (`WritePress`): no other module
+ *  can name it, so no caller reads the press through the handle. */
+const pressOfHandle = Symbol("press of a write");
+
+/** A handle on the press a write began under (`WritePress`): it holds the press weakly, so the
+ *  context a write keeps through its whole run - a keyed write's, handed from its `onMutate` to
+ *  its `onSuccess` - never keeps a finished press, and the page it read, alive. A press that is
+ *  not over is never collected: the listeners it puts on the document hold it until it ends. */
+interface PressHandle {
+  readonly [pressOfHandle]: WeakRef<ArmedPress>;
+}
+
+/** The handle of each press a write has begun under (`pressOfWrite`), so the same press always
+ *  gives the same handle, and a caller tells two writes' presses apart by their handles. */
+const handleOfPress = new WeakMap<ArmedPress, PressHandle>();
+
+/** The press a write began under, as every hold over that write takes it (`holdHandOff`): a
+ *  handle on the press armed as the write began (`pressOfWrite`), which shows nothing of the
+ *  press and holds it weakly (`PressHandle`), else null. */
+export type WritePress = PressHandle | null;
+
+/** The press `handle` stands for, else null: null for no handle, and for one whose press has
+ *  been collected, which had ended. */
+function pressOf(handle: WritePress): ArmedPress | null {
+  return handle?.[pressOfHandle].deref() ?? null;
+}
 
 /** The press a write that begins now begins under: the armed press (`armHandOff`), else null.
  *  Every hold over that write takes this press (`holdHandOff`), however late it begins - through
@@ -1131,7 +1168,13 @@ export type WritePress = ArmedPress | null;
  *  keyed write reads it in its `onMutate`, which TanStack calls in the `mutate` the reader's press
  *  makes, and is handed it back in its `onSuccess` (`useKeyedWrite`). */
 export function pressOfWrite(): WritePress {
-  return armed;
+  if (armed === null) return null;
+  let handle = handleOfPress.get(armed);
+  if (handle === undefined) {
+    handle = { [pressOfHandle]: new WeakRef(armed) };
+    handleOfPress.set(armed, handle);
+  }
+  return handle;
 }
 
 /** Begins a hold on what answers the write `press` began (`pressOfWrite`), or, with no `press`
@@ -1152,8 +1195,9 @@ export function pressOfWrite(): WritePress {
  *  (`issues-table-actions.ts`'s `moveTo`), so the press's control, which its press leaves held
  *  with nothing to do, keeps it live no longer. Answers what ends the hold; ending it again does
  *  nothing. */
-export function holdHandOff(press: WritePress = armed): () => void {
-  return press === null ? () => undefined : press.hold();
+export function holdHandOff(press?: WritePress): () => void {
+  const held = press === undefined ? armed : pressOf(press);
+  return held === null ? () => undefined : held.hold();
 }
 
 /** Counts the bound of `press` (`ACTION_BOUND_MS`) from now, as the action that holds it
@@ -1164,7 +1208,7 @@ export function holdHandOff(press: WritePress = armed): () => void {
  *  action began. No other write of the page moves it. A press that has ended, or whose bound has
  *  passed, is left as it is: a single write longer than the bound still ends the press there. */
 export function actionWriteBegins(press: WritePress): void {
-  press?.wrote();
+  pressOf(press)?.wrote();
 }
 
 /** A new record of what the reader can see of `element` (`Sight`), read now against every box

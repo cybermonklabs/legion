@@ -52,6 +52,7 @@ import {
   type Filters,
   ownEntry,
   PLACEHOLDER_LABELS,
+  prCount,
   priorityValues,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
@@ -343,9 +344,7 @@ function OwnColourPicker({
       onOpenChange={setOpen}
       open={open}
       optionDetail={counted ? (value) => String(countOf(value)) : undefined}
-      optionDetailLabel={
-        counted ? (value) => `${countOf(value)} PR${countOf(value) === 1 ? "" : "s"}` : undefined
-      }
+      optionDetailLabel={counted ? (value) => prCount(countOf(value)) : undefined}
       optionLabel={(value) => parentAgentLabel(value, groups)}
       options={[...new Set([...selected, ...options])]}
       searchLabel="Search parent agents…"
@@ -421,14 +420,7 @@ function Facet({
         onOpenChange={onOpenChange}
         open={open}
         optionDetail={counts === undefined ? undefined : (value) => String(countOf(value))}
-        optionDetailLabel={
-          counts === undefined
-            ? undefined
-            : (value) => {
-                const count = countOf(value);
-                return `${count} PR${count === 1 ? "" : "s"}`;
-              }
-        }
+        optionDetailLabel={counts === undefined ? undefined : (value) => prCount(countOf(value))}
         optionLabel={valueLabel}
         options={options}
         searchLabel={`Search ${label.toLowerCase()}\u2026`}
@@ -923,7 +915,7 @@ export function DeliveryPage(): ReactNode {
               ) : null}
               <span className={`ml-4 ${textMutedOnCanvas}`}>
                 {counted
-                  ? `${shownPRs.length} PR${shownPRs.length === 1 ? "" : "s"} in current filter/window`
+                  ? `${prCount(shownPRs.length)} in current filter/window`
                   : "Counting PRs in current filter/window…"}
               </span>
             </div>

@@ -1,5 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { act, type RenderResult, render, renderHook, screen } from "@testing-library/react";
+import {
+  act,
+  type RenderHookResult,
+  type RenderResult,
+  render,
+  renderHook,
+  screen,
+} from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
@@ -15,6 +22,7 @@ import { ROW_MARKER } from "./row-marker";
 import {
   focusListStop,
   type MarkedList as MarkedListModel,
+  type MarkedPlace,
   SelectionBar,
   useLastMarkedPlace,
 } from "./SelectionBar";
@@ -1418,6 +1426,56 @@ test("window blur ends the key wait so a later keyup does not owe the landing ag
   }
 });
 
+/** What `parkOnLeaving` answers: the view, the mark the bar's hand-off parked the focus on, and
+ *  what takes the case down. */
+interface Parked {
+  /** Ends the writes' hold, disarms the press, and takes the view and its rows' layout down. */
+  readonly end: () => void;
+  readonly parked: HTMLElement;
+  readonly view: RenderResult;
+}
+
+/** Draws `PlacedList`'s rows laid out, at `count` marks and with `last` the row marked last,
+ *  naming `leaving` as leaving, each row with a Dismiss of its own where `dismissals` says. Then
+ *  presses the bar's Dismiss and holds its writes, which name those rows while the bar goes with
+ *  its marks: the bar's hand-off parks the focus on the mark of `last` (`parked`). A failure
+ *  before the focus is parked takes the case down itself. */
+function parkOnLeaving(
+  leaving: readonly string[],
+  count: number,
+  { dismissals = false, last = "CORE-13" }: { dismissals?: boolean; last?: string } = {}
+): Parked {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const page = (marks: number) => (
+    <PlacedList
+      count={marks}
+      dismissals={dismissals}
+      last={last}
+      leaving={leaving}
+      listed={PLACED_KEYS}
+    />
+  );
+  const view = render(page(count));
+  let answered: () => void = () => undefined;
+  const end = () => {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  };
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(page(0));
+    const parked = rowBox(last);
+    expect(focusedName()).toBe(`Select ${last}`);
+    return { end, parked, view };
+  } catch (error) {
+    end();
+    throw error;
+  }
+}
+
 // A press of the reader's own on another row's own Dismiss while a landing is owed. Chromium and
 // Firefox move the focus onto that Dismiss as the button goes down, and the click its release
 // makes, about 100 ms later, is what names that row as leaving, as an Inbox row's own Dismiss does
@@ -1428,20 +1486,14 @@ test("window blur ends the key wait so a later keyup does not owe the landing ag
 // the landing is owed again, and is made once that row has gone, on the row now at the place of
 // the row marked last.
 test("a press on another row's own Dismiss while a landing is owed is read after its click, and the landing is made once that row goes", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
   const leaving = ["CORE-12", "CORE-13"];
   /** `PlacedList` with each row's own Dismiss and CORE-13 the row marked last, at `count` marks,
    *  holding `listed` and naming `named` as leaving. */
   const page = (count: number, listed: readonly string[], named: readonly string[]) => (
     <PlacedList count={count} dismissals last="CORE-13" leaving={named} listed={listed} />
   );
-  const view = render(page(2, PLACED_KEYS, leaving));
-  let answered: () => void = () => undefined;
+  const { end, view } = parkOnLeaving(leaving, 2, { dismissals: true });
   try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(page(0, PLACED_KEYS, leaving));
-    expect(focusedName()).toBe("Select CORE-13");
     const own = screen.getByRole("button", { name: "Dismiss CORE-15" });
     act(() => {
       own.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
@@ -1464,10 +1516,7 @@ test("a press on another row's own Dismiss while a landing is owed is read after
     view.rerender(page(0, without(PLACED_KEYS, "CORE-12", "CORE-13", "CORE-15"), []));
     expect(focusedName()).toBe("Select CORE-14");
   } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
+    end();
   }
 });
 
@@ -1477,18 +1526,8 @@ test("a press on another row's own Dismiss while a landing is owed is read after
 // Nothing lands before the read. The read finds the focus on the body, fallen from a mark that
 // went with its row, so the landing is owed again, and is made then.
 test("a press whose control leaves the page before its pointerup is read after that pointerup, and the landing is made then", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const leaving = ["CORE-13"];
-  const view = render(
-    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
-  );
-  let answered: () => void = () => undefined;
+  const { end, parked, view } = parkOnLeaving(["CORE-13"], 1);
   try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
-    const parked = rowBox("CORE-13");
-    expect(focusedName()).toBe("Select CORE-13");
     act(() => {
       parked.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     });
@@ -1503,10 +1542,7 @@ test("a press whose control leaves the page before its pointerup is read after t
     await act(afterTask);
     expect(focusedName()).toBe("Select CORE-14");
   } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
+    end();
   }
 });
 
@@ -1515,18 +1551,8 @@ test("a press whose control leaves the page before its pointerup is read after t
 // focus on the parked mark of a leaving row, so the landing is owed again, and is made once the
 // rows' going drops the focus onto the body.
 test("a press the browser cancels is read after its pointercancel, and the landing is made once the rows go", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const leaving = ["CORE-13"];
-  const view = render(
-    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
-  );
-  let answered: () => void = () => undefined;
+  const { end, parked, view } = parkOnLeaving(["CORE-13"], 1);
   try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
-    const parked = rowBox("CORE-13");
-    expect(focusedName()).toBe("Select CORE-13");
     act(() => {
       parked.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       parked.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
@@ -1536,10 +1562,7 @@ test("a press the browser cancels is read after its pointercancel, and the landi
     view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-13")} />);
     expect(focusedName()).toBe("Select CORE-14");
   } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
+    end();
   }
 });
 
@@ -1548,18 +1571,8 @@ test("a press the browser cancels is read after its pointercancel, and the landi
 // ended what was owed, so the rows' going lands nothing. A read at the `pointerup` would find the
 // focus on the parked mark of a leaving row and owe the landing again.
 test("window blur ends a press's wait so a later pointerup does not owe the landing again", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const leaving = ["CORE-13"];
-  const view = render(
-    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
-  );
-  let answered: () => void = () => undefined;
+  const { end, parked, view } = parkOnLeaving(["CORE-13"], 1);
   try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
-    const parked = rowBox("CORE-13");
-    expect(focusedName()).toBe("Select CORE-13");
     act(() => {
       parked.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
       window.dispatchEvent(new Event("blur"));
@@ -1571,10 +1584,7 @@ test("window blur ends a press's wait so a later pointerup does not owe the land
     expect(focusedName()).toBeNull();
     expect(document.activeElement?.tagName).toBe("BODY");
   } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
+    end();
   }
 });
 
@@ -1656,18 +1666,8 @@ test("Shift+Tab from the parked mark of a leaving row goes to the row before it,
 // key pressed with Meta is read a task after its keydown instead. The focus stands on the parked
 // mark of a leaving row then, so the landing is owed again, and is made once the rows go.
 test("⌘C on the parked mark of a leaving row, whose keyup never comes, is read after its keydown, and the landing is made once the rows go", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const leaving = ["CORE-12", "CORE-13"];
-  const view = render(
-    <PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
-  );
-  let answered: () => void = () => undefined;
+  const { end, parked, view } = parkOnLeaving(["CORE-12", "CORE-13"], 2);
   try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
-    const parked = rowBox("CORE-13");
-    expect(focusedName()).toBe("Select CORE-13");
     const meta = { bubbles: true, code: "MetaLeft", key: "Meta" };
     act(() => {
       parked.dispatchEvent(new KeyboardEvent("keydown", { ...meta, metaKey: true }));
@@ -1683,10 +1683,7 @@ test("⌘C on the parked mark of a leaving row, whose keyup never comes, is read
     );
     expect(focusedName()).toBe("Select CORE-14");
   } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
+    end();
   }
 });
 
@@ -1695,18 +1692,8 @@ test("⌘C on the parked mark of a leaving row, whose keyup never comes, is read
 // that same task, before a read a task later could run: the landing, still owed, is made by the
 // commit that takes them away.
 test("Meta alone on the parked mark of a leaving row ends nothing, and the landing is made once the rows go", async () => {
-  const laidOut = layRowsOut("[data-row]", 9);
-  const leaving = ["CORE-12", "CORE-13"];
-  const view = render(
-    <PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
-  );
-  let answered: () => void = () => undefined;
+  const { end, parked, view } = parkOnLeaving(["CORE-12", "CORE-13"], 2);
   try {
-    pressInBar("Dismiss");
-    answered = holdHandOff();
-    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
-    const parked = rowBox("CORE-13");
-    expect(focusedName()).toBe("Select CORE-13");
     act(() => {
       parked.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -1724,10 +1711,7 @@ test("Meta alone on the parked mark of a leaving row ends nothing, and the landi
     await act(afterTask);
     expect(focusedName()).toBe("Select CORE-14");
   } finally {
-    answered();
-    disarm();
-    view.unmount();
-    laidOut();
+    end();
   }
 });
 
@@ -1780,6 +1764,35 @@ test("Space on the parked mark of a leaving row ticks it, and the landing is mad
   }
 });
 
+/** The list's rows `keys`, each an `<li>` with its mark, drawn apart from the hook. */
+function rowsApart(keys: readonly string[]): ReactNode {
+  return (
+    <ul aria-label="Rows">
+      {keys.map((key) => (
+        <li data-row={key} key={key}>
+          <input aria-label={`Select ${key}`} type="checkbox" />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The bar's hand-off without its host, over the list `rowsApart` drew, with CORE-13 the row
+ *  marked last and named as leaving, and the bar gone. */
+function handOffApart(): RenderHookResult<MarkedPlace, unknown> {
+  const stop = screen.getByRole("list", { name: "Rows" });
+  return renderHook(() =>
+    useLastMarkedPlace({
+      control: (key) => stop.querySelector<HTMLElement>(`[data-row="${key}"] input`),
+      lastMarked: () => "CORE-13",
+      leaving: (key) => key === "CORE-13",
+      list: () => stop,
+      order: () => PLACED_KEYS,
+      shown: false,
+    })
+  );
+}
+
 // INFRA-3135, round 29 (N4): the read of where the reader's act left the focus is still to come a
 // task after a wheel, and until its keyup after a key, which never comes where the window loses the
 // focus first. A settle before it - the hook's unmount, or a new landing owed - ends it unmade, so
@@ -1794,26 +1807,8 @@ test.each([
   "%s's read of the focus, ended by %s before it runs, moves nothing",
   async (what, ending) => {
     const laidOut = layRowsOut("[data-row]", 9);
-    const rows = render(
-      <ul aria-label="Rows">
-        {PLACED_KEYS.map((key) => (
-          <li data-row={key} key={key}>
-            <input aria-label={`Select ${key}`} type="checkbox" />
-          </li>
-        ))}
-      </ul>
-    );
-    const stop = screen.getByRole("list", { name: "Rows" });
-    const hand = renderHook(() =>
-      useLastMarkedPlace({
-        control: (key) => stop.querySelector<HTMLElement>(`[data-row="${key}"] input`),
-        lastMarked: () => "CORE-13",
-        leaving: (key) => key === "CORE-13",
-        list: () => stop,
-        order: () => PLACED_KEYS,
-        shown: false,
-      })
-    );
+    const rows = render(rowsApart(PLACED_KEYS));
+    const hand = handOffApart();
     let mounted = true;
     try {
       // The bar has gone and left the focus on the body: the landing is owed, and parked on the mark.
@@ -1859,28 +1854,8 @@ test.each(["the hook's unmount", "a new landing owed"] as const)(
   "a press's read of the focus, ended by %s before its pointerup, moves nothing",
   async (ending) => {
     const laidOut = layRowsOut("[data-row]", 9);
-    /** The list's rows `keys`, drawn apart from the hook. */
-    const drawRows = (keys: readonly string[]) => (
-      <ul aria-label="Rows">
-        {keys.map((key) => (
-          <li data-row={key} key={key}>
-            <input aria-label={`Select ${key}`} type="checkbox" />
-          </li>
-        ))}
-      </ul>
-    );
-    const rows = render(drawRows(PLACED_KEYS));
-    const stop = screen.getByRole("list", { name: "Rows" });
-    const hand = renderHook(() =>
-      useLastMarkedPlace({
-        control: (key) => stop.querySelector<HTMLElement>(`[data-row="${key}"] input`),
-        lastMarked: () => "CORE-13",
-        leaving: (key) => key === "CORE-13",
-        list: () => stop,
-        order: () => PLACED_KEYS,
-        shown: false,
-      })
-    );
+    const rows = render(rowsApart(PLACED_KEYS));
+    const hand = handOffApart();
     let mounted = true;
     try {
       // The bar has gone and left the focus on the body: the landing is owed, and parked on the mark.
@@ -1900,7 +1875,7 @@ test.each(["the hook's unmount", "a new landing owed"] as const)(
           hand.result.current.land();
         });
       }
-      rows.rerender(drawRows(without(PLACED_KEYS, "CORE-13")));
+      rows.rerender(rowsApart(without(PLACED_KEYS, "CORE-13")));
       expect(document.activeElement?.tagName).toBe("BODY");
       act(() => {
         document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
@@ -2738,18 +2713,10 @@ test.each([
 ] as const)(
   "a landing owed while the page moves the focus to %s ends on %s once the rows have gone",
   (where, ends) => {
-    const laidOut = layRowsOut("[data-row]", 9);
     const leaving = ["CORE-12", "CORE-13"];
-    const view = render(
-      <PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
-    );
+    const { end, view } = parkOnLeaving(leaving, 2);
     const dialog = render(<button aria-label="Confirm" type="button" />);
-    let answered: () => void = () => undefined;
     try {
-      pressInBar("Dismiss");
-      answered = holdHandOff();
-      view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
-      expect(focusedName()).toBe("Select CORE-13");
       act(() => {
         if (where === "a control outside the list") {
           screen.getByRole("button", { name: "Confirm" }).focus();
@@ -2764,11 +2731,8 @@ test.each([
       );
       expect(focusedName()).toBe(ends);
     } finally {
-      answered();
-      disarm();
       dialog.unmount();
-      view.unmount();
-      laidOut();
+      end();
     }
   }
 );
@@ -2787,18 +2751,10 @@ test.each([
   "j from the parked mark into another leaving row, where %s, ends on %s",
   async (when, ends) => {
     const user = userEvent.setup();
-    const laidOut = layRowsOut("[data-row]", 9);
     const leaving = ["CORE-11", "CORE-12", "CORE-13"];
-    const view = render(
-      <PlacedList count={3} last="CORE-12" leaving={leaving} listed={PLACED_KEYS} />
-    );
+    const { end, view } = parkOnLeaving(leaving, 3, { last: "CORE-12" });
     const keys = stepKeys();
-    let answered: () => void = () => undefined;
     try {
-      pressInBar("Dismiss");
-      answered = holdHandOff();
-      view.rerender(<PlacedList count={0} last="CORE-12" leaving={leaving} listed={PLACED_KEYS} />);
-      expect(focusedName()).toBe("Select CORE-12");
       await user.keyboard("j");
       await act(afterTask);
       expect(focusedName()).toBe("Select CORE-13");
@@ -2819,10 +2775,7 @@ test.each([
       }
     } finally {
       keys();
-      answered();
-      disarm();
-      view.unmount();
-      laidOut();
+      end();
     }
   }
 );

@@ -977,7 +977,7 @@ type OpenFilter = "group" | "machine" | "role";
 
 /** The two lists whose picks can take the address past what it keeps: a machine's name and a
  *  role are any length, while the four groups are short words of the page's own. */
-type BoundedFilter = "machine" | "role";
+type BoundedFilter = Exclude<OpenFilter, "group">;
 
 /** The group filter's option labels: the control hands its values over as strings, and a string
  *  that names no group has no label. */

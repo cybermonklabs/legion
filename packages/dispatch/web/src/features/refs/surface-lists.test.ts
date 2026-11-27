@@ -11,6 +11,7 @@ import {
 import * as ts from "typescript";
 
 import { referencesLaneFiles } from "../../../../e2e/reference-lane";
+import { stripComments } from "../../__tests__/strip-comments";
 
 /**
  * The two lists say what the framework covers: `DISPATCH_WRITING_BOXES` every box a person
@@ -399,50 +400,12 @@ const TREE_BY_FILE = new Map(
   SCANNED_FILES.map((file) => [file, parseSource(file, TEXT_BY_FILE.get(file) ?? "")] as const)
 );
 
-/** A comment, as it stands in code that holds no string, template, regex literal or JSX text. */
-const COMMENT = /\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g;
-
-/**
- * The lines of the file `tree` is with every comment blanked, so prose that names a deleted
- * reader - its module in a sentence, its name in an explanation - is not read as a use of it.
- * Blanks rather than drops, so a line number below is the file's own.
- *
- * The tree says where each string, template, regex literal and JSX text is, and their characters
- * are left as they are: `path="/issues/:key/*"` in `app.tsx`, `/https?:\/\//` and `<p>see
- * http://x</p>` open no comment. A comment is trivia between tokens, so it lies in the code
- * between two of those, and there every `//` and `/*` opens one.
- */
-function codeLines(tree: ts.SourceFile): string[] {
-  const literals: (readonly [number, number])[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isJsxText(node)) {
-      // JSX text has no trivia before it: it starts where the tag or the `}` before it ends.
-      literals.push([node.pos, node.end]);
-    } else if (
-      ts.isStringLiteralLike(node) ||
-      ts.isTemplateLiteralToken(node) ||
-      ts.isRegularExpressionLiteral(node)
-    ) {
-      literals.push([node.getStart(tree), node.end]);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(tree);
-  const { text } = tree;
-  let code = "";
-  let at = 0;
-  for (const [start, end] of [...literals, [text.length, text.length] as const]) {
-    const between = text.slice(at, start);
-    code += between.replace(COMMENT, (comment) => comment.replace(/[^\n]/g, " "));
-    code += text.slice(start, end);
-    at = end;
-  }
-  return code.split("\n");
-}
-
-/** Each scanned file's lines of code (`codeLines`), read once for the deleted readers' check. */
+/** Each scanned file's lines with every comment blanked (`stripComments`), read once for the
+ *  deleted readers' check, so prose that names a deleted reader - its module in a sentence, its
+ *  name in an explanation - is not read as a use of it. Blanks rather than drops, so a line
+ *  number is the file's own. */
 const LINES_BY_FILE = new Map(
-  [...TREE_BY_FILE].map(([file, tree]) => [file, codeLines(tree)] as const)
+  [...TEXT_BY_FILE].map(([file, text]) => [file, stripComments(text, file).split("\n")] as const)
 );
 
 /** An element's tag as one name: a member's parts joined by dots and a namespace's by a colon,
@@ -4522,11 +4485,11 @@ function modulesNamedIn(tree: ts.SourceFile): NamedModule[] {
 
 /** Each line of `tree` that brings `reader` back, as `file:line`: one naming a module whose end
  *  is the reader's (`modulesNamedIn`), and one whose code - `lines`, its comments blanked
- *  (`codeLines`) - writes one of the reader's names as a word. */
+ *  (`stripComments`) - writes one of the reader's names as a word. */
 function deletedReaderUses(
   tree: ts.SourceFile,
   reader: DeletedReader,
-  lines: readonly string[] = codeLines(tree)
+  lines: readonly string[] = stripComments(tree.text, tree.fileName).split("\n")
 ): string[] {
   const { module } = reader;
   const found = new Set(

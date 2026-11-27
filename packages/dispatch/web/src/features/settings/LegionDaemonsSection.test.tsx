@@ -9,6 +9,7 @@ import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
@@ -417,19 +418,19 @@ test("a reader who is not a person is shown the daemons and offered no control",
 test("the daemons' box takes tabindex -1 while a person's row draws Remove", async () => {
   const section = await renderSection(legionServer([setting]));
   const remove = await section.findByRole("button", { name: "Remove the Legion daemon of ACME" });
-  expect(remove.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+  expect(remove.closest(TABLE_SHELL)?.getAttribute("tabindex")).toBe("-1");
 });
 
 test("the daemons' box takes no tabindex for a reader who is not a person", async () => {
   const reader = await renderSection(legionServer([setting]), false);
   const url = await reader.findByRole("cell", { name: "http://127.0.0.1:9731" });
-  expect(url.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+  expect(url.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
 });
 
 test("the daemons' box takes no tabindex while no project names a daemon", async () => {
   const section = await renderSection(legionServer([]));
   const empty = await section.findByText("No project names a Legion daemon yet.");
-  expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+  expect(empty.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
 });
 
 /** `server` with every read it is asked recorded by project, in order, and every write held

@@ -38,6 +38,7 @@ import { AnchoredPanel, type PanelDismissal, scrollToShow, shownSpan } from "./A
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { ChevronIcon } from "./DisclosureToggle";
 import { focusLost } from "./focus-place";
+import { heldPress } from "./held-press";
 import { TruncatedText } from "./TruncatedText";
 import { useTooltips } from "./tooltips";
 
@@ -936,18 +937,15 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               ref={footRef}
             >
               <button
-                aria-disabled={selected.length === 0 || undefined}
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
-                onClick={() => {
-                  // Held, with nothing picked, a press does nothing.
-                  if (selected.length === 0) return;
+                {...heldPress(selected.length === 0, () => {
                   // Clear keeps active the option it finds active, which it shows whole once the
                   // host's pick holds nothing (`awaiting`).
                   if (activeRow !== undefined) setActiveValue(activeRow);
                   awaiting.current = { cleared: true };
                   props.onChange([]);
-                }}
+                })}
                 onClickCapture={selected.length === 0 ? undefined : focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"

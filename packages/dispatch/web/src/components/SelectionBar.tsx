@@ -289,7 +289,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         options
       );
       const onAct = (event: Event) => {
-        if (readerActed(event)) leavingFocus.current = null;
+        if (leavingFocus.current !== null && readerActed(event)) leavingFocus.current = null;
       };
       for (const kind of READER_ACTS) document.addEventListener(kind, onAct, options);
     }
@@ -572,6 +572,10 @@ function listRowOf(
   matches?: (row: string) => boolean
 ): Element | null {
   if (!(target instanceof Node)) return null;
+  // A row around a mark is a `ROW_SELECTOR` element, so a target in none - the body, the bar's own
+  // buttons - is in no such row, and the list's rows need no walk.
+  const at = target instanceof Element ? target : target.parentElement;
+  if (list.row === undefined && (at === null || at.closest(ROW_SELECTOR) === null)) return null;
   for (const row of list.order()) {
     if (matches !== undefined && !matches(row)) continue;
     const element =

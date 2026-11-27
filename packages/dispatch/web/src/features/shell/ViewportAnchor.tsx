@@ -12,6 +12,14 @@ export interface AnchorRow {
   via: "center" | "focus" | "pointer";
 }
 
+/** An element right before or right after a row a press of the reader's is taking away, where
+ *  that element is no row - a group's heading, a band's **Show more** - and how far the current
+ *  row moves up once that element has gone too, read as the row's own `by` is (`beside`). */
+interface Beside {
+  by: number;
+  element: Element;
+}
+
 /** A row above the current one that a press of the reader's is taking away (`leaving`), as the
  *  commit's snapshot reads it, immediately before the row goes. */
 interface Leaving {
@@ -19,15 +27,14 @@ interface Leaving {
    *  row takes in the list (`spaceTaken`), the part above the view's top included. */
   by: number;
   id: string;
-  /** The element right before the row where that element is no row (a group's heading), and how
-   *  far the current row moves up once that element has gone too, read as `by` is. Null where a
-   *  row, or nothing, stands right before the row, and where that element is the `trail` of the
-   *  row named before this one. A group's heading goes with the last row of its group. */
-  lead: { by: number; element: Element } | null;
-  /** The element right after the row where that element is no row (a band's **Show more**), read
-   *  as `lead` is. Null where a row, or nothing, stands right after the row. A band's **Show
-   *  more** goes with the rows its fold takes away. */
-  trail: { by: number; element: Element } | null;
+  /** The element right before the row where that element is no row (a group's heading). Null
+   *  where a row, or nothing, stands right before the row, and where that element is the `trail`
+   *  of the row named before this one. A group's heading goes with the last row of its group. */
+  lead: Beside | null;
+  /** The element right after the row where that element is no row (a band's **Show more**).
+   *  Null where a row, or nothing, stands right after the row. A band's **Show more** goes with
+   *  the rows its fold takes away. */
+  trail: Beside | null;
 }
 
 /** The list the current row stands in and every element in it, immediately before a commit in
@@ -98,6 +105,20 @@ function spaceTaken(element: Element): number {
   const box = element.getBoundingClientRect();
   const after = element.nextElementSibling;
   return (after === null ? box.bottom : after.getBoundingClientRect().top) - box.top;
+}
+
+/** `element`, right before or right after a row leaving, with the space it takes (`Beside`); null
+ *  where there is no such element or it is a row itself (`selector`). */
+function beside(element: Element | null, selector: string): Beside | null {
+  return element === null || element.matches(selector)
+    ? null
+    : { by: spaceTaken(element), element };
+}
+
+/** How far `side` lets the current row move up now the commit is in: its `by` where it went with
+ *  the row beside it, else none. */
+function freedBy(side: Beside | null): number {
+  return side !== null && !side.element.isConnected ? side.by : 0;
 }
 
 export interface ViewportAnchorProps {
@@ -655,19 +676,12 @@ export class ViewportAnchor extends Component<
       const id = this.idOf(each);
       if (!this.named(id, previous)) continue;
       const lead = each.previousElementSibling;
-      const trail = each.nextElementSibling;
       found.push({
         by: spaceTaken(each),
         id,
         // A heading between two named rows is the first one's trail: it is counted once.
-        lead:
-          lead === null || lead.matches(selector) || found.at(-1)?.trail?.element === lead
-            ? null
-            : { by: spaceTaken(lead), element: lead },
-        trail:
-          trail === null || trail.matches(selector)
-            ? null
-            : { by: spaceTaken(trail), element: trail },
+        lead: found.at(-1)?.trail?.element === lead ? null : beside(lead, selector),
+        trail: beside(each.nextElementSibling, selector),
       });
     }
     return found;
@@ -724,8 +738,8 @@ export class ViewportAnchor extends Component<
         now !== null && (row.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
       if (above) continue;
       freed += by;
-      if (lead !== null && !lead.element.isConnected) freed += lead.by;
-      if (trail !== null && !trail.element.isConnected) freed += trail.by;
+      freed += freedBy(lead);
+      freed += freedBy(trail);
     }
     return freed;
   }

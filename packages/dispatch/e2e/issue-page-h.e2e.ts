@@ -16,7 +16,10 @@ import {
   CONTROL_LABELS,
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
-import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
+import {
+  priorityTriggerName,
+  savingPriorityTriggerName,
+} from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
 import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
@@ -1470,11 +1473,9 @@ function priorityPicker(page: Page): Locator {
 
 /** The line's picker trigger in `scope` while a write of the line and the reads after it hold it:
  *  it then says "Saving priorities…" in place of its words, and is named by them, in either place
- *  the line stands (`priorityTriggerName`). */
+ *  the line stands (`savingPriorityTriggerName`). */
 function heldPriorityTrigger(scope: Locator, key: string): Locator {
-  return scope.getByRole("button", {
-    name: priorityTriggerName(key, false, { ANSWER_LINES, CONTROL_LABELS }),
-  });
+  return scope.getByRole("button", { name: savingPriorityTriggerName(key, CONTROL_NAME_WORDS) });
 }
 
 /**

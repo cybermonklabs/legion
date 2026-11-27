@@ -1,14 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
 import {
   DataTable,
@@ -498,10 +490,10 @@ export function IssuesTable({
   leavingNow.current = leaving;
   // The bar's hand-off reads the press that armed it (`armHandOff`), and a press in a dialog is a
   // press outside the bar. So the press that answers a dialog a press on the bar's own actions
-  // opened - the confirm of the List's question where the bar asked it (`fromBar`), and the submit
-  // of the name dialog the bar's New epic from these opened - arms the hand-off at the bar's root
-  // as well, as a pick in a list portalled out of the bar is armed there, before the action runs
-  // and holds that press (`perform`): the bar's going once the action's read settles is the
+  // opened - the confirm of the List's question where the bar asked it (`origin` "bar"), and the
+  // submit of the name dialog the bar's New epic from these opened - arms the hand-off at the bar's
+  // root as well, as a pick in a list portalled out of the bar is armed there, before the action
+  // runs and holds that press (`perform`): the bar's going once the action's read settles is the
   // reader's doing, and its hand-off puts the focus at the place of the row marked last rather
   // than leave it on the page's body. A Cancel, an Escape, the confirm of a question no bar action
   // opened and the rename dialog's submit arm nothing at the bar.
@@ -509,36 +501,27 @@ export function IssuesTable({
     const bar = barRef.current;
     if (bar !== null) armHandOff(control, bar);
   };
-  // An epic group's Merge…, from the press on it: the element the group's Epic actions are drawn
-  // in, and, from the first commit after the press that finds the List idle (`busy` false), the
-  // question that commit shows, which is the merge's own; a merge refused before it asks shows
-  // none and leaves nothing here. A press in a dialog is a press outside the group's heading line
-  // too, so the confirm of that question arms the hand-off at those actions as well, as the bar's
-  // questions arm it at the bar: the line's going, once the merge has moved the epic's last issue
-  // out, is the reader's doing, and the table's hand-off walks the focus on from where the Epic
-  // actions stood (`issues-table-rows.tsx`'s `EpicActions`).
-  const mergeAsked = useRef<{ readonly actions: Element; readonly question?: object } | null>(null);
-  useLayoutEffect(() => {
-    const asked = mergeAsked.current;
-    if (asked === null || asked.question !== undefined || busy) return;
-    mergeAsked.current =
-      confirming === undefined ? null : { actions: asked.actions, question: confirming };
-  });
+  // The element an epic group's Epic actions are drawn in, from the press on that group's Merge…
+  // (`askMerge`). A press in a dialog is a press outside the group's heading line too, so the
+  // confirm of a question the merge asked (`origin` "merge") arms the hand-off at those actions
+  // as well, as the bar's questions arm it at the bar: the line's going, once the merge has moved
+  // the epic's last issue out, is the reader's doing, and the table's hand-off walks the focus on
+  // from where the Epic actions stood (`issues-table-rows.tsx`'s `EpicActions`).
+  const mergeActions = useRef<Element | null>(null);
   const askMerge = (from: string, into: string, actions: Element | null) => {
-    mergeAsked.current = actions === null ? null : { actions };
+    mergeActions.current = actions;
     mergeEpic?.(from, into);
   };
   const confirmQuestion = (control: HTMLButtonElement) => {
-    if (confirming?.fromBar === true) armAtBar(control);
-    const asked = mergeAsked.current;
-    if (confirming !== undefined && asked?.question === confirming) {
-      armHandOff(control, asked.actions);
+    if (confirming?.origin === "bar") armAtBar(control);
+    else if (confirming?.origin === "merge" && mergeActions.current !== null) {
+      armHandOff(control, mergeActions.current);
     }
     confirmed();
   };
   const nameNewEpic = (keys: readonly string[], name: string, control: HTMLElement) => {
     armAtBar(control);
-    void newEpic?.(keys, { fromBar: true, title: name });
+    void newEpic?.(keys, { origin: "bar", title: name });
   };
 
   // How many parents the walk could not read: every one of them when the walk itself failed,

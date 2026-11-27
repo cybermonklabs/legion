@@ -2,6 +2,7 @@ import {
   hashKey,
   type Query,
   type QueryClient,
+  type QueryStatus,
   queryOptions,
   useQuery,
   useQueryClient,
@@ -153,7 +154,7 @@ const recordedClients = new WeakSet<QueryClient>();
  *  sets its reason and each success removes it, as the query takes them, so the reason kept is the
  *  latest failure's whichever views were mounted when it came. One listener per client, never
  *  removed: the client's cache holds it, so it lives as long as the client. The shell's poller and
- *  each view that reads the reason (`useAgentListFailure`: each registry view and each `useAgents`
+ *  each view that reads the reason (`useAgentListSettled`: each registry view and each `useAgents`
  *  caller) install it, so a page or a case without the poller has it too; a failure the query
  *  already holds when the listener is installed is kept as well. */
 function recordFailures(client: QueryClient): void {
@@ -179,14 +180,36 @@ function keptFailure(client: QueryClient): Error | undefined {
   return query === undefined ? undefined : failures.get(query);
 }
 
-/** Why the agent list's latest failed read failed, for a reader of the list whose query holds
- *  `error` now: that error, else - while a later read is out and the query holds none - the reason
- *  the reader's client keeps (`recordFailures`), until a read of the list succeeds. Every view of
- *  the list reads the reason here, so each names the same one throughout. */
-export function useAgentListFailure(error: Error | null): Error | undefined {
+/**
+ * What the agent list's reads last settled, for a reader of the list whose query holds `error`,
+ * `errorUpdateCount` and `status` now, rather than what a read of it is doing now: a read that is
+ * out never takes the last answer away. A list that has only ever failed goes back to pending,
+ * with no error, while each later read is out, and a view that read that as no answer yet would
+ * drop what the failure said and say it again when the read lands on the same error.
+ *
+ * `current`: the latest read succeeded. `isError`: a failure has been recorded
+ * (`errorUpdateCount`) and no read has succeeded since; the count stands through every later
+ * read. `failure`: why that failure came - the query's `error`, else, while a later read is out
+ * and the query holds none, the reason the reader's client keeps (`recordFailures`) until a read
+ * succeeds - so every view of the list names the same reason throughout. `refilling`: that
+ * reason is Envoy answering that its agent list is refilling (`isAgentListRefilling`), which a
+ * view says in place of an unreachable listener.
+ */
+export function useAgentListSettled({
+  error,
+  errorUpdateCount,
+  status,
+}: {
+  readonly error: Error | null;
+  readonly errorUpdateCount: number;
+  readonly status: QueryStatus;
+}): { current: boolean; failure: Error | undefined; isError: boolean; refilling: boolean } {
   const client = useQueryClient();
   useEffect(() => recordFailures(client), [client]);
-  return error ?? keptFailure(client);
+  const current = status === "success";
+  const isError = !current && errorUpdateCount > 0;
+  const failure = error ?? keptFailure(client);
+  return { current, failure, isError, refilling: isError && isAgentListRefilling(failure) };
 }
 
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
@@ -245,21 +268,17 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   });
   const agents = data ?? EMPTY_AGENTS;
   const lookup = registryLookup(agents);
-  // What the registry last answered, rather than what a read of it is doing now: a read that is
-  // out never takes the last answer away. A list that has only ever failed goes back to pending
-  // on each poll of the shell's, and a view that read that as "no answer yet" would drop what the
-  // last answer settled - the counts a refused list does not decide, and the page's word that it
-  // could not check which claims have lapsed - and draw them again when the poll lands on the
-  // same error. A read's failure is counted once it is recorded (`errorUpdateCount`), and the
-  // count stands through every later read. A failed refetch keeps the last response's data, so
-  // the state goes back to unknown while the cached titles go on naming agents.
-  const known = status === "success";
-  const isError = !known && errorUpdateCount > 0;
-  // Why that failure came, which the query clears while its next read is out although the failure
-  // still stands: a view that says what it could not check names the same reason throughout, and
-  // never Envoy as unreachable while it is the agent list refilling (`useAgentListFailure`).
-  const failure = useAgentListFailure(error);
-  const refilling = isError && isAgentListRefilling(failure);
+  // What the registry last answered, rather than what a read of it is doing now
+  // (`useAgentListSettled`): a view that read a list gone back to pending as "no answer yet" would
+  // drop what the last answer settled - the counts a refused list does not decide, and the page's
+  // word that it could not check which claims have lapsed - and draw them again when the poll
+  // lands on the same error. A failed refetch keeps the last response's data, so the state goes
+  // back to unknown while the cached titles go on naming agents.
+  const {
+    current: known,
+    isError,
+    refilling,
+  } = useAgentListSettled({ error, errorUpdateCount, status });
   return useMemo(
     () => ({
       isError,

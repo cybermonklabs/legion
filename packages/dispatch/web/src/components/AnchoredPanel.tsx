@@ -15,7 +15,7 @@ import { createPortal } from "react-dom";
 import { hearPresses } from "../features/issue-page/focus-keeper";
 import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { inputMethodKey } from "../lib/input-method-key";
-import { CLIPPING_OVERFLOW, focusableIn } from "./focus-place";
+import { CLIPPING_OVERFLOW, firstFocusableIn, focusableIn } from "./focus-place";
 
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
@@ -166,7 +166,7 @@ function leastHeight(panel: HTMLElement): number {
     stuck.push(child);
     least += child.getBoundingClientRect().height;
   }
-  const row = focusableIn(panel).find((control) => !stuck.some((child) => child.contains(control)));
+  const row = firstFocusableIn(panel, (control) => !stuck.some((child) => child.contains(control)));
   return least + (row?.getBoundingClientRect().height ?? 0);
 }
 

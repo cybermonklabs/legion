@@ -34,6 +34,11 @@ export const DEPLOYED_LABELS: Record<DeployedFacet, string> = {
 
 export const REWORK_LABELS: Record<ReworkFacet, string> = { value: "value", rework: "rework" };
 
+/** `count` pull requests as the page counts them: "1 PR", and "N PRs" for every other number. */
+export function prCount(count: number): string {
+  return `${count} PR${count === 1 ? "" : "s"}`;
+}
+
 /** What `table` holds under `key` as a key of its own, else nothing: a label, a title or a count.
  *  A value the address carries can be any word, `constructor` among them, which every object
  *  inherits and no table names. */

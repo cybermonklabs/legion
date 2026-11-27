@@ -9,6 +9,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -311,13 +312,13 @@ for (const section of sections) {
     const stubs = section.stub(() => Promise.resolve());
     try {
       const revoke = await renderSection(section);
-      expect(revoke.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+      expect(revoke.closest(TABLE_SHELL)?.getAttribute("tabindex")).toBe("-1");
       cleanup();
       stubs.clearList();
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
       const empty = await screen.findByText(section.empty);
-      expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+      expect(empty.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
     } finally {
       cleanup();
       stubs.restore();
@@ -352,7 +353,7 @@ test("Live grants: a list of grants nobody may revoke leaves the table's box wit
     );
     const line = await screen.findByText("Ends with its machine login");
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
-    expect(line.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+    expect(line.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
   } finally {
     cleanup();
     queryClient.clear();

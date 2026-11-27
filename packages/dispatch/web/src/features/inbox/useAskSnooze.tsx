@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useMemo, useState } from "react";
 
 import { api, askSnoozeRequest, type WriteMethod } from "../../api/client";
@@ -43,6 +43,24 @@ function snoozeMethod({ until }: AskSnoozePress): WriteMethod {
 /** The ask a press of a snooze is of. */
 function snoozeAsk({ askId }: AskSnoozePress): string {
   return askId;
+}
+
+/** Puts back on each inbox cache in `previous` - the caches as they stood before the press - the
+ *  moment each of `asks` had there, or none (`null`) where that cache held no row for it, and
+ *  leaves every other row as it is now. */
+function putSnoozesBack(
+  queryClient: QueryClient,
+  previous: readonly (readonly [QueryKey, InboxRow[] | undefined])[],
+  asks: ReadonlySet<string>
+): void {
+  for (const [key, data] of previous) {
+    const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
+    queryClient.setQueryData<InboxRow[]>(key, (current) =>
+      current?.map((row) =>
+        asks.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
+      )
+    );
+  }
 }
 
 /** Every row's snooze write in one Inbox (`useAskSnoozeWrites`). */
@@ -129,12 +147,7 @@ export function useAskSnoozeWrites(): AskSnoozeWrites {
       return previous;
     },
     onError: (_error, press, previous) => {
-      for (const [key, data] of previous ?? []) {
-        const before = data?.find((row) => row.id === press.askId)?.snoozed_until ?? null;
-        queryClient.setQueryData<InboxRow[]>(key, (current) =>
-          current?.map((row) => (row.id === press.askId ? { ...row, snoozed_until: before } : row))
-        );
-      }
+      putSnoozesBack(queryClient, previous ?? [], new Set([press.askId]));
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
@@ -263,13 +276,8 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           (result) => result.status === "rejected" && refusedByDispatch(result.reason)
         ).length;
         const refused = new Set(failed.map(({ askId }) => askId));
-        for (const [key, data] of refused.size === 0 ? [] : previous) {
-          const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
-          queryClient.setQueryData<InboxRow[]>(key, (current) =>
-            current?.map((row) =>
-              refused.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
-            )
-          );
+        if (refused.size > 0) {
+          putSnoozesBack(queryClient, previous, refused);
         }
       } finally {
         // Whatever happens above: a hold left on would keep every read of the Inbox waiting.

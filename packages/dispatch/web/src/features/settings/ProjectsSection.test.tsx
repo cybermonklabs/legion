@@ -9,6 +9,7 @@ import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
@@ -403,14 +404,14 @@ test("the projects' box takes tabindex -1 while a project is listed, and none wh
   const listed = renderOverServer(projectServer(withDefault));
   try {
     const coreBox = await repositoryBox("CORE");
-    expect(coreBox.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+    expect(coreBox.closest(TABLE_SHELL)?.getAttribute("tabindex")).toBe("-1");
   } finally {
     listed.done();
   }
   const none = renderOverServer(projectServer([]));
   try {
     const empty = await screen.findByText("No projects yet.");
-    expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+    expect(empty.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
   } finally {
     none.done();
   }

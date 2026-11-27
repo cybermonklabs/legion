@@ -11,6 +11,7 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import type {
   DeliveryLeadTimeTiming,
   DeliveryPipelineResponse,
@@ -378,7 +379,7 @@ test("the failing-jobs note names the roll-up the server leaves out only by its 
 test("the failing jobs' box takes tabindex -1 for its links, and the slowest jobs' box takes none", () => {
   view();
   const box = (section: string) =>
-    document.querySelector(`[data-section="${section}"] [data-control="table-shell"]`);
+    document.querySelector(`[data-section="${section}"] ${TABLE_SHELL}`);
   expect(box("failing-jobs")?.getAttribute("tabindex")).toBe("-1");
   expect(box("slowest-jobs")).not.toBeNull();
   expect(box("slowest-jobs")?.hasAttribute("tabindex")).toBe(false);

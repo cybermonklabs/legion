@@ -76,24 +76,24 @@ interface Confirmation {
   /** Told of a Cancel, an Escape or a press on the backdrop, beside the dialog closing: what a
    *  Finish that waits on the answer hears. */
   cancel?: () => void;
-  /** Set where a press on the selection bar's own actions opened the question: the bar's Move to
-   *  epic (`askTarget`), its Start next over a selection larger than the page, and its New epic
-   *  from these, through the name dialog. The List's confirm of such a question arms the bar's
-   *  hand-off at the bar's root too (`IssuesTable`), so the bar's going after the action is the
-   *  reader's doing. A Finish's question (`askOnFinish`) and an epic group's merge are no bar
-   *  action's. */
-  fromBar?: true;
+  /** Which press opened the question, where the List's confirm of it arms a hand-off there too
+   *  (`IssuesTable`), so the going of what the action takes away is the reader's doing. `"bar"`:
+   *  a press on the selection bar's own actions - its Move to epic (`askTarget`), its Start next
+   *  over a selection larger than the page, and its New epic from these, through the name dialog -
+   *  whose confirm arms the bar's hand-off at the bar's root. `"merge"`: an epic group's Merge…
+   *  (`askMerge`), whose confirm arms it at the group's Epic actions. A Finish's question
+   *  (`askOnFinish`) has none. */
+  origin?: "bar" | "merge";
 }
 /** What a question says, before the page knows what its yes and its Cancel do. */
-type Question = Omit<Confirmation, "cancel" | "fromBar" | "run">;
+type Question = Omit<Confirmation, "cancel" | "origin" | "run">;
 /** What an action that moves issues under an epic is, as the question it asks says it: what the
- *  action does (`lead`), said before the question's own sentences, and its name; and whether a
- *  press on the selection bar's own actions began it (`fromBar`), which the question it asks
- *  carries (`Confirmation`'s `fromBar`). */
+ *  action does (`lead`), said before the question's own sentences, and its name; and which press
+ *  began it (`origin`), which the question it asks carries (`Confirmation`'s `origin`). */
 interface TargetAction {
-  readonly fromBar?: true;
   readonly lead?: string;
   readonly noun: "merge" | "move";
+  readonly origin?: "bar" | "merge";
 }
 /** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
 export type EpicNaming =
@@ -563,7 +563,7 @@ export function useIssueTableActions({
       (question) => {
         setBusy(false);
         if (question === undefined) go(false, press);
-        else setConfirming({ ...question, fromBar: action.fromBar, run: () => go(true) });
+        else setConfirming({ ...question, origin: action.origin, run: () => go(true) });
       },
       (error: unknown) => {
         setBusy(false);
@@ -669,7 +669,7 @@ export function useIssueTableActions({
     // Only the bar moves issues to an epic (`IssueTableSelection`'s Move and Take out of epic), so
     // the question this asks is the bar's.
     if (epic === null) move(false);
-    else askTarget(epic, open, { fromBar: true, noun: "move" }, move);
+    else askTarget(epic, open, { noun: "move", origin: "bar" }, move);
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the reader
    *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
@@ -748,7 +748,7 @@ export function useIssueTableActions({
         title: "Start these next?",
         body: `${queued.length} issues move to the head of Legion's queue, one write each.`,
         confirmLabel: "Start next",
-        fromBar: true,
+        origin: "bar",
         run: () => runQueued(queued),
       });
       return;
@@ -757,19 +757,19 @@ export function useIssueTableActions({
   };
   /** `title` is the name the reader gave, `force` makes the epic past a near copy Dispatch named,
    *  `intoWork` is the reader's yes to the new epic's move into work, which the action asks for
-   *  before its create where an issue it moves is in work (D12), and `fromBar` says the name came
+   *  before its create where an issue it moves is in work (D12), and `origin` says the name came
    *  from the dialog the bar's New epic from these opened, so that question is the bar's. */
   const newEpic = async (
     keys: readonly string[],
     {
       force = false,
-      fromBar,
       intoWork,
+      origin,
       title: chosenTitle,
     }: {
       readonly force?: boolean;
-      readonly fromBar?: true;
       readonly intoWork?: true;
+      readonly origin?: "bar";
       readonly title?: string;
     } = {}
   ) => {
@@ -798,7 +798,7 @@ export function useIssueTableActions({
     if (intoWork === undefined && targetMustMove(undefined, rows)) {
       setConfirming({
         ...newEpicQuestion(`“${title}”`, rows),
-        fromBar,
+        origin,
         run: () => void newEpic(keys, { force, intoWork: true, title }),
       });
       return;
@@ -970,13 +970,14 @@ export function useIssueTableActions({
     if (!canBegin()) return;
     const members = mergeMembers(issues, from);
     const lead = mergeLead(from, into, members.length);
-    askTarget(into, members, { lead, noun: "merge" }, (intoWork) => {
+    askTarget(into, members, { lead, noun: "merge", origin: "merge" }, (intoWork) => {
       if (intoWork) void mergeEpic(from, into, true);
       else
         setConfirming({
           title: "Merge this epic?",
           body: lead,
           confirmLabel: "Merge",
+          origin: "merge",
           run: () => void mergeEpic(from, into),
         });
     });

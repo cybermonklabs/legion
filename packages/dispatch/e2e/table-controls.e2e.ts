@@ -13446,7 +13446,7 @@ test("a pointer press on empty space in the List's selection bar line or the Boa
   const emptySpotIn = async (what: string, box: Locator) => {
     await expect.poll(() => findSpot(box), { message: `no empty spot in ${what}` }).not.toBeNull();
     const settled = await settledValue(`${what} empty spot`, () => findSpot(box));
-    expect(settled, `no settled empty spot in ${what}`).not.toBeNull();
+    if (settled === null) throw new Error(`no settled empty spot in ${what}`);
     return settled;
   };
 
@@ -13465,7 +13465,51 @@ test("a pointer press on empty space in the List's selection bar line or the Boa
       };
     });
 
-  // Project List: selection bar's line (`tabindex="-1"`).
+  /** Presses empty space in `box` (`what`) and then Tab. The press puts the focus on `box` with
+   *  no focus ring, and the Tab moves it on with its ring drawn: onto a control inside `holder`
+   *  where `tabStaysIn` says so, else out of `holder`. */
+  const pressEmptySpotThenTab = async (
+    what: string,
+    box: Locator,
+    holder: Locator,
+    tabStaysIn: boolean
+  ) => {
+    const spot = await emptySpotIn(what, box);
+    await page.mouse.click(spot.x, spot.y);
+    await expect
+      .poll(() => focusRingOn(box))
+      .toEqual({
+        boxShadow: "none",
+        focusVisible: false,
+        isBox: true,
+        outlineStyle: "none",
+        tag: "DIV",
+      });
+    await page.keyboard.press("Tab");
+    await expect
+      .poll(async () => {
+        const state = await focusRingOn(box);
+        const inHolder = await holder.evaluate((node) => {
+          const active = document.activeElement;
+          return active !== null && active !== node && node.contains(active);
+        });
+        return {
+          drewRing: state.outlineStyle !== "none" || state.boxShadow !== "none",
+          focusVisible: state.focusVisible,
+          inHolder,
+          isBox: state.isBox,
+        };
+      })
+      .toEqual({
+        drewRing: true,
+        focusVisible: true,
+        inHolder: tabStaysIn,
+        isBox: false,
+      });
+  };
+
+  // Project List: selection bar's line (`tabindex="-1"`), whose Tab goes on to a control of the
+  // bar.
   await page.goto("/projects/CORE/issues");
   const mark = page.getByRole("checkbox", { exact: true, name: `Select ${first.key}` });
   await expect(mark).toBeVisible();
@@ -13474,38 +13518,7 @@ test("a pointer press on empty space in the List's selection bar line or the Boa
   await expect(bar).toBeVisible();
   const barLine = bar.locator('> div[tabindex="-1"]').first();
   await expect(barLine).toBeVisible();
-  const barSpot = await emptySpotIn("selection bar line", barLine);
-  await page.mouse.click(barSpot?.x ?? -1, barSpot?.y ?? -1);
-  await expect
-    .poll(() => focusRingOn(barLine))
-    .toEqual({
-      boxShadow: "none",
-      focusVisible: false,
-      isBox: true,
-      outlineStyle: "none",
-      tag: "DIV",
-    });
-  await page.keyboard.press("Tab");
-  await expect
-    .poll(async () => {
-      const state = await focusRingOn(barLine);
-      const inBar = await bar.evaluate((node) => {
-        const active = document.activeElement;
-        return active !== null && active !== node && node.contains(active);
-      });
-      return {
-        drewRing: state.outlineStyle !== "none" || state.boxShadow !== "none",
-        focusVisible: state.focusVisible,
-        inBar,
-        isBox: state.isBox,
-      };
-    })
-    .toEqual({
-      drewRing: true,
-      focusVisible: true,
-      inBar: true,
-      isBox: false,
-    });
+  await pressEmptySpotThenTab("selection bar line", barLine, bar, true);
 
   // Project Board: flat board scroller (`tabindex="-1"`).
   await openIssuesTab(page, "CORE", "Board");
@@ -13513,40 +13526,9 @@ test("a pointer press on empty space in the List's selection bar line or the Boa
   await expect(scroller).toBeVisible();
   await expect(scroller).toHaveAttribute("tabindex", "-1");
   await expect(page.locator(`[data-board-card="${first.key}"]`)).toBeVisible();
-  const boardSpot = await emptySpotIn("board scroller", scroller);
-  await page.mouse.click(boardSpot?.x ?? -1, boardSpot?.y ?? -1);
-  await expect
-    .poll(() => focusRingOn(scroller))
-    .toEqual({
-      boxShadow: "none",
-      focusVisible: false,
-      isBox: true,
-      outlineStyle: "none",
-      tag: "DIV",
-    });
   // Tab from the focused scroller goes into the board's cards in Chromium and WebKit. Firefox
   // sends it to the page's first control (Skip to content), as it does on main, where the same
   // press leaves the focus on the main content and no tabindex is on the scroller (a throwaway
   // probe, builds Job infra-3135-i-b7p-2mvcn).
-  await page.keyboard.press("Tab");
-  await expect
-    .poll(async () => {
-      const state = await focusRingOn(scroller);
-      const inScroller = await scroller.evaluate((node) => {
-        const active = document.activeElement;
-        return active !== null && active !== node && node.contains(active);
-      });
-      return {
-        drewRing: state.outlineStyle !== "none" || state.boxShadow !== "none",
-        focusVisible: state.focusVisible,
-        inScroller,
-        isBox: state.isBox,
-      };
-    })
-    .toEqual({
-      drewRing: true,
-      focusVisible: true,
-      inScroller: browserName !== "firefox",
-      isBox: false,
-    });
+  await pressEmptySpotThenTab("board scroller", scroller, scroller, browserName !== "firefox");
 });

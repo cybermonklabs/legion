@@ -1,12 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
 import {
   agentsQuery,
   EMPTY_AGENTS,
-  useAgentListFailure,
+  useAgentListSettled,
   useRegistryPolling,
 } from "../refs/agent-registry";
 
@@ -46,15 +45,14 @@ export function useAgents(
     refetchOnMount: !refreshWhileOpen,
   });
   const agents = data ?? EMPTY_AGENTS;
-  // What the reads last settled, rather than what a read is doing now: a list that has only ever
-  // failed goes back to pending, with no error, while each later read is out, and a view that read
-  // that as no answer yet would put its loading state in place of the failure it said, and say the
-  // failure again when the read lands on it. A failure counts once it is recorded
-  // (`errorUpdateCount`) and stands until a read succeeds, with its reason (`useAgentListFailure`).
-  const current = status === "success";
-  const isError = !current && errorUpdateCount > 0;
-  const failure = useAgentListFailure(error);
-  const refilling = isError && isAgentListRefilling(failure);
+  // What the reads last settled, rather than what a read is doing now (`useAgentListSettled`): a
+  // view that read a list gone back to pending as no answer yet would put its loading state in
+  // place of the failure it said, and say the failure again when the read lands on it.
+  const { current, failure, isError, refilling } = useAgentListSettled({
+    error,
+    errorUpdateCount,
+    status,
+  });
 
   return useMemo(
     () => ({

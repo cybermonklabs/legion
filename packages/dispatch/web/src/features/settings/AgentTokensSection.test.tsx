@@ -10,6 +10,7 @@ import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type {
@@ -564,11 +565,11 @@ test("the token table's box takes tabindex -1 while a token is live, and none wh
   try {
     const revoked = await screen.findByRole("table", { name: "Agent tokens" });
     expect(within(revoked).getByText("Revoked")).toBeDefined();
-    expect(revoked.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+    expect(revoked.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
     restore();
     restore = renderMintForm([token]);
     const revoke = await screen.findByRole("button", { name: "Revoke architect" });
-    expect(revoke.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+    expect(revoke.closest(TABLE_SHELL)?.getAttribute("tabindex")).toBe("-1");
   } finally {
     restore();
   }

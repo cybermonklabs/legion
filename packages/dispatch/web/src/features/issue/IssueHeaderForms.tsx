@@ -41,6 +41,9 @@ interface HeaderFormProps {
   onCancel: () => void;
   /** Closes the editor after a save that was sent or queued. */
   onSaved: () => void;
+  /** The form, for the hand-off of the editor's opener once a save closes it
+   *  (`useSavedEditorHandOff`). */
+  ref?: Ref<HTMLFormElement>;
   /** Whether the header's issue write is out, which holds Save. */
   saving: boolean;
 }
@@ -93,7 +96,7 @@ export function IssueRouteForm({
   onSaved,
   ref,
   saving,
-}: HeaderFormProps & { ref?: Ref<HTMLFormElement> }): ReactNode {
+}: HeaderFormProps): ReactNode {
   const input = useFocusOnOpen();
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -154,7 +157,7 @@ export function IssueParentForm({
   project,
   ref,
   saving,
-}: HeaderFormProps & { project: string; ref?: Ref<HTMLFormElement> }): ReactNode {
+}: HeaderFormProps & { project: string }): ReactNode {
   const input = useFocusOnOpen();
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -196,7 +199,7 @@ export function IssueParentForm({
 }
 
 /** Whether an editor of Details is open, held by the header, which closes it with Details. */
-interface DetailsEditorProps extends Omit<HeaderFormProps, "onSaved"> {
+interface DetailsEditorProps extends Omit<HeaderFormProps, "onSaved" | "ref"> {
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
 }

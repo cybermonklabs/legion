@@ -23,6 +23,7 @@ import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { prCount } from "./lib/facets";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
@@ -305,7 +306,7 @@ export function SessionGroupsEditor({
             const inGroup = groupOf.get(session);
             // No count while the answer on screen is not the address's (`counted`): the session's
             // group alone.
-            const detail = [counted ? `${count} PR${count === 1 ? "" : "s"}` : undefined, inGroup]
+            const detail = [counted ? prCount(count) : undefined, inGroup]
               .filter((part) => part !== undefined)
               .join(" · ");
             return (

@@ -114,13 +114,15 @@ function CachedHeader({ isClosed }: { isClosed: boolean }): ReactNode {
   );
 }
 
-/** The header of `details` in the main content, with the page's text after it, and the title
- *  writes it makes answered as Dispatch answers them. With `isClosed`, the issue is
- *  `closedDetails`; a row about another state of the issue hands it as `drawn`. */
-function header(
-  isClosed = false,
-  drawn: IssueDetails = isClosed ? closedDetails : details
-): { patches: Patches; unmount: () => void; user: UserEvent } {
+/** The header of `drawn`, `details` unless a row about another state of the issue hands it, in
+ *  the main content, with the page's text after it, and the title writes it makes answered as
+ *  Dispatch answers them. The issue is closed where `drawn` has closed (`closed_at`). */
+function header(drawn: IssueDetails = details): {
+  patches: Patches;
+  unmount: () => void;
+  user: UserEvent;
+} {
+  const isClosed = drawn.closed_at !== null;
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -473,7 +475,7 @@ test("focusing Edit title does not open the title's editor", async () => {
 // A closed issue's title edits nothing: it is the heading alone, with no Edit title button, no
 // Tab stop and nothing that a press on it opens.
 test("a closed issue's title is its heading alone, with no Edit title button", async () => {
-  const { unmount, user } = header(true);
+  const { unmount, user } = header(closedDetails);
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: base.title });
     expect(heading).not.toHaveAttribute("tabindex");
@@ -695,7 +697,7 @@ test.each(["click", "Enter"] as const)(
   async (press) => {
     const released = Promise.withResolvers<Issue>();
     const release = spyOn(api, "releaseIssueClaim").mockReturnValue(released.promise);
-    const { unmount, user } = header(false, claimedDetails);
+    const { unmount, user } = header(claimedDetails);
     const stopFocusFixup = emulateChromiumFocusFixup();
     const name = "Release the claim on CORE-1";
     try {
@@ -756,7 +758,7 @@ test.each([
             opener: "Edit parent issue",
             openerAgain: "Edit parent issue",
           };
-    const { patches, unmount, user } = header(false, editor.drawn);
+    const { patches, unmount, user } = header(editor.drawn);
     const save = Promise.withResolvers<Issue>();
     patches.mockImplementation(() => save.promise);
     try {
