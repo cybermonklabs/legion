@@ -115,6 +115,7 @@ func TestTheBrokerBinaryAnswersAGoogleEdgeListener(t *testing.T) {
 // (oidc.ErrIssuer), which is the one answer on which the broker hands a token on to its Google
 // verifier, as it does beside one audience.
 func TestTheBrokerBinaryAnswersEdgeListenersBesideAPodAudienceList(t *testing.T) {
+	t.Parallel()
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")
 	rig := newEdgeRig(t)

@@ -190,6 +190,7 @@ func requireRefusal(t *testing.T, who string, got readerRefusal, want readerWant
 // two of them accepted, so that its logins do not move the launcher credential M1's rows hold. A
 // 429 is a failure of the row that meets it (requireRefusal), never a pass or a refusal.
 func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	nats := natsCalloutEnv(t, "edge-listener/edge-a/PRIV="+edgeListenerAccount)
 	natsAudience := envSetting(t, nats, "BROKER_NATS_K8S_AUDIENCE")
@@ -476,6 +477,7 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 // both settings' routes. The database it is given is unreachable, so a broker that took the list
 // fails on the host instead of on the setting.
 func TestTheBrokerBinaryRefusesAPodAudienceListAtStart(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	nats := natsCalloutEnv(t, "edge-listener/edge-a/PRIV="+edgeListenerAccount)
 	natsAudience := envSetting(t, nats, "BROKER_NATS_K8S_AUDIENCE")
@@ -527,6 +529,7 @@ func TestTheBrokerBinaryRefusesAPodAudienceListAtStart(t *testing.T) {
 // listed audience and takes one of its own. With neither BROKER_K8S_OIDC_ISSUER nor
 // BROKER_K8S_OIDC_AUDIENCE the boot reads no key set and builds no pod verifier.
 func TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart(t *testing.T) {
+	t.Parallel()
 	const operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
 	cluster := oidctest.New(t)
 	key := cluster.PublishKey(t, "signing-key")

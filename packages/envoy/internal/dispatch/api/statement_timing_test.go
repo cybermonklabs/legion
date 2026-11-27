@@ -84,7 +84,9 @@ const (
 // package's equality tests are held to. The newest event's before text is main's, which
 // priority_newest_event_test.go holds as its oracle in the same way.
 func TestStatementTimings(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its assertion compares two timings. Each pair fails unless the after text's
+	// median is below the before text's (benchtime.Pair, PairSeries) or within a bound of it
+	// (PairWithin), and a reading taken beside another test's work is that test's reading too.
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -774,7 +776,10 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 // DISPATCH_BENCH_TIMING is set as well as DISPATCH_BENCH_DATABASE_URL: a person runs it on a quiet
 // machine, and CI never does.
 func TestRelatedTermsRefreshTiming(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its assertion compares two timings, the rounds' medians against the pass with
+	// no change, and a reading taken beside another test's work is that test's reading too. It runs
+	// only where DISPATCH_BENCH_TIMING is set, which CI never sets, and the marker holds all the
+	// same: the rule is about what the test does when it runs, not how often it does.
 	if os.Getenv("DISPATCH_BENCH_TIMING") == "" {
 		t.Skip("DISPATCH_BENCH_TIMING is unset: protocol 3's times are read on a quiet machine, never in CI")
 	}
