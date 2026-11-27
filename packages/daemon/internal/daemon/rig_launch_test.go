@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -126,7 +127,7 @@ func rigOwnLaunch(t *testing.T, envoyURL string) rigLaunchRequest {
 	dir := t.TempDir()
 	file := func(name, text string, mode os.FileMode) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(text), mode); err != nil {
+		if err := execfile.Write(path, []byte(text), mode); err != nil {
 			t.Fatal(err)
 		}
 		return path
