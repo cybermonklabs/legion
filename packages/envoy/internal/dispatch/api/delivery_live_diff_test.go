@@ -296,7 +296,7 @@ func livePipelineOf(computedAt time.Time, n int) deliveryPipelineResponse {
 
 func mustEncodeLive(t *testing.T, kind string, body any) deliveryLiveEncoded {
 	t.Helper()
-	encoded, err := encodeDeliveryBody(kind, body)
+	encoded, _, err := encodeDeliveryBody(kind, body)
 	if err != nil {
 		t.Fatalf("encode %s body: %v", kind, err)
 	}
@@ -969,7 +969,7 @@ func TestDiffAgainstAPagesRevsAfterReconnect(t *testing.T) {
 func TestAListWithARepeatedIDIsRefused(t *testing.T) {
 	t.Parallel()
 	body := liveTimelineOf(liveFrom.Add(time.Hour), []delivery.DeliveryPRView{livePR(1), livePR(1)}, []delivery.DeliveryWaitingPRView{}, []delivery.DeliveryRunView{})
-	if _, err := encodeDeliveryBody(deliveryLiveTimeline, body); err == nil || !strings.Contains(err.Error(), `"acme/widgets#1" twice`) {
+	if _, _, err := encodeDeliveryBody(deliveryLiveTimeline, body); err == nil || !strings.Contains(err.Error(), `"acme/widgets#1" twice`) {
 		t.Fatalf("encode = %v, want a refusal naming the repeated id", err)
 	}
 }

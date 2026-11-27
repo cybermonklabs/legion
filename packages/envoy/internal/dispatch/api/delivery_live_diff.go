@@ -40,19 +40,23 @@ type deliveryLiveValue struct {
 
 // encodeDeliveryBody encodes body, a view of kind's GET body, by its kind's field classes. It
 // refuses a list item without an id, and two items of one list with the same id, since either
-// would leave a page holding something no delta can reach.
-func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
+// would leave a page holding something no delta can reach. The duration is how long its revisions
+// took, the recompute's revision stage (deliveryRecomputeTimes), which the caller takes from its
+// own time of the call to leave the encode stage. The revisions are timed where they are made,
+// entry by entry, since each entry's encoding is read just before its revision in the same loop.
+func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Duration, error) {
+	var revising time.Duration
 	classes, ok := deliveryLiveKinds[kind]
 	if !ok {
-		return deliveryLiveEncoded{}, fmt.Errorf("delivery live: unknown view kind %q", kind)
+		return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: unknown view kind %q", kind)
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return deliveryLiveEncoded{}, fmt.Errorf("delivery live: encode %s body: %w", kind, err)
+		return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: encode %s body: %w", kind, err)
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
-		return deliveryLiveEncoded{}, fmt.Errorf("delivery live: read %s body: %w", kind, err)
+		return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: read %s body: %w", kind, err)
 	}
 	field := func(name string) (json.RawMessage, error) {
 		value, ok := top[name]
@@ -79,23 +83,25 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 	for _, list := range classes.lists {
 		value, err := field(list)
 		if err != nil {
-			return deliveryLiveEncoded{}, err
+			return deliveryLiveEncoded{}, revising, err
 		}
 		var items []json.RawMessage
 		if err := json.Unmarshal(value, &items); err != nil {
-			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: read %s.%s: %w", kind, list, err)
+			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: read %s.%s: %w", kind, list, err)
 		}
 		encodedItems := make([]deliveryLiveItem, 0, len(items))
 		revs := make(map[string]string, len(items))
 		for _, item := range items {
 			id, err := deliveryLiveItemID(item)
 			if err != nil {
-				return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s: %w", kind, list, err)
+				return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s: %w", kind, list, err)
 			}
 			if _, duplicate := revs[id]; duplicate {
-				return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s holds id %q twice", kind, list, id)
+				return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s holds id %q twice", kind, list, id)
 			}
+			started := time.Now()
 			rev := deliveryLiveRevision(item)
+			revising += time.Since(started)
 			revs[id] = rev
 			encodedItems = append(encodedItems, deliveryLiveItem{id: id, raw: item, rev: rev})
 		}
@@ -106,18 +112,20 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 	for name, excluded := range classes.maps {
 		value, err := field(name)
 		if err != nil {
-			return deliveryLiveEncoded{}, err
+			return deliveryLiveEncoded{}, revising, err
 		}
 		var entries map[string]json.RawMessage
 		if err := json.Unmarshal(value, &entries); err != nil {
-			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
+			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
 		}
 		values := make(map[string]deliveryLiveValue, len(entries))
 		revs := make(map[string]string, len(entries))
 		for key, entry := range entries {
+			started := time.Now()
 			rev, err := deliveryLiveRevisionWithout(entry, excluded)
+			revising += time.Since(started)
 			if err != nil {
-				return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s[%q]: %w", kind, name, key, err)
+				return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s[%q]: %w", kind, name, key, err)
 			}
 			values[key] = deliveryLiveValue{raw: entry, rev: rev}
 			revs[key] = rev
@@ -129,18 +137,20 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 	for _, name := range classes.counts {
 		value, err := field(name)
 		if err != nil {
-			return deliveryLiveEncoded{}, err
+			return deliveryLiveEncoded{}, revising, err
 		}
 		var facets map[string]map[string]int
 		if err := json.Unmarshal(value, &facets); err != nil {
-			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
+			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
 		}
 		revs := make(map[string]map[string]string, len(facets))
 		for facet, counts := range facets {
 			facetRevs := make(map[string]string, len(counts))
+			started := time.Now()
 			for key, count := range counts {
 				facetRevs[key] = deliveryLiveCountRevision(count)
 			}
+			revising += time.Since(started)
 			revs[facet] = facetRevs
 		}
 		encoded.counts[name] = facets
@@ -150,11 +160,13 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 	for name, excluded := range classes.whole {
 		value, err := field(name)
 		if err != nil {
-			return deliveryLiveEncoded{}, err
+			return deliveryLiveEncoded{}, revising, err
 		}
+		started := time.Now()
 		rev, err := deliveryLiveRevisionWithout(value, excluded)
+		revising += time.Since(started)
 		if err != nil {
-			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s: %w", kind, name, err)
+			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s: %w", kind, name, err)
 		}
 		encoded.fields[name] = deliveryLiveValue{raw: value, rev: rev}
 		encoded.revs.Fields[name] = rev
@@ -162,13 +174,15 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 	for _, name := range classes.withChanges {
 		value, err := field(name)
 		if err != nil {
-			return deliveryLiveEncoded{}, err
+			return deliveryLiveEncoded{}, revising, err
 		}
+		started := time.Now()
 		rev := deliveryLiveRevision(value)
+		revising += time.Since(started)
 		encoded.fields[name] = deliveryLiveValue{raw: value, rev: rev}
 		encoded.revs.Fields[name] = rev
 	}
-	return encoded, nil
+	return encoded, revising, nil
 }
 
 // deliveryLiveItemID is a list item's "id": a string as it is, a number in its JSON form.

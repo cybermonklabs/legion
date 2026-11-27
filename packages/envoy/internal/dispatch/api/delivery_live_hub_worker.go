@@ -125,7 +125,7 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 	return next, !next.IsZero()
 }
 
-// deliveryViewRead is one recompute's read and compute.
+// deliveryViewRead is one recompute's read and compute, and how long each of its stages took.
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
@@ -139,6 +139,7 @@ type deliveryViewRead struct {
 	sessions          map[string]string
 	prs, runs         int
 	unfetchable       int
+	times             deliveryRecomputeTimes
 }
 
 // recompute answers one dirty view from a fresh read: the newest change position first, which
@@ -195,7 +196,9 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
+		sending := time.Now()
 		sent = h.sendLocked(g, view)
+		read.times.diff = time.Since(sending)
 		if classes.reads != viewReadsDelivery {
 			// A view that reads no delivery row holds no delivery settings, so it judges no
 			// freshness: the verdict stays the one the delivery views' own reads set.
@@ -220,7 +223,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	h.recheckHeardLocked(g, view, now)
 	subscribers := len(view.subs)
 	h.mu.Unlock()
-	h.finishRecompute(spec, cause, started, read.prs, read.runs, subscribers, sent)
+	h.finishRecompute(spec, cause, started, read.prs, read.runs, subscribers, sent, read.times)
 }
 
 // read is recompute's read and compute, outside the hub's lock, on g's context. Once it holds the
@@ -234,7 +237,9 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
 	ctx := g.readContext()
 	var read deliveryViewRead
+	started := time.Now()
 	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	read.times.read = time.Since(started)
 	if err != nil {
 		return read, err
 	}
@@ -250,11 +255,17 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	}
 	h.mu.Unlock()
 	now := h.clock.Now()
+	// The kind's read times its own compute (deliveryLiveClasses.read), and the rest of its call
+	// is its reads; the hub's lock and note between the position and the call time as neither.
+	started = time.Now()
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	read.times.read += time.Since(started) - read.times.compute
 	if err != nil {
 		return read, err
 	}
-	read.body, err = encodeDeliveryBody(spec.kind, body)
+	started = time.Now()
+	read.body, read.times.revision, err = encodeDeliveryBody(spec.kind, body)
+	read.times.encode = time.Since(started) - read.times.revision
 	return read, err
 }
 
@@ -271,11 +282,14 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	if err != nil {
 		return nil, err
 	}
+	computing := time.Now()
 	// Every issue the daemon reports, so an event about one marks the view (dirtyIssueLocked); a
 	// stored facts row moves it through the issue_facts change kind (touchedBy) instead, and the
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
-	return legionBoardCompute(board, now), nil
+	body := legionBoardCompute(board, now)
+	read.times.compute = time.Since(computing)
+	return body, nil
 }
 
 // readLegionIssueView is a legion_issue view's read: GET /api/v1/issues/{key}/legion's body, through
@@ -285,6 +299,8 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 // whose configured is false and never an error, so this view, unlike the board, is never refused
 // LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
 // only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
+// It times no compute: the route's read builds the body inside its one transaction, so the whole
+// of it is the recompute's read stage.
 func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	answer, err := h.server.readLegionIssue(ctx, spec.issue)
 	if err != nil {
@@ -308,6 +324,7 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
 		return nil, err
 	}
+	computing := time.Now()
 	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
 	if spec.at == nil {
 		read.expiry = pipelineNextExpiry(read.pipe, now)
@@ -315,6 +332,7 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	read.from = measures.WindowStart(read.at)
 	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
 	read.unfetchable = read.pipe.leadTimes.unfetchable
+	read.times.compute = time.Since(computing)
 	return body, nil
 }
 
@@ -362,6 +380,7 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
 		return nil, err
 	}
+	computing := time.Now()
 	body := deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
 	if spec.preset > 0 {
 		read.expiry = nextExpiry(read.pop, spec.days(), now)
@@ -369,6 +388,7 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	read.from = from
 	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
 	read.unfetchable = read.pop.unfetchable
+	read.times.compute = time.Since(computing)
 	return body, nil
 }
 
@@ -385,6 +405,8 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: deliveryCauseExpiry})
 
 	now := h.clock.Now()
+	var times deliveryRecomputeTimes
+	computing := time.Now()
 	var body any
 	var from, at, expiry time.Time
 	var prs, runs int
@@ -402,7 +424,10 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}
-	encoded, err := encodeDeliveryBody(spec.kind, body)
+	times.compute = time.Since(computing)
+	encoding := time.Now()
+	encoded, revision, err := encodeDeliveryBody(spec.kind, body)
+	times.encode, times.revision = time.Since(encoding)-revision, revision
 
 	h.mu.Lock()
 	view.computing = false
@@ -414,17 +439,48 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 		view.expiry = time.Time{}
 	default:
 		view.body, view.from, view.at, view.expiry = &encoded, from, at, expiry
+		sending := time.Now()
 		sent = h.sendLocked(g, view)
+		times.diff = time.Since(sending)
 	}
 	subscribers := len(view.subs)
 	h.mu.Unlock()
-	h.finishRecompute(spec, deliveryCauseExpiry, started, prs, runs, subscribers, sent)
+	h.finishRecompute(spec, deliveryCauseExpiry, started, prs, runs, subscribers, sent, times)
 }
 
-// finishRecompute records one recompute's shared log line and test observation.
-func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, started time.Time, prs, runs, subscribers, sent int) {
-	log.Printf("dispatch: delivery live recompute view=%s cause=%s elapsed_ms=%d prs=%d runs=%d subscribers=%d sent=%d",
-		spec.kind, cause, time.Since(started).Milliseconds(), prs, runs, subscribers, sent)
+// deliveryRecomputeTimes is how long each stage of one recompute took, which its log line
+// carries (finishRecompute), so a run whose recomputes slowed says which stage the time went to:
+//
+//   - read, the database reads: the change position and the kind's own reads, with what the kind
+//     does between them (the board's placing of its cards, the closing of its facts at now);
+//   - compute, the body built from what was read, and what the hub keeps of it beside the body
+//     (the issues an event marks the view by, the next expiry);
+//   - encode, the body's JSON encoding and its reading back into the list items, map entries,
+//     counts and fields a delta sends (encodeDeliveryBody), but for their revisions;
+//   - revision, the revisions of those (deliveryLiveRevision, deliveryLiveRevisionWithout), a
+//     Legion board's issues map and the timeline's maps and lists among them;
+//   - diff, the send to every subscriber of its snapshot or of its delta against the revisions
+//     it holds (sendLocked), each built and queued on its connection.
+//
+// A stage the recompute did not run is 0: an expiry reads nothing, a failed read encodes nothing,
+// and a refused or failed read sends no subscriber a body. The hub's lock and its test notes are
+// in no stage, so the stages sum to a little less than the recompute's elapsed time.
+type deliveryRecomputeTimes struct {
+	read, compute, encode, revision, diff time.Duration
+}
+
+// finishRecompute records one recompute's shared log line and test observation. The line carries
+// the recompute's elapsed time, its counts and then the time of each of its stages
+// (deliveryRecomputeTimes) as read_ms, compute_ms, encode_ms, revision_ms and diff_ms. The stages
+// come after every other field, since legionbench's drive reads the line only up to elapsed_ms
+// (recomputeLine), and they keep a tenth of a millisecond where elapsed_ms is whole: a stage that
+// ran, a delta for one subscriber or the whole compute of a small view, is routinely under a
+// millisecond, and a whole number would log it 0, as a stage that did not run is.
+func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, started time.Time, prs, runs, subscribers, sent int, times deliveryRecomputeTimes) {
+	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+	log.Printf("dispatch: delivery live recompute view=%s cause=%s elapsed_ms=%d prs=%d runs=%d subscribers=%d sent=%d read_ms=%.1f compute_ms=%.1f encode_ms=%.1f revision_ms=%.1f diff_ms=%.1f",
+		spec.kind, cause, time.Since(started).Milliseconds(), prs, runs, subscribers, sent,
+		ms(times.read), ms(times.compute), ms(times.encode), ms(times.revision), ms(times.diff))
 	h.note(deliveryHubNote{what: "recompute end", view: spec.key, cause: cause, sent: sent})
 }
 

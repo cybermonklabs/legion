@@ -327,7 +327,9 @@ type deliveryLiveClasses struct {
 	// GET route reads of a query, including the key one view of this kind is held under.
 	parse func(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError
 	// read is the kind's own read and compute, outside the hub's lock: it fills the parts of the
-	// read its kind holds and answers the body, which the caller encodes by these classes.
+	// read its kind holds and answers the body, which the caller encodes by these classes. It
+	// records its compute, from its last database read to its answer, in into.times.compute, and
+	// the caller times the rest of the call as the recompute's read (deliveryRecomputeTimes).
 	read func(h *deliveryHub, ctx context.Context, spec deliveryLiveSpec, now time.Time, into *deliveryViewRead) (any, error)
 }
 
