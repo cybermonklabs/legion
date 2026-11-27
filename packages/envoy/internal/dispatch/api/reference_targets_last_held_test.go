@@ -27,15 +27,18 @@ const (
 	lastHeldProse = "A plain block in the issue's own fragment."
 )
 
-func lastHeldBlockRef(key, slug, block string) string {
-	ref, _ := text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: key, ID: slug, Block: block})
+func lastHeldBlockRef(t testing.TB, key, slug, block string) string {
+	t.Helper()
+	ref, ok := text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: key, ID: slug, Block: block})
+	if !ok {
+		t.Fatalf("format block ref for %s/%s#%s: refused", key, slug, block)
+	}
 	return ref
 }
 
 func editLastHeldTree(t *testing.T, handler http.Handler, tree decisionDocument, ops ...map[string]any) {
 	t.Helper()
-	succeeded(t, "edit the tree fragment", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+tree.id+"/edits",
-		map[string]any{"ops": ops}, "alice"))
+	succeeded(t, "edit the tree fragment", editDocument(t, handler, tree.id, map[string]any{"ops": ops}))
 }
 
 func removeLastHeldNode(t *testing.T, rig *moveRig, key, address string) {
@@ -45,20 +48,17 @@ func removeLastHeldNode(t *testing.T, rig *moveRig, key, address string) {
 	if count < 1 {
 		t.Fatalf("the dry run for %s takes %d nodes, want at least the node itself", address, count)
 	}
-	_, tag := placementOf(t, rig.database, refs.BlockNodeKind, address)
+	tag := rig.tag(t, address)
 	if taken := deletedCount(t, "delete "+address, deleteNodeAs(as, key, address, false, count, tag)); taken != count {
 		t.Fatalf("the DELETE of %s takes %d nodes, want %d", address, taken, count)
 	}
 }
 
-// lastHeldQuiet waits until the store of rig owes no version: the rig's own quiet, and then no
-// query drain either. A settlement that moves a query's record writes no version of that query: in
-// the transaction that clears its pending row it marks the issue's queries owed
-// (issue_query_marks), and it writes their versions after that commit
-// (docs.Service.DrainOwedQueries). A read of a query's newest version made between the two is one
-// version short. The read below counts both tables in one statement, so it finds neither row only
-// once the drain's commit, which writes the versions and clears the mark, is in. That wait's bound
-// is the test binary's deadline (testwait.UntilPolling), and its failure prints the two counts.
+// lastHeldQuiet waits until the store of rig owes no version: rig.quiet (which already drains
+// doc_settlements_pending, digest_owed and issue_query_marks and then waits for background writes),
+// followed by a re-check of doc_settlements_pending and issue_query_marks once those background
+// writes have ended. That wait's bound is the test binary's deadline (testwait.UntilPolling), and
+// its failure prints the two counts.
 func lastHeldQuiet(t *testing.T, rig *moveRig) {
 	t.Helper()
 	rig.quiet(t)
@@ -159,17 +159,17 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 	succeeded(t, "take the lens gone", writeStateAs(t, rig.handler, key, lens, graphstore.StateGone, "alice"))
 	lastHeldQuiet(t, rig)
 	checkLastHeld(t, rig.handler,
-		lastHeldWant{lastHeldBlockRef(key, "spec", "removed_statement"), beforeSpec.number, true},
-		lastHeldWant{lastHeldBlockRef(key, "spec", "tree-statement"), beforeTreeStatement, true},
-		lastHeldWant{lastHeldBlockRef(key, issueTreeName, prose), beforeTree.number, true},
-		lastHeldWant{lastHeldBlockRef(key, "spec", "kept"), 0, false},
+		lastHeldWant{lastHeldBlockRef(t, key, "spec", "removed_statement"), beforeSpec.number, true},
+		lastHeldWant{lastHeldBlockRef(t, key, "spec", "tree-statement"), beforeTreeStatement, true},
+		lastHeldWant{lastHeldBlockRef(t, key, issueTreeName, prose), beforeTree.number, true},
+		lastHeldWant{lastHeldBlockRef(t, key, "spec", "kept"), 0, false},
 		lastHeldWant{"dispatch://" + lens, 0, true},
 	)
 	// The contracts module is rendered from the committed OpenAPI document and never committed
 	// itself, so the document is what declares the field (`schemaFields`).
 	fields := schemaFields(committedDocument(t, repositoryRoot(t)))["ReferenceTarget"]
 	if !slices.Contains(fields, "last_held") {
-		t.Errorf("%s ReferenceTarget properties = %v, want last_held (regenerate from the route table)", OpenAPIDocumentPath, fields)
+		t.Errorf("%s ReferenceTarget properties = %v, want last_held", OpenAPIDocumentPath, fields)
 	}
 }
 
@@ -177,11 +177,11 @@ func TestReferenceTargetsNameTheVersionThatLastHeldAGoneNode(t *testing.T) {
 	rig := newMoveRig(t, "GONE")
 	issue := createDigestIssue(t, rig.handler, rig.database, "GONE", "Last held after DELETE", lastHeldSpec, false)
 	key := issue.Key
-	statement := lastHeldBlockRef(key, "spec", "removed_statement")
+	statement := lastHeldBlockRef(t, key, "spec", "removed_statement")
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+key, "verification.md",
-		graphEditCheck("no-result", "The check has no result.", lastHeldBlockRef(key, "spec", "kept")))
+		graphEditCheck("no-result", "The check has no result.", lastHeldBlockRef(t, key, "spec", "kept")))
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+key, "plan.md",
-		":::plan_task{#task serves=\""+lastHeldBlockRef(key, "spec", "kept")+"\"}\nThe task to remove.\n:::\n")
+		":::plan_task{#task serves=\""+lastHeldBlockRef(t, key, "spec", "kept")+"\"}\nThe task to remove.\n:::\n")
 	tree := readDecisionDocument(t, rig.database, key, issueTreeName)
 	editLastHeldTree(t, rig.handler, tree, map[string]any{"op": "insert", "after": "end", "markdown": lastHeldProse})
 	_, prose := textBlockOf(t, rig.database, tree.id, "paragraph", lastHeldProse)
@@ -215,10 +215,10 @@ func TestReferenceTargetsNameTheVersionThatLastHeldAGoneNode(t *testing.T) {
 				t.Fatalf("the %s query version %d still holds %s after DELETE", want.query, after.number, address)
 			}
 		}
-		wants = append(wants, lastHeldWant{lastHeldBlockRef(key, want.slug, want.block), before.number, true})
+		wants = append(wants, lastHeldWant{lastHeldBlockRef(t, key, want.slug, want.block), before.number, true})
 	}
 	checkLastHeld(t, rig.handler, append(wants,
-		lastHeldWant{lastHeldBlockRef(key, "spec", "kept"), 0, false},
+		lastHeldWant{lastHeldBlockRef(t, key, "spec", "kept"), 0, false},
 		lastHeldWant{"dispatch://" + lens, 0, true},
 		lastHeldWant{statement, wants[0].version, true}, // the same reference in the same batch
 	)...)
@@ -229,8 +229,8 @@ func TestReferenceTargetsGiveNoLastHeldWhereTheCallerMayNotSeeTheNode(t *testing
 	issue := createDigestIssue(t, rig.handler, rig.database, "HIDE", "Private history", lastHeldSpec, false)
 	key := issue.Key
 	spec := readDecisionDocument(t, rig.database, key, "spec")
-	ref := lastHeldBlockRef(key, "spec", "removed_statement")
-	unknown := lastHeldBlockRef(key, "spec", "unknown")
+	ref := lastHeldBlockRef(t, key, "spec", "removed_statement")
+	unknown := lastHeldBlockRef(t, key, "spec", "unknown")
 	lastHeldQuiet(t, rig)
 	before := newestQueryVersion(t, rig.database, spec.id).number
 	editSpec(t, rig.handler, key, []map[string]any{{"op": "delete", "block": "removed_statement"}})
@@ -260,12 +260,15 @@ func TestReferenceTargetsGiveNoLastHeldWhereTheCallerMayNotSeeTheNode(t *testing
 	checkLastHeld(t, rig.handler, lastHeldWant{ref, before, true})
 	seedExec(t, rig.database, "return the project to public", `update projects set visibility = 'public' where key = 'HIDE'`)
 	bob := dispatchRequest(t, rig.handler, http.MethodGet, referenceTargetsOf(ref), nil, "bob")
-	if bob.Code != http.StatusOK || decodeBody[model.ReferenceTargets](t, bob).Targets[0].LastHeld == "" {
+	if bob.Code != http.StatusOK {
+		t.Fatalf("public control: Bob's history request reads status=%d body=%s", bob.Code, bob.Body.String())
+	}
+	if bobTargets := decodeBody[model.ReferenceTargets](t, bob).Targets; len(bobTargets) == 0 || bobTargets[0].LastHeld == "" {
 		t.Fatalf("public control: Bob's history request reads status=%d body=%s", bob.Code, bob.Body.String())
 	}
 
-	// The graph writer does not admit author-only issues, artifacts or document blocks. Seed
-	// their visibility with the shared test helper, leaving the real edit's history unchanged.
+	// The graph writer does not admit an author-only document block. Seed the gone block's
+	// visibility with the shared test helper, leaving the real edit's history unchanged.
 	ctx := t.Context()
 	tx, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
@@ -282,7 +285,7 @@ func TestReferenceTargetsGiveNoLastHeldWhereTheCallerMayNotSeeTheNode(t *testing
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	noHistory("another author's gone block", ref, lastHeldBlockRef(key, issueTreeName, "removed_statement"), unknown)
+	noHistory("another author's gone block", ref, lastHeldBlockRef(t, key, issueTreeName, "removed_statement"), unknown)
 	checkLastHeld(t, rig.handler, lastHeldWant{ref, before, true})
 }
 
@@ -302,7 +305,7 @@ func TestReferenceTargetsGiveLastHeldToBlocksAlone(t *testing.T) {
 	constraint := created201[constraintRead](t, "write a constraint", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+key+"/constraints", map[string]any{"standard": "RFC 9110", "reference": "section 13.1.1"}, "alice"))
 	finding := refs.BlockRef(refs.StoreRef(graphstore.KindLens, lens.ID), lens.Findings[0].BlockID)
-	live := lastHeldWant{lastHeldBlockRef(key, "spec", "kept"), 0, false}
+	live := lastHeldWant{lastHeldBlockRef(t, key, "spec", "kept"), 0, false}
 	others := []string{refs.StoreRef(graphstore.KindLens, lens.ID), finding,
 		refs.StoreRef(graphstore.KindRisk, risk.ID), refs.StoreRef(graphstore.KindConstraint, constraint.ID)}
 	wants := []lastHeldWant{live}
@@ -321,7 +324,7 @@ func TestReferenceTargetsGiveLastHeldToBlocksAlone(t *testing.T) {
 func TestReferenceTargetsETagChangesWithLastHeld(t *testing.T) {
 	rig := newMoveRig(t, "TAG")
 	issue := createDigestIssue(t, rig.handler, rig.database, "TAG", "ETag for block history", lastHeldSpec, false)
-	ref := lastHeldBlockRef(issue.Key, "spec", "removed_statement")
+	ref := lastHeldBlockRef(t, issue.Key, "spec", "removed_statement")
 	cut := []map[string]any{{"op": "delete", "block": "removed_statement"}}
 	editSpec(t, rig.handler, issue.Key, cut)
 	lastHeldQuiet(t, rig)

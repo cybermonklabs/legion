@@ -87,7 +87,7 @@ var (
 // the node the request moves, which names a placement_seq the answer gives with no node beside it.
 type graphEditExchange struct {
 	method, path string
-	ifMatch      *string
+	ifMatch      string
 	trees        bool
 	as           graphEditCaller
 	body         any
@@ -102,12 +102,12 @@ func graphEditSend(t *testing.T, handler http.Handler, as graphEditCaller, metho
 	t.Helper()
 	header := http.Header{}
 	var payload any
+	if body != nil {
+		payload = body
+	}
 	switch {
 	case as.login != "":
 		header.Set("X-Dispatch-User", as.login)
-		if body != nil {
-			payload = body
-		}
 	case as.session != "":
 		header.Set("Authorization", "Bearer agent-token")
 		named := maps.Clone(body)
@@ -118,14 +118,10 @@ func graphEditSend(t *testing.T, handler http.Handler, as graphEditCaller, metho
 		payload = named
 	default:
 		header.Set("Authorization", "Bearer agent-token")
-		if body != nil {
-			payload = body
-		}
 	}
-	exchange := &graphEditExchange{method: method, path: shown, as: as, body: payload, trees: trees}
+	exchange := &graphEditExchange{method: method, path: shown, ifMatch: tag, as: as, body: payload, trees: trees}
 	if tag != "" {
 		header.Set("If-Match", tag)
-		exchange.ifMatch = &tag
 	}
 	if trees {
 		header.Set(displayTreesHeader, "1")
@@ -319,7 +315,7 @@ func TestGraphEditWebFixture(t *testing.T) {
 	fixture["moved"] = seed.moved(t)
 	fixture["refused"], fixture["deleted"] = seed.refusals(t)
 	fixture["targets"] = seed.targets(t)
-	names.blocks(t, seed.rig.database)
+	names.blocks(seed.rig.database)
 	fixture["owed"] = graphEditOwed(t, seed.rig.database, names)
 	got := names.encode(fixture)
 	if t.Failed() {
@@ -365,7 +361,7 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	ask := askOfBlock(t, database, s.key, "q1")
 	succeeded(t, "alice answers her question", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer",
 		map[string]any{"text": graphEditAnswerWords}, "alice"))
-	served := "dispatch://" + s.key + "/spec#b-k1"
+	served := lastHeldBlockRef(t, s.key, "spec", "k1")
 	editSpec(t, handler, s.key, []map[string]any{{"op": "insert", "after": "end", "markdown": ":::criterion{#k1 parent=\"dispatch://" + s.key + "/ask/" + ask + "\"}\n" +
 		graphEditCriterionWords + "\n:::\n\n" +
 		":::requirement{#s1 serves=\"" + served + "\"}\n" + graphEditStatement1Words + "\n:::\n\n" +
@@ -379,7 +375,7 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	s.agentEdit(t, graphEditArchitect, issue.PrimaryArtifactID, "block:s1", ":::requirement{#s2 serves=\""+served+"\"}\n"+graphEditStatement2Words+"\n:::\n")
 	s.agentEdit(t, graphEditArchitect, issue.PrimaryArtifactID, "end", "::::decision{#d1}\n"+graphEditDecisionWords+"\n\n:::reading{#g1}\n"+graphEditReadingWords+"\n:::\n::::\n")
 
-	statement := func(block string) string { return "dispatch://" + s.key + "/spec#b-" + block }
+	statement := func(block string) string { return lastHeldBlockRef(t, s.key, "spec", block) }
 	uploadDocument(t, handler, "/api/v1/issues/"+s.key, "verification.md",
 		graphEditCheck("c1", "Every edit of the graph is one write.", statement("s1"), statement("s2"), statement("s3")))
 	verification := readDecisionDocument(t, database, s.key, model.ArtifactSlugVerification)
@@ -397,8 +393,7 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	s.tree = readDecisionDocument(t, database, s.key, issueTreeName)
 	edit := func(markdown string) {
 		t.Helper()
-		succeeded(t, "alice writes into the issue's own fragment", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+s.tree.id+"/edits",
-			map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": markdown}}}, "alice"))
+		succeeded(t, "alice writes into the issue's own fragment", editDocument(t, handler, s.tree.id, insertAtEnd(markdown)))
 	}
 	edit(graphEditProseWords + "\n\n## A heading of the issue's own\n\n- " + graphEditListWords + "\n- The second item of the list.\n\n" +
 		"| Act | Key |\n| --- | --- |\n| Indent | Tab |\n\n```go\nfmt.Println(\"graph\")\n```\n")
@@ -429,7 +424,7 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	done := createDigestIssue(t, handler, database, graphEditProject, "The done copy", ":::criterion{#dk1}\nThe closed issue keeps its graph.\n:::\n", false)
 	s.done = done.Key
 	editSpec(t, handler, s.done, []map[string]any{{"op": "insert", "after": "end",
-		"markdown": ":::requirement{#ds1 serves=\"dispatch://" + s.done + "/spec#b-dk1\"}\nThe closed issue's statement.\n:::\n"}})
+		"markdown": ":::requirement{#ds1 serves=\"" + lastHeldBlockRef(t, s.done, "spec", "dk1") + "\"}\nThe closed issue's statement.\n:::\n"}})
 	succeeded(t, "close the done copy", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+s.done, map[string]any{"status": "done"}, "alice"))
 	// The create of the unconverted issue goes to the server itself: a process of the release
 	// before stands beside the server until the create's helper takes it back
@@ -443,10 +438,10 @@ func seedGraphEdit(t *testing.T, names *graphEditNames) *graphEditSeed {
 	for raw, name := range map[string]string{s.key: "<issue>", s.child: "<child>", s.done: "<done>", s.unconverted: "<unconverted>"} {
 		names.name(raw, name)
 	}
-	names.issue(t, database, s.key, "")
-	names.issue(t, database, s.child, "child-")
-	names.issue(t, database, s.done, "done-")
-	names.issue(t, database, s.unconverted, "unconverted-")
+	names.issue(database, s.key, "")
+	names.issue(database, s.child, "child-")
+	names.issue(database, s.done, "done-")
+	names.issue(database, s.unconverted, "unconverted-")
 	s.questionBlock, s.statement1, s.statement2 = s.tree.address("q1"), s.tree.address("s1"), s.tree.address("s2")
 	s.checkShared, s.checkAgent = s.tree.address("c1"), s.tree.address("c2")
 	s.comment = graphstore.KindComment + "/" + comment.ID
@@ -619,11 +614,16 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 	person, architect, worker := graphEditPerson, graphEditArchitect, graphEditWorker
 	issueNode := graphstore.KindIssue + "/" + s.key
 	indent := map[string]any{"parent": s.statement2, "after": nil}
-	refused := map[string]any{}
-	moveRefused := func(code, what string, exchange *graphEditExchange, status int) {
-		t.Helper()
-		refused[code] = exchange.refused(t, what, status, strings.Fields(code)[0])
+	refused, refusedDeletes := map[string]any{}, map[string]any{}
+	refusedInto := func(into map[string]any) func(code, what string, exchange *graphEditExchange, status int) *graphEditExchange {
+		return func(code, what string, exchange *graphEditExchange, status int) *graphEditExchange {
+			t.Helper()
+			into[code] = exchange.refused(t, what, status, strings.Fields(code)[0])
+			return exchange
+		}
 	}
+	moveRefused := refusedInto(refused)
+	deleteRefused := refusedInto(refusedDeletes)
 	moveRefused(codeNodeNotMovable, "the move of the comment "+s.comment, s.move(t, person, "<comment-on-statement-3>", s.comment,
 		s.tag(t, "<comment-on-statement-3>", s.comment), map[string]any{"parent": s.criterion}), http.StatusBadRequest)
 	tag := s.tag(t, "<statement-3>", s.statement3)
@@ -653,12 +653,6 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 	moveRefused("NOT_FOUND", "the move of the done copy's statement under "+s.key, s.move(t, person, "<done-statement>", s.doneStatement,
 		s.tag(t, "<done-statement>", s.doneStatement), map[string]any{"parent": s.criterion}), http.StatusNotFound)
 
-	refusedDeletes := map[string]any{}
-	deleteRefused := func(code, what string, exchange *graphEditExchange, status int) *graphEditExchange {
-		t.Helper()
-		refusedDeletes[code] = exchange.refused(t, what, status, strings.Fields(code)[0])
-		return exchange
-	}
 	dryRun := s.remove(t, person, s.statement3, true, "", -1).taken(t, "the dry run of "+s.statement3)
 	counted := dryRun.count(t)
 	deleteRefused(codeStateNotPermitted, "the architect's dry run of "+s.statement3+", which holds a lens", s.remove(t, architect, s.statement3, true, "", -1), http.StatusForbidden)
@@ -706,7 +700,7 @@ func (s *graphEditSeed) refusals(t *testing.T) (map[string]any, map[string]any) 
 	moveRefused(codeParentDocumentRemovable, "the move of the prose block onto a document a removal could take", s.move(t, person, "<prose-under-criterion>", s.prose,
 		s.tag(t, "<prose-under-criterion>", s.prose), map[string]any{"parent": graphstore.KindArtifact + "/" + notes.RefKey}), http.StatusConflict)
 	s.contended(t, refused, refusedDeletes)
-	s.names.issue(t, s.rig.database, s.key, "")
+	s.names.issue(s.rig.database, s.key, "")
 	return refused, map[string]any{"dry_run": dryRun, "taken": taken, "tree_after": treeAfter, "refused": refusedDeletes}
 }
 
@@ -720,16 +714,16 @@ func (s *graphEditSeed) targets(t *testing.T) *graphEditExchange {
 	// after that read so the tree cannot answer it without asking for reference targets.
 	const goneStatement = "last-held-statement"
 	editSpec(t, s.rig.handler, s.key, []map[string]any{{"op": "insert", "after": "end",
-		"markdown": ":::requirement{#" + goneStatement + " serves=\"dispatch://" + s.key + "/spec#b-k1\"}\nThe citation keeps the last version that held its target.\n:::\n"}})
+		"markdown": ":::requirement{#" + goneStatement + " serves=\"" + lastHeldBlockRef(t, s.key, "spec", "k1") + "\"}\nThe citation keeps the last version that held its target.\n:::\n"}})
 	removeLastHeldNode(t, s.rig, s.key, s.tree.address(goneStatement))
 	_, prose, _ := strings.Cut(s.goneProse, "#")
 	addresses := []string{
-		lastHeldBlockRef(s.key, "spec", "s1"),
-		lastHeldBlockRef(s.key, "spec", goneStatement),
-		lastHeldBlockRef(s.key, model.ArtifactSlugVerification, "c2"),
-		lastHeldBlockRef(s.key, issueTreeName, prose),
+		lastHeldBlockRef(t, s.key, "spec", "s1"),
+		lastHeldBlockRef(t, s.key, "spec", goneStatement),
+		lastHeldBlockRef(t, s.key, model.ArtifactSlugVerification, "c2"),
+		lastHeldBlockRef(t, s.key, issueTreeName, prose),
 		s.lens,
-		lastHeldBlockRef(s.key, model.ArtifactSlugPlan, "t1"),
+		lastHeldBlockRef(t, s.key, model.ArtifactSlugPlan, "t1"),
 	}
 	path := referenceTargetsOf(addresses...)
 	exchange := graphEditSend(t, s.rig.handler, graphEditPerson, http.MethodGet, path, path, "", false, nil).
@@ -758,7 +752,7 @@ func (s *graphEditSeed) contended(t *testing.T, refused, refusedDeletes map[stri
 	t.Helper()
 	second := createDigestChild(t, s.rig.handler, s.rig.database, graphEditProject, "The second child", graphEditSecondChildWords+"\n", s.key, false)
 	s.names.name(second.Key, "<child-2>")
-	s.names.issue(t, s.rig.database, second.Key, "child-2-")
+	s.names.issue(s.rig.database, second.Key, "child-2-")
 	secondParagraph := blockWithText(t, s.rig.database, graphEditSecondChildWords)
 	s.names.name(secondParagraph, "<child-2-paragraph>")
 	moves := []struct{ key, name, block string }{{s.child, "<child-paragraph>", s.childParagraph}, {second.Key, "<child-2-paragraph>", secondParagraph}}
@@ -798,9 +792,9 @@ func (s *graphEditSeed) contended(t *testing.T, refused, refusedDeletes map[stri
 // a write of the tree artifact defers its index (acceptedFixture.holdOwedBy) - read right after
 // the write of a paragraph and a requirement into the tree artifact, and again once the
 // reconciliation has indexed the room.
-func graphEditOwed(t *testing.T, store *store.Store, names *graphEditNames) map[string]any {
+func graphEditOwed(t *testing.T, database *store.Store, names *graphEditNames) map[string]any {
 	t.Helper()
-	handler, database, deps := newTestServer(t, testServerOptions{store: store, settle: time.Hour, browserPeers: true})
+	handler, _, deps := newTestServer(t, testServerOptions{store: database, settle: time.Hour, browserPeers: true})
 	createReferenceAPIProject(t, handler, graphEditOwedProject)
 	issue := createDigestIssue(t, handler, database, graphEditOwedProject, "The tree artifact owes its index",
 		":::criterion{#ok1}\nThe owed issue's criterion.\n:::\n", false)
@@ -809,8 +803,8 @@ func graphEditOwed(t *testing.T, store *store.Store, names *graphEditNames) map[
 	fixture.holdOwedBy(t, issue.PrimaryArtifactID, "")
 	written := acceptedRequirement("or2")
 	fixture.accept(t, "the write of a paragraph and a requirement into the tree artifact", tree.id, []acceptedBlock{written}, func() string {
-		succeeded(t, "alice writes into the tree artifact", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+tree.id+"/edits",
-			map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": graphEditOwedWords + "\n\n" + typedBlockMarkdown(issue.Key, written)}}}, "alice"))
+		succeeded(t, "alice writes into the tree artifact", editDocument(t, handler, tree.id,
+			insertAtEnd(graphEditOwedWords+"\n\n"+typedBlockMarkdown(issue.Key, written))))
 		return tree.id
 	})
 	owed := graphEditRead(t, handler, graphEditPerson, issue.Key, "")
@@ -818,11 +812,11 @@ func graphEditOwed(t *testing.T, store *store.Store, names *graphEditNames) map[
 	reconcileUntilNothingOwed(t, handler, deps, issue.Key)
 	indexed := graphEditRead(t, handler, graphEditPerson, issue.Key, "")
 	names.name(issue.Key, "<owed-issue>")
-	names.issue(t, database, issue.Key, "owed-")
+	names.issue(database, issue.Key, "owed-")
 	names.name(tree.address("ok1"), "<owed-criterion>")
 	names.name(tree.address(written.id), "<owed-requirement>")
 	names.name(blockWithText(t, database, graphEditOwedWords), "<owed-paragraph>")
-	names.blocks(t, database)
+	names.blocks(database)
 	return map[string]any{"owed": owed, "indexed": indexed}
 }
 
@@ -897,28 +891,28 @@ func (n *graphEditNames) seq(seq int64, node string) string {
 
 // issue names each document of the issue key, by prefix and its slug, and keeps prefix as the
 // prefix of the names of the issue's blocks (blocks).
-func (n *graphEditNames) issue(t *testing.T, database *store.Store, key, prefix string) {
-	t.Helper()
+func (n *graphEditNames) issue(database *store.Store, key, prefix string) {
+	n.t.Helper()
 	n.issues[key] = prefix
 	rows, err := database.Pool.Query(context.Background(), `select id::text, slug from artifacts where issue_key = $1`, key)
 	if err != nil {
-		t.Fatalf("read the documents of %s: %v", key, err)
+		n.t.Fatalf("read the documents of %s: %v", key, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, slug string
 		if err := rows.Scan(&id, &slug); err != nil {
-			t.Fatalf("read a document of %s: %v", key, err)
+			n.t.Fatalf("read a document of %s: %v", key, err)
 		}
 		n.name(id, "<"+prefix+strings.TrimSuffix(slug, "-md")+">")
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the documents of %s: %v", key, err)
+		n.t.Fatalf("read the documents of %s: %v", key, err)
 	}
 }
 
 // graphEditBlock is one document_blocks row blocks reads: the block's id, its type, the block
-// that holds it, its words and its node's address.
+// that holds it, its words, its node's address and its document's id.
 type graphEditBlock struct {
 	id, typ, parent, excerpt, address, artifact string
 }
@@ -926,29 +920,29 @@ type graphEditBlock struct {
 // blocks names each block of the documents of each issue the names hold whose id a run minted and
 // that no name names yet: by the path of names from the block that holds it, else from its issue's
 // prefix and prose, and its type, each of the unnamed siblings of one type numbered in the order of
-// their words. It reads the rows standing in database once its writes are done, so it is called
-// once for each store.
-func (n *graphEditNames) blocks(t *testing.T, database *store.Store) {
-	t.Helper()
+// their words. It reads the rows standing in database when called (once after the seed's writes,
+// and again after graphEditOwed's writes on the same store).
+func (n *graphEditNames) blocks(database *store.Store) {
+	n.t.Helper()
 	for _, key := range slices.Sorted(maps.Keys(n.issues)) {
 		rows, err := database.Pool.Query(context.Background(), `
 			select d.block_id, d.type, coalesce(d.parent_block_id, ''), d.excerpt, coalesce(d.node_address, ''), d.artifact_id::text
 			from document_blocks d join artifacts a on a.id = d.artifact_id where a.issue_key = $1`, key)
 		if err != nil {
-			t.Fatalf("read the blocks of %s: %v", key, err)
+			n.t.Fatalf("read the blocks of %s: %v", key, err)
 		}
 		held := map[string]graphEditBlock{}
 		for rows.Next() {
 			var block graphEditBlock
 			if err := rows.Scan(&block.id, &block.typ, &block.parent, &block.excerpt, &block.address, &block.artifact); err != nil {
 				rows.Close()
-				t.Fatalf("read a block of %s: %v", key, err)
+				n.t.Fatalf("read a block of %s: %v", key, err)
 			}
 			held[block.id] = block
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			t.Fatalf("read the blocks of %s: %v", key, err)
+			n.t.Fatalf("read the blocks of %s: %v", key, err)
 		}
 		named := func(block graphEditBlock) (string, bool) {
 			if name, ok := n.within[block.address]; ok && block.address != "" {
@@ -1087,8 +1081,8 @@ func (n *graphEditNames) value(v any, node string) any {
 func (n *graphEditNames) exchange(e *graphEditExchange) map[string]any {
 	n.t.Helper()
 	request := map[string]any{"method": e.method, "path": n.text(e.path), "login": e.as.name, "if_match": nil}
-	if e.ifMatch != nil {
-		request["if_match"] = n.tag(*e.ifMatch)
+	if e.ifMatch != "" {
+		request["if_match"] = n.tag(e.ifMatch)
 	}
 	if e.trees {
 		request["dispatch_trees"] = "1"
@@ -1312,7 +1306,9 @@ func graphEditStale(got, want []byte) []string {
 }
 
 // graphEditDifference is the first path under path where got, the handlers' answer, and want,
-// the committed fixture's, differ, with the two values there.
+// the committed fixture's, differ, with the two values there. A missing object member and a JSON
+// null both read as nil here and compare equal, so a difference between the two falls back to the
+// enclosing object.
 func graphEditDifference(path string, got, want any) string {
 	switch g := got.(type) {
 	case map[string]any:
@@ -1320,7 +1316,7 @@ func graphEditDifference(path string, got, want any) string {
 		if !ok {
 			break
 		}
-		keys := slices.Sorted(maps.Keys(g))
+		keys := slices.Collect(maps.Keys(g))
 		for key := range w {
 			if !slices.Contains(keys, key) {
 				keys = append(keys, key)
@@ -1347,7 +1343,8 @@ func graphEditDifference(path string, got, want any) string {
 	return fmt.Sprintf("%s: the handlers answer %s, the file holds %s", path, graphEditShown(got), graphEditShown(want))
 }
 
-// graphEditShown is v as JSON, cut to 200 bytes, or "nothing" for a member one side lacks.
+// graphEditShown is v as JSON, cut to 200 bytes, or "nothing" for nil (a missing member or a JSON
+// null).
 func graphEditShown(v any) string {
 	if v == nil {
 		return "nothing"

@@ -125,8 +125,9 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // gone, as one nothing addresses is. trees is the request's own reader, nil for a caller that asked
 // for no tree, which then reads no block's text at all.
 func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
-	// Preserve actingReader's projection for the existing name and text lookups.
-	// LastHeld independently checks access under the live credential's project scope.
+	// Short ids, names and block trees are read as the recorded actor (model.Actor.Recorded,
+	// as actingReader projects it); last_held checks access under the live credential
+	// (referenceTargetsLastHeld).
 	historyReader := who
 	who = who.Recorded()
 	raw := r.URL.Query()["ref"]

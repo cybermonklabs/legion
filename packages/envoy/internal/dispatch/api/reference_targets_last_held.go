@@ -29,10 +29,26 @@ func lastHeldParentAtCut(kind, id string) string {
 	return `select p.to_kind, p.to_id from (
 		select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
 		from graph_tuples t
-		where t.from_kind = ` + kind + ` and t.from_id = ` + id + ` and t.kind = 'part_of'
+		where t.from_kind = ` + kind + ` and t.from_id = ` + id + ` and t.kind = '` + graphstore.TuplePartOf + `'
 		  and t.to_kind <> 'value' and t.seq <= cut.read_seq
 		order by t.to_kind, t.to_id, t.at desc, t.seq desc
 	) p where p.asserted order by p.at desc, p.seq desc limit 1`
+}
+
+// lastHeldOwnNode admits a node belonging to block.issue_key (or a finding, or a kind whose id
+// does not carry an issue prefix).
+func lastHeldOwnNode(kind, id string) string {
+	return `(` + kind + ` not in ('artifact', 'version', '` + refs.BlockNodeKind + `')
+		    or split_part(` + id + `, '/', 1) = block.issue_key
+		    or ` + graphstore.FindingIDSQL(id) + `)`
+}
+
+// lastHeldStateAtCut reads the node's standing state at cut.read_seq.
+func lastHeldStateAtCut(kind, id string) string {
+	return `(select case when t.asserted then t.to_id end from graph_tuples t
+		       where t.from_kind = ` + kind + ` and t.from_id = ` + id + `
+		         and t.kind = '` + graphstore.AttributeState + `' and t.to_kind = 'value' and t.seq <= cut.read_seq
+		       order by t.at desc, t.seq desc limit 1)`
 }
 
 // lastHeldBlocksStatement finds the real gone node and its last document before reading versions.
@@ -63,7 +79,7 @@ var lastHeldBlocksStatement = `
 		select addressed.address, held.id as node, held.supertag, keyed.id as indexed_under, keyed.kind as keyed_kind,
 		       substr(held.id, length(keyed.ref_key) + 2) as block_id
 		from addressed
-		join graph_nodes held on held.kind = 'block' and held.id = addressed.node and held.state = $4
+		join graph_nodes held on held.kind = '` + refs.BlockNodeKind + `' and held.id = addressed.node and held.state = $4
 		join artifacts keyed on keyed.ref_key = split_part(held.id, '#', 1)
 		where ` + refs.VisibleKindRow(refs.BlockNodeKind, "held", "$2") + ` and ` + lastHeldDocumentVisible("keyed") + `
 	), visible as materialized (
@@ -122,7 +138,7 @@ var lastHeldBlocksStatement = `
 	join artifact_versions version on version.artifact_id = cut.artifact_id and version.number = cut.number
 	cross join lateral (
 		select case when t.asserted then split_part(t.to_id, chr(10), 1) end as text
-		from graph_tuples t where t.from_kind = 'block' and t.from_id = block.node
+		from graph_tuples t where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = block.node
 		  and t.kind = '` + graphstore.AttributeText + `' and t.to_kind = 'value' and t.seq <= cut.read_seq
 		order by t.at desc, t.seq desc limit 1
 	) opening
@@ -131,7 +147,7 @@ var lastHeldBlocksStatement = `
 		from (
 			select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
 			from graph_tuples t
-			where t.to_kind = 'issue' and t.to_id = block.issue_key and t.kind = 'part_of' and t.seq <= cut.read_seq
+			where t.to_kind = 'issue' and t.to_id = block.issue_key and t.kind = '` + graphstore.TuplePartOf + `' and t.seq <= cut.read_seq
 			order by t.from_kind, t.from_id, t.at desc, t.seq desc
 		) first_child
 		cross join lateral (` + lastHeldParentAtCut("first_child.from_kind", "first_child.from_id") + `) parent
@@ -144,19 +160,14 @@ var lastHeldBlocksStatement = `
 		where block.supertag = 'callout' and first_child.asserted and rank.rank is not null
 		  and parent.to_kind = 'issue' and parent.to_id = block.issue_key
 		  and first_child.from_kind not in ('comment', 'issue', 'step', 'plan', 'handoff')
-		  and (first_child.from_kind not in ('artifact', 'version', 'block')
-		    or split_part(first_child.from_id, '/', 1) = block.issue_key
-		    or ` + graphstore.FindingIDSQL("first_child.from_id") + `)
-		  and (select case when t.asserted then t.to_id end from graph_tuples t
-		       where t.from_kind = first_child.from_kind and t.from_id = first_child.from_id
-		         and t.kind = '` + graphstore.AttributeState + `' and t.to_kind = 'value' and t.seq <= cut.read_seq
-		       order by t.at desc, t.seq desc limit 1) is distinct from $4
+		  and ` + lastHeldOwnNode("first_child.from_kind", "first_child.from_id") + `
+		  and ` + lastHeldStateAtCut("first_child.from_kind", "first_child.from_id") + ` is distinct from $4
 		order by rank.rank collate "C", (first_child.from_kind || ':' || first_child.from_id) collate "C"
 		limit 1
 	) memo on true
 	where opening.text is not null and exists (
 		with recursive placed(kind, id, child_kind, child_id) as (
-			select 'block'::text, block.node, null::text, null::text
+			select '` + refs.BlockNodeKind + `'::text, block.node, null::text, null::text
 			union
 			select parent.to_kind, parent.to_id, child.kind, child.id
 			from placed child
@@ -164,12 +175,8 @@ var lastHeldBlocksStatement = `
 			-- The part_of log alone does not prove that a comment or message's thread
 			-- passed the conversation filter at this cut. Do not use it as a root proof.
 			where child.kind not in ('issue', 'comment', 'comment_block', 'message', 'message_block')
-			  and (child.kind not in ('artifact', 'version', 'block') or split_part(child.id, '/', 1) = block.issue_key
-			    or ` + graphstore.FindingIDSQL("child.id") + `)
-			  and (select case when t.asserted then t.to_id end from graph_tuples t
-			       where t.from_kind = child.kind and t.from_id = child.id and t.kind = '` + graphstore.AttributeState + `'
-			         and t.to_kind = 'value' and t.seq <= cut.read_seq
-			       order by t.at desc, t.seq desc limit 1) is distinct from $4
+			  and ` + lastHeldOwnNode("child.kind", "child.id") + `
+			  and ` + lastHeldStateAtCut("child.kind", "child.id") + ` is distinct from $4
 		)
 		select 1 from placed where kind = 'issue' and id = block.issue_key
 		union all
@@ -178,14 +185,14 @@ var lastHeldBlocksStatement = `
 		select 1 from placed foreign_parent
 		join spec_chain ancestor on ancestor.subject = block.issue_key and ancestor.depth > 0
 		  and ancestor.key = split_part(foreign_parent.id, '/', 1)
-		where foreign_parent.kind = 'block' and foreign_parent.child_kind = 'block'
+		where foreign_parent.kind = '` + refs.BlockNodeKind + `' and foreign_parent.child_kind = '` + refs.BlockNodeKind + `'
 		  and exists (
 		      select 1 from artifacts d
 		      cross join lateral (` + lastHeldParentAtCut("'artifact'", "d.ref_key") + `) top
 		      where d.issue_key = block.issue_key and top.to_kind = 'issue' and top.to_id = block.issue_key
 		        and (select t.asserted from graph_tuples t
-		             where t.from_kind = 'block' and t.from_id = foreign_parent.child_id
-		               and t.kind = 'in_document' and t.to_kind = 'artifact' and t.to_id = d.ref_key
+		             where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = foreign_parent.child_id
+		               and t.kind = '` + refs.TupleInDocument + `' and t.to_kind = 'artifact' and t.to_id = d.ref_key
 		               and t.seq <= cut.read_seq order by t.at desc, t.seq desc limit 1)
 		  )
 	))
@@ -243,10 +250,16 @@ func (s *server) referenceTargetsLastHeld(ctx context.Context, who model.Actor, 
 		}
 		viewer = &resolved
 	}
+	nullable := func(value string) any {
+		if value == "" {
+			return nil
+		}
+		return value
+	}
 	rows, err := s.deps.Store.Pool.Query(ctx, lastHeldBlocksStatement, candidates, refs.VisibilityArg(who),
 		map[string]any{"sees": viewer.Sees, "all": viewer.All, "open": viewer.Open, "private": viewer.AnyPrivate,
-			"person": viewer.Person, "session": viewer.Session}, graphstore.StateGone, lastHeldQueryTypes,
-		refs.IssueDepthCap)
+			"person": nullable(viewer.Person), "session": nullable(viewer.Session)}, graphstore.StateGone,
+		lastHeldQueryTypes, refs.IssueDepthCap)
 	if err != nil {
 		return fmt.Errorf("read the versions that last held reference targets: %w", err)
 	}
