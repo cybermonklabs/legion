@@ -35,9 +35,10 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation, by default the six roles' former
-// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation, by default 2 CPU and 8Gi, each
+// requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
@@ -125,8 +126,8 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 		t.Errorf("the role homes volume is %+v, want an emptyDir on the node's disk", homes)
 	}
 	reservation := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 	}
 	for _, container := range slices.Concat(pod.InitContainers, pod.Containers) {
 		if !sameRequirements(container.Resources, reservation) {
@@ -142,6 +143,7 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 // told its DSN. A deployment that sets nothing renders none of the three, and the controller's
 // pod never serves one: it runs no tests, and its container holds its own credentials.
 func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.TestPostgres = true
 	r, err := configure(opts)
@@ -209,6 +211,7 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 // server cannot start under refuses the daemon's boot probe rather than every pod's first
 // Postgres test. A deployment that serves none passes the flag to nothing.
 func TestTheImageProbeProvesTheTestPostgres(t *testing.T) {
+	t.Parallel()
 	for serves, want := range map[bool]bool{true: true, false: false} {
 		opts := goldenOptions()
 		opts.TestPostgres = serves
@@ -261,6 +264,7 @@ func sameRequirements(a, b corev1.ResourceRequirements) bool {
 // a container every role's launcher shares. Each such value travels in that role's generation's
 // start command alone.
 func TestTheRolesContainerEnvironmentNamesNoRole(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.Pod.Env = map[string]string{"OPERATOR_SETTING": "operator-value"}
 	r, err := configure(opts)
@@ -314,6 +318,7 @@ func toEarlierLayout(p *corev1.Pod) {
 // Uncertain at every observation. A pod missing a role's container, one already running `roles`,
 // or one running `roles` beside them is not that layout.
 func TestAnInjectedSidecarLeavesAPodOfTheEarlierLayout(t *testing.T) {
+	t.Parallel()
 	roles := make([]string, len(claim.Roles))
 	for i, role := range claim.Roles {
 		roles[i] = string(role)
@@ -350,8 +355,12 @@ func TestAnInjectedSidecarLeavesAPodOfTheEarlierLayout(t *testing.T) {
 // replaces it where it stands, an installing launch included, where a launch into a pod that has
 // merely drifted keeps it; the replacement is a fresh pod on the configured image, so that launch
 // installs nothing; the pod it makes runs one container, the siblings' old processes read as the
-// daemon's replacement (Displaced), and a sibling resumes into the same new pod.
+// daemon's replacement (Displaced), and a sibling resumes into the same new pod. Each launch here
+// must succeed, so its waits end on the rig's controller ending and making a pod, under a boot
+// timeout as long as the test binary's deadline allows (withWaitsToTheDeadline), not one a loaded
+// machine outruns.
 func TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester, reviewer := workerSpec(t), testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	testerLoc, reviewerLoc := g.spawn(tester), g.spawn(reviewer)
@@ -411,6 +420,7 @@ func TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaun
 // note that mark sends is written for a role of an issue pod's one container, which this pod
 // never had (outOfMemory).
 func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	pod := podObject(name, recorded, sandboxUID, labels, corev1.PodStatus{})
@@ -456,6 +466,7 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 // role's own key directory is alive, and a generation the role's record says was told a moved
 // daemon URL is stale.
 func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
+	t.Parallel()
 	broker := func(o *Options) {
 		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	}
@@ -520,6 +531,7 @@ func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 // lines of the container's log alone (roleLines), never a sibling's or the launcher's unprefixed
 // ones: the rig's log reads "fake logs", which no role's prefix begins.
 func TestTheRolesContainerEndingEndsEveryRole(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -545,6 +557,7 @@ func TestTheRolesContainerEndingEndsEveryRole(t *testing.T) {
 // reviewer's or the tester's oldest; the launcher's own unprefixed lines follow under their own
 // header, its newest, and none of the reviewer's.
 func TestARolesQuoteIsItsNewestLinesOfALogPastTheBound(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -609,6 +622,7 @@ func servedTail(t *testing.T, action k8stesting.Action, log []string) []byte {
 // read from its start, that read holds the tail's oldest lines; it is read once more for half the
 // lines it held, which here fit the bound, so the quote is the newest lines and carries no note.
 func TestTheSharedLogsReadIsBoundedInBytes(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -649,6 +663,7 @@ func TestTheSharedLogsReadIsBoundedInBytes(t *testing.T) {
 // A second read whose newest lines are longer still is cut too: the quote carries what that read
 // reached, says the container's newest lines are not in it, and the log is read no third time.
 func TestASharedLogStillPastTheBoundOnItsSecondReadSaysSo(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -696,6 +711,7 @@ func TestASharedLogStillPastTheBoundOnItsSecondReadSaysSo(t *testing.T) {
 // first read's lines: the quote is what the cut read held, with the note that it is not the
 // container's newest, never a bare "could not be read" that throws those lines away.
 func TestASharedLogsFailedSecondReadKeepsTheFirstRead(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -743,6 +759,7 @@ func TestASharedLogsFailedSecondReadKeepsTheFirstRead(t *testing.T) {
 // line before it, then the note. The kubelet here serves the whole log whatever TailLines asks,
 // so both of readLog's reads stop at the same byte.
 func TestABoundedReadOfTheSharedLogDropsTheLineItStoppedInside(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -796,6 +813,7 @@ func TestABoundedReadOfTheSharedLogDropsTheLineItStoppedInside(t *testing.T) {
 // launcher: a role's quote is its own last lines alone, the prefix dropped, and a sibling's, the
 // launcher's own unprefixed ones and a role whose name another's begins with are none of it.
 func TestARolesQuoteIsItsOwnLinesOfTheSharedLog(t *testing.T) {
+	t.Parallel()
 	log := strings.Join([]string{
 		"launcher: connected",
 		"tester: one",
@@ -822,6 +840,7 @@ func TestARolesQuoteIsItsOwnLinesOfTheSharedLog(t *testing.T) {
 // start it inside a line: a fragment there that reads as the tester's is not quoted as the
 // tester's.
 func TestEachRolesQuoteCarriesTheLaunchersCrash(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -860,6 +879,7 @@ func TestEachRolesQuoteCarriesTheLaunchersCrash(t *testing.T) {
 // dropped, so that whole line is quoted: a tester whose only line is the first after the cut, in a
 // log of 33 role lines each below the launcher's 64 KiB line cap, keeps it in its quote.
 func TestARolesFirstWholeLineAfterTheByteCutIsQuoted(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -890,6 +910,7 @@ func TestARolesFirstWholeLineAfterTheByteCutIsQuoted(t *testing.T) {
 // The stream an issue pod's launcher dials is read from its one container: a pod whose roles
 // container dials a stream the daemon moved from is StaleAddress for its role.
 func TestTheStreamIsReadFromTheRolesContainer(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	pod := podObject(name, recorded, sandboxUID, labels, corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
@@ -910,6 +931,7 @@ func TestTheStreamIsReadFromTheRolesContainer(t *testing.T) {
 // layout before it, exactly one container per workflow role, which the next launch replaces; every
 // other shape it refused it still refuses.
 func TestTheBootCensusPassesBothIssuePodLayouts(t *testing.T) {
+	t.Parallel()
 	issue := claimLabels(claim.RoleArchitect)
 	for name, containers := range map[string][]string{
 		"one container": {"roles"},
@@ -937,6 +959,7 @@ func TestTheBootCensusPassesBothIssuePodLayouts(t *testing.T) {
 // /var/run/shm to /dev/shm, read from the image) lands on what role-init covers and is refused as
 // well.
 func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
+	t.Parallel()
 	mountAt := func(path string) Pod {
 		return Pod{
 			Volumes:      []corev1.Volume{{Name: "share", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
@@ -974,6 +997,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 // filesystem it overlaps. A mount beside them in /dev's other directories is not one role-init
 // replaces.
 func TestCheckPodRefusesAMountAtOrUnderARolesOwnDevices(t *testing.T) {
+	t.Parallel()
 	mountAt := func(path string) Pod {
 		return Pod{
 			Volumes:      []corev1.Volume{{Name: "share", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},

@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -36,12 +38,67 @@ import (
 // root (registerAndWait), in place of running the tests.
 const registerEnv = "AGENT_SECRETS_HELPER_TEST_REGISTER"
 
+// TestMain runs this binary as a session root that registers with the helper at registerEnv's
+// socket, where it is set, and runs the tests otherwise. Only TestMain makes a session root of a
+// copy a test starts: in a build of these tests without it, such a copy runs the tests, each of
+// which starts copies that run them again. registerCopy refuses to start a copy in such a process
+// (registerCopyRefusal), and TestACopyStartedAsASessionRootRegisters fails in such a build by name.
 func TestMain(m *testing.M) {
 	if sock := os.Getenv(registerEnv); sock != "" {
 		registerAndWait(sock)
 		return
 	}
 	os.Exit(cmdtest.Main(m))
+}
+
+// registerCopy is the path of this test binary, which a test runs as a session root with
+// registerEnv in the copy's environment. It fails t where registerCopyRefusal refuses.
+func registerCopy(t *testing.T) string {
+	t.Helper()
+	if err := registerCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// registerCopyRefusal is why this process may start no copy of this test binary, nil when it may.
+// A process that has registerEnv set was started as a session root, and TestMain runs such a
+// process as a session root, so one that runs the tests runs in a build without TestMain, and a
+// copy started there would run the tests again.
+func registerCopyRefusal() error {
+	if sock := os.Getenv(registerEnv); sock != "" {
+		return fmt.Errorf("this process has %s=%s, so a test started it as a session root, but it runs the tests: this build of the tests has no TestMain that runs a session root, and a copy started here would run the tests again", registerEnv, sock)
+	}
+	return nil
+}
+
+// registerCopyRefusal, which registerCopy asks before any copy starts, refuses a process that has
+// registerEnv set and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsASessionRootStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, registerEnv)
+	if err := registerCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", registerEnv, err)
+	}
+	t.Setenv(registerEnv, "/run/helper.sock")
+	if err := registerCopyRefusal(); err == nil || !strings.Contains(err.Error(), registerEnv+"=/run/helper.sock") {
+		t.Fatalf("with %s set: %v, want a refusal that names it", registerEnv, err)
+	}
+}
+
+// A copy started with registerEnv set runs as a session root: it asks the helper at that socket to
+// register it, and with no helper there it says so and exits 1. The session root does not read -h.
+// In a build without TestMain, the testing package reads -h before any test runs, prints its own
+// flag usage and exits 0, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsASessionRootRegisters(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(registerCopy(t), "-h")
+	cmd.Env = append(os.Environ(), registerEnv+"="+filepath.Join(t.TempDir(), "no-helper.sock"))
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if want := "register: "; !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as a session root with -h and no helper: %v, want exit 1 and a refusal that starts %q\n%s", err, want, out)
+	}
 }
 
 // registerAndWait registers this process with the helper at sock, prints "registered", and lives
@@ -226,7 +283,7 @@ func fakeBroker(t *testing.T) *httptest.Server {
 // session root of its own, and keeps it alive until the test ends.
 func registerChild(t *testing.T, sock string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0])
+	cmd := exec.Command(registerCopy(t))
 	cmd.Env = append(os.Environ(), registerEnv+"="+sock)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()

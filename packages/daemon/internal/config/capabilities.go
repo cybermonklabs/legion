@@ -51,6 +51,9 @@ func readCapabilities(value *yaml.Node, key string) (*Capabilities, error) {
 		name, reason := capabilities.Name(decided.Content[i].Value), decided.Content[i+1]
 		field := decidedKey + "." + string(name)
 		if !slices.Contains(names, name) {
+			if !keyShape(string(name)) {
+				return nil, fmt.Errorf("%s: a decision may name %s", unknownKeyAt(decided.Content[i], decidedKey), orList(names))
+			}
 			return nil, fmt.Errorf("unknown key %s: a decision may name %s", field, orList(names))
 		}
 		if _, twice := block.Decided[name]; twice {

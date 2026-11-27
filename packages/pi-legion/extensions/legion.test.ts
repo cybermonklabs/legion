@@ -763,7 +763,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:500-520 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:541-561 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
@@ -2239,7 +2239,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // check reads: it does at once for a refusal whose status cannot clear, of the task's prompt or
     // of a reminder's own turn, which no prompt ran and which the daemon judges from its
     // turn-outcome report (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the
-    // reminders keep their pace, and the controller is told once at six such turns in a row.
+    // reminders keep their pace. At six such turns in a row the daemon sends the `provider-errors`
+    // notice once (`providerErrorRunReached` in the daemon's `workflow.go` says to whom).
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);

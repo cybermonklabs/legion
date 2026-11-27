@@ -3,6 +3,7 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The acceptance clause this holds: a hook failure the recovery repairs by itself logs no ERROR.
@@ -21,8 +23,10 @@ import (
 // HookStall, which /healthz reads, is back to no stall and no error once the retry has covered
 // the reconnect.
 func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri})
+	clientLogs := captureBusLogs()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithLogger(clientLogs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -39,16 +43,11 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 		return nil
 	})
 
-	logs := captureBusLogs(t)
+	logs := clientLogs.fromHere()
 	srv.Stop(t)
 	srv.Start(t)
-	for run := 1; run <= 2; run++ {
-		select {
-		case <-hooked:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the reconnect hooks ran %d time(s); want the failed run and the retry", run-1)
-		}
-	}
+	testwait.Receive(t, "the reconnect hooks' failed run", hooked)
+	testwait.Receive(t, "the reconnect hooks' retry", hooked)
 	// The retry clears the stall as it records the events it covered, just after the hook returned.
 	waitFor(t, "the retry that covered the reconnect", func() bool {
 		stall, hookErr := client.HookStall()
@@ -73,9 +72,11 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 // (bus.WithReconnectErrClock, so the test moves bus.RepairGrace rather than waiting it out), and
 // the error of the last run that failed, so the answer names what is broken and for how long.
 func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	clock := &reconnectErrClock{now: time.Now()}
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now))
+	// The failing hook's lines are no part of what this test reads.
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReconnectErrClock(clock.Now), bus.WithLogger(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -83,7 +84,6 @@ func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
 	errRewatch := errors.New("rewatch interest cache: nats: no responders available for request")
 	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error { return errRewatch })
 
-	captureBusLogs(t)
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}

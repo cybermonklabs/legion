@@ -103,9 +103,13 @@ rebuild. The envoy packages of `LEGION_VERSION_ARGS` are every package `go list 
 through the module's `replace` on ../envoy, public and internal, so a change to any of them
 changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
 which versions of their dependencies it links. That list is written here by hand; this is the
-command that prints it, to be run from packages/daemon whenever what the binary links moves:
-  go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
+command that prints it, to be run from packages/daemon, once for each target
+.github/go-release-targets.json lists, whenever what the binary links moves:
+  CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
+packages/daemon/cmd/legion/release_list_test.go (TestTheReleaseListNamesEveryEnvoyPackageLegionLinks,
+in daemon-go) runs that command for each target and fails naming each package the list misses,
+with the targets that link it, or that no target links any longer.
 
 ## Why GOPROXY falls through to direct
 
@@ -321,7 +325,7 @@ program, only release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of
 tarball) and the pinned actions its steps use (actions/checkout, actions/setup-node, actions/download-artifact, actions/attest-build-provenance), so the scopes and the deploy key it holds never meet the
 code the build jobs ran. release-push.sh itself also runs curl, tar and one binary of its own:
 the gitleaks release it fetches and holds to a pinned sha256, which runs this repository's
-private-name rules (packages/daemon/internal/leakguard/private-names.toml, from this checkout)
+private-name rules (.github/private-names.toml, from this checkout)
 over every write this job's steps make to a public repository and refuses the write when they match. That
 binary reads what is about to be published and nothing else, and it is a pinned upstream
 release, not code from a build job.

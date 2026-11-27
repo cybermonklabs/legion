@@ -18,8 +18,13 @@ import (
 // through everything before it whatever lands beside it.
 const membersOwedVersion = 20261123224717
 
-// issuePriorityVersion is the migration that adds issues.priority, which PutIssue writes.
-const issuePriorityVersion = 20261124060500
+// issuePriorityVersion is the migration that adds issues.priority, and p0StartVersion the one that
+// adds issues.resolved_known, resolved_priority and priority_from (dispatch://INFRA-5636), each of
+// which PutIssue writes.
+const (
+	issuePriorityVersion = 20261124060500
+	p0StartVersion       = 20261125181828
+)
 
 // membersOwedRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -38,19 +43,21 @@ const membersOwedRelease = "the release that brings a re-admitted tree's members
 // members back. Its way back, the last paragraph of the migration's header, drops the column and
 // deletes the migration's version row, and the roll-forward marks the same roots again.
 func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)
-	// The seed goes through this release's PutIssue, which writes issues.priority, a column the
-	// waiting line's issue priority (20261124060500) adds above this migration. That one is applied
-	// with the seed's schema, and Migrate, which decides each migration on its own row, then
-	// applies this one; neither reads or writes the other's column.
+	// The seed goes through this release's PutIssue, which writes issues.priority and the resolved
+	// priority's three columns, which the waiting line's issue priority (20261124060500) and the P0
+	// start (20261125181828) add above this migration. Those are applied with the seed's schema, and
+	// Migrate, which decides each migration on its own row, then applies this one; none reads or
+	// writes another's column.
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	for _, migration := range all {
-		if migration.Version != issuePriorityVersion {
+		if migration.Version != issuePriorityVersion && migration.Version != p0StartVersion {
 			continue
 		}
 		if _, err := store.apply(ctx, migration); err != nil {

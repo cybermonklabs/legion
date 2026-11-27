@@ -75,6 +75,7 @@ type experimentIssue struct {
 // the operator's line after the second boot shows, and each record of a step names the variant of
 // its issue, which `dispatch steps` prints.
 func TestExperimentLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	natsURL := os.Getenv(liveNATSURLEnv)
 	if natsURL == "" {
@@ -93,7 +94,7 @@ func TestExperimentLive(t *testing.T) {
 	l := &experimentLive{liveProof: liveProof{t: t}, r: r, root: root, legion: buildProofLegion(t, root, t.TempDir()), cliHome: t.TempDir()}
 	l.declare("a")
 	r.boot()
-	l.note("Dispatch %s (database of its own, events on %s), project %s mapped to acme/widgets; daemon at %s, admission cap %d; the project declares the experiment planning at mode on, arm a",
+	l.note("Dispatch %s (database of its own, events on %s), project %s whose default repository is acme/widgets; daemon at %s, admission cap %d; the project declares the experiment planning at mode on, arm a",
 		r.baseURL, natsURL, r.cfg.Project, r.d.base, r.cfg.AdmissionCap)
 	l.step("group-recorded", l.groupRecorded)
 	l.step("owner-plan-taken", l.ownerPlanTaken)

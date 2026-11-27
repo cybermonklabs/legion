@@ -192,6 +192,10 @@ type serverChangeRun struct {
 // crosses the hub, and through the holder's listener H, so the publish route runs on the machine
 // the stand-in registered through.
 func TestServerChange(t *testing.T) {
+	// Not parallel: it orders each disruption by a time.Sleep, opening the stand-in's gates 1.5 s
+	// after its drop (serverChangeGateWindow), inside its 2 s reconnect wait, and requires each
+	// 3 s quiet window (serverChangeQuiet) to pass with the stand-in unmoved and every message
+	// received.
 	runs := []serverChangeRun{
 		{name: "senders through S"},
 		{name: "senders through H", sendThroughHolder: true},
@@ -354,7 +358,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 // registration that listener has not read yet.
 func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
-	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
+	waitFor(t, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
 		var sessions []listenerwire.SessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {

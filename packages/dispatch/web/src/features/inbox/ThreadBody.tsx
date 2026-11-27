@@ -6,9 +6,9 @@
  * is shown, every message rendered whole with `MarkdownBody`, laid out by the one order-and-
  * collapse rule (`threads/thread-layout.ts`), each message the reader has not read marked
  * **New**, and ending in the composer of the thread's own page, so a reply sent from here goes
- * where one sent there goes. The reading pane draws it, below 1280 px and in the drawer the card
- * draws it, and inside a document it is drawn in the slot under the block it is anchored to
- * (`ThreadPane.tsx`).
+ * where one sent there goes. The reading pane draws it - beside the list from 1280 px, in place
+ * of the list below - the drawer's card draws it, and inside a document it is drawn in the slot
+ * under the block it is anchored to (`ThreadPane.tsx`).
  *
  * What is unread is the row's own answer, never a count this module works out: a Reply row
  * carries the thread's read mark (`read_through`) and an Agent row the ids of its unread replies.
@@ -59,9 +59,11 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
-import { EditedMark, PostBody } from "../refs/PostBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
@@ -76,6 +78,11 @@ interface ThreadTurn {
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** Which record the turn is, so its body is drawn as that record's own text: the comment or
+   *  the issue message the route it was read from answered with. */
+  readonly kind: "comment" | "message";
+  /** The issue that record is on; null for a direct message. */
+  readonly issue: string | null;
   /** The post's deletion, null for one nobody deleted. */
   readonly deleted: PostDeletion | null;
   /** When the post's author last replaced its body; null for one nobody edited. */
@@ -99,6 +106,7 @@ function ThreadQuote({ thread }: { thread: MyReplyRow }): ReactNode {
       className={`mt-2 border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}
       data-inbox-thread-quote=""
     >
+      {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
       {quote}
     </blockquote>
   );
@@ -135,7 +143,13 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <PostBody deleted={turn.deleted} markdown={turn.body} tree={turn.tree} />
+        <PostBody
+          deleted={turn.deleted}
+          markdown={turn.body}
+          source={textSourceOf(turn.kind, turn.id, turn.issue)}
+          surface="inbox-thread-turn"
+          tree={turn.tree}
+        />
       </div>
       {turn.note}
     </div>
@@ -353,6 +367,7 @@ function CommentThreadBody({
           // comes back to this thread. The key names the composer too: the thread's root is
           // drawn beside it under the thread's id, and siblings are told apart by their keys.
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
@@ -389,6 +404,8 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     deleted: postDeletion(comment),
     edited: comment.edited_at,
     id: comment.id,
+    issue: comment.issue_key,
+    kind: "comment",
     tree: comment.body_tree,
   };
 }
@@ -401,6 +418,8 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     deleted: postDeletion(message),
     edited: message.edited_at,
     id: message.id,
+    issue: message.issue_key,
+    kind: "message",
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
   };
@@ -451,6 +470,7 @@ function MessageThreadBody({
         ) : (
           // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline

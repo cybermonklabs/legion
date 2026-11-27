@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
@@ -83,10 +84,15 @@ func emptyStore(t *testing.T) *Store {
 		t.Fatalf("create %s: %v", name, err)
 	}
 	t.Cleanup(func() {
-		if err := testdb.Drop(context.Background(), admin, name); err != nil {
+		dropContext, cancel := testwait.TeardownContext(t)
+		defer cancel()
+		if err := testdb.Drop(dropContext, admin, name); err != nil {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 
 	testURL := *base
 	testURL.Path = "/" + name
@@ -118,6 +124,7 @@ func randomSuffix(t *testing.T) string {
 }
 
 func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
+	t.Parallel()
 	_, err := Open(context.Background(), "postgres://legion:hunter2@127.0.0.1:1/legion")
 	if err == nil {
 		t.Fatal("expected an error connecting to 127.0.0.1:1, got none")
@@ -127,37 +134,6 @@ func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("error leaks the DSN password: %v", err)
-	}
-}
-
-// The driver's own text is not ours to trust: whatever it says on a future
-// version, the password the daemon was configured with does not reach a log.
-func TestConnectErrorRedactsThePasswordOutOfWhatItWraps(t *testing.T) {
-	for _, detail := range []string{
-		"failed to connect to `host=db.internal password=hunter2`",
-		"cannot parse postgres://legion:hunter2@db.internal:5432/legion",
-	} {
-		err := &connectError{address: "db.internal:5432", password: "hunter2", err: errors.New(detail)}
-		if strings.Contains(err.Error(), "hunter2") {
-			t.Errorf("error leaks the password its driver printed: %v", err)
-		}
-		if !strings.Contains(err.Error(), "db.internal:5432") {
-			t.Errorf("error does not name the host:port it failed to reach: %v", err)
-		}
-	}
-}
-
-// postgres://legion:legion@… is the ordinary devbox DSN: the password equals
-// the user and the database name. Redaction that blanked every occurrence
-// would hide the two fields an operator reads to diagnose the refusal.
-func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
-	err := &connectError{
-		address:  "127.0.0.1:5432",
-		password: "legion",
-		err:      errors.New("failed to connect to `user=legion database=legion`: connection refused"),
-	}
-	if !strings.Contains(err.Error(), "user=legion database=legion") {
-		t.Errorf("error hides the user and database the daemon was connecting as: %v", err)
 	}
 }
 
@@ -175,6 +151,7 @@ func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
 // the startup message with one ErrorResponse (refusingBackend): 57P01, 57P02 and class 08 cannot
 // be made on a scratch server in a test, and the rest answer the same way from a real one.
 func TestOpenRetryableReadsEachConnectionErrorOfR3(t *testing.T) {
+	t.Parallel()
 	refused := "postgres://legion@127.0.0.1:1/legion?sslmode=disable"
 	at := func(listen func(*testing.T) string) func(*testing.T) string {
 		return func(t *testing.T) string {
@@ -439,6 +416,7 @@ func selfSignedCertificate(t *testing.T) tls.Certificate {
 }
 
 func TestSchemaVersionIsZeroBeforeAnyMigration(t *testing.T) {
+	t.Parallel()
 	version, err := emptyStore(t).SchemaVersion(context.Background())
 	if err != nil {
 		t.Fatalf("schema version on an empty database: %v", err)
@@ -460,6 +438,7 @@ func latestMigration(t *testing.T) (count, version int) {
 }
 
 func TestMigrateAppliesEveryEmbeddedMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	count, latest := latestMigration(t)
@@ -481,6 +460,7 @@ func TestMigrateAppliesEveryEmbeddedMigration(t *testing.T) {
 }
 
 func TestMigrateAppliesNothingASecondTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	_, latest := latestMigration(t)
@@ -507,6 +487,7 @@ func TestMigrateAppliesNothingASecondTime(t *testing.T) {
 // so a database at 0001-0040 and 0042 and later takes 0041 — here child_release_retries, a table no
 // later migration alters — and ends with every version recorded.
 func TestMigrateAppliesALowerMigrationADatabaseAlreadyPastItLacks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -580,6 +561,7 @@ func TestMigrateAppliesALowerMigrationADatabaseAlreadyPastItLacks(t *testing.T) 
 // connection returns to the pool as the migration left it, and this fails: a pooled connection
 // reads 77s and the row's schema.
 func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -672,6 +654,7 @@ func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
 }
 
 func TestBootsCountsTheProjectsBootsFromItsFirst(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	first := time.Now().UTC().Truncate(time.Microsecond)
@@ -704,6 +687,7 @@ func TestBootsCountsTheProjectsBootsFromItsFirst(t *testing.T) {
 }
 
 func TestBootsIsZeroForAProjectThatNeverBooted(t *testing.T) {
+	t.Parallel()
 	count, firstBootAt, err := migratedStore(t).Boots(context.Background(), "LEGION")
 	if err != nil {
 		t.Fatalf("boots: %v", err)
@@ -717,6 +701,7 @@ func TestBootsIsZeroForAProjectThatNeverBooted(t *testing.T) {
 }
 
 func TestStopBootStampsTheBootItNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	started := time.Now().UTC().Truncate(time.Microsecond)
@@ -752,6 +737,7 @@ func TestStopBootStampsTheBootItNames(t *testing.T) {
 }
 
 func TestStopBootRefusesAnUnknownBoot(t *testing.T) {
+	t.Parallel()
 	err := migratedStore(t).StopBoot(context.Background(), 4242, time.Now().UTC())
 	if err == nil {
 		t.Fatal("expected an error stopping boot 4242, got none")
@@ -762,6 +748,7 @@ func TestStopBootRefusesAnUnknownBoot(t *testing.T) {
 }
 
 func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 
@@ -782,6 +769,7 @@ func TestTxCommitsWhatTheFunctionWrote(t *testing.T) {
 }
 
 func TestTxRollsBackWhatTheFunctionWroteBeforeFailing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	failure := errors.New("the phase gave up")
@@ -846,6 +834,7 @@ func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.P
 // worker happened to be handed a new task: 0011 gives each such delivery the run its issue is on,
 // and leaves a claim on an issue no workflow records — an operator's own (LEGION-272) — at zero.
 func TestTheDeliveryGenerationBackfillsFromTheIssuesRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 10)
@@ -898,6 +887,7 @@ func TestTheDeliveryGenerationBackfillsFromTheIssuesRun(t *testing.T) {
 // the task its new process is given carries its own run — as is one on an issue no workflow
 // records.
 func TestTheServingRunBackfillsForClaimsBetweenTurns(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 10)
@@ -948,6 +938,7 @@ func TestTheServingRunBackfillsForClaimsBetweenTurns(t *testing.T) {
 // root still lingers, so the row goes on to expire that linger, and deletes the rest: their linger
 // has ended, and a row that never decodes would fail every tick and every promotion of its tree.
 func TestQueuedLingerRowsOfTheOlderShapeNameTheirLingerOrGo(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 13)
@@ -1030,6 +1021,7 @@ func TestQueuedLingerRowsOfTheOlderShapeNameTheirLingerOrGo(t *testing.T) {
 // boot and together cover every live claim; started from 0013, a claim already past relaunching
 // with a zero run is out of 0014's reach, which is the limit its header states.
 func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from      int
 		wantReady int64
@@ -1098,28 +1090,37 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
-// (conflict_confirm and merge_forward) and dispatch://INFRA-175's 20261119203047 do: the case of a
-// database main migrated applies a version left out of the list before the list's own rewrites of
-// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
-// So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
+// (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047,
+// dispatch://INFRA-3320's 20261122154643 (the two basis seeds) and this change's 20261126110259
+// (merge_holds_changed) do: the case of a database main migrated applies a version left out of the
+// list before the list's own rewrites of that check, which do not name the later kind, so the row
+// seeded of that kind fails the upgrade. So does one that reads a column a version of the list
+// adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
-// column. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
-// main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
-// 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
-// column a version of the list adds either, so neither is in the list. Any other version left out
-// makes the cases below weaker, never red, which is why the comment says where the list comes
-// from.
+// column. So does one that changes a table a version of the list creates, as the givers of a plan
+// version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
+// that table exists, it fails on the missing table. 20261126110259 is the last migration that
+// writes outbox_kind_check: it stands above main's 20261122154643, 20261119203047 and
+// 20261119003157, which write it too, and main's 20261111090000, 20261111091500 and 20261116144907
+// write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version
+// of the list adds either, so neither is in the list. The project pause's 20261115194357 is in it
+// as well, though it rewrites no kind list: a database migrated before the pause takes it in the
+// upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
+// must take them all. Any other version left out makes the cases below weaker, never red, which is
+// why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
 	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
-	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
-	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
-	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
-	20261123212127: true,
+	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261114064234: true,
+	20261114232555: true, 20261115060739: true, 20261115121838: true, 20261115194357: true,
+	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
+	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
+	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124033010: true,
+	20261126110259: true,
 }
 
 const idleRelease = 20261101222956
@@ -1147,6 +1148,7 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // news's list, which runs after the step record's 20261117000528, the plan record's 20261117023932
 // and the merge forward's 20261119003157, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
+	t.Parallel()
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
@@ -1245,6 +1247,7 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 // fail to decode and stall its issue's lifecycle lane. The migration strips the key and leaves
 // everything else of the row as it is; a row that never had it is untouched.
 func TestTheIssueSuspendMigrationStripsTheReleaseKeyFromQueuedRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 50)

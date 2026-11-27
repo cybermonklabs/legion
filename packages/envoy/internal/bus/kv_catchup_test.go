@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -367,7 +368,7 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
 	watcher := newRaiseWatcher(js, 3, 1<<30, nil)
-	_, err := ensureKeyValue(context.Background(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the error = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -381,10 +382,12 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 // A member that never applies a create is waited for until the caller's context ends, and the
 // error carries both that end and the member's own answer, "bucket not found".
 func TestAMemberThatNeverAppliesACreateEndsAtTheCallersContext(t *testing.T) {
+	// A window, not a wait: the member never applies the create, and the context must end for the
+	// wait to answer context.DeadlineExceeded with the member's own answer.
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	reads := 0
-	_, err := awaitBucketApplied(ctx, catchupBucket, bucketMissing, func() (struct{}, error) {
+	_, err := awaitBucketApplied(ctx, slog.Default(), catchupBucket, bucketMissing, func() (struct{}, error) {
 		reads++
 		return struct{}{}, nats.ErrBucketNotFound
 	})

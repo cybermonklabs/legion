@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -251,6 +252,7 @@ func (rig ruleRig) requireIssue(t *testing.T, key, status, parent string) {
 // option moved no issue, and none after a call with no option. With the rule on, the same close
 // with no option is refused before anything is written.
 func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 
 	t.Run("done closes every open issue under the issue, deepest first", func(t *testing.T) {
@@ -351,6 +353,7 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 // two base attributes are stated. It states no authored_by: the system actor is nobody the store
 // names (graphstore.AuthorOf), so the store census reads no author off its row either.
 func TestAStatusChangesCommentIsANodeOfTheStore(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	ctx := context.Background()
 	root := rig.file(t, "Root closed with its child", "in_progress", "")
@@ -410,14 +413,15 @@ func TestAStatusChangesCommentIsANodeOfTheStore(t *testing.T) {
 	}
 }
 
-// TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject: a parent may be an issue of another
-// project, so include_parent can move an ancestor the caller's credential may not write. A
-// credential scoped to BETA is refused the status change of its own BETA issue whose
-// include_parent would move the ALPHA ancestor: 403 PROJECT_SCOPE naming the ancestor and both
-// projects, with changed [] and nothing written, no status moved and no event appended on either
-// issue, and its dry run is refused the same way. The same call by a person, whose credential
-// names no project, moves the ancestor, which is the control.
-func TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject(t *testing.T) {
+// TestAScopedStatusChangeMovesAnAncestorOfAnotherProject: a parent may be an issue of another
+// project, so include_parent can move an ancestor of a project other than the one the caller's
+// credential names. A credential scoped to BETA writes each object of another project that a
+// credential naming no project may write, so its status change of its own BETA issue moves the
+// ALPHA ancestor too. Its dry run answers the ancestor's move and the issue's and writes nothing:
+// no status moved and no event appended on either issue. The call itself answers both moves, and
+// a read of each issue answers it in progress.
+func TestAScopedStatusChangeMovesAnAncestorOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{})
 	caller := newBrokerCaller(t)
 	ctx := context.Background()
@@ -449,42 +453,48 @@ func TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject(t *testing.T) {
 		}
 		return held
 	}
+	seq := issueLastSeqs(t, rig.database, ancestor, named)
+	path := "/api/v1/issues/" + named + "/status-change"
 	before := stored()
-	for _, dryRun := range []bool{false, true} {
-		label := fmt.Sprintf("a scoped status change moving an ancestor of another project (dry_run %t)", dryRun)
-		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", token, map[string]any{
-			"status": "in_progress", "include_parent": true, "dry_run": dryRun,
-		}))
-		requireStatusChange(t, label, refused, http.StatusForbidden, wantRefusal(codeProjectScope, fmt.Sprintf(
-			"this request's credential may write project BETA; an issue this status change's include_parent writes, %s, belongs to project ALPHA",
-			ancestor)))
-	}
-	if after := stored(); after != before {
-		t.Fatalf("the refused status changes moved %s to %s, want nothing written", before, after)
-	}
-	moved := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", map[string]any{
-		"status": "in_progress", "include_parent": true,
+	planned := rig.serve(caller.presenting(t, http.MethodPost, path, token, map[string]any{
+		"status": "in_progress", "include_parent": true, "dry_run": true,
+	}))
+	requireStatusChange(t, "a scoped dry run moving an ancestor of another project", planned, http.StatusOK, map[string]any{
+		"issue": wantChange{named, model.IssueStatusTriage, ancestor, 0, seq[named]}.issue(),
+		"changed": entries([]wantChange{
+			{ancestor, "in_progress", "", seq[ancestor], -1}, {named, "in_progress", ancestor, seq[named], -1},
+		}),
 	})
-	if moved.Code != http.StatusOK {
-		t.Fatalf("a person's status change moving an ancestor of another project: status=%d body=%s, want 200", moved.Code, moved.Body.String())
+	if after := stored(); after != before {
+		t.Fatalf("the dry run moved %s to %s, want nothing written", before, after)
 	}
+	moved := rig.serve(caller.presenting(t, http.MethodPost, path, token, map[string]any{
+		"status": "in_progress", "include_parent": true,
+	}))
+	requireStatusChange(t, "a scoped status change moving an ancestor of another project", moved, http.StatusOK, wantAnswer(
+		wantChange{named, "in_progress", ancestor, seq[named], seq[named] + 1},
+		wantChange{ancestor, "in_progress", "", seq[ancestor], seq[ancestor] + 2},
+		wantChange{named, "in_progress", ancestor, seq[named], seq[named] + 1},
+	))
 	for _, key := range []string{ancestor, named} {
 		if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)).Status; status != "in_progress" {
-			t.Errorf("the person's status change left %s %s, want in_progress", key, status)
+			t.Errorf("the scoped status change left %s %s, want in_progress", key, status)
 		}
 	}
 }
 
-// TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject: a child may be an issue of another
+// TestAScopedStatusChangeWritesADescendantOfAnotherProject: a child may be an issue of another
 // project, so include_children can move, and unlink_children can unlink, an issue below the
-// caller's own that its credential may not write. A credential scoped to ALPHA is refused the
-// status change of its own ALPHA parent whose include_children would move the BETA child, and
-// the one whose unlink_children would unlink it: 403 PROJECT_SCOPE naming the child, the option
-// and both projects, with changed [] and nothing written - no status or parent moved, no event
-// appended and no comment left on either issue - and each dry run is refused the same way. The
-// same unlink by a person, whose credential names no project, unlinks the child, which is the
-// control.
-func TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject(t *testing.T) {
+// caller's own of a project other than the one its credential names. A credential scoped to ALPHA
+// writes each object of another project that a credential naming no project may write, so its
+// status change of its own ALPHA parent writes the BETA child under it: include_children out of
+// work moves the child before the parent, include_children into work moves it after the parent,
+// and unlink_children leaves it with no parent. Each case files a parent and a child of its own,
+// so no case starts from another's write. Each dry run answers the call's changes and writes
+// nothing - no status or parent moved, no event appended and no comment left on either issue -
+// and each call answers the same changes, and a read of the child answers what the call wrote.
+func TestAScopedStatusChangeWritesADescendantOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{})
 	caller := newBrokerCaller(t)
 	ctx := context.Background()
@@ -493,23 +503,32 @@ func TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject(t *testing.T) {
 			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
 		}
 	}
-	named := createdIssue(t, "create ALPHA's parent", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "ALPHA", "title": "Its own project's parent", "force": true,
-	})).Key
-	child := createdIssue(t, "create BETA's child under it", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "BETA", "title": "Another project's child", "parent": named, "force": true,
-	})).Key
-	if moved := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+child+"/status-change", map[string]any{
-		"status": "in_progress", "include_parent": true,
-	}); moved.Code != http.StatusOK {
-		t.Fatalf("move %s and %s into work: status=%d body=%s", child, named, moved.Code, moved.Body.String())
-	}
 	const token = "a-token-scoped-to-alpha"
 	answer := liveNamedToken(caller.jkt)
 	answer.Projects = []string{"ALPHA"}
 	rig.broker.Says(token, answer)
+	// family files an ALPHA parent and a BETA child under it, both in triage. With started, a
+	// person's include_parent on the child then moves both into work.
+	family := func(t *testing.T, title string, started bool) (string, string) {
+		t.Helper()
+		parent := createdIssue(t, "create ALPHA's parent", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "ALPHA", "title": title + ", the parent", "force": true,
+		})).Key
+		child := createdIssue(t, "create BETA's child under it", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "BETA", "title": title + ", the child of another project", "parent": parent, "force": true,
+		})).Key
+		if !started {
+			return parent, child
+		}
+		if moved := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+child+"/status-change", map[string]any{
+			"status": "in_progress", "include_parent": true,
+		}); moved.Code != http.StatusOK {
+			t.Fatalf("move %s and %s into work: status=%d body=%s", child, parent, moved.Code, moved.Body.String())
+		}
+		return parent, child
+	}
 	// stored is each issue's status, parent and last_seq, and the events and comments on the two.
-	stored := func() string {
+	stored := func(t *testing.T, named, child string) string {
 		t.Helper()
 		var held string
 		if err := rig.database.Pool.QueryRow(ctx, `
@@ -522,35 +541,72 @@ func TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject(t *testing.T) {
 		}
 		return held
 	}
-	before := stored()
-	for _, call := range []struct {
-		option, status string
-	}{
-		{optionIncludeChildren, "backlog"},
-		{optionUnlinkChildren, "done"},
-	} {
-		for _, dryRun := range []bool{false, true} {
-			label := fmt.Sprintf("a scoped status change whose %s writes a child of another project (dry_run %t)", call.option, dryRun)
-			refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", token, map[string]any{
-				"status": call.status, call.option: true, "dry_run": dryRun,
-			}))
-			requireStatusChange(t, label, refused, http.StatusForbidden, wantRefusal(codeProjectScope, fmt.Sprintf(
-				"this request's credential may write project ALPHA; an issue this status change's %s writes, %s, belongs to project BETA",
-				call.option, child)))
+	// scoped is the token's status change of named with body.
+	scoped := func(t *testing.T, named string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", token, body))
+	}
+	// dryRun fails t unless the token's dry run of body on named answers want and writes nothing
+	// on named or child.
+	dryRun := func(t *testing.T, label, named, child string, body, want map[string]any) {
+		t.Helper()
+		before := stored(t, named, child)
+		requireStatusChange(t, label+" (dry run)", scoped(t, named, withMembers(body, map[string]any{"dry_run": true})), http.StatusOK, want)
+		if after := stored(t, named, child); after != before {
+			t.Fatalf("%s (dry run) moved %s to %s, want nothing written", label, before, after)
 		}
 	}
-	if after := stored(); after != before {
-		t.Fatalf("the refused status changes moved %s to %s, want nothing written", before, after)
-	}
-	unlinked := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", map[string]any{
-		"status": "done", "unlink_children": true,
+
+	t.Run("include_children out of work moves the child before the parent", func(t *testing.T) {
+		named, child := family(t, "Put back on the backlog", true)
+		seq := issueLastSeqs(t, rig.database, named, child)
+		label := "a scoped include_children moving a child of another project to backlog"
+		body := map[string]any{"status": "backlog", optionIncludeChildren: true}
+		dryRun(t, label, named, child, body, map[string]any{
+			"issue":   wantChange{named, "in_progress", "", 0, seq[named]}.issue(),
+			"changed": entries([]wantChange{{child, "backlog", named, seq[child], -1}, {named, "backlog", "", seq[named], -1}}),
+		})
+		requireStatusChange(t, label, scoped(t, named, body), http.StatusOK, wantAnswer(
+			wantChange{named, "backlog", "", seq[named] + 1, seq[named] + 2},
+			wantChange{child, "backlog", named, seq[child], seq[child] + 2},
+			wantChange{named, "backlog", "", seq[named] + 1, seq[named] + 2},
+		))
+		ruleRig{database: rig.database}.requireIssue(t, child, "backlog", named)
 	})
-	if unlinked.Code != http.StatusOK {
-		t.Fatalf("a person's status change unlinking a child of another project: status=%d body=%s, want 200", unlinked.Code, unlinked.Body.String())
-	}
-	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+child, nil)).Parent; parent != nil {
-		t.Errorf("the person's status change left %s under %s, want no parent", child, *parent)
-	}
+
+	t.Run("include_children into work moves the child after the parent", func(t *testing.T) {
+		named, child := family(t, "Picked up", false)
+		seq := issueLastSeqs(t, rig.database, named, child)
+		label := "a scoped include_children moving a child of another project to todo"
+		body := map[string]any{"status": "todo", optionIncludeChildren: true}
+		dryRun(t, label, named, child, body, map[string]any{
+			"issue":   wantChange{named, model.IssueStatusTriage, "", 0, seq[named]}.issue(),
+			"changed": entries([]wantChange{{named, "todo", "", seq[named], -1}, {child, "todo", named, seq[child], -1}}),
+		})
+		requireStatusChange(t, label, scoped(t, named, body), http.StatusOK, wantAnswer(
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+		))
+		ruleRig{database: rig.database}.requireIssue(t, child, "todo", named)
+	})
+
+	t.Run("unlink_children leaves the child with no parent", func(t *testing.T) {
+		named, child := family(t, "Closed without its child", true)
+		seq := issueLastSeqs(t, rig.database, named, child)
+		label := "a scoped unlink_children unlinking a child of another project"
+		body := map[string]any{"status": "done", optionUnlinkChildren: true}
+		dryRun(t, label, named, child, body, map[string]any{
+			"issue":   wantChange{named, "in_progress", "", 0, seq[named]}.issue(),
+			"changed": entries([]wantChange{{child, "in_progress", "", seq[child], -1}, {named, "done", "", seq[named], -1}}),
+		})
+		requireStatusChange(t, label, scoped(t, named, body), http.StatusOK, wantAnswer(
+			wantChange{named, "done", "", seq[named] + 1, seq[named] + 2},
+			wantChange{child, "in_progress", "", seq[child], seq[child] + 2},
+			wantChange{named, "done", "", seq[named] + 1, seq[named] + 2},
+		))
+		ruleRig{database: rig.database}.requireIssue(t, child, "in_progress", "")
+	})
 }
 
 // statusChangeCaller is one way a request reaches the status-change route: what it presents, and
@@ -693,11 +749,13 @@ func cookieServer(t *testing.T, on bool) statusChangeServer {
 }
 
 // iapServer is a server behind an identity-aware proxy, whose person no Dispatch cookie names:
-// the proxy's signed assertion alone.
+// the proxy's signed assertion alone. Its verifier judges an assertion's times on the wall clock:
+// each request carries an assertion minted for it that lives nine minutes, and no row here asks
+// when one expires.
 func iapServer(t *testing.T, on bool) statusChangeServer {
 	t.Helper()
 	database := storetest.Open(t)
-	iap := newIAPSocketKeys(t, database)
+	iap := newIAPSocketKeys(t, database, clock.Real())
 	handler, _, _ := newTestServer(t, testServerOptions{store: database, parentStatusRule: on, identity: iap.identity})
 	server := statusChangeServer{
 		name: "the IAP server", project: ruleProject, database: database,
@@ -724,6 +782,7 @@ func iapServer(t *testing.T, on bool) statusChangeServer {
 // token, a broker token acting as its session, and one scoped to its person. Both hold with the
 // setting off too.
 func TestOnlyABrowserSignInClosesChildrenWithTheirParent(t *testing.T) {
+	t.Parallel()
 	for _, on := range []bool{true, false} {
 		t.Run(fmt.Sprintf("with the rule on %t", on), func(t *testing.T) {
 			for _, server := range []statusChangeServer{tokenCallersServer(t, on), cookieServer(t, on), iapServer(t, on)} {
@@ -759,6 +818,7 @@ func TestOnlyABrowserSignInClosesChildrenWithTheirParent(t *testing.T) {
 // sign-in cookie, is the token's. Its include_children with done is refused as a token's, and the
 // write of a call it is allowed records the session the token acts as, not the person.
 func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
+	t.Parallel()
 	tokens := tokenCallersServer(t, true)
 	cookies := cookieServer(t, true)
 	for _, beside := range []struct {
@@ -807,6 +867,7 @@ func TestATokenBesideABrowserIdentityIsTheTokens(t *testing.T) {
 // gets into it. An id the cleaning empties is "a session". A personal token names the person it
 // belongs to, whatever session its body names.
 func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	// started starts a new issue on the backlog, under a new parent on the backlog, with
 	// include_parent and actor as the body's actor, sent by send, and answers the parent, which
@@ -900,6 +961,7 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 // done child stays. Each unlinked child has one comment that names the call, and the issue the
 // call names has one after them, which names the call and lists each unlink.
 func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent closed without its children", "in_progress", "")
 	triaged := rig.file(t, "Child in triage", model.IssueStatusTriage, named)
@@ -942,6 +1004,7 @@ func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
 // call, and the issue the call names has one after them, which names the call and lists each
 // move; it has none when every ancestor is in work already.
 func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 
 	t.Run("two ancestors that have not started, highest first", func(t *testing.T) {
@@ -1069,6 +1132,7 @@ func (rig ruleRig) keyedStatusChange(t *testing.T, write ruleWrite, key string) 
 // answer, with no changed added or moved. With the rule off, a dry run of a call the rule would
 // refuse answers 409 PARENT_STATUS_CONFLICT as with it on, and the real call is taken.
 func TestADryRunWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	for index, test := range statusChangeCases {
 		t.Run(test.option, func(t *testing.T) {
@@ -1167,6 +1231,7 @@ func TestADryRunWritesNothing(t *testing.T) {
 // a member it does not declare, so the close moves no child: with the rule off it closes the
 // parent alone, and with the rule on it is refused for the open child.
 func TestTheOptionsRideARouteOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	for _, on := range []bool{false, true} {
 		t.Run(fmt.Sprintf("with the rule on %t", on), func(t *testing.T) {
 			rig := newRuleRig(t, on)
@@ -1196,6 +1261,7 @@ func TestTheOptionsRideARouteOfTheirOwn(t *testing.T) {
 // status, code and body, with changed holding the first child's entry as its write answered it,
 // and no step after it runs. A call refused before its first step answers changed [].
 func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
+	t.Parallel()
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent closed with its children", "in_progress", "")
 	first := rig.file(t, "First child", "todo", named)
@@ -1251,6 +1317,7 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 // work. The key sent again with another body (422 KEY_REUSED) and a malformed key (400
 // KEY_INVALID), under which nothing ran, answer changed [].
 func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
+	t.Parallel()
 	rig := newRepeatRig(t)
 	named := rig.file(t, "Issue whose key is refused", "backlog", "")
 	rig.file(t, "Child of the keyed call", "backlog", named)
@@ -1305,6 +1372,7 @@ func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
 // /api/v1/issues/{key} with for the same credential, and with changed [] beside them, which the
 // PATCH's answer does not carry, under a Content-Length that counts it. Nothing is written.
 func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{parentStatusRule: true})
 	agent := newBrokerCaller(t)
 	const readOnly, serviceOnly = "a-read-only-token-that-changes-a-status", "a-token-naming-no-person-that-changes-a-status"
@@ -1377,6 +1445,7 @@ func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
 // issue's own step moves it into work (one event), and each child's step moves it with a comment
 // (two events), and no label the other writer added is in any issue of the answer.
 func TestARepeatOfAStatusChangeAnswersTheIssuesItsStepsRead(t *testing.T) {
+	t.Parallel()
 	rig := newRepeatRig(t)
 	label := func(t *testing.T, issue, label string) {
 		t.Helper()
@@ -1616,6 +1685,7 @@ const reopenNotes = "Notes context\n\n:::ask{#reopen-decision urgency=\"med\" mu
 // Through the step hook, another writer's event on the named issue stops the call at the next
 // step, and an issue that another writer moved first is left as that writer left it.
 func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
+	t.Parallel()
 	const changedSince = "issue changed since the hand-over read"
 
 	t.Run("a stale expected_sequence refuses each option and its dry run", func(t *testing.T) {
@@ -1867,6 +1937,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 // issue makes a dry run wait for it, which pg_locks shows, and the open child that writer files
 // under that issue before it commits is in the dry run's answer.
 func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStatusChangeRig(t, true)
 	named := rig.file(t, "Parent whose plan is read under its locks", "in_progress", "")
@@ -1986,14 +2057,20 @@ func (rig repeatRig) requireSweptOnce(t *testing.T, issue, ask string) {
 	}
 }
 
-// seqs reads the last_seq of each of keys.
-func (rig repeatRig) seqs(t *testing.T, keys ...string) map[string]int {
+// issueLastSeqs reads the last_seq of each of keys (issueLastSeq).
+func issueLastSeqs(t *testing.T, database *store.Store, keys ...string) map[string]int {
 	t.Helper()
 	seq := make(map[string]int, len(keys))
 	for _, key := range keys {
-		seq[key] = issueLastSeq(t, rig.database, key)
+		seq[key] = issueLastSeq(t, database, key)
 	}
 	return seq
+}
+
+// seqs reads the last_seq of each of keys.
+func (rig repeatRig) seqs(t *testing.T, keys ...string) map[string]int {
+	t.Helper()
+	return issueLastSeqs(t, rig.database, keys...)
 }
 
 // stopAfterStep sends write under key in the background and stops its run once the step at index
@@ -2129,6 +2206,7 @@ func movedComment(key, from, to, named string) string {
 // so every json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey,
 // replayRecovered) names each member as those statements do.
 func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.T) {
+	t.Parallel()
 	members := map[string]string{
 		"Changed": pointChanged, "Events": pointEvents, "Withdrawn": pointWithdrawn, "Moved": pointMoved, "Finished": pointFinished,
 		"Issue": pointIssue,
@@ -2157,6 +2235,7 @@ func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.
 // the bound, not far before it. The paragraph names the option of each move, of a move the list
 // leaves out too. A call whose moves fit lists each of them and counts none.
 func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	const named = "ACME-1"
 	// moved is count moves by include_children of the issues after first, then, past the cut, one
 	// move by include_parent: no call writes in that order, so that only a move the list leaves out
@@ -2225,6 +2304,7 @@ func TestTheCommentOnTheNamedIssueListsWhatOneBlockHoldsAndCountsTheRest(t *test
 // stored, and a holder inside its lease is KEY_IN_FLIGHT. A repeat judged once its body arrived
 // (answerDrainedRepeat) is judged the same way.
 func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
+	t.Parallel()
 	const changedSince = "issue changed since the hand-over read"
 	rig := newRepeatRig(t)
 
@@ -2841,6 +2921,7 @@ var statusChangeFixtures = filepath.Join("testdata", "status-change")
 // `go -C packages/envoy test -count=1 -run '^TestStatusChangeAnswersMatchTheirFixtures$' ./internal/dispatch/api -update`
 // rewrites them.
 func TestStatusChangeAnswersMatchTheirFixtures(t *testing.T) {
+	t.Parallel()
 	const rewrite = "go -C packages/envoy test -count=1 -run '^TestStatusChangeAnswersMatchTheirFixtures$' ./internal/dispatch/api -update"
 	rig := newStatusChangeRig(t, true)
 	type answer struct {

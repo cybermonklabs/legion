@@ -23,10 +23,11 @@ const (
 	// maxEventPage is the most events one page of an issue's or a document's event log holds,
 	// and its default.
 	maxEventPage = 200
-	// maxEventReplay is the most events one page of the global event log holds (readEventsAfterID):
-	// the relay's read and GET /api/v1/events/log each page through the log at it, and it is that
-	// route's default. An events subscription's catch-up pages the same read at maxLiveReplay
-	// instead, the bound its resume is replayed within (replayThrough in live_events.go).
+	// maxEventReplay is the most events one page of the global event log holds: the relay's read
+	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) each page through the
+	// log at it, and it is that route's default. An events subscription's catch-up pages
+	// readEventsAfterID at maxLiveReplay instead, the bound its resume is replayed within
+	// (replayThrough in live_events.go).
 	maxEventReplay = 1000
 )
 
@@ -137,11 +138,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // for the old one. That is what the browser harness does between scenarios - it empties `issues`
 // and restarts each project's numbering, so every scenario's issues take the keys of the last
 // one's (packages/dispatch/e2e/seed.ts) - and it is the reading a restored database gives a
-// process that outlived the restore. The comment list is held to the same rule by a counter that
-// never comes back with the key (migration 20261106020619); the feed's column does come back, so
-// the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
-// tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (events.EventLogWasReset).
+// process that outlived the restore. So the row's birth stamp is hashed in beside the column, as
+// the comment list's validator hashes it beside its own counters, which a new issue under the key
+// reaches again too (commentListETag). It is the same fact, read the same way, that tells the
+// event relay an event log that was reset under its cursor from one that merely went quiet
+// (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
@@ -303,6 +304,23 @@ func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, 
 		where e.id > $1 and e.id <= $2
 		order by e.id asc limit $3
 	`, after, through, limit)
+}
+
+// readEventsAfterIDOnLog is readEventsAfterID for a reader whose cursor after is the id of an event
+// it read with created_at afterAt (0 and the zero time before the first): the page holds rows only
+// while that row still carries that created_at, in the statement's own snapshot. A reset of the log
+// (e2e/seed.ts's delete with the table's sequence restarted, or `truncate events restart
+// identity`) holds an ACCESS EXCLUSIVE lock on events until it commits, and the statement holds its
+// ACCESS SHARE lock until it ends, so the reset lands wholly before or wholly after this read. A
+// page read after a reset is therefore empty, never a page of the new log above the old cursor,
+// which the reader would take for the events after the ones it read (events.EventLogWasReset
+// tells the two cases apart).
+func (s *server) readEventsAfterIDOnLog(ctx context.Context, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, who, eventSelect+`
+		where e.id > $1 and e.id <= $2
+		  and ($1 = 0 or exists (select 1 from events c where c.id = $1 and c.created_at = $4))
+		order by e.id asc limit $3
+	`, after, through, limit, afterAt)
 }
 
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up

@@ -98,21 +98,132 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		browserMark(t, service, artifactID, "proofComment", "b1", "brown")
-	}()
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	if err != nil || anchored.Quote != "brown" {
-		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
+	// VerifyMark's wait for a browser's update is the row's own (markTimer): each arm hands the
+	// row the duration it was armed with and the channel the row fires it on, unbuffered, so a
+	// fire goes through only to a call that is waiting on it. The row writes the browser's mark
+	// only once the first call has looked and missed it (afterMarkMiss), so that call can find the
+	// mark only by the room update's wake, and the second call's wait fires only when the row
+	// fires it: no verdict reads a wall clock or races a real timer. (A 1 s bound on the whole
+	// call failed under the package's parallel load in envoy-go-race-docs job 138998017546, and a
+	// browser write 100 ms after the call's start raced its real 300 ms timer.)
+	type armedWait struct {
+		d    time.Duration
+		fire chan time.Time
+	}
+	arms := make(chan armedWait, 2)
+	var armed []armedWait
+	service.markTimer = func(d time.Duration) (<-chan time.Time, func() bool) {
+		fire := make(chan time.Time)
+		arms <- armedWait{d: d, fire: fire}
+		return fire, func() bool { return true }
+	}
+	// A row that fails before it fires a wait leaves no call waiting on it: a closed channel
+	// fires every receive.
+	testcleanup.Add(t, func() {
+		for _, wait := range armed {
+			close(wait.fire)
+		}
+	})
+	awaitArm := func(call string) armedWait {
+		t.Helper()
+		select {
+		case arm := <-arms:
+			armed = append(armed, arm)
+			if arm.d != 300*time.Millisecond {
+				t.Errorf("VerifyMark of %s armed its wait for %v, want MarkWait, 300ms", call, arm.d)
+			}
+			return arm
+		case <-time.After(roomWait(t)):
+			t.Fatalf("VerifyMark of %s armed no wait", call)
+			return armedWait{}
+		}
 	}
 
-	started := time.Now()
-	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
-		t.Fatalf("missing mark err = %v", err)
+	misses := make(chan struct{}, 1)
+	service.afterMarkMiss = func(string) {
+		select {
+		case misses <- struct{}{}:
+		default:
+		}
 	}
-	if waited := time.Since(started); waited < 250*time.Millisecond || waited > time.Second {
-		t.Fatalf("waited %v, want approximately MarkWait", waited)
+
+	// A mark the browser writes after the call has looked and missed it is the call's answer,
+	// through the room update's wake, with the wait unfired.
+	type verified struct {
+		anchored Anchored
+		err      error
+	}
+	found := make(chan verified, 1)
+	go func() {
+		anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
+		found <- verified{anchored, err}
+	}()
+	awaitArm("the mark the browser writes")
+	select {
+	case <-misses:
+	case got := <-found:
+		t.Fatalf("VerifyMark of the mark the browser writes answered %q, %v before it had looked and missed it", got.anchored.Quote, got.err)
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark of the mark the browser writes never looked and missed it")
+	}
+	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+	select {
+	case got := <-found:
+		if got.err != nil || got.anchored.Quote != "brown" {
+			t.Fatalf("VerifyMark = %q, %v", got.anchored.Quote, got.err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark did not answer the mark the browser wrote while it waited")
+	}
+
+	// A mark the document never takes is answered ErrAnchorMissing, and only once the wait fires:
+	// the fire goes through only once the call waits on it, and a call that answers without
+	// waiting answers first.
+	missing := make(chan error, 1)
+	go func() {
+		_, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never")
+		missing <- err
+	}()
+	wait := awaitArm("a mark the document never takes")
+	select {
+	case wait.fire <- time.Now():
+	case err := <-missing:
+		t.Fatalf("VerifyMark of a mark the document never takes answered %v before its wait fired", err)
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark of a mark the document never takes neither waited on its wait nor answered")
+	}
+	select {
+	case err := <-missing:
+		if !errors.Is(err, ErrAnchorMissing) {
+			t.Fatalf("VerifyMark of a mark the document never takes = %v, want ErrAnchorMissing once its wait fired", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("VerifyMark did not answer once its wait fired")
+	}
+}
+
+// The wait VerifyMark arms in production (wallMarkTimer) fires at the duration it is armed with:
+// never before it, and before a timer armed after it for half as long again. The second half
+// reads no wall clock: a timer channel hands a value to a receive once its deadline has passed
+// (Go's synchronous timer channels), so once the later timer has fired the earlier deadline has
+// passed too. A machine slow enough to deschedule the row past both deadlines can only pass a
+// fault, never fail a right timer.
+func TestTheMarkTimerFiresAtItsDuration(t *testing.T) {
+	t.Parallel()
+	const d = 200 * time.Millisecond
+	armed := time.Now()
+	wait, stop := wallMarkTimer(d)
+	defer stop()
+	later := time.NewTimer(d * 3 / 2)
+	defer later.Stop()
+	<-later.C
+	select {
+	case fired := <-wait:
+		if early := fired.Sub(armed); early < d {
+			t.Fatalf("the mark timer armed for %v fired %v after it was armed", d, early)
+		}
+	default:
+		t.Fatalf("the mark timer armed for %v had not fired when a timer armed after it for %v had", d, d*3/2)
 	}
 }
 
@@ -1228,9 +1339,16 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+// waitFor waits until condition holds, failing the test naming description. It waits for the
+// fact, not for a span: its one bound is the test binary's deadline less testwait's margin
+// (testwait.Until), so a loaded machine slows the wait and does not fail it. The span a caller
+// passes is not read.
+func waitFor(t *testing.T, _ time.Duration, description string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
+	testwait.Until(t, description, func() (bool, bool) {
+		held := condition()
+		return held, held
+	})
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats
@@ -1552,6 +1670,8 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 // repeat as they found it. The upload stores what the base did: the id repair every upload runs
 // keeps the id for the first block in document order.
 func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator in installCounterIDs).
 	const seed = ":::callout{#note}\nOriginal.\n:::\n\n:::callout{kind=\"warning\"}\nCopy.\n:::\n\nThe quick brown fox\n"
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	accept := func(quote, replacement string) func(*testing.T, *Service, string) error {

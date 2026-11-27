@@ -1,15 +1,14 @@
 package bus
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every sweep pass read the newest message of every takeover record subject, finished or not, and a
@@ -21,6 +20,7 @@ import (
 // reads are read off the wire from a second connection, up to a mark the client publishes after
 // each read of the records.
 func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {
@@ -43,8 +43,8 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	finished := TakeoverSubject("cache", "ses_finished", "attempt1")
 	unfinished := TakeoverSubject("cache", "ses_unfinished", "attempt2")
 	// Each write names the subject's newest message as a pass does (WriteTakeoverRecordAt); a
@@ -78,21 +78,17 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 		}
 		reads := map[string]int{}
 		for {
-			select {
-			case msg := <-wire:
-				if msg.Subject == mark {
-					return bySubject, reads
-				}
-				var request struct {
-					Last string `json:"last_by_subj"`
-				}
-				if err := json.Unmarshal(msg.Data, &request); err != nil {
-					t.Fatalf("decode %q: %v", msg.Data, err)
-				}
-				reads[request.Last]++
-			case <-time.After(30 * time.Second):
-				t.Fatal("the mark did not come back within 30 s")
+			msg := testwait.Receive(t, "the mark to come back", wire)
+			if msg.Subject == mark {
+				return bySubject, reads
 			}
+			var request struct {
+				Last string `json:"last_by_subj"`
+			}
+			if err := json.Unmarshal(msg.Data, &request); err != nil {
+				t.Fatalf("decode %q: %v", msg.Data, err)
+			}
+			reads[request.Last]++
 		}
 	}
 

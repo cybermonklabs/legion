@@ -60,8 +60,8 @@ It carries:
   — the `codegraph` tool a tester queries for `affected` tests and a reviewer for `impact`/`callers` blast radius (`packages/daemon/internal/prompts/roles/core/tester.md`, `core/reviewer.md`).
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
-- OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>/`:
-  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (123 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
+- OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest):
+  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (125 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
 
 - pinned Bun, `jj` (Sami's fork, the version the dogfood daemon runs) and `gh` at `/usr/local/bin`, and `git` at `/usr/bin/git` from the `debian:trixie-slim` base
   — jj's git backend requires git >= 2.42 (bookworm's 2.39.5 made every `jj git clone` in the init container fail), so the build also proves the image's jj accepts its git with a network-free `jj git clone` of a scratch bare repository before the probes run, and its last step refuses a git anywhere but `/usr/bin/git`;
@@ -71,15 +71,24 @@ It carries:
   The git wrapper changes two commands, a commit and a push, and runs every other one unchanged.
   A commit goes to `legion git --real /usr/bin/git`, which adds the commit's `Omp-Session` and `Legion-Role` trailers and then runs the real git.
   It adds each line only when its value is valid, and only when git alone would accept the commit's message and the two lines change nothing else.
+  It adds none when the caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
   The two lines record which session and which role made the commit, and they guard nothing.
   A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand, after the caller's own global options, and with the push's own `--no-verify` taken out:
   git itself computes the update lines and hands them to that hook, which runs `legion leak-check pre-push`, and `jj git push` makes its push by shelling out to the `git` its `PATH` names, so this one wrapper catches a role's own push and jj's.
   git takes the last `-c` of a name, so that placement outranks a caller's own `-c core.hooksPath` and the runtime's `core.hooksPath=/dev/null` pin alike, and the pin still holds for every other command.
   The jj wrapper gives jj that wrapper as `git.executable-path` on every command line, and once more as the line's last layer after a push, which outranks every configuration file and a `[[--scope]]` for one command alike.
   It reads a command as jj does, aliases and `ui.default-command` expanded, runs the expansion it read, and before a `jj git push` or a `jj gerrit upload` checks that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not, or where it cannot read the command.
-  `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
-  The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal names at most 1000 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
+  Then it hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, which runs the push step and then the real jj with the line it read, but for a revision argument whose meaning the rewrite changed, which then names the commits it named before the step, as the step left them, and with `--ignore-working-copy` where the step took its one snapshot of the working copy, so the push takes no second one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The step gives each commit the push sends the author of the role its first `Legion-Role` trailer names, from `LEGION_ROLE_IDENTITIES` (contract entry `20261125161436`, below), and prints one `legion jj:` line for each commit it rewrote.
+  It sets no author on an immutable commit, one a remote bookmark holds, one only a git tag names or one whose role has no identity, nor, but for an empty author, where it prints that it could not.
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
+
+- the rules engine that hook and those wrappers run:
+  `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library, so no pod can meet an absent engine.
+  The binary embeds no rule file:
+  the private-name rules a pod runs are the deployment's own, which the daemon hands each launch ([The deployment's private-name rules](#the-deployments-private-name-rules)).
+  So a pod can meet a rule file that is missing or that the guard cannot use, and the guard then refuses the write as a setup failure.
+  The rules read a push's added paths and diff as git writes them and scan each one as it arrives, and a refusal shows at most 40 lines and counts the rest, so the pass holds one line, the record in hand, and one commit's author, committer and message, whatever the number and size of the push's files; what grows with the push is the list of its commit ids, and with one long line that line's size, held whole a few times over (a 73 MB line took 416 MiB), since a split line could hide a match that crosses the split.
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a repository the deployment names, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build, and a deployment that names a manifest digest (below) moves its `manifest_sha256` in the same change.
@@ -120,7 +129,8 @@ It carries:
   The pod holds no credential for that repository and reads nothing of Dispatch.
 
 - a deployment that names no check, which runs none:
-  the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
+  the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and the deployment's private-name rules still running over it where the deployment names a rule file ([The deployment's private-name rules](#the-deployments-private-name-rules)).
+  A deployment that names neither a check nor a rule file has every write cleared with nothing read.
 
 - the check's launches, rollbacks and tmux panes:
   a launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
@@ -132,11 +142,14 @@ It carries:
   an older daemon pushes nothing and tells no digest, so a new image's shim starts the role, and every write it makes is refused for the check its environment names and its pod does not hold.
   A tag of that repository need not be protected for a role to run under the check the deployment named: a tag force-moved to other bytes has another manifest digest, which every shim and guard told the deployment's refuses; the daemon serves its earlier copy of the tag until it restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
-  The daemon resolves that machine's check once per launch and tells the pane where it is, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
-  A refused write writes nothing and prints one of three lines on standard error:
-  `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
-  `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
-  or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
+  The daemon resolves that machine's check once per launch and tells the pane where it is, and the manifest digest as `LEGION_LEAK_CHECKER_MANIFEST_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are");
+
+- the leak guard's answers to a role: a refused write is a command that wrote nothing and one of three lines on standard error:
+  `LEAK CHECK: refusing <the write>: <the check that refused it>` is a name in the write.
+  A private-name refusal shows each match with its record, the rule's description and its line, within the bounds of [The deployment's private-name rules](#the-deployments-private-name-rules).
+  It shows the text because the agent that would make the write wrote it.
+  `<the write>: GitHub answers 404 for <repo>, …` is a wrong name or a credential that cannot see it.
+  `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>` is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
@@ -415,7 +428,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections` (`legion-testpg`'s comment gives the number), below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections` (`legion-testpg`'s comment gives the number), more than the 1,024 gVisor allows (`net.core.somaxconn`), which caps it at 1,024, and gVisor's network stack drops a burst past that while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -1072,13 +1085,13 @@ and a member the mapping does not model is refused by name (`readSessionStore` a
 
 `impersonate_service_account` is optional.
 The loader refuses a value of it that is not a Google service account's email:
-`runtime.kubernetes.session_database.impersonate_service_account "<value>" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`.
+`runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com` (the value is not quoted, since a key pasted there would print).
 When the member is set, the loader also refuses a `user` that is not that account's IAM login:
-`runtime.kubernetes.session_database.user "<user>" must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`.
+`runtime.kubernetes.session_database.user must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com` (the value is not quoted, since a token pasted there would print).
 Both checks use `ompsessions.ServiceAccountLogin` (`internal/ompsessions/store.go`), and the pod's proxy holds to the same rule.
 
 **What a pod signs in as, and what a deployment grants for it.**
-Every Legion pod runs as the Kubernetes ServiceAccount that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`).
+Every Legion pod runs as the Kubernetes ServiceAccount that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), the daemon-launched controller's pod excepted where `runtime.kubernetes.pod.controller_service_account` names another, and a repository cache's pod excepted while `runtime.kubernetes.repository_cache.bucket` is set, which runs as the cache's own account and signs in to no session database ([The repository cache](#the-repository-cache), "The bucket").
 Under Workload Identity Federation for GKE, the pod's cloud identity is the principal of that ServiceAccount, a federated principal with no email address.
 Cloud SQL takes only a user, a service account or a group as an IAM database login, so that principal cannot have a login.
 
@@ -1090,6 +1103,7 @@ A deployment that sets the member makes these four things true in Google Cloud:
 
 - The principal of the pods' Kubernetes ServiceAccount holds a role on the account, and that role holds `iam.serviceAccounts.getAccessToken`.
   `roles/iam.workloadIdentityUser` holds it.
+  Where `runtime.kubernetes.pod.controller_service_account` names an account of its own for the daemon-launched controller's pod, that account's principal holds the role too, since that pod's proxy impersonates with that pod's own credentials.
 
 - The account holds `roles/cloudsql.instanceUser` and `roles/cloudsql.client`.
 
@@ -1163,8 +1177,8 @@ A deployment that sets the member makes these four things true:
 - The account grants `roles/iam.workloadIdentityUser` to the principal, in that pool, of each Kubernetes ServiceAccount the project's pods run as, the controller's pod included:
   `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/subject/system:serviceaccount:<namespace>:<service account>`.
   `<namespace>` is `runtime.kubernetes.namespace`, and `<service account>` is each such ServiceAccount.
-  At this release every pod, the controller's included, runs as the one that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), so that is one principal.
-  This grant takes the place of the account's grant to the pod's own principal, the first item of the list under "What a pod signs in as, and what a deployment grants for it" above.
+  Every pod that signs in to the session database runs as the one that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), except the daemon-launched controller's pod where `runtime.kubernetes.pod.controller_service_account` names an account of its own, so that is one principal, or two with that account; a repository cache's pod, which runs as the cache's own account while its bucket is on, signs in to none.
+  This grant takes the place of the account's grant to the pods' own principals, the first item of the list under "What a pod signs in as, and what a deployment grants for it" above.
 
 - The Security Token Service API (`sts.googleapis.com`) and the IAM Service Account Credentials API (`iamcredentials.googleapis.com`) are enabled.
 
@@ -1180,7 +1194,7 @@ Turn `writer_audience` on in this order:
    A pod keeps the session flags it was created with, and a writer audience added is a moved session store.
    So each pod takes the writer token when it is replaced: an issue pod by its update round, and the controller's pod at the next launch into it.
 
-3. When every pod shows the writer setting, remove the account's grant to the pod's own principal.
+3. When every pod shows the writer setting, remove the account's grant to the pods' own principals, the controller's account's included where it has one.
    A pod shows it when its launcher container's command carries `--session-writer-audience`, and its proxy's start line ends `with the launcher's writer token`.
    Until that grant is gone, the pod's own credentials still impersonate the account, and every process that holds them can sign in as it.
 
@@ -1188,7 +1202,7 @@ A pod created under the member keeps `--session-writer-audience` in its launcher
 A daemon before the release that adds `writer_audience` sends no `agentExecutable`, and it refuses the member by name, as a key it does not know.
 So turn `writer_audience` off on this release first, and roll back below it only after that, in this order:
 
-1. On the release that carries the member, restore the account's grant to the pod's own principal, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
+1. On the release that carries the member, restore the account's grant to the pods' own principals, the controller's account's included where it has one, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
    The grant comes first, because a pod created without the member impersonates the account with the pod's own credentials, and Google refuses them without the grant.
    Keep the writer pool, its provider and the account's grant to the pool's principal until step 2 is done: until its replacement, a pod that carries the fifth flag still exchanges the writer token, and each new generation in it proves a dial with that token.
    This release reads the fifth flag of every pod (`sessionProxyFlagsIn`, `internal/runtime/sandbox/addresses.go`), so each pod that carries it holds a moved session store.
@@ -1216,7 +1230,7 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
-Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
+Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and the settings whose keys every pod mounts (`runtime.kubernetes.session_dsn_secret` among them), never a key of the Secret (`internal/runtime/sandbox/probe.go`, `providersMountFault`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
@@ -1478,7 +1492,8 @@ A refused connection costs no dial and no credential work, and its line holds no
 No other process of the role passes the check:
 
 - A command that Oh My Pi runs is a descendant of Oh My Pi, so it is never a direct child of the shim.
-  No process of the shim makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+  A shim under role-init never makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+  Only the controller pod's single-role shim reaps orphans itself (`--reap-orphans`, [Daemon-launched controller](#daemon-launched-controller)), and that form runs no session peer check.
 
 - An orphan that runs `legion worker-shim` is younger than the real shim, and the check takes the oldest.
 
@@ -1503,6 +1518,7 @@ Nobody has measured the kernel of a microVM pod, so such a pod starts a generati
 
 What the operator supplies is the three required values of `session_database`, the pods' cloud identity and the login's rights in the database.
 The pods' cloud identity is the identity of the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
+The daemon-launched controller's pod runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, so its cloud identity is that account's rather than the other pods'.
 Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
 With `writer_audience`, the operator also supplies that fifth value and the four things that [Selecting the store](#selecting-the-store) lists for it.
@@ -1539,9 +1555,19 @@ Two commands replace what a provider keeps refusing, and the compaction is the f
 legion claims compact --claim <token> --operator-token-file <file>
 ```
 
-It has the claim's Oh My Pi session write a summary of itself and then sends the claim whatever task it owes again, however much of the provider-error ladder's wait was left: the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
-The summary is text, because the daemon asks with instructions of its own: Oh My Pi runs its image-based snapcompact method only for a compaction that carries none, and a worker resumed on those images would need a vision model to read its own past (`compactInstructions`, `packages/daemon/internal/api/compact.go`).
-The answer says whether the session was compacted and, when it was not, why — Oh My Pi's own words for a compaction it refused or skipped, `Already compacted` or `Nothing to compact (session too small)`, and the daemon's for a wait that ran out or a transport that failed — and whatever task the claim owed has gone again either way.
+It has the claim's Oh My Pi session write a handoff document of itself and then sends the claim whatever task it owes again, however much of the provider-error ladder's wait was left:
+the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
+The daemon asks with Oh My Pi's `handoff` request, never its `compact` request:
+Anthropic refuses the summary request `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`, dispatch://INFRA-5798), and accepts the handoff, which sends the live system prompt, tools and turns.
+Oh My Pi commits the handoff document as the session's compaction entry, method `handoff`, on the same session.
+The daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`) are the focus the document is written to, and they keep the reviewer's entry in it.
+The answer says whether the session was shortened and, when it was not, why
+— Oh My Pi's own words for a handoff it refused, such as `Cannot hand off while a response is in progress` or `Nothing to hand off (already compacted)`, the daemon's `Oh My Pi made no handoff document. The session did not change.` for a handoff Oh My Pi answered with success and no document, the daemon's `Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session changed.` for a success whose data is a boolean, a number, a string or an array, and the daemon's for a wait that ran out or a transport that failed
+— and whatever task the claim owed has gone again either way.
+Neither of the daemon's two sentences resets the claim's run of provider errors, since neither says the session was shortened.
+A task whose prompt Oh My Pi had accepted when the compaction was asked for is sent once: the handoff aborts no turn, so that prompt's turn is the task's.
+So is a prompt that reaches Oh My Pi while the handoff runs: Oh My Pi parks it until the handoff ends, and the daemon keeps a send whose prompt it wrote and whose wait ran out meanwhile as the task's prompt rather than sending it again.
+A send that runs out before its prompt is written, such as an adoption of the working copy that times out, sent nothing, so the task stays owed and goes at the next send.
 The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
 While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused `CLAIM_IN_A_TURN`, since a claim whose session is being compacted is read before its process and the compaction in flight owns what becomes of its agent.
 
@@ -1568,12 +1594,20 @@ So does a claim that moved under the request where the daemon finds it no longer
 Both refuse a claim between states, queued or with a launch in flight, and a claim left working under a relaunch the daemon's wake pacing parked, which has a launch in flight as much as those two (`CLAIM_UNSETTLED`).
 Both refuse a claim a suspension is held over as well, in whatever state the hold found it, since what such a claim waits for is that hold's end rather than anything either recovery would do.
 Where the read finds no process behind a claim stored working the two part: the fresh session reaches that claim, and the compaction refuses it `CLAIM_NOT_RUNNING`, naming `fresh_session` (`legion claims retry --fresh-session`) as what starts it again, because it has no agent to ask and no session to compact.
-The project's own controller claim is the one exception: the fresh session refuses it in every state, and the daemon's controller keeper does nothing for a controller stored working, so the compaction names the operator's `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>` instead.
+The project's own controller claim is the one exception: the fresh session refuses it in every state but failed or retired under `cyber_policy`, and the daemon's controller keeper ends a turn of a controller stored working only once that turn has stayed open longer than `controller_turn_bound_minutes` (90 by default, `0` off), so the compaction names the operator's `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>` instead, which wait for no bound.
 Each refusal says what the claim is doing when it is given, and which operation reaches each state `legion claims list` shows: it names no report, turn, hold or relaunch to come, and ends by telling the caller to ask again later and read the claim's state in that list.
-The compaction refuses three more: a claim that is suspended, failed or retired, which runs no session to ask and whose refusal names what starts it again, the fresh session for a workflow role and the daemon's controller keeper for the project's own controller claim, a claim whose agent has registered and is not ready yet, which has no session to ask either and which the fresh session reaches, and a claim whose role runs on the Claude Code harness, which has no Oh My Pi session to compact at all.
-The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the claim by its issue and role rather than by a token the controller never sees: the effect, the refusals and the answer are the operator's own and only the authentication differs, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first for a claim whose session the provider keeps refusing and a fresh session when the claim is still refused after it, and the fresh session alone for a claim no process stands behind, which the compaction refuses by name (`skills/legion-controller`).
-The controller's own claim is the one asymmetry: a fresh session of it is refused whatever state it is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
+The compaction refuses three more: a claim that is suspended, failed or retired, which runs no session to ask and whose refusal names what starts it again, the fresh session for a workflow role and the daemon's controller keeper for the project's own controller claim (the operator's `legion claims retry --claim <token>` for a controller held for `cyber_policy`, which its keeper retries no more), a claim whose agent has registered and is not ready yet, which has no session to ask either and which the fresh session reaches, and a claim whose role runs on the Claude Code harness, which has no Oh My Pi session to compact at all.
+The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the agent by its issue and role rather than by its claim's token, which the controller never sees, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first for an agent whose session the provider keeps refusing and a fresh session when the agent is still refused after it, and the fresh session alone for an agent whose claim no process stands behind, which the compaction refuses by name (`skills/legion-controller`).
+The daemon serves both, and the four other actions on an agent, `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, to the project's controller alone: every other grant, an architect's included, is refused `403 CONTROLLER_REQUIRED` before any claim is read (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
+An architect or a phase worker that needs one of the six asks the controller with a Dispatch comment on that agent's issue that mentions the controller's role (`skills/legion-architect`, `skills/legion-worker`).
+The controller's compaction has the operator's effect, codes and answer, and only the authentication and two refusal sentences differ.
+For an agent the operator's own suspension holds, landed or held over it, the controller's sentence names that hold and the operator's `legion claims resume` as what starts the agent, where the operator's names the fresh session or asks again later, since that suspension refuses the controller's fresh session (`refuseNotRunning`, `packages/daemon/internal/api/compact.go`, and `refuseHeldSuspension`, `packages/daemon/internal/api/freshsession.go`).
+The controller's fresh session has the operator's effect and answer, but not every refusal of the operator's: the suspension and the resume it runs are the controller's own, so before it reads anything else of the claim it is refused `409 SUSPENDED_BY_OPERATOR` for an agent the operator's own suspension holds, landed or held for a turn (`claimFreshSession`, `packages/daemon/internal/api/freshsession.go`).
+Only the operator's `legion claims resume` lifts that hold.
+The controller's own agent is a case of its own: a fresh session of it is refused whatever state its claim is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it), retries one that failed or retired, and ends a turn that stays open longer than `controller_turn_bound_minutes` (90 by default, `0` off) — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
+A controller that failed under `cyber_policy` (OpenAI refused its session's content) is the exception: the keeper retries it no more, so the operator's `legion claims retry --claim <token>`, with `--fresh-session` or without, launches its agent again, always in a new session.
 The controller cannot name itself through its own door either way, since `controller` is no role a claim token is built from, so the operator's `--claim` is the one way onto that claim.
+A relaunch the daemon makes of a controller whose session is older than `controller_session_max_age_hours` (72 by default, `0` off) starts a fresh session instead of resuming it, and the daemon stops no live controller for its age.
 
 Use `legion claims forget-session` for a session that is gone rather than refused: a stopped claim's session lost with its volume, or a file session imported before its volume can be reaped.
 Read the claim's recorded session from `legion claims list`, then run:
@@ -1627,7 +1661,7 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    Copy one tree at a time, in the pod of [A shell on an issue's disk](#a-shell-on-an-issues-disk) with that tree's claim: a pod of the worker image, under gVisor, with the tree's volume read-only at `/legion` and nothing else mounted.
    The import reads two more files, and both come from your machine after the pod is `Ready`.
    `claims.json` from step 2 goes to the import's standard input (`--claims -`).
-   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a pod on the Legion pool can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
+   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a Legion pod can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
    The URL goes into the pod on standard input, into a file of mode 0600 in a directory of mode 0700, so no command line holds it:
 
    ```sh
@@ -1688,7 +1722,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
-an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Pods in microVMs](#pods-in-microvms)).
+an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the cluster's general nodes, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Pods in microVMs](#pods-in-microvms)).
 The pod holds two init containers and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
 — `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
@@ -1831,6 +1865,15 @@ A deployment of an earlier layout clears all of it before it upgrades ([Upgradin
 The daemon runs on a host its pods can reach and serves the worker stream they dial.
 The controller is `legion controller start` on the operator's machine, or, under `controller: daemon`, a pod of its own with one launcher that the daemon launches ([The controller](#the-controller)).
 
+### Reaching the daemon's database by hand
+
+A step below that reads or writes the daemon's database by hand gives `psql` or `pg_dump` the database's URL with no password in it, `<postgres_url>`, and the password in a file, never as an argument, because every process on the machine can read another's arguments.
+`<postgres_url>` is the daemon's `postgres_dsn` with its password taken out: `postgres://<user>@<host>:<port>/<database>?sslmode=...`.
+`<pgpass file>` is a file of mode `0600` that holds one line, `<host>:<port>:<database>:<user>:<password>`, which libpq reads when `PGPASSFILE` names it (https://www.postgresql.org/docs/current/libpq-pgpass.html).
+Write each field as it is, not as a URL writes it: a password that `postgres_dsn` percent-encodes (`%40` for `@`) goes into the file decoded, and a `:` or a `\` inside a field is written `\:` or `\\`, or libpq reads the line wrong and the command fails to authenticate.
+So each command reads `PGPASSFILE=<pgpass file> psql '<postgres_url>' …`, and libpq takes the password from the file.
+Delete the file when the step is done.
+
 ### Daemon migration identifiers and release order
 
 A migration's version is the leading digits of its file name (`internal/store/migrations`).
@@ -1914,15 +1957,15 @@ No migration turns a per-claim Sandbox or locator into an issue pod's, and nothi
    ```
 
    ```sql
-   -- connected as the daemon is, with its postgres_dsn
+   -- connected as the daemon is, as "Reaching the daemon's database by hand" says
    select token, state from claims where project = '<project>' and locator->>'runtime' = 'sandbox';
    ```
 
    The query lists every claim that records a Sandbox locator at all, which is stricter than the boot check:
    on the earlier release every such locator is a per-claim one.
 
-5. **Dump the database**, `pg_dump -Fc -T omp_session_files -T omp_session_files_parts -f <dump
-   file> '<postgres_dsn>'` with the daemon's `postgres_dsn`.
+5. **Dump the database**, `PGPASSFILE=<pgpass file> pg_dump -Fc -T omp_session_files -T omp_session_files_parts -f <dump
+   file> '<postgres_url>'`, with the daemon's database as [Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand) gives it.
    It is the only way back ([Rolling back](#rolling-back-the-upgrade)).
    The two `-T` options leave out Oh My Pi's session tables:
    where they share the daemon's database under a login of their own, the daemon's login cannot read them and a `pg_dump` that names them exits 1 with `permission denied for table
@@ -2111,7 +2154,7 @@ An earlier release cannot send them: it refuses a controller notice of a kind it
 Stop this release's daemon, and run the block below once before the earlier release starts:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'memory-guard-kill';
 commit;
@@ -2252,6 +2295,39 @@ From a release that also carries the one `roles` container (daemon API contract 
 — since the release before this one refuses a `roles` locator and an `issue` resources entry as this one does;
 its step 4 is not needed, since every issue Sandbox is deleted here.
 
+#### Rolling back the release whose check report names its check
+
+`POST /legion/v1/handoff/complete` reports a production check's look only when the request names `checkOpenedAt` (the tool's `check_opened_at`), the check's opening time.
+The look task gives that time in RFC3339 with its stored microseconds.
+State, the caller's role and whether a phase task is pending do not decide which call it is.
+Without the field the request completes a phase.
+A done issue refuses that phase call with `CHECK_LOOK_NOT_SERVED` and names the missing field; it records nothing.
+With the field the route first refuses a missing, closed or different check (`CHECK_NOT_OPEN`), then another role (`CHECK_ROLE_MISMATCH`), then a look the claim has not served (`CHECK_LOOK_NOT_SERVED`), before it applies any fact.
+A served look stays on the claim through phase tasks until another look replaces it, so its report can arrive after a phase task was queued.
+The check route runs no phase effects.
+A late phase completion needs this run's started task (`EntryTask`), not merely an entry counter or claim, and its fresh handoff is still required.
+A carried run keeps its task; a cleared generation removes it.
+A task's stop records the first late report only if that step had started, and still returns `TASK_STOPPED`.
+
+Before returning to a daemon that chooses a check report from the claim's state, stop the new daemon and, for each project being rolled back, run the SQL below with `<PROJECT>` replaced by that project's key.
+Without this reset the old daemon can mistake a later phase completion for a check report, because a phase task no longer clears the kept look.
+Clear only kept looks on claims whose issues still run.
+Done issues keep their looks so the old daemon can attribute their production reports, and another project's claims stay unchanged.
+Then start the previous daemon with its matching plugin and worker image.
+This step is needed only when that previous daemon lacks the explicit `checkOpenedAt` request field.
+
+```sql
+UPDATE claims AS c
+SET serving_check_look = 0, serving_check_opened_at = NULL
+FROM issues AS i
+WHERE c.issue = i.key
+  AND i.project = '<PROJECT>'
+  AND i.phase <> 'done';
+```
+
+`TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone` runs this exact SQL against a running issue, a done issue and an issue of another project.
+It checks the reset's scope; it does not claim to exercise the previous daemon's completion route.
+
 #### Rolling back the release whose cap counts issues
 
 This release's migration `20261103183833_issue_slots` gives a slot to every issue already at work, adds `design_gates.ever_opened` and `dispatch_issues.parent`, and writes the tree lifecycle row of every running tree that had none.
@@ -2376,7 +2452,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Five migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps both names.
+Six migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2420,11 +2496,70 @@ commit;
 The earlier release decides again on the next read of each such head that finds it conflicting, and asks the implementer.
 An ask of the merger that has landed stays: the earlier release reads it as a landed merge forward, as it reads its own.
 
+#### Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold
+
+This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and a suspension source of a claim, `controller`.
+It serves the project's controller six actions on an agent, `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`, which it served before, and `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, and it refuses every other grant, an architect's included, `403 CONTROLLER_REQUIRED` at all six (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
+Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so it writes the list last on any database.
+Its migration `20261115060739_claim_suspended_by_controller` adds the source to the claims' check (`claims_suspended_by_check`).
+The migrations change no column.
+This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
+Its migration `20261115121838_drop_controller_wakes_for_nothing` deletes the queued controller notices of `awaiting-person` and `unslotted`, the two kinds this release no longer writes, and the rollback needs no statement for it: the earlier release writes and runs both kinds again.
+
+**The rows of the new kinds must go before the earlier image is pinned.**
+A `merge_holds_changed` row tells the merger of an issue in `merging` that the project's merge holds document changed, and a `notice` row of kind `merge-holds-changed` tells the architect of an issue in `accepting` the same.
+An earlier release puts no `merge_holds_changed` row in an outbox lane (`laneKinds` in `record/outbox.go`), so such a row waits through the rollback and runs at the roll forward, when the change it tells of may be long over.
+An earlier release refuses the notice at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so nobody gets it.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The message to a merger, and the notice to an architect, that the merge holds document changed.
+delete from outbox where kind = 'merge_holds_changed';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-holds-changed';
+```
+
+Each deleted row costs one thing: one merger or one architect is not told of one change of the merge holds document.
+After the rollback, no role reads that document, because the earlier release's role prompts and skills do not name it, so a line in it holds no sign-off and no merge.
+
+**The architect's `provider-errors` notices must go as well.**
+An earlier release refuses a `notice` row of that kind at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so the row fails on its backoff for ever, and while that backoff holds it ahead of now it fails every read of the project's state that passes it (`WaitingNotices`, `pacedCatchUps`).
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The notices to an architect of a run of provider errors. The controller's rows stay.
+delete from outbox where kind = 'notice' and payload->>'kind' = 'provider-errors';
+```
+
+Each deleted row costs one architect one notice of one run of provider errors.
+The controller's `controller_notice` row of a run of provider errors stays, and the earlier release sends it.
+
+**The earlier release does not hold an agent that the controller suspended, unless you move its suspension to the operator.**
+An earlier release keeps an agent suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it treats every other suspended agent as one the daemon itself suspended, which its rules start again.
+To keep each such agent suspended through the rollback, run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- Hand each suspension the controller holds to the operator.
+update claims set suspended_by = 'operator'
+  where state = 'suspended' and suspended_by = 'controller';
+```
+
+It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
+Each agent whose suspension moved then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts it in a new session with `fresh_session`: the earlier release gives the controller no `resume_agent`.
+Leave the statement out, and the earlier release treats each such agent as one the daemon suspended, which its rules start again.
+The two checks keep the new names after the rollback, and the rollback needs no statement for them: an earlier release never writes them, so the checks refuse nothing that release writes.
+The kind check also keeps every kind of the list of `20261122154643_outbox_kinds_with_the_basis_seeds`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among them, so it refuses no row the earlier release writes either.
+
+**`runtime.kubernetes.pod.controller_service_account` must go before the earlier image is pinned.**
+This release adds that key, and an earlier release's key table has no row for it, so its loader refuses the file by name (`unknown key runtime.kubernetes.pod.controller_service_account`) and its daemon does not start while the key stands.
+Where `legion.yaml` sets it, remove the key before you pin the earlier image.
+The earlier release then runs the controller's pod as `runtime.kubernetes.pod.service_account`, the account of every other pod, so the rights that an account of its own gave the controller, such as `delete pods`, go with the key.
+
 #### Rolling back the release that merges a conflicting head forward in its phase
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Only `20261119203047_design_news` writes the list after it, and that list keeps both names and `phase_ended`.
+Two migrations write the list after it, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps both names and `phase_ended`.
+The release that holds a parent's start while a child of it is open queues `phase_ended` rows again for one move of its own ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
 
@@ -2512,9 +2647,11 @@ The given-up records stay as they were, and after the roll forward a replay or a
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Four migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
-A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
-The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+Five migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps the name.
+A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
+The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
+A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
+After a suspension by any other source, the resume's first write over the kept session, `queued` or `launching`, queues one too: it puts the session back in the set before the agent registers.
 The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
@@ -2534,15 +2671,15 @@ A later decision of that claim, such as a second stop, makes that write again on
 Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
 **Who can write the set.**
-The route takes a write that names the actor `legion-daemon:<project>`.
-Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
+The route takes a write that names the actor `legion-daemon:<project>`, and with Dispatch's `DISPATCH_LEGION_STATUS_SCOPE` on only one from the daemon's own broker token.
+Before the airlock, Dispatch takes the session that a bearer caller names, so with that setting off any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
 The airlock closes that case.
 
 **A row of the new kind can stay through a rollback.**
 An earlier release puts the kind in no outbox lane, so it never runs such a row.
 Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
-At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
-The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
+At the roll forward, this release runs the row, and it sends the set that it reads then, so the row does no harm.
+The boot of this release queues each issue with a claim that holds its role, a released claim among them, or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
 To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
@@ -2553,6 +2690,7 @@ delete from outbox where kind = 'role_holders_publish';
 While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
 After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, Dispatch also reads the set to let an architect's status write through (R26), and an earlier daemon leaves each stored set as it stands, so turn that setting off before such a rollback.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
@@ -2570,7 +2708,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Three migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
+Five migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320) and then the merge-holds release's `20261126110259_merge_holds_changed`, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2628,7 +2766,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Two migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward` and then `20261119203047_design_news`, and each list keeps the name.
+Three migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -2713,15 +2851,17 @@ The tables hold the plan of each issue that has one: each version of it given at
 The columns hold the step a role's phases row runs for an issue with plan rows.
 An earlier release boots with all five in place: its phases reads and writes name each column they touch, and it names none of the three tables, so it reads none of them, and every row it inserts takes the columns' defaults, which read as no step.
 This release also queues rows an earlier release cannot decode.
-It tells an architect of three new kinds of notice: `task-stopped`, the stop of a task, whose notice of an owner's stop names the architect that made it (`stoppedBy`); `retro-held`, a parent held before its retro for the issues beneath it; and `plan-not-taken`, a plan that an issue's first step passed over, at this release a plan of an earlier owner (from the release whose experiment sets how each issue is done, also a plan of an issue whose experiment's group takes none).
+It tells an architect of three new kinds of notice: `task-stopped`, the stop of a task, whose notice of an owner's stop names the architect that made it (`stoppedBy`); `retro-held`, a parent held before its retro while an issue beneath it or a root that rests on its approval is still in the workflow, or a Dispatch child of it is open; and `plan-not-taken`, a plan that an issue's first step passed over, at this release a plan of an earlier owner (from the release whose experiment sets how each issue is done, also a plan of an issue whose experiment's group takes none).
 A `controller_notice` row takes every kind an architect is told, these three among them.
 It writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
 An earlier release decodes a `notice`, a `controller_notice` and a `supervise` row strictly: its decode refuses a notice kind it does not know (`unknown notice kind`, `validNoticeKinds` in `record/outbox.go`), a field it does not hold, such as `stoppedBy`, and an op it does not know (`unknown supervise operation`, `validSuperviseOp`), which is no permanent refusal for those kinds (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll-forward.
 The refusal of a `step_stop` row also fails every read of that role's run at that generation, because `RoleRuns` in `record/store.go` decodes the queued supervise rows of each run it reads, and the transaction that makes the read fails with it.
-This release also writes two new reasons of a hold on `issues.hold_reason`: `task-stopped`, an issue its owner or a failed step stopped the task of, and `children`, a parent whose task's last step is not the owner's acceptance, held before its retro for the issues beneath it.
+This release also writes two new reasons of a hold on `issues.hold_reason`: `task-stopped`, an issue its owner or a failed step stopped the task of, and `children`, a parent whose task's last step is not the owner's acceptance, held before its retro for the issues beneath it, the roots that rest on its approval or its open Dispatch children.
 An earlier release serves `holdReason` as the record holds it, and its plugin reads the key with the one value `escalated` (`LegionStateResponse` in that release's `packages/contracts/src/legion-api.ts`) and refuses the whole state body for another, so every agent's `read_record` and each completion's read of the state on that project would fail while any issue stands held for either reason.
 
-At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
+At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
+On a store that cybermonklabs/legion#5310's release or a later one migrated, also run the way back in the header of `20261124033010_plan_earlier_givers.up.sql` in that session, before or after the block below: it drops `issue_plans.earlier_givers` where the table still stands and deletes that migration's version row, so the roll-forward's `Migrate` adds the column again to the table it creates.
+Each of its statements runs again with no error, so it runs in each project's session as the block below does.
 An earlier release refuses a `legion.yaml` that names `projects.<KEY>.default_steps`, with `Unknown key "projects.<KEY>.default_steps"` (`readProject` in `config/stage3.go`), so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That part is owed to the roll-forward, not to the earlier release.
@@ -2749,12 +2889,12 @@ The header of `20261117034837_issue_plans.up.sql` carries this same block.
 
 What the way back costs is every plan given before the rollback, which its owner gives again, and each delivery a deleted row had still to make.
 A deleted `task-stopped` notice is a stop its issue's architect is never told of: which task stopped, and which architect or which failed step stopped it.
-A deleted `retro-held` notice is a hold its parent's architect is never told of, with the issues beneath it that the retro waits for.
+A deleted `retro-held` notice is a hold its parent's architect is never told of, with the issues the retro waits for.
 A deleted `plan-not-taken` notice is a plan an issue's first step passed over that the issue's architect is never told of: a plan of an earlier owner, which it is then not asked to give again as its own, or, once the release whose experiment sets how each issue is done has run, a plan of an issue whose experiment's group takes none.
 A deleted controller notice of one of those kinds is the same telling, lost to the controller.
 A deleted `step_stop` row costs the stop of one step's process: that process runs on until its issue closes, and the way back drops the task's stop with the plan rows.
 An issue whose `task-stopped` reason the way back cleared is a plain hold under the earlier release: its architect's retry, or a person's `todo` on a root, starts the role of the phase it is held from again, the step the stop ended, on today's line.
-A parent whose `children` reason it cleared is a plain hold too, and the earlier release does not wait for the issues beneath it: a retry would start the parent's next phase while they still run, so leave it held until they leave the workflow.
+A parent whose `children` reason it cleared is a plain hold too, and the earlier release does not wait for the issues that hold it: a retry would start the parent's next phase while they still run, so leave it held until the issues beneath it and the roots that rest on its approval have left the workflow and its Dispatch children are closed.
 That release also reads a hold from `retro` as accepted, and it holds each issue that stands at `admitted` beneath an accepted parent until the parent closes (`HeldUnderAccepted` in `record/project.go`), so such an issue never starts while the parent waits for it.
 So where an issue beneath the parent still stands at `admitted`, have the architect that owns the parent write `backlog` on it, and run it again with `rerun_child` once the issues beneath it have left the workflow: that is the restart the earlier release's rules for ending a child name.
 A root takes no such write, since that release sets back an architect's status on the tree root: a retry of it runs its retro and its merge without that issue's work, and the issue runs after the tree closes, as a root of its own, so ask a person before you retry it.
@@ -2856,7 +2996,7 @@ So one project can roll back while another stays on this release, and the statem
 
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
-Its version stands above `20261119003157`, so its list is the last word of the kind check.
+Its version stands above `20261119003157`, and two migrations stand above it and write the list again with `design_changes` among their kinds: the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and above that the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), whose list is the last word of the kind check.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -2940,7 +3080,7 @@ Roll back every daemon of one database in the same change, and run the statement
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
 This release reads neither column and writes neither column.
-It takes no turn's end as an answer, it takes no answer back, and it asks no worker a second time.
+It takes no turn's end as an answer, it takes no answer back, and it asks no worker a second time once an ask has reached its session.
 Pull request cybermonklabs/legion#2792 added both columns in `store/migrations/20261105022045_claim_update_answer_marks.up.sql`.
 The commit it merged as, `c82087d74996`, is release `legion-v19.16.0`, so every release from `legion-v19.16.0` on carries the two columns.
 Each of those releases names both columns in its claim read (`claimSelect` in `packages/daemon/internal/store/claims.go`) and in its `PutClaim` insert and on-conflict update.
@@ -3003,6 +3143,26 @@ What the strip costs is one line of one wake: the tick that row carries then nam
 
 Nothing else of this release needs a rollback step.
 The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
+#### Rolling back the release that names undelivered hook prompts on the issue
+
+This release holds a hook prompt the Envoy listener refuses to keep in the prompt's own outbox row, and names each prompt that ends undelivered in a Dispatch message on the issue, held for an hour so that every prompt to the same role that ends in that hour joins it ([Idle release](#idle-release), the bullet on a message published to the role topic).
+The held message's outbox row carries a new field, `hook_prompts`, beside its `body`: the role and the prompts the message names, which is how the next prompt's end finds it.
+The prompt that opens such a message also queues a notice to the issue's architect of a new kind, `hook-prompt-undelivered`.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows neither the field nor the kind, so a held message or a notice still queued at the rollback fails on its backoff for ever: the issue never gets the message, and the notice fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`).
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'hook_prompts' where kind = 'dispatch_message' and payload ? 'hook_prompts';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'hook-prompt-undelivered';
+```
+
+The strip costs the message nothing: its `body` holds the text this release wrote from the field at its last write, and the earlier release posts that body when the row comes due.
+The delete costs the architect the notice of each message still held, which names nothing the message does not.
+
+Roll the Envoy listener back before the daemon.
+An earlier daemon ends a hook prompt's row, and a phase-ended message's row, at the `404` a listener of this release answers it, and the message is lost (`scripts/e2e/hook-prompt-two-builds.sh` shows it for the hook prompt); an earlier listener keeps either for the role's next holder, as the earlier daemon expects.
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
 
 #### Rolling back the release that frees the slot past review
@@ -3074,6 +3234,256 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that holds a parent's start while a child of it is open
+
+This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
+Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason`, `children_wait_since` and `children_wait_children`, which the check `issues_children_wait_shape` ties to the phase, and `children_waited_at`, which outlives it.
+It adds four columns to `phases` beside the phase entry.
+`entry_from` is the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
+`entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
+The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
+The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
+That migration writes the kind check last, above the design news's `20261119203047_design_news`, and keeps `design_changes` and `phase_ended` in it, and this release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
+The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
+
+**Before the deploy, list the parents that the first admission pass after it stops.**
+That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
+An open child is one that `record.ChildOpen` reads as open, a child filed in the backlog or triage and never released among them.
+The migration leaves `phases.entry_from` null on every row it finds, so that pass also stops a parent whose role stands on an entry that a move back out of `retro` or `merging` raised, which a later pass, reading the column this release writes, leaves where it stands.
+Where such a parent's worker is in the middle of its phase, the pass retires the task its claim holds for that phase (`retire_task`) and sends that worker a `phase_ended` message in the middle of its turn, which tells it to push what it has and stop.
+A parent in `accepting`, or one whose start has not reached its worker, is moved with no `phase_ended` message, and the architect of every parent the pass moves gets one `awaiting-children` notice.
+The migration leaves `phases.entry_given_task` empty on every row it finds, so for a parent whose worker is in the middle of its phase, or whose start has not reached its worker, on an entry the release before raised, that pass holds the work that entry was raised with (`entry_task`): for a worker the release before retried on that entry, not the retry's task and reason, which that release kept on the queued start row and the claim's pending delivery, neither of which the pass reads, and for a reviewer, whose `entry_task` that release stored with the two sentences of its review round, the phase's resume task, which says to carry the phase's work on.
+The return gives that work back with the daemon's sentences once: the base-merge sentence of a tester of a parent, and the reviewer's round for the entry the return raises.
+This read lists those parents, after the reading of dispatch://INFRA-2192/artifact/parent-waits-reading-sh (version 6): one line for each, with its phase, its tree and its open children.
+It reads the running daemon's state with `legion state --json`, and every issue of the daemon's project from Dispatch in one listing, `GET /api/v1/issues?project=<key>` with the key the state names in `.daemon.project`, with `DISPATCH_URL` set to the daemon's `dispatch_url` and `DISPATCH_TOKEN_FILE` to its `dispatch_token_file`, in bash, which gives curl the token as a header file and never as an argument.
+It groups the listing's open children by their `.parent`, and one rule, `live`, says whether an issue the state records is still in the workflow, for a parent, its tree's root and a child alike:
+
+```bash
+legion state --json > state.json
+project=$(jq -r '.daemon.project' state.json)
+curl -sSf -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues?project=$project" > issues.json
+jq -r --slurpfile listed issues.json '.issues as $I
+  | def live($r): $r != null and $r.phase != "done" and (($r.status | IN("triage", "icebox", "backlog", "done")) | not);
+    def open($c): if ($c.status | IN("done", "icebox")) then false
+      elif $I[$c.key].tree == $c.key then live($I[$c.key])
+      elif ($c.status | IN("backlog", "triage")) then $I[$c.key] == null or live($I[$c.key])
+      else true end;
+  (reduce ($listed[0][] | select(.parent != null and open(.))) as $c ({}; .[$c.parent] += [$c.key])) as $open
+  | .issues[] | $I[.tree // ""] as $root
+  | select((.phase | IN("planning", "implementing", "testing", "reviewing", "accepting")) and live(.)
+      and (.pullRequest.state // "") != "merged" and live($root) and $root.lingerUntil == null
+      and $open[.key] != null)
+  | "\(.key) \(.phase) tree=\(.tree) open=\($open[.key] | join(","))"' state.json
+```
+
+The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues (`record.Store.DispatchChildren`), which a boot's listing of the project refreshes: a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
+
+An earlier daemon reads this much of the release:
+
+- **An issue in `awaiting_children`.**
+  An earlier daemon knows no such phase, and a write of such a row that leaves the phase without clearing the held start fails `issues_children_wait_shape` (the comment of `20261114232555_awaiting_children.up.sql`).
+
+- **`phases.entry_from`.**
+  An earlier daemon names it in no statement: its inserts leave it null and its upserts leave it as it is, so an entry that release raises keeps the phase of the entry before it, which this release, rolled forward, would read as the move that raised the new entry.
+
+- **`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`.**
+  An earlier daemon names them in no statement: its inserts leave them `''`, 0 and 0 and its upserts leave them as they are, so an entry that release raises leaves `entry_given_entry` at an entry before it, and its generation clear leaves the given task beside the entry it keeps and the `entry_task` it empties.
+  This release, rolled forward, reads a given task only for the entry and the issue's generation it was given for, so it holds for such an entry what it holds for an entry the release before raised (**Before the deploy**, above), and for an issue that clear gave a new generation, its rerun, its adoption or its re-admission as a root, the phase's resume task.
+
+- **The new notice kinds and the new supervise operation.**
+  An earlier release refuses a notice of any of the four kinds (`unknown notice kind`, `validNoticeKind` in its `record/outbox.go`) and a supervise row whose op is `retire_task` (`unknown supervise operation`, `validSuperviseOp`).
+  Each such row is refused on every attempt and retried on its backoff for ever.
+  The fields `Ref` and `Actor` that this release puts on the three basis notices go with those rows.
+
+- **The new fields of an existing payload.**
+  An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+  A `catch-up` notice of this release can carry two fields in a design-gate step's entry that it knows nothing of, `pending` and `basis` (`record.CatchUpGate`), so such a row is refused as the four kinds are.
+  The catch-up's own fields (`record.CatchUp`) are the earlier release's, and `record.GateSeed` gained no field.
+
+- **The two new outbox kinds.**
+  An earlier release knows neither `pending_basis_seed` nor `reparent_seed`, so it runs no row of either.
+
+- **A queued `phase_ended` row.**
+  The release before this one puts the kind in no outbox lane (its migration `20261119003157_conflict_reads_and_merge_forward` deleted every such row), so it runs no row of it, and a row left queued would tell a worker at the roll forward that a phase ended long before.
+
+- **A queued `role_message` that names a dropped merge forward.**
+  When a move into `awaiting_children` drops a merge forward that has not landed, this release tells the role it was asked of, the implementer for an ask made before `merging`, in a `role_message` unless the move ends that role's own phase, where its `phase_ended` row says it.
+  The earlier release runs that row as it runs any role message, and its body tells that role to begin no merge of the dropped merge forward, which the earlier release, holding no parent in a wait, may ask for again.
+  Its body opens with the parent's key and the fixed words `: the issue moved into awaiting_children, where it waits on its open Dispatch children.`
+
+- **The columns of `20261114064234_design_gate_basis`** need no statement: an earlier daemon names none of them, reads a step a basis opened as approved at the version the root registered, and reads a pending step as registered and not approved (that migration's comment).
+
+**The simplest rollback waits until no issue stands in `awaiting_children`.**
+The wait ends by itself as the parents' open children finish.
+Read it with:
+
+```sql
+select count(*) from public.issues where phase = 'awaiting_children';
+```
+
+Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements, the clear of `phases.entry_from` and, on a rollback below `20261111225552_phase_entry`, the clear of the three given columns.
+
+**Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
+
+```sql
+-- The four notice kinds this release adds, with the Ref and Actor they carry.
+delete from public.outbox
+  where kind = 'notice'
+    and payload->>'kind' in ('awaiting-children', 'basis-ended', 'basis-changes-requested', 'resting-root');
+-- The two reads of Dispatch this release adds.
+delete from public.outbox where kind in ('pending_basis_seed', 'reparent_seed');
+-- The retirement of the task a stopped worker's claim holds, and the message that its phase ended.
+delete from public.outbox where kind = 'supervise' and payload->>'op' = 'retire_task';
+delete from public.outbox where kind = 'phase_ended';
+-- The message that tells the role a merge forward was asked of (the implementer, or the merger for an ask made in merging) that the move into the wait dropped it.
+delete from public.outbox
+  where kind = 'role_message'
+    and starts_with(payload->>'body', issue || ': the issue moved into awaiting_children, where it waits on its open Dispatch children.');
+-- A catch-up's step entries, without the two fields an earlier release does not know.
+update public.outbox
+  set payload = jsonb_set(payload, '{catch_up,gates}',
+    (select jsonb_agg(gate - 'pending' - 'basis' order by position)
+       from jsonb_array_elements(payload->'catch_up'->'gates') with ordinality as entries(gate, position)))
+  where kind = 'notice' and payload->>'kind' = 'catch-up'
+    and jsonb_path_exists(payload, '$.catch_up.gates[*] ? (exists (@.pending) || exists (@.basis))');
+```
+
+What each costs: an architect is not told of one move into the wait, one end of a basis wait, one changes request on an ancestor or one root resting on its ancestor; a root's pending basis is read again by nobody, which the earlier release reads as a step registered and not approved; a re-parented root and its new parent's architect are not told of the move; a stopped worker keeps the task its claim held for the stopped phase and is not told that the phase ended; the role a merge forward was asked of (the implementer, or the merger for an ask made in merging) is not told that a move into the wait dropped it; and a catch-up tells its architect a step's state without the basis it rests on.
+
+**Clear `phases.entry_from` with the same daemons stopped, whichever path the rollback takes.**
+
+```sql
+update public.phases set entry_from = null where entry_from is not null;
+```
+
+What it costs: once this release is rolled forward, a parent whose phase's role stood on an entry a role's move back raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
+
+`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation` take no statement on a rollback that stops at or above `20261111225552_phase_entry`, which leaves `phases.entry` standing.
+Their correctness there rests on no clear: this release reads a given task only where its entry is the entry the row stands on and its generation is the issue's, so an entry the earlier release raises, and a generation it gives an issue it clears, are read as the release before leaves them.
+A clear would do harm there: an entry this release raised, and the earlier release left standing, would read as one the release before raised, so the hold of a tester of a parent would be its `entry_task`, which this release wrote with the base-merge sentence, and a return on that held task would give the sentence twice.
+What it costs: a member of a tree whose root the earlier release re-admitted keeps its own generation, so where that release raised no entry of it afterwards, the given task of its entry from before the rollback stays readable beside the `entry_task` that clear emptied, and the first admission pass that stops it holds that task where the release before would hold the phase's resume task.
+
+**On a rollback below `20261111225552_phase_entry`, clear the three with the same daemons stopped.**
+
+```sql
+update public.phases set entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0
+  where (entry_given_task, entry_given_entry, entry_given_generation) <> ('', 0, 0);
+```
+
+It prints `UPDATE <n>`, one for each row whose given columns are not at `''`, 0 and 0, and a rerun prints `UPDATE 0`.
+It is owed there because that rollback runs the phase entry's way back to contract 87 ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), which drops `phases.entry`, and the roll forward runs `20261111225552_phase_entry` again, which puts every role the earlier release handed work at entry 1 again and leaves each issue's generation as the earlier release left it.
+A given task of entry 1 from before the rollback, in a generation its issue still stands in, would then match its row again, so the first admission pass that stops its parent would hold that task, and a return that goes back to the held start, as one of `planning` or `implementing` does, would give it back to the worker.
+A role the earlier release handed no work stays at entry 0 after the roll forward, so a given task of entry 0, which a restart of a row that stands at entry 0 writes, would match its row the same way, which is why the statement clears every row whose given columns are not at their defaults.
+On that path the clear does no harm: the same block drops `phases.entry_task`, and the roll forward fills it again from the start rows the earlier release still owes, which carry no base-merge sentence.
+So the hold is entry 1's work as the earlier release composed it, or the phase's resume task, which is the hold of the reviewer, whose `entry_task` the roll forward of `20261116234034_phase_reviewed_head` gives its round's two sentences again, and of a row the fill left empty; either way the return decorates the held task once.
+
+**Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
+The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren` and `record.ReturnStep`).
+A held start of `planning` or `implementing` goes back to that phase, and so does any held start whose pull request merged during the wait, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
+A held start of `testing`, `reviewing` or `accepting` whose pull request did not merge goes to the step right after the implementer's in the issue's walk, since no round before the wait ran on a base that carries each needed child's merge.
+It does so only where the walk has an implementer step and the held start's own step stands after it: where the walk has no implementer step, has no step of the held start, or has that step at or before the implementer's, the issue goes back to the held start itself.
+For an issue with no plan rows at its generation, whose run walks today's line, the step after the implementer's is `testing`.
+For an issue with plan rows, the walk is the steps in `public.plan_steps` of the issue's task in `public.plan_tasks` at its generation, and the issue goes to the phase of that step's role, whatever the role is: `reviewing` on a plan of an implementer and a reviewer, and `planning` on a plan that puts the planner right after the implementer.
+Through the wait the task stood at the held start's place, so where the issue goes to another step, the statement also moves the task to that step's place (`running_kind` and `position`), since the issue's phase and its task's place are two records of where it stands.
+It clears the held start, `children_wait_children` with it, which the shape check requires of every other phase.
+It clears `children_waited_at` as well: the earlier release's retry below hands a worker the phase entry its row already names, raised before the wait, and this release, rolled forward with the column standing, would refuse a completion of such an entry that arrives after the issue left its phase (workflow's `leftItsPhase`).
+Its `returning` list is the record of what it moved: the key and the phase it stands in now, whether its pull request merged (`merged`), and the held start, the held task, the held reason and the held children as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
+It also returns the held children that merged during the wait (`held_merged`), as this release's return names them: each held child whose record stands at `done` with its pull request merged, with that pull request, in the order the wait recorded them.
+Keep it: the earlier release queues no start for any of these issues, and the statement clears the held task, the held reason and the held children, which say what each start was to hand its role.
+
+```sql
+with moved as (
+  select i.key, i.children_wait_start as held_start, i.children_wait_task as held_task, i.children_wait_reason as held_reason,
+    i.children_wait_children as held_children, i.generation, pr.merged, run.task, walk.after_position,
+    case
+      when i.children_wait_start in ('planning', 'implementing') or pr.merged then i.children_wait_start
+      when run.task is null then 'testing'
+      else coalesce(walk.after_implementing, i.children_wait_start)
+    end as back_to,
+    (select string_agg(format('%s (pull request #%s)', w.child, p.number), ', ' order by w.position)
+       from unnest(i.children_wait_children) with ordinality as w(child, position)
+       join public.issues as c on c.key = w.child and c.project = i.project and c.phase = 'done'
+       join public.pull_requests as p on p.issue = w.child and p.state = 'merged') as held_merged
+  from public.issues as i
+  cross join lateral (
+    select exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') as merged
+  ) as pr
+  left join lateral (
+    select t.task from public.plan_tasks as t where t.issue = i.key and t.generation = i.generation
+  ) as run on true
+  left join lateral (
+    select s.position as after_position,
+      case s.role
+        when 'planner' then 'planning' when 'implementer' then 'implementing' when 'tester' then 'testing'
+        when 'reviewer' then 'reviewing' when 'acceptance' then 'accepting'
+      end as after_implementing
+    from public.plan_steps as impl
+    join public.plan_steps as s
+      on s.issue = impl.issue and s.generation = impl.generation and s.task = impl.task and s.position = impl.position + 1
+    join public.plan_steps as held
+      on held.issue = impl.issue and held.generation = impl.generation and held.task = impl.task
+        and held.position > impl.position
+        and held.role = case i.children_wait_start
+          when 'testing' then 'tester' when 'reviewing' then 'reviewer' when 'accepting' then 'acceptance'
+        end
+    where impl.issue = i.key and impl.generation = i.generation and impl.task = run.task and impl.role = 'implementer'
+  ) as walk on true
+  where i.phase = 'awaiting_children'
+),
+tasks as (
+  update public.plan_tasks as t
+    set running_kind = 'step', position = moved.after_position
+    from moved
+    where t.issue = moved.key and t.generation = moved.generation and t.task = moved.task
+      and moved.back_to <> moved.held_start
+  returning t.issue
+)
+update public.issues as i
+  set phase = moved.back_to,
+    children_wait_start = null, children_wait_task = null, children_wait_reason = null, children_wait_since = null,
+    children_wait_children = null, children_waited_at = null
+  from moved
+  where i.key = moved.key
+  returning i.key, i.phase, moved.merged, moved.held_start, moved.held_task, moved.held_reason, moved.held_children,
+    moved.held_merged;
+```
+
+The earlier release's boot writes each moved issue's Dispatch status to its phase's (`correctStatuses` in that release's `workflow/resume.go`).
+Nothing of it starts the phase's worker: the move into the wait finished every start the issue owed, and the statement writes none.
+So, once the earlier daemon is up, start each one by hand, for the role of the phase the statement returned (`planning` the planner, `implementing` the implementer, `testing` the tester, `reviewing` the reviewer).
+The earlier release's retry below starts the phase with a task of its own, whose reason is the operator's retry (`restartPhase` and `retryPhase` in that release's `workflow/engine.go`), so it carries neither the held task nor the held reason.
+Give each worker that work in a comment on the issue before the retry.
+Where the held start is `planning` or `implementing`, or `merged` is true, give the held task, since that task carries the reason (a tester's failures, a review's words).
+Otherwise the issue went from a held `testing`, `reviewing` or `accepting` to the phase the statement returned, by the rule above, which is `testing` on today's line: give the held start and the held reason, as this release's return names them in that step's task.
+In either case, name each child in `held_merged` with its pull request, as this release's return does; where it is null, no held child merged.
+For a tester, add the sentence every testing task of a parent ends with in this release (workflow's `baseMergeRun`), which the earlier release's task lacks, word for word, unless the held task you give ends with it already:
+
+```text
+Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference.
+```
+
+Read the claim's token on the issue's row for that role in `legion claims list --operator-token-file <file>`.
+The earlier release's `legion claims retry` starts a phase again only for a claim that failed or that an operator stopped (`retryStart` and `restartWorkedPhase` in its `api/operator.go`), so stop a claim in any other state first, which retires it, and then retry it:
+
+```sh
+legion claims stop --operator-token-file <file> --claim <token>
+legion claims retry --operator-token-file <file> --claim <token>
+```
+
+The retry starts the phase again on the claim's own session.
+An issue back in `accepting` has no worker to start: its architect signs it off as any issue in `accepting`.
+Nothing tells that architect: this release's return would have sent it an `awaiting-children` notice that the issue waits on its sign-off, and the outbox statements above delete such notices.
+So tell it on its role topic, or in a comment on the issue, that the issue is back in `accepting`.
+Where the list shows no claim of that role, the role has never run on the issue, and its architect decides how its work goes on.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` and `outbox` are one table each for all of them, so the statements above act on every project's rows.
+Run them only when every daemon of the database is stopped, and roll back every daemon of one database in the same change.
+
+**Each project's daemon image moves first, and its worker image with it or after it.**
+The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
+A rollback moves each project's worker image back with its daemon image.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3113,16 +3523,17 @@ LEGION-631 is one: it deletes the `/legion/v1/gh-token` and `/legion/v1/git-cred
 The daemon's boot log, and every orphan sweep after it, names each pod still on another image
 — `sandbox runtime: <sandbox> runs image <image>, the configured image is <image>; its agents call
 this daemon as the older release until its update round replaces the pod` (`warnPodDrift` in `internal/runtime/sandbox/sandbox.go`).
-The same log names each pod running as a ServiceAccount other than `runtime.kubernetes.pod.service_account`
+The same log names each pod running as a ServiceAccount other than the one its kind is configured with — `runtime.kubernetes.pod.service_account`, or for the daemon-launched controller's pod `runtime.kubernetes.pod.controller_service_account` where the file names one
 — `sandbox runtime: <sandbox> runs as ServiceAccount <account>, the configured ServiceAccount is
 <account>; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`accountDrift`, warned by the same function)
 — one warning per Sandbox per kind of drift, so a pod holding both is named twice.
+A repository cache's pod is warned of for neither, whether it runs as `runtime.kubernetes.repository_cache.service_account`, while its bucket is on, or as `service_account`, since its own sweep replaces it for either drift ([The repository cache](#the-repository-cache)).
 A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `sandbox.go`, read by `relaunch` in `relaunch.go`, `roundCovers` in `drift.go`):
 a pod an update round covers — every issue pod — is replaced by that round, which asks the issue's roles to push their work, let their subagents and background jobs finish or stop them and push what they made, and ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
 Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 For the account, the pod's kind decides, not the exemption a stale-plugin install has for the pod's shape (below): such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
-The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway.
+The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway; its account is `controller_service_account` where the file names one, so setting, changing or dropping that key replaces the controller's pod at its next launch and moves no other pod.
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
 The boot action is the log line alone: refusing to adopt a drifted pod would stop observing a live pod and trigger nothing.
 
@@ -3131,13 +3542,19 @@ the orphan sweep reads the image as drift and publishes one message to each role
 The round asks no role that failed and no role the daemon itself suspended, and it does not wait for either ([The disk dies with its pod](#the-disk-dies-with-its-pod) says which roles it asks).
 The daemon ends the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
 So pinning such a release reaches a running issue pod by itself, without stopping a tree.
-A turn that still runs at the bound ends with the pod.
+Where the round replaces the pod, a turn that still runs at the bound ends with the pod.
 A role's own push is what keeps its work, and work a role did not push before the pod goes is lost with the disk, a failed claim's and a passed-over claim's included, unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)); an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
-Where the round passed over a role the daemon suspended, or a role whose relaunch waits on the pod had not answered, the daemon first reads the issue's workspace through a role whose process runs in the pod, once every role the round asks has answered and no turn runs, and it writes on the issue what the read found where the read found work or failed, and, on a kept volume that the issue's next pod mounts, that the work is on that volume; a replacement the bound lets through over a role the round asks that has not answered, or over a turn, makes no read, and the read pushes and saves nothing ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+Before every replacement the daemon reads the issue's workspace, through a role whose process runs in the pod, or through the pod's launcher where none does, as where the pod is replaced through a role whose relaunch waits on it.
+Where the read finds work that no branch or tag on origin holds, or fails, the round keeps the pod over a drift its roles can keep working under, and ends with no replacement.
+A kept volume that the issue's next pod mounts is no exception: the round keeps such a pod as it keeps any other.
+Over a drift that breaks the pod, the daemon replaces the pod whatever the read finds, and tells the issue's architect what the read found and whether the work is on a kept volume; the read pushes and saves nothing ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+The project's controller opens the same round over one issue's pod with its `legion` tool's `replace_pod` (`POST /legion/v1/issues/pod-update`), under the same limits (`pod_update_max_open_rounds`, `pod_update_rounds_per_minute`), and the round runs as a drift round does, replacing the pod only over a clean read of its workspace and keeping it where the read finds work that origin does not hold, or fails.
+The request opens its round over a pod an earlier round kept as well, over which the sweep opens no round (`podKeptForWork`), and that round's own read keeps the pod again where it still finds work that origin does not hold, or fails.
+That is the one way the controller removes an issue pod whose workspace may hold work: it has no exec, attach or port-forward into a pod, and it deletes no issue pod itself.
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work, let its subagents and background jobs finish or stop them, push what they made, put scratch evidence on Dispatch and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
 A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below).
-What holds a round past its bound is a claim an operator's own suspension holds, a pod replacement the cluster refuses, a pod the runtime cannot read, two pods at once, or no process in the round's pod where an operator holds a role of the round or the runtime cannot say which pod the issue's Sandbox holds,
+What holds a round past its bound is a claim under a suspension that holds (the operator's or the controller's, which the notice names with its holder), a pod replacement the cluster refuses, a pod the runtime cannot read, two pods at once, or no process in the round's pod where such a suspension holds a role of the round or the runtime cannot say which pod the issue's Sandbox holds,
 and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
 The earlier playbook reads an `update-stalled` notice by its `waiting` entries, and for a role that did not answer and is not suspended it opens no ask: it sends that role the round's steps instead.
@@ -3193,8 +3610,8 @@ pin the worker image with the daemon release, since the image probe refuses an i
 The release before it is contract 38, the blocked issues (INFRA-225), whose issue pods run the six role containers of contract 37, the pod-owned disk ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)), and this section is written against it:
 a deployment still on a release before contract 37 cuts over to the pod-owned disk first.
 A rollback rewrites the database in place and needs no dump (below);
-a safety copy taken with the daemon stopped does no harm, as `pg_dump -Fc -T omp_session_files -T
-omp_session_files_parts -f <dump file> '<postgres_dsn>'` with the daemon's `postgres_dsn`:
+a safety copy taken with the daemon stopped does no harm, as `PGPASSFILE=<pgpass file> pg_dump -Fc -T omp_session_files -T
+omp_session_files_parts -f <dump file> '<postgres_url>'`, with the daemon's database as [Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand) gives it:
 where Oh My Pi's two session tables share that database under a login of their own, the daemon's login cannot read them and a `pg_dump` that does not leave them out exits 1 with `permission denied for
 table omp_session_files`.
 At boot, store migration 0054 rewrites every stored claim locator naming a per-role container to `roles`, and the boot census passes a pod of either layout and refuses everything else as before.
@@ -3253,7 +3670,7 @@ In this order:
    the controller's locators still name `controller` and are not touched, and a tmux locator, or one with no `sandbox` member, matches neither statement:
 
    ```sh
-   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
    begin;
    update claims set locator = jsonb_set(locator, '{sandbox,container}', to_jsonb(role))
    where locator->>'runtime' = 'sandbox'
@@ -3346,7 +3763,7 @@ the record a role's completion of its current phase named, and its version.
 To roll this release back to contract 44, stop the daemon and drop both columns, with the row `schema_version` records for 20261101144900_handoff_records, which leaves the store at the earlier release's schema, 67:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists handoff_record, drop column if exists handoff_version;
 delete from schema_version where version = 20261101144900;
@@ -3410,7 +3827,7 @@ The commits already stamped keep their line: it is in their messages, which noth
 A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
 `phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
 An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
-Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `awaiting_children`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
 A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
 from contract 146 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
 A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/shaping.go`).
@@ -3442,7 +3859,7 @@ The daemon wakes the project's controller with `architect-stalled on <KEY>` (`sk
   A root waiting on a person raises it as any root does, and its reason says the root waits, because the daemon queues the next start of its architect only when that wait is answered.
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
-  After a pause, it counts from no earlier than the moment the wake pacing let out a launch of the architect that the pause held (`pod_resumes.clock_at`).
+  After a pause, it counts from no earlier than the moment the wake pacing let out a launch of the architect that the pause held (`pod_resumes.clock_at`), and it counts nothing while that launch still waits in the pacing's queue (`pod_resumes.queued`).
   Once a turn of the architect has confirmed a task of that entry, it counts from no earlier than that first confirmation (`claims.handshake_confirmed_at`), which comes after the pacing let the architect's launch out.
   So the time an architect waits for its launch in the pacing counts only while no turn has confirmed its entry's task, and an architect that has confirmed none in 90 minutes has something other than the queue wrong with it, such as a start that never ran.
 
@@ -3492,7 +3909,7 @@ cybermonklabs/legion#3995's four statements and those three ways back touch no r
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists entry_verbatim;
 delete from schema_version where version = 20261114061900;
@@ -3562,10 +3979,16 @@ A rollback of a store that #4903's release migrated runs the way back in the hea
 What that rollback costs is the two times: the earlier release rewrites a claim's cause and leaves standing the time and the digest of the cause before it, and #5349's release serves a time only while its digest is the digest of the cause the claim holds, and a start failure's time before the claim's `lastReady` as none (the migration's header).
 So after the roll-forward a cause the earlier release wrote with other text is served with no time, and so is a start failure it wrote after a ready; a cause it wrote with the same text, a death or a start failure with no ready between, is served with the older cause's time until that release records the next cause of that kind, and no read can tell.
 `20261124143026_issue_release_teardown.up.sql`, of #5372's release, carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave the new columns to their defaults, which the new index of `pod_releases` does not hold.
+`20261122154643_outbox_kinds_with_the_basis_seeds.up.sql`, of #4592's release, carries no way back of its own: #4592's rollback ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)) deletes the outbox rows of its two kinds and no version row.
+`20261124130001_pull_request_reviews_requested.up.sql`, of #5398's release, carries no way back, since an earlier release neither reads nor writes the five columns it adds and its insert leaves them at the values that say no read wrote them; a row such a release updates, at a new head or at the same one, keeps them beside its own `state_read_at`, and `pull_requests.evidence_read_at` makes them read as unread there.
 `20261124182040_issue_pod_disks.up.sql`, of #4392's release, carries no way back, since an earlier release names `issue_pod_disks` in no statement and leaves it standing.
+`20261125181828_p0_bound.up.sql`, of dispatch://INFRA-5636's release, carries no way back, since an earlier release reads no row of the table it adds or of the columns it adds to `issues`.
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
+A rollback of a store that cybermonklabs/legion#5310's release or a later one migrated runs the way back in the header of `20261124033010_plan_earlier_givers.up.sql` too, with the steps of [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps), and it deletes that version's row.
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
+A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
+A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3575,7 +3998,7 @@ Every store that cybermonklabs/legion#3995's release migrated is such a store on
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`): the earlier release's own version, 20261112180548, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and else the highest of the migrations the list after the block leaves standing that the store records, since neither block deletes a version row but its own and the way back of each later release deletes none but its own migration's, where it deletes one.
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases add column if not exists assignment text not null default '';
 alter table claims add column if not exists serving_assignment text not null default '';
@@ -3626,6 +4049,10 @@ The migrations recorded above this one are these.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
+20261114064234_design_gate_basis, of dispatch://INFRA-3320, adds the basis and kept-approval columns of `design_gates` and `issues.view_of`, and touches none of the six, so the block holds over it and leaves the columns standing, which the earlier release names in no statement ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
+20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues`, `phases.entry_from`, `phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`, and `phases.entry_given_entry` names an entry of `phases.entry`, one of the six, so the block holds over it only once the clear of the three given columns has run, the statement [Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open) gives for a rollback below `20261111225552`; a rollback to a release before it takes the steps of that section first, that clear among them.
+20261115060739_claim_suspended_by_controller, of cybermonklabs/legion#4065, writes the claims' check `claims_suspended_by_check` again with the source `controller` added, and touches none of the six, so the block holds over it; a rollback to a release before it needs no statement for the check, and the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold), hand the suspension of each agent the controller suspended to the operator, so that it stays suspended through the rollback.
+20261115121838_drop_controller_wakes_for_nothing, of cybermonklabs/legion#4065, deletes the queued `controller_notice` rows of the kinds `awaiting-person` and `unslotted`, alters no table and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold)).
 20261115194357_project_pause, of dispatch://INFRA-3759, adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, two columns of `pod_resumes` and one of `outbox`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the steps of its own section, [Rolling back the project pause](#rolling-back-the-project-pause), come before the earlier image is pinned.
 20261116144907_claim_sessions adds the table `claim_sessions`, which holds each name of a session to the claim that first recorded it, and fills it from each claim's session and the session it last abandoned; it touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement, and at the roll forward each boot holds again every name no row holds that a claim's row still records, its current session and file and the session it last abandoned (`HoldRecordedSessions`), not a session the earlier release recorded and then replaced.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
@@ -3644,16 +4071,31 @@ The migrations recorded above this one are these.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
+20261122154643_outbox_kinds_with_the_basis_seeds, of dispatch://INFRA-3320, writes the outbox's kind check again with `pending_basis_seed` and `reparent_seed` added to the design news's list and touches none of the six, so the block holds over it, and a rollback to a release before it deletes the rows of both kinds as [Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open) says and deletes no version row, so after the eleven statements a store that cybermonklabs/legion#4592's release migrated still records it.
 20261123050533_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261124033010_plan_earlier_givers adds `issue_plans.earlier_givers`, each owner that gave a version of a plan before the one `given_by` names, at its default, no earlier giver, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; its way back, which drops the column where `issue_plans` still stands and deletes its row, runs only in a rollback past `20261117034837_issue_plans`, before or after that migration's way back, and a rollback onto a release that has the plan tables costs what its header says: the earlier release passes a version over at a first step where the giver it last recorded no longer owns the issue, though an earlier giver still does.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
+20261124130001_pull_request_reviews_requested, of dispatch://INFRA-4192, adds five columns of `pull_requests`: `reviews_requested`, how many review requests GitHub holds open on the pull request, null on every row it finds; `head_checks`, whether a check of the head was running when the merge state was read, at its default `''`; `null_mergeable_reads` and `null_mergeable_since`, how many reads in a row answered `mergeable` null and when the first was, at 0 and the zero instant; and `evidence_read_at`, the read time of the read that wrote them, at the zero instant.
+It touches none of the six, so the block holds over it and leaves the five columns standing, which the earlier release names in no statement; it carries no way back, since an earlier release neither reads nor writes them and its insert leaves them at the values that say no read wrote them.
 20261124143026_issue_release_teardown, of dispatch://INFRA-3149, adds `issue_releases.teardown` at its default, `reached`, on every mark it finds, adds `pod_releases.issue_release_id`, null on every row it finds, with a unique index of the rows that name a mark, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave both columns to their defaults.
 20261124182040_issue_pod_disks adds `issue_pod_disks` and touches none of the six, so the block holds over it.
 A rollback to a release before it leaves the table in place and needs no SQL for this migration.
 20261125000600_production_check_failed_looks adds `production_checks.failed_looks` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which takes `wakeAt` off every queued `check_wake` row, a key the release before refuses as one it does not know, drops the column and deletes its version row, with every daemon of the database stopped: `production_checks` holds the checks of every project that shares the database, and a daemon of this release still running for another project would fail every fact that reads a check after the drop.
+20261125021636_claim_session_run, of dispatch://INFRA-2045, adds `claims.session_run` at its default, the empty run, with `turnFinished` true on every row that records a session, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since nothing needs to be taken off: that release neither counts nor resets the run, so a session it starts after a rollback inherits the run the row held, `turnFinished` included, and a rollback past it takes `controller_turn_bound_minutes` and `controller_session_max_age_hours` out of `legion.yaml` first, since that release refuses both keys.
+20261125023041_idle_release_declines_told_pod adds the column `idle_release_declines.told_pod`, null on every row it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, newest first in the block of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which drops the column and deletes its version row.
+20261125023100_pod_replacements adds the table `pod_replacements`, empty, the daemon's record of each replacement of an issue pod that may take a disk until the issue's architect's `workspace-taken` notice of it is queued, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, newest first in the block of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which drops the table and deletes its version row.
+20261125163328_message_wake_pacing, of dispatch://INFRA-5682, adds `claims.message_mark_at`, null on every claim it finds, and `pod_resumes.queued`, false on every resume it finds, and touches none of the six, so the block holds over it and leaves the two columns standing, which the earlier release names in no statement; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, since the release before publishes a notice only once it is due and the pacing holds such a row at a due time of 2100, takes `paced_turns` off every queued catch-up, a key the release before refuses as one it does not know, and clears every claim's message mark.
+20261125181828_p0_bound, of dispatch://INFRA-5636, adds the table `project_p0_bound_changes`, empty, and the columns `issues.resolved_priority`, `issues.resolved_known` and `issues.priority_from`, and touches none of the six, so the block holds over it and leaves the table and the columns standing, which the earlier release names in no statement; it carries no way back.
+A rollback past it takes `admission_p0_bound` out of `legion.yaml` first, since the earlier release refuses a key it does not know (`unknown key admission_p0_bound`), and after it every P0 issue waits for a slot under the cap again.
+20261125212800_claims_tree adds the index `claims_tree` on `claims (tree)`, which the reads of a session's claims in one tree use, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads and writes `claims` the same with the index in place, and a rollback leaves it standing.
+20261125223008_claim_held_for, of cybermonklabs/legion#5505, adds `claims.held_for` at its default, the empty string, writes `provider_error` in place of each `cyber_policy` that `claims.failure_cause` or `claims.pending_cause` holds and `cyber_policy` in that row's `held_for`, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since the two cause columns then hold only words an earlier release knows, and that release reads a claim held for `cyber_policy` as one failed under `provider_error` and does not hold it.
+The same release writes the outbox key `decided` on each supervise start a person, the controller or the issue's architect decided (`record.SuperviseRequest.Decided`), and an earlier release decodes outbox rows strictly, so a row that carries it fails there on every attempt: before the earlier image boots, with every daemon of the database stopped, run `update outbox set payload = payload - 'decided' where kind = 'supervise' and payload ? 'decided';`, which takes that key off each supervise row and leaves every other key, and every row of another kind, a catch-up notice's own `decided` among them; the earlier release then runs such a start as one of its own.
+That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scratch `outbox` table with the `kind` check and the `payload jsonb` column `0004_record.up.sql` gives it, holding a supervise start that carried `decided` beside `resendEntry`, a supervise start without it and a `notice` row carrying `decided` at the top and under `catch_up`: the first run printed `UPDATE 1` and the second `UPDATE 0`, the first row kept `resendEntry`, and the `notice` row kept both keys.
+20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -3705,6 +4147,21 @@ A tree it drew in that window has its answer in `issues.memory_*` alone, and the
 this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
+
+**The identities of an issue's roles in each role's process (contract entry `20261125161436`, `role-identities`).**
+A release that carries contract entry `20261125161436` tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each role of the issue.
+Its value is one JSON object from each role to the `name` and `email` that role's App commits as, keys sorted.
+The daemon writes it from the identities it already resolves for each role.
+A launch whose other App's lease cannot be minted still happens: its table holds the roles of its own App alone, the daemon logs a warning naming the claim, that App and the error, and the step leaves the author of a commit whose trailer names a role left out as it is.
+The controller gets none, and `legion controller start` drops one it inherits.
+The push step of `legion jj` reads it before each `jj git push`, and gives a commit the push sends the author of the role that the commit's first `Legion-Role` trailer names, with the exceptions that [Worker image](#worker-image) names.
+The variable is the daemon's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and so is a provider key of that name.
+
+To roll this release back to a release without that entry, re-pin the earlier release, with no change to `legion.yaml`.
+There is no SQL to run and no column to drop: the change adds no store migration, and no record holds the table.
+What the rollback costs is the step:
+the earlier daemon tells no role the table, so the step does nothing, and a commit can again reach the remote with another role's App as its author.
+A tmux daemon rolled back leaves `<state_dir>/bin/jj`, which runs a `legion jj` command that the older `legion` does not have, so every pane's `jj` fails until the operator deletes that file (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
 ### Contract discipline
 
@@ -3853,8 +4310,8 @@ runtime:
     issue_volume: 50Gi          # default 50Gi; one volume per issue, and one for the controller's pod
     kubeconfig: /home/ubuntu/.kube/legion-daemon-production   # relative to legion.yaml's directory
     context: legion-daemon@example   # required when the kubeconfig sets no current context
-    scheduling:                 # optional, beyond the Legion pool the runtime always selects
-      node_selector: {}         # merged over legion.dev/pool=legion, which it may not name
+    scheduling:                 # optional: every pod's whole placement on the cluster's general nodes
+      node_selector: {}         # as written; it may not name legion.dev/pool, the retired Legion pool's label
       tolerations: []
       priority_class: legion
     sandbox:                    # optional: the sandbox of the project's issue pods and of its controller's pod (Pods in microVMs, below)
@@ -3864,10 +4321,11 @@ runtime:
                                 # or Burstable), so every pod is covered for the resource-limits capability with or
                                 # without this block, and an ephemeral-storage limit over a smaller request (the
                                 # pod's bound on the node's disk)
-      issue: { memory: 32Gi, memory_request: 19Gi }   # every issue pod: Burstable, reserves 19Gi, may use 32Gi
+      issue: { memory: 32Gi, memory_request: 8Gi }   # every issue pod: Burstable, reserves 8Gi, may use 32Gi
       controller: { cpu: 2, memory: 8Gi }  # controller: daemon only
     pod:                        # the operator's: env, volumes, mounts, ServiceAccount (below)
       service_account: <the ServiceAccount this deployment's pods run as>
+      controller_service_account: <optional, controller: daemon only: the ServiceAccount the controller's pod runs as instead>
       env: { PI_CONFIG_FILES: /etc/legion-operator/overlay.yml }
       volumes: [...]
       volume_mounts: [...]
@@ -3876,6 +4334,8 @@ runtime:
       refresh_minutes: 10       # default 10; how long between the cache's fetches from GitHub
       retain_hours: 168         # default 168; how long a cache outlives the last live record that names its repository
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
+      bucket: example-legion-packs                # optional, with service_account: the Cloud Storage bucket the caches keep their packs in (The repository cache, below)
+      service_account: legion-repository-cache   # optional, with bucket: the ServiceAccount the cache pods alone run as, never pod.service_account
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher and in the gVisor controller pod's; a microVM pod's launcher, an issue pod's or the controller's, runs the guest watch instead (The memory guard in an issue pod, The memory guard in the controller's pod, and Memory in a microVM pod, below)
@@ -3901,20 +4361,20 @@ a lower request makes that pod `Burstable` ([Issue sizing](#issue-sizing-one-res
 
 | key | cpu (limit / request) | memory (limit / request) | ephemeral-storage (limit / request) |
 | :--- | :--- | :--- | :--- |
-| `issue` | 3 / 3 | 19Gi / 19Gi | 80Gi / 6Gi |
+| `issue` | 2 / 2 | 8Gi / 8Gi | 80Gi / 6Gi |
 | `controller` (`controller: daemon`) | 1 / 1 | 4Gi / 4Gi | 10Gi / 1Gi |
 | the image probe (fixed, not a `resources` key) | 500m / 500m | 1Gi / 1Gi | 5Gi / 1Gi |
 
-The `issue` default is the sum of the six per-role defaults of the layout that ran one container per role.
+The `issue` default is the size INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with heavy builds and whole test suites run in CI or where the deployment's instructions send them, not in the pod (`skills/legion-worker/references/tools.md`).
 One number frees nothing at run time: under gVisor every process of a pod already used whatever the pod had free, so the pod's peak must fit its reservation
-— an issue pod measured at 1-minute resolution used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
+— an issue pod that still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
 On GKE Autopilot the cap is 10Gi of ephemeral storage for the main containers' sum and 10Gi for each init container (server dry runs, 2026-10-24), and GKE clamps a container's limit to its request, so a GKE deployment sets `issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi}`.
 
 The image probe pod's reservation is the daemon's own and no issue pod's share (`probeReservation`, `packages/daemon/internal/daemon/kubernetes.go`):
 `legion probe-image` starts one Oh My Pi at a time, runs no lane, and checks the image's capability rows and the roles' overlays, so 1Gi holds it; its 500m was set while it also ran a TLS check of the image's clients, and is kept until its other checks are audited ([Image size and pull time](#image-size-and-pull-time)); and the probe runs at every boot before anything is served
 — a probe that reserved a larger share, as it did the controller's 1 CPU and 4Gi until LEGION-632, could leave the daemon unable to boot on a pool with no room for a pod that large ([Issue sizing](#issue-sizing-one-reservation-per-pod), "The bound").
 
-At the defaults an issue pod reserves 3 CPU and 19 GiB, an ephemeral-storage limit of 80Gi and a request of 6Gi.
+At the defaults an issue pod reserves 2 CPU and 8 GiB, an ephemeral-storage limit of 80Gi and a request of 6Gi.
 `issue_volume` sizes each issue pod's own disk:
 the clone, the workspace, uv's Pythons and packages, and everything a role writes without being told where to put it.
 Four of those directories are the issue's, one set its roles share
@@ -4134,18 +4594,28 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   controller the daemon launches, and controller: operator launches none: set controller: daemon or
   drop the key`);
 
+- `pod.controller_service_account` unless `controller: daemon`, as `resources.controller` (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`);
+
 - the earlier shape inside an entry: `runtime.kubernetes.resources.issue.requests is gone: a
   reservation is its cpu and memory limits, with cpu_request and memory_request below them
   where set` (`limits` likewise); any other member of an entry but `cpu`, `cpu_request`, `memory`, `memory_request`, `ephemeral_storage` and `ephemeral_storage_request` is an unknown key, and any of those six or `issue_volume` that is not a positive Kubernetes quantity is refused as such (`… must be a positive Kubernetes quantity (e.g. 20Gi or 500m)`);
 
 - a request past its limit, once both are settled
-  — the file set one side or both, since the defaults never exceed: `runtime.kubernetes.resources.issue.memory_request 20Gi exceeds memory
-  19Gi`, and likewise `cpu_request … exceeds cpu …` and `ephemeral_storage_request …
-  exceeds ephemeral_storage …`, for `controller` too, and `runtime.kubernetes.repository_cache.resources.…` likewise;
+  — the file set one side or both, since the defaults never exceed: `runtime.kubernetes.resources.issue.memory_request 9Gi exceeds memory
+  8Gi`, and likewise `cpu_request … exceeds cpu …` and `ephemeral_storage_request …
+  exceeds ephemeral_storage …`, for `controller` too, and `runtime.kubernetes.repository_cache.resources.…` likewise.
+  This is a breaking configuration change for a file that sets an issue pod's `memory_request` above 8Gi or its `cpu_request` above 2 with no limit beside it.
+  To load such a file, set the limit beside the request, as in `issue: {memory: 32Gi, memory_request: 9Gi}`;
 
-- a `repository_cache` that is not a mapping, or names a member but `volume`, `refresh_minutes`, `retain_hours` and `resources`;
+- a `repository_cache` that is not a mapping, or names a member but `volume`, `refresh_minutes`, `retain_hours`, `resources`, `bucket` and `service_account`;
   a `volume` that is not a positive Kubernetes quantity;
   a `refresh_minutes` or `retain_hours` that is not a positive integer; its `resources` take a reservation's six members and nothing else;
+  a `bucket` without a `service_account` or a `service_account` without a `bucket` (`runtime.kubernetes.repository_cache.bucket needs runtime.kubernetes.repository_cache.service_account: …`, and the other way round);
+  either one blank (`… must not be empty`) or still holding a `${…}` placeholder (`… is an unfilled placeholder: …`);
+  a `bucket` that is not a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots, so a `gs://` address or a capital is refused (Cloud Storage refuses the rest of its naming rules when the bucket is made);
+  a `service_account` that is no ServiceAccount's name, which Kubernetes takes only as a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, beginning and ending with a letter or a digit, in at most 253 characters, so `Legion_Cache` or `a/b` is refused (`runtime.kubernetes.repository_cache.service_account "<value>" is no ServiceAccount's name: …`);
+  a `service_account` that is the account the issue pods run as: `pod.service_account`, or `default` while `pod.service_account` is unset (`… must differ from runtime.kubernetes.pod.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod`);
+  a `service_account` that is `pod.controller_service_account`, the account the daemon-launched controller's pod runs as (`… must differ from runtime.kubernetes.pod.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod`);
 
 - a `memory_guard` that is not a mapping, or names a member but `issue_pods` and `controller_pod`;
   an `issue_pods` or a `controller_pod` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
@@ -4188,7 +4658,8 @@ resources: Burstable (a request below the limit): the issue pod; every other pod
 ```
 
 Legion holds no model route.
-`pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's.
+`pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's;
+and `controller_service_account`, the account the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod").
 A ConfigMap or Secret a volume names must exist in the daemon's namespace, with every key the volume asks of it:
 the image probe refuses the boot at once, naming it, when it does not, for every volume a `volume_mounts` entry mounts (the kubelet attempts no other) ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
 
@@ -4218,7 +4689,7 @@ A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, a
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
 the other two, which are not credentials, go in `runtime.kubernetes.pod.env`.
-The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a
+The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`entry <n> sets a credential-shaped variable: a credential comes from a
 Secret, …`), which is why the key takes the `provider_keys` route.
 A provider key reaches every role's child under this runtime, Oh My Pi's included
 — that is this runtime's standing rule for every provider key, not something a Claude Code role changes:
@@ -4303,6 +4774,19 @@ Every address a pod is handed must be one a pod can reach, so `daemon_url`, `env
 This is a breaking configuration change for a file that names a host in Unicode; write it in its `xn--` form.
 `envoy_url` and each `nats_urls` entry are endpoints, not request URLs: they refuse a query string or fragment.
 This is a breaking configuration change for a file that has either; put credentials in URL userinfo or in a Secret, never in a query.
+`envoy_url`, `dispatch_url`, `daemon_url` and each `nats_urls` entry also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`).
+The check reads the decoded path, so a `%40` in the path is refused as an `@` is; an endpoint's path that holds one has to drop it.
+The refusal names the key, or a `nats_urls` entry by its position, and quotes none of the URL.
+A `runtime.kubernetes.plugins` http(s) source refuses an `@` in its query, in its fragment, or in any path segment other than the plugins' scope `@sjawhar`, which a registry tarball URL holds as a segment of its own (`/@sjawhar/pi-legion/-/pi-legion-<v>.tgz`, Artifactory's `/api/npm/<repo>/@sjawhar/…`, GitHub Packages' `/download/@sjawhar/…`), naming the key alone.
+The fragment and the path are read decoded, so a `%40` in either counts as an `@`; the query is read as written, so a `%40` there loads, and it is no userinfo for a credential to land in.
+A credential pasted as the URL's user lands there when it holds a `/`, `?` or `#`: write it percent-encoded (`%2F`, `%3F`, `%23`); an `@` the path itself holds outside the scope, remove.
+No plugin refusal quotes the source, the version refusal included.
+A `nats_urls` entry with an `@` after its host, or holding a comma, is refused too, and so is one that does not parse, and a websocket entry whose path or host stops parsing once the NATS client's handshake decodes it.
+The NATS client reads a comma as the end of a server URL, so list each server as its own entry.
+A user name or password holding an unescaped `/`, `?`, `#`, space or comma ends the URL's host part early or splits it into two servers, so write such a credential percent-encoded (`%2F`, `%3F`, `%23`, `%20`, `%2C`).
+An unquoted item of a `[...]` list that carries a user name or password, tagged `!!str` or not, is refused: YAML splits such an item at every comma, so quote it or write the list as a block list.
+So is a list that mixes websocket (`ws`, `wss`) and other schemes, an entry that is empty or no string, and an entry whose host and port are not written as an address the NATS client dials (a port past 65535 or of 0, three colons, an IPv6 address with a port and no brackets, a zone among them, though the client would bracket that one itself): write an IPv6 host in brackets (`nats://[::1]:4222`), and a port from 1 to 65535 or none.
+Each refusal names the entry by its position alone (`nats_urls entry 2 …`), never by any of its text.
 `advertise_host` is an IP address or an ASCII DNS name, the host alone, and only `runtime: kubernetes` accepts it.
 A pod's own IP changes on every restart, so a daemon running inside the cluster binds `0.0.0.0` and lets `advertise_host` name the Service DNS name that reaches whichever pod is live.
 Pods dial it at the port the worker stream listens on, so the Service exposes `worker_stream_port` as that same port number.
@@ -4354,7 +4838,7 @@ What it does not do is what boot writes or runs: the state directory, secretsd's
 
 The NATS nkey seed is optional, as on tmux:
 `nats_nkey_seed_file` (relative to `legion.yaml`'s directory), else `NATS_NKEY_SEED_FILE`, else `NATS_NKEY_SEED` in the daemon's environment, is the `legion-pane` user every pod connects as, and the user the daemon's own NATS connection authenticates as when it has no seed of its own (below).
-A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key and the path.
+A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key; a file that could not be read is named by the key and the system's reason, never by its path, and only a file that was opened is named by its path too.
 One exception: when root owns the file and the daemon is not root, its group may read it, since a daemon running as a non-root uid in a pod reads a mounted Secret
 — always root's — only through the pod's `fsGroup`.
 Mount it with `defaultMode: 0440`, never the kubelet's default `0644`, which others can read;
@@ -4493,6 +4977,214 @@ the check before the pane seed is written also has each daemon consume a Dispatc
 `legion-pane` is never granted the daemon's subjects above.
 Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`, and each refused subject logs the error line above (a refused consumer or subscription never delivers).
 
+### The deployment's private-name rules
+
+The leak guard runs up to two checks before a role writes ([Worker image](#worker-image)):
+the shared public leak check, where one is named for the role (the deployment's `leak_check` setting in a pod, or on a pane's machine the check its operator installed), and the deployment's own private-name rules, where the deployment names a rule file (`packages/daemon/internal/leakguard`).
+The `legion` binary carries no private-name rule.
+A deployment names its own rule file, in gitleaks' rule format.
+Each is the operator's to name, so a write gets one of four guards:
+
+- a shared check and a rule file named: the check runs, then the visibility read, then the rules over a public destination;
+
+- a rule file and no shared check: the visibility read, then the rules over a public destination;
+
+- a shared check and no rule file: the check alone, with no visibility read;
+
+- neither: no leak guard at all, and every write is cleared with nothing read; the daemon says so in two boot lines, one that no leak check is configured and one that no rule file is named.
+
+The key and the variable below work the same way under `runtime: tmux` (`docs/deployment.md`, "What a pane's Dispatch credential is").
+
+**Where the file is named.**
+`private_name_rules_file` in `legion.yaml` names the file:
+
+```yaml
+private_name_rules_file: private-name-rules.toml   # relative to legion.yaml's directory
+```
+
+A relative path resolves against `legion.yaml`'s directory, and an empty value is refused (`private_name_rules_file must not be empty`).
+Where the file sets no such key, `LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment names the file.
+An empty value of the variable names no file, as an unset variable does.
+Where both name a file, the key wins.
+A daemon of an earlier release refuses `private_name_rules_file`.
+So a deployment that may roll back across this release sets the variable instead of the key.
+
+**What the daemon does with it.**
+The daemon reads the file once, at boot, and compiles it with the guard's own loader (`readBoot`, `packages/daemon/internal/daemon/bootreads.go`, and `compilePrivateNameRules`, `privatenamerules.go`).
+A file it cannot read or compile refuses the boot, and `legion config check` refuses it in the same words before any boot.
+The refusal names the key or the variable, and the file.
+The daemon's own branch create runs the rules boot compiled.
+Every launch carries the file's bytes as the launch secret `LEGION_PRIVATE_NAME_RULES` (`launchSecrets`, `packages/daemon/internal/daemon/launchsecrets.go`):
+each worker under either runtime, and the controller under `controller: daemon`.
+The runtime writes the secret to a file of the launch's own and points `LEGION_PRIVATE_NAME_RULES_FILE` at that file:
+`/var/run/legion/private/g<generation>/LEGION_PRIVATE_NAME_RULES` in a pod ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and a 0600 file under `<state_dir>/secrets` in a tmux pane.
+A role keeps the copy its launch was handed.
+So a changed file reaches a role only after the daemon restarts and that role launches again.
+`runtime.tmux.pane_env` may not set `LEGION_PRIVATE_NAME_RULES_FILE`.
+While the deployment names a file, `runtime.kubernetes.pod.env` may not set that variable either, and no `provider_keys` entry may be named `LEGION_PRIVATE_NAME_RULES`.
+
+**The bound.**
+The guard reads at most 256 KiB of a rule file (`MaxRulesFile`, `packages/daemon/internal/leakguard/rules.go`), and the daemon refuses a longer file at boot.
+A deployment's file is a few kilobytes of regular expressions.
+The bound is there because the file rides every launch's start command.
+Under `runtime: kubernetes` that command is one frame, and a launcher reads no frame longer than 1 MiB, so the daemon refuses a start whose frame is longer before it sends it (`checkStartFrame`, `packages/daemon/internal/runtime/sandbox/launcher.go`).
+The same frame carries the role's system prompt and the launch's other files, all of it JSON-encoded, and JSON doubles each backslash of a regular expression.
+A file near 1 MiB would therefore fail every launch.
+The bound also refuses a pointer to a log or an image, named by mistake, rather than reading that file into memory whole.
+
+**What the file may hold.**
+What the file holds is the whole of what the guard's private-name step detects (`LoadRules`, `rules.go`).
+The guard refuses a file in each of these cases, and so does the daemon at boot:
+
+- The file is longer than 256 KiB.
+
+- The file is no TOML.
+
+- The file holds a key that gitleaks' rule format does not have, and the refusal names the key.
+  gitleaks itself ignores an unknown key, so a misspelt `[[rule]]` would compile to no rule at all.
+
+- The file holds an `[extend]` section.
+  Write the extended rules into the file itself.
+
+- The file holds two rules of one `id`, and gitleaks would run only the last of them.
+
+- The file holds no rule.
+
+- A pattern of the file does not compile.
+
+The guard ignores `gitleaks:allow`.
+A line that carries those words is scanned like any other line, so no writer can exempt a line from the deployment's rules.
+
+**What the rules read.**
+The private-name step runs only for a destination GitHub reports public, and for one the caller cannot name.
+It scans each record of the write on its own, so a rule that needs two words matches only where one record holds both.
+A report names a record by its label: as it was written where that is printable text of at most 200 bytes with no `\`, and otherwise as **The report** below says.
+A push has these records:
+
+- The ref name, labelled `the ref name`.
+
+- Each commit's author, committer and message, labelled `commit <sha7> author`, `commit <sha7> committer` and `commit <sha7> message`.
+
+- Each added or renamed path, labelled by the path.
+
+- Each added line, labelled by its file's path.
+  The report's `on line <n>` is the line in that file.
+
+A gh call has these records:
+
+- Each argument, labelled `the gh call's argument <i>`.
+  A field given to `-f`, `--raw-field`, `-F` or `--field` of `gh api` or `gh workflow run` is two records: its value, labelled `the gh call's field <name>`, and its name, labelled `the gh call's field <name> (name)`.
+  Only those two commands have field options: in every other command `-f` and `-F` mean other things (`-F` is `--body-file` in `gh pr create`), so there every argument is one record, read whole.
+  An option's value is read as that option's value and never as an option of its own, so `gh api -t '-f…'` is a template, read whole.
+  A `gh api` call's endpoint is also read decoded, because GitHub decodes the percent-escapes of an endpoint's path and query: it decodes a REST path, and stores a release asset's `name` and `label` query values decoded.
+  Its path with its percent-escapes decoded is a record, labelled `the gh call's argument <i>, path`, and so is each value of its query, decoded as a URL query is, labelled `the gh call's argument <i>, query <key>`, and each key of its query, decoded the same way, labelled `the gh call's argument <i>, query <key> (name)`; each is a record only where decoding changes the text.
+  A key is read because GitHub may store it as a name: a server that merges a query into a request's parameters, as a Rails parser does, reads `inputs%5Bnotes%5D=1` as an input named `notes`; that is not measured, since measuring it takes a write, and the read costs one record.
+  A `;` inside a query value stays in the value, as GitHub keeps it (measured on `api.github.com` on 2026-11-25: `?per_page=1&x=a%62c;d` came back as the pair `x=abc%3Bd`), so such a pair is read decoded with its `;`.
+  A path whose escapes do not decode is read only as written, and so is a pair of a query whose key or value does not decode.
+
+- The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
+  A call that only prints, such as gh's help of a command (`--help`, or a `-h` that no option of the command takes), sends nothing beside its arguments, so the guard opens no file its options name: `legion gh pr comment 1 --body-file <file> --help` passes where no file is at `<file>`, and its arguments are read as any call's are.
+  A `-h` counts as help only after the command's name, where no option of the command takes it; before the command's name, a `-h` passes only as the whole argv, `gh -h`; any other `-h` there is refused, such as `gh pr -h`, `gh -R acme/widgets -h` or one with words after it, since gh can take the next word as its value and run another command (`gh -h status config set -h github.com editor x` runs `gh config set`, whose own `-h` is `--host`).
+
+- Each JSON string of a request body (`gh api --input <file>`, `gh api --input -`, or the standard input of `gh workflow run --json`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
+  An object's name is a record too, labelled `<record>, JSON <path> (name)`.
+  A path of more than 8 steps is shown as its first 2 steps, `…` and its last 5, and a step longer than 64 bytes is cut there, with `…`, so a deep body's labels stay short.
+  An empty string is no record, since no rule can match it.
+  A body that is not exactly one JSON document is read as one record.
+  A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com`, is read as one record, because GitHub stores it as sent.
+  Where such a body is exactly one JSON document, its JSON strings are read beside that record too, because whoever parses the stored document reads each string decoded, `\u0074` as `t`.
+  A call to such a URL that gives fields, no `--input` and a method other than `GET` is refused, because gh would send its fields as one JSON document that GitHub stores as sent; send the asset's bytes with `--input <file>` or `--input -`.
+  With `--input`, or with the method `GET` (`-X GET` or `--method GET`, in any case), gh puts the fields in the URL's query string instead, and they are read as any field of the call is.
+  A file or standard input longer than 1 MiB (1,048,576 bytes) is refused, because the guard reads no more than that of what a call sends, so a release asset past that size is refused too.
+
+- Each string literal of a GraphQL query, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the record that holds the query.
+  A `gh api` call's query is read so whatever spelling of GitHub's GraphQL endpoint the call names (`graphql`, `/graphql`, the API's full URL), and wherever the query comes from: a field, a file, a JSON body's `query`, or standard input named by `-F query=@-`.
+  A query that does not lex is read as written.
+
+Each text that a write to a public repository sends and GitHub stores and shows is read as GitHub stores it, but a release asset's file and a label gh takes from the name of a file a glob pattern matched, which are handled as on `main` (the last row).
+The table lists each of them, what GitHub does to it before it stores it, and the records the guard reads of it; `TestEveryTextGitHubStoresIsReadAsItIsStored` (`packages/daemon/internal/leakguard/gh_fields_test.go`) holds a row for each record the table names:
+
+| What the call sends | What GitHub stores | What the guard reads |
+| --- | --- | --- |
+| An argument, such as a title, a body or a tag | the text as written | `the gh call's argument <i>`, as written |
+| A field of `gh api` or `gh workflow run` (`-f`, `--raw-field`, `-F`, `--field`) | the name and the value as written: gh JSON-escapes them, and GitHub stores the strings | `the gh call's field <name>` and `the gh call's field <name> (name)`, as written |
+| A JSON request body sent to GitHub's REST API (`gh api --input <file>` or `--input -`) | each JSON string, its escapes decoded | `<record>, JSON <path>` and `<record>, JSON <path> (name)`, decoded |
+| A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com` | the bytes as sent | `<record>`, as sent, and where the body is exactly one JSON document `<record>, JSON <path>` too, decoded |
+| The file of a file option (`--body-file`, `--notes-file`, `--from-file`, and the `-F` that is one of them), and the file of a field's `@<path>` (`-F <name>=@<path>`, `--field <name>=@<path>`) but a GraphQL query's, which its own row covers | the text as written | the file's path, labelling its text as written |
+| A `gh api` endpoint's path | the path, its percent-escapes decoded | `the gh call's argument <i>, path`, decoded, beside the argument as written |
+| Each pair of a `gh api` endpoint's query | the value, its percent-escapes decoded and a `;` in it kept | `the gh call's argument <i>, query <key>`, decoded with its `;`; a pair whose key or value does not decode is read only as written, in the argument |
+| Each key of a `gh api` endpoint's query | the key, its percent-escapes decoded, where GitHub merges the query into the request's parameters (not measured) | `the gh call's argument <i>, query <key> (name)`, decoded; a pair whose key or value does not decode is read only as written, in the argument |
+| A GraphQL query (a `query` field, a file, a JSON body's `query`, or `-F query=@-`) | each string literal, its escapes decoded | `<record>, GraphQL string <k>`, decoded |
+| The inputs of `gh workflow run --json`, on standard input | each input's JSON string, its escapes decoded | `the gh call's standard input, JSON <path>`, decoded |
+| A release asset of `gh release upload` or `gh release create` | the file's bytes, its name and its label | as on `main`: each argument as written, so an asset's path or `#label` written in an argument is read and refused as any argument is; the rule pass opens no asset's file, and a label gh takes from the name of a file a glob pattern matched is in no argument and goes unread; the shared check reads the call's arguments too |
+
+A text that `legion leak-check text` checks has two records, `the title` (its first line) and `the body` (the rest).
+A path rule reads only a record's path, and only a pushed file's records carry one: its added or renamed path and each of its added lines.
+A file that a gh call sends carries no path, because GitHub never sees the name the file has where the call runs.
+So no label, JSON path or line number is read as a path.
+
+**The report.**
+A refusal by the private-name rules starts `LEAK CHECK: refusing <the write>: the deployment's private-name rules match it`.
+Under that line it shows one line for each distinct finding among the 40 shown; a line the report already shows, such as a path rule's finding on every added line of a file, is not written again.
+Each line is indented two spaces:
+
+```text
+<record>: <description>: matched "<match>" on line <n>: "<line>"
+```
+
+`<record>` is the record's label.
+A character that does not print, and `\`, stands in it as Go writes it in a quoted string, so a newline in a field's name or a path cannot break the report apart either.
+A label longer than 200 bytes is shown as its first 60 bytes, `…` and its last 140.
+`<description>` is the description the deployment's rule gives.
+`<match>` and `<line>` are Go-quoted, so a newline or a control character cannot break the report apart.
+The match is cut at 200 bytes.
+The line is a window of at most 120 bytes on each side of the match shown.
+`…` marks each cut.
+A path rule's finding stands on no line, and reads `<record>: <description>: matched the path`.
+A report shows at most 40 lines, and then `… and <k> more matches not shown`.
+The report masks nothing it shows.
+It shows the text because the agent that would make the write wrote it, so nothing in it is hidden from that agent.
+This repository's public CI never prints the guard's report.
+
+**What the boot and a role say.**
+With no file named, boot logs this line before anything that can stop the boot:
+
+```text
+daemon: the deployment names no private-name rule file (private_name_rules_file in legion.yaml, or LEGION_PRIVATE_NAME_RULES_FILE in the daemon's environment): every role's guard runs no private-name rule
+```
+
+With a file named, boot logs this line once it has read and compiled the file:
+
+```text
+daemon: the deployment's private-name rules are <path> (sha256 <hex>, <n> rules), handed to every launch
+```
+
+The sha256 is of the bytes every launch carries, so an operator can tell one version of the file from another.
+`GET /legion/v1/state` shows the path, and never the rules, as `settings.private_name_rules_file`, and leaves the key out while no file is named.
+
+Where its launch names no rule file, a role's guard runs the shared check alone, reads no visibility and builds no record; where the deployment names no shared check either (the `leak_check` setting above), it runs nothing and clears every write.
+`legion leak-check pre-push`, `legion leak-check text` and `legion gh` print nothing of it, on any command, since a line on each would break a script that reads what they print.
+The boot's line above says it once, in the daemon's log.
+`legion gh` logs such a call with the visibility source `no-rules` (`packages/daemon/cmd/legion/gh_reads.go`).
+Where `LEGION_PRIVATE_NAME_RULES_FILE` names a file the guard cannot use (missing, unreadable, longer than 256 KiB, or refused above), the guard refuses the write as a setup failure:
+`LEAK CHECK SETUP ERROR: <the write>: the private-name rule file <path>, which LEGION_PRIVATE_NAME_RULES_FILE names, <why>`.
+`<path>` is shown as the report shows a label, and so is every path, repository and option a setup failure of the guard names.
+A deployment that named rules meant them to run, and a guard that ran none in their place would pass what they refuse.
+
+**The operator-launched controller.**
+Under `controller: operator` the daemon launches no controller, so no launch hands that controller the rules.
+`legion controller start` runs Oh My Pi on top of the operator's own environment ([Operator-launched controller](#operator-launched-controller)).
+So an operator who wants that controller's guard to run the rules exports `LEGION_PRIVATE_NAME_RULES_FILE` there.
+That controller's gh tokens are the review App's read-only tokens, so no write of its gh reaches GitHub, with the rules or without them.
+
+**Deploy order.**
+A pod's guard runs the rules its daemon hands it at launch.
+So each project moves its daemon to this release before its pods' image, or with it.
+A rollback goes in the reverse order: the pods' image first, then the daemon.
+A pod of an older image runs the rules its own `legion` binary embeds, whatever its daemon hands it.
+A pod of the new image under an older daemon runs no private-name rule, and nothing says so: an older daemon logs no line about the rules, and the pod's commands print nothing of it.
+A deployment that may roll back across this release names its file in `LEGION_PRIVATE_NAME_RULES_FILE`, since an older daemon refuses `private_name_rules_file`.
+
 <a id="issue-pods-in-microvms"></a>
 ### Pods in microVMs
 
@@ -4586,10 +5278,10 @@ The daemon renders the placement of a microVM pod, an issue pod or the controlle
 
 - `runtimeClassName: microvm`, in place of `gvisor`.
 
-- The node selector is a gVisor pod's, `legion.dev/pool: legion` and then the operator's `scheduling.node_selector`, with `cloud.google.com/compute-class` set to `microvm.compute_class`.
+- The node selector is a gVisor pod's, the operator's `scheduling.node_selector`, with `cloud.google.com/compute-class` set to `microvm.compute_class`.
   That entry replaces any class the operator's selector names, and every other entry stays.
 
-- The tolerations are a gVisor pod's, the pool's `legion.dev/pool=legion:NoSchedule` and then the operator's, less any operator toleration whose key is `cloud.google.com/compute-class`, which tolerates the class being replaced.
+- The tolerations are a gVisor pod's, the operator's `scheduling.tolerations`, less any whose key is `cloud.google.com/compute-class`, which tolerates the class being replaced.
   One toleration follows them: `cloud.google.com/compute-class=<compute_class>:NoSchedule`, operator `Equal`, the taint GKE puts on the nodes of a custom ComputeClass.
 
 - The priority class is `scheduling.priority_class`, as on every pod.
@@ -4818,7 +5510,7 @@ the guest watch runs whatever that block says, `enabled: false` included, and a 
 
 **In the controller's pod.**
 Where `type` is `microvm`, the controller's launcher runs the guest watch by the rules of this section over the controller pod's classifier (`controllerClassifier`, "What it spares, and what it may end" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
-The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and every direct child of the shim.
+The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and each of the shim's own children, never an orphan the shim adopted.
 Every process of the container is the controller's, so each process the watch names is reported to the controller, and its `ended` line names `role=controller`.
 That pod has no `role-init`: once the shim has exited, the launcher, PID 1, drains the exited generation itself, sending SIGTERM over the container's processes, waiting up to its stop grace for them to go, and sending SIGKILL to each one left (`cleanExitedGeneration`, `packages/daemon/internal/launcher/process.go`).
 That drain's SIGKILL takes the place of `role-init`'s in "The kills" and "What the sign does not show" below, so the watch's `SessionDrain` there is the stop grace and a second more, where an issue pod's is 3 s (`controllerSessionDrain`, `packages/daemon/internal/launcher/memoryguard.go`).
@@ -5179,7 +5871,7 @@ and the five deployment rows are the daemon's to measure, from its own configura
   controller's pod`, so `legion state --json` shows which pods reserve less than they may use.
   Under tmux it is open unless decided: a pane has no requests or limits.
 
-- `pool-capacity`: the Legion pool had room for the image probe pod's own 500m / 1Gi reservation at boot — the probe pod scheduled at its first attempt.
+- `pool-capacity`: the cluster's nodes had room for the image probe pod's own 500m / 1Gi reservation at boot — the probe pod scheduled at its first attempt.
   While it did not (`stuck`, `internal/runtime/sandbox/probe.go`:
   the pod `Pending` with `PodScheduled=False Unschedulable` for longer than `worker_boot_timeout_seconds`), the daemon stays up and retries without exiting ([Issue sizing](#issue-sizing-one-reservation-per-pod), "The bound"), and once the probe passes the row is open, saying how many attempts waited and the scheduler's last reason (`the image
   probe pod was Unschedulable <n> time(s) at boot before it scheduled: <reason>; the pool had no
@@ -5286,12 +5978,23 @@ architect, planner, implementer, tester, reviewer, merger):
    repository cache <url> to be ready: <its answer>`, every 10 s, for at most the cache's own first clone's 2 hours and 10 more, `workspace.CacheWaitTimeout`;
    a pod waiting holds its node reservation, and its launch the issue's lifecycle lane, all the while, both while a first clone runs and when the cache never becomes ready
    — a crash loop, a cache pod that cannot be scheduled or whose volume does not bind, a first clone past its 2 hours
-   — so each such launch spends 130 minutes, not 40, before its fetch fails), unpacks its copy of the repository, checks each pack and its index against the checksums git wrote into them and that every object the refs reach is there, then fetches from GitHub the default branch GitHub names, the issue's recorded default while GitHub has it, and the Legion issue branches:
-   its log's last line is `workspace-init fetch: <n> bytes from the repository cache <url> in <d>, its history
-   verified in <d>; <m> bytes from GitHub for the delta (<k> refs)`.
+   — so each such launch spends 130 minutes, not 40, before its fetch fails), takes its copy of the repository from the cache's bucket, where the cache keeps its packs in one, or else from the cache's `/tar` ("The bucket" in [The repository cache](#the-repository-cache)), checks each pack and its index against the checksums git wrote into them and that every object the refs reach is there, then fetches from GitHub the default branch GitHub names, the issue's recorded default while GitHub has it, and the Legion issue branches.
+   Its log first names where the copy came from, then ends with the bytes and times of each source:
+
+   - From the bucket, `workspace-init fetch: source=bucket`, then one line for each pack and index it downloaded and verified, `workspace-init fetch: bucket object=<name> size=<bytes> sha256=<hex>`
+     — the object's name in the bucket, its exact size, and the SHA-256 the fetch computed of the bytes it wrote, which matched the one the cache sent
+     — and last `workspace-init fetch: <n> bytes from the repository cache <url> (bucket) in <d>, its history
+     verified in <d>; <m> bytes from GitHub for the delta (<k> refs)`.
+
+   - From `/tar`, `workspace-init fetch: source=/tar reason=<why>`, `<why>` being `/packs is not served` for a cache with no bucket or of a release before it, and otherwise the bucket's failure ("The bucket", below), then, as before the bucket, `workspace-init fetch: <n> bytes from the repository cache <url> in <d>, its history
+     verified in <d>; <m> bytes from GitHub for the delta (<k> refs)`.
+     A `/tar` that then fails fails the fetch after the `source=/tar` line, and no last line is written.
+
+   The tester's production check reads these lines: the `source=` line of each new issue pod, and one pod's `bucket object=` lines, each of whose name and size it compares with the bucket's own listing of the repository's prefix.
+   No line names a signed address, its query, a token, or a ref's contents.
    A cache that is never ready, refuses the pod's token, names another repository, or streams history that does not verify fails the fetch, naming why, and nothing is cloned from GitHub instead, so the cache's own first clone is the one full download of the repository ([The repository cache](#the-repository-cache)).
 
-   - A fresh feed is filled beside its final path and renamed into place only once the stream, its verification and the delta have all succeeded, so the disk holds a whole and current feed or none.
+   - A fresh feed is filled beside its final path and renamed into place only once the bucket's downloads or the stream, their verification and the delta have all succeeded, so the disk holds a whole and current feed or none.
      A retry of the fetch in the same pod that does find a feed there fetches the delta into it alone (`the feed holds <owner>/<repo> already: …`), after removing every git lock file a fetch killed mid-update left in the feed and every partial pack (`objects/pack/tmp_*`) a transfer killed mid-pack left there, each logged with its age, and after deleting every branch outside the delta that GitHub no longer lists or has moved, each logged with its reason, as a fresh feed's fetch does too (below, [The repository cache](#the-repository-cache)).
      Such a retry is rare: the kubelet retries a failed init container on the pod it failed in, but the daemon reads that first failure (`failedInit`, `observe.go`) and replaces the pod within seconds, and a pod created anew starts on an empty disk and fills its feed whole.
      On a kept volume each later pod of the issue finds the feed too, and fetches the delta into it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -5310,8 +6013,8 @@ architect, planner, implementer, tester, reviewer, merger):
      default branch of <owner>/<repo> is now <name>, which this fetch did not bring: HEAD stays at
      <ref> until a fetch brings it`).
      Once the fetch may start — at once, or once the cache is ready
-     — the cache's stream and its verification share one 30-minute bound (`workspace.FetchTimeout`), each given what remains of it, and the delta from GitHub has a 30-minute bound of its own, so a slow stream never leaves the delta minutes to run in.
-     The fetch's waits, transfers and checks end within 190 minutes (`workspace.FetchBudget`) however long it waited, and the few local git commands around them take moments;
+     — the bucket attempt has 15 minutes (`workspace.BucketFetchTimeout`), `/tar`'s verification 30 (`workspace.FetchTimeout`), and the delta from GitHub 30 of its own, so neither leaves the delta short.
+     The fetch's waits, transfers and checks end within 205 minutes (`workspace.FetchBudget`) however long it waited, and the few local git commands around them take moments;
      a step with nothing left fails the fetch, naming the bound.
      Each transfer from GitHub is tried again up to four times after a transient failure, within that bound.
      It holds the provisioning token, and no other process of the pod does ([Trust model](#trust-model-the-provisioning-token)).
@@ -5483,6 +6186,14 @@ a link an earlier generation of the role left there (a `~/.cache` linked elsewhe
 a link, which role-init does not follow on the way to a mount point: replaced it with the mount
 point's place`, and anything else in the way that is neither a link nor a directory fails the generation.
 role-init then starts the shim's argv unchanged as its child, cloned into a nested user namespace that maps uid and gid 1000 with no capabilities, and stays the PID namespace's init, so when a generation ends every process it started ends with it and a role's `kill -9 -1` reaches none of its siblings'.
+The shim runs in role-init's own process group, so every orphan the role leaves in the shim's group (a `cmd &` whose shell exits) is reaped by role-init inside that group (`runRoleShim`, `roleinit_linux.go`).
+With the shim in a group of its own, the cluster's gVisor ended roles: it keeps, per process group, a count of the members whose parent is in another group of the session, takes one from it when such a member is reaped, and adds none when a member is reparented (`ancestors` in gVisor's `pkg/sentry/kernel/sessions.go`, and `task_exit.go` beside it).
+Each orphan role-init reaped from outside the shim's group lowered that count, until the group read as orphaned while the shim still ran, and a stopped member then brought SIGHUP and SIGCONT to the whole group, the shim and Oh My Pi among them.
+In role-init's group the one member with a parent outside it is role-init, whose parent is the launcher, so the group never reads as orphaned while the role runs.
+A role process can signal that group itself, and role-init is in it: with `kill 0`, or with the group's number, which is 1 in the role's PID namespace, so `kill -- -<pgid>` there is `kill(-1)` and reaches every process of the role but role-init.
+role-init takes a SIGTERM or a SIGINT to the group as the launcher's stop: SIGTERM to the whole role, and no drain after the shim exits.
+Each other signal the Go runtime ends a process on when it is sent (SIGHUP, SIGQUIT, SIGABRT, SIGILL, SIGTRAP, SIGSYS, SIGSTKFLT, and a sent SIGBUS, SIGFPE or SIGSEGV) role-init catches and drops (`roleInitDropped`), so it ends only the processes that take it, the shim among them, and role-init reports the shim's status and drains the role as for any shim that exits on its own.
+Oh My Pi sends no signal to its own group in its normal run, since its embedded shell refuses `kill 0`.
 The isolation rests on ownership and private mounts, not on a read-only root, which a nested user namespace could undo (`docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-INFRA-208.md`).
 An operator mount (`runtime.kubernetes.pod.volume_mounts`) at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or at or above the image's other spellings of them (`/var/run/lock`, `/run/shm`, `/var/run/shm`), is refused:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> is at or above <dir>, which every role's namespace in an issue pod covers with its own: mount under it instead`.
@@ -5527,7 +6238,7 @@ the `roles` container's own spec carries a single variable, `POD_UID` from the d
 `launchEnvironment` (`manifest.go`) splits the rendered environment in two
 — the kubelet-resolved entries go on the container, and the plain `NAME=value` pairs travel in the daemon's start command for that role to `legion launcher`, which hands them to that role's `legion worker-shim` and so to its agent (`launcherCommand`, `launcher.go`).
 So a `printenv` run by `kubectl exec` into the container finds none of them but `PATH`, which the worker image's own `ENV` sets (`packages/daemon/docker/worker.Dockerfile`) to the value the row below documents, so every process of the container carries it however it was started;
-one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it does not.
+one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it never sets and for `LEGION_PRIVATE_NAME_RULES_FILE` in a deployment that names no private-name rule file.
 They are an issue pod's role's; `<generation>` is the role's own generation counter, which differs between the roles of one pod and rises on each relaunch of that role in it, and every path under `/var/run/legion` is the role's own directory, bound there in its namespaces.
 `ENVOY_TOKEN_FILE` is stated without condition because configuration load refuses a `runtime: kubernetes` daemon that sets no `envoy_token_file` (`packages/daemon/internal/config/kubernetes.go`), and so is `DISPATCH_TOKEN_FILE`, because it refuses one that sets no `dispatch_url` and a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`) unless `dispatch_token_broker` is true.
 Under that setting a role in a pod that carries the exchange identity is told `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE` ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
@@ -5545,11 +6256,12 @@ Under that setting a role in a pod that carries the exchange identity is told `D
 | `LEGION_BOOT_TOKEN_FILE` | `/var/run/legion/private/g<generation>/LEGION_BOOT_TOKEN` | `launcherCommand`, `launcher.go` |
 | `LEGION_TERMINATION_GRACE_SECONDS` | the runtime sets it in no container; the pod's grace reaches the shim as its `--stop-grace` argument | `launcherCommand`, `launcher.go` |
 | `ENVOY_TOKEN_FILE` | `/var/run/legion/private/g<generation>/ENVOY_TOKEN` | `manifest.go` |
+| `LEGION_PRIVATE_NAME_RULES_FILE` | `/var/run/legion/private/g<generation>/LEGION_PRIVATE_NAME_RULES` where the deployment names a private-name rule file, and in no container where it names none ([The deployment's private-name rules](#the-deployments-private-name-rules)) | `manifest.go`, over `launchSecrets`, `internal/daemon/launchsecrets.go` |
 
 `<owner>`, `<repo>`, `<key-lower>` and `<generation>` are the pod's own:
 the owner and repository of the issue's repository, the issue key in lower case, and the role's generation counter.
 The daemon-launched controller's container differs:
-of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the bundle's first directory, sorted, which is usually an owner the review App is installed on whose lease the mint answered for, though a configured rename also puts the pair's `from` owner in the bundle as an alias directory, and such a name can sort first and be taken, and the bundle is one read-only directory per owner that App is installed on, with none for a repository (`appauth.ControllerCredential` and `bundleDefault`, `credential.go`);
+of these twelve names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the bundle's first directory, sorted, which is usually an owner the review App is installed on whose lease the mint answered for, though a configured rename also puts the pair's `from` owner in the bundle as an alias directory, and such a name can sort first and be taken, and the bundle is one read-only directory per owner that App is installed on, with none for a repository (`appauth.ControllerCredential` and `bundleDefault`, `credential.go`);
 [Daemon-launched controller](#daemon-launched-controller) has the rest of it.
 
 The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
@@ -5560,10 +6272,13 @@ Under `dispatch_token_broker: true` this holds only for a launch into a live pod
 Every other launch carries no Dispatch token, and its role trades its pod's exchange identity for a token of its own session ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bytes against them (`MatchesSharedAgentToken`, `packages/envoy/internal/dispatch/auth/agent_token.go`) and reads no person, no service and no project from them.
-Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>` (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
+Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>`, PROJECT being the project of the issue that the write is on (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
 Dispatch takes any other bearer as a service token or a personal token (`optionalActor`, `server.go`), and every role's session then carries that token's service or owner as well.
 `dispatch whoami` in a role tells the two apart:
 for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
+
+Under `dispatch_token_broker: true` the daemon's token proves the session of the daemon's own project, `legion-daemon:<PROJECT>`, and Dispatch refuses a write whose actor names another session (`403 ACTOR_SESSION_MISMATCH`).
+So every write of the daemon's names that session, on an issue of another project too (`daemonDispatchClient`, `packages/daemon/internal/daemon/daemon.go`).
 
 The Kubernetes service-account tokens this runtime projects for a role are the broker's, under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`): `agent-secrets-token` for its `audience`, and `agent-secrets-exchange` for its `exchange_audience` where that key is set (`exchangeTokenProjection`).
 Each reaches the secrets broker and nothing else.
@@ -5767,11 +6482,11 @@ Every pod runs:
 
 - with `runtimeClassName: gvisor`, except an issue pod whose sandbox is a microVM and the project controller's pod where `runtime.kubernetes.sandbox.type` is `microvm`, each of which runs with `runtimeClassName: microvm` ([Pods in microVMs](#pods-in-microvms));
 
-- with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none) and `automountServiceAccountToken: false`;
+- with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none), or for the daemon-launched controller's pod to `pod.controller_service_account` where the operator names one, and `automountServiceAccountToken: false`;
 
 - under Pod Security "restricted": non-root user 1000 on the pod, and on each container no privilege escalation, ALL capabilities dropped and the RuntimeDefault seccomp profile;
 
-- on the Legion pool, with its node selector and toleration (and, for a microVM pod, an issue pod or the controller's, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
+- on the cluster's general nodes, with the operator's `scheduling.node_selector` and `scheduling.tolerations` alone (and, for a microVM pod, an issue pod or the controller's, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
   no affinity (GKE Autopilot adds its own to an annotated pod, below);
 
 - `Guaranteed` at the default reservations:
@@ -5791,6 +6506,10 @@ Every pod runs:
   - a pod carrying it is refused outright under the `cloud.google.com/gke-spot` node selector or toleration (GKE offers no extended duration to a Spot Pod requested any other way, such as the `autopilot-spot` compute class);
     the boot probe (below) carries only Karpenter's, so it does not catch a `gke-spot` scheduling config before every issue and controller launch is refused;
 
+  - a repository cache's pod ([The repository cache](#the-repository-cache)) carries Karpenter's and `cluster-autoscaler.kubernetes.io/safe-to-evict: "true"` in place of `"false"`, with its bucket on or off, so the cluster autoscaler can move it and remove its node:
+    a Sandbox is no controller the cluster autoscaler knows, so without that annotation the autoscaler keeps every node a cache pod runs on (`no.scale.down.node.pod.not.backed.by.controller`);
+    a move makes the pod again on the same volume, in the same zone, and a `/tar` stream the move cuts fails its fetch, and the daemon makes that issue pod again;
+
   - the image probe pod (below) carries only the first:
     a dedicated node per boot would cost more than the eviction window buys a probe that is already short-lived and retried on failure.
 
@@ -5809,11 +6528,15 @@ one Sandbox, `legion-<project>-cache-<owner>-<repo>-<8 hex>` (`CacheSandboxName`
 the hex is of the repository's name, so two repositories whose names slug alike get two caches), labelled `legion.dev/project` and `legion.dev/cache=true` and annotated `legion.dev/cache-repo: <owner>/<repo>`, which is the one place its repository is read from (`kubectl -n legion get sandbox -l legion.dev/cache`).
 It is no issue's and no claim's: no tree's cleanup lists it, and nothing of it registers on the worker stream (`internal/runtime/sandbox/repocache.go`).
 Its pod runs one container, `cache`, the image's `legion workspace-init cache --repo <owner>/<repo> --root /legion/cache --listen :8418 --refresh
-10m0s` (`refresh_minutes`, as a duration), on the Legion pool under gVisor with the operator's ServiceAccount, and nothing of an agent's:
+10m0s` (`refresh_minutes`, as a duration), under gVisor with the operator's ServiceAccount and scheduling, or with the cache's own ServiceAccount while its bucket is on ("The bucket", below), and nothing of an agent's:
 no model route, provider key or Dispatch variable.
 It owns one volume, `cache-<sandbox>`, of `runtime.kubernetes.repository_cache.volume` (20Gi by default), holding a bare clone of the repository at `/legion/cache/<owner>/<repo>.git`, and a headless Service of its own name, whose DNS name resolves to the pod only while it is Ready.
 Its Secret, `<sandbox>-token`, holds the implement App's reading lease on the repository's owner, the same lease an issue pod's `workspace-fetch` clones with ("Trust model: the provisioning token"), read again as every transfer from GitHub starts and brought to the current lease on the gh refresher's minute, and the cache's own bearer token, 32 random bytes made with the Secret and kept while it stands;
 the issue pods of that repository are given the same bearer token in their provisioning Secret, and no other pod has it.
+Its pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "true"` beside `karpenter.sh/do-not-disrupt: "true"`, so the cluster autoscaler can move the pod and remove its node ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
+a Sandbox is no controller the autoscaler knows, so without the annotation the autoscaler keeps every node a cache pod runs on;
+a move makes the pod again on the same volume, in the same zone, and each `/tar` stream the move cuts fails its fetch, whose issue pod the daemon makes again.
+A cache pod of a release before the annotation runs another image, so the daemon replaces it with an annotated one once it serves no stream (below).
 
 The process clones the repository once, through the same one-shot credential as an issue pod's fetch but, the first time, within `workspace.CacheFetchTimeout` (2 hours) rather than an issue pod's 30 minutes
 — its first clone is the repository's one full download, and on 2026-10-26 one deployment's cache with one CPU under gVisor was killed at 30 minutes 289 times running, never ready
@@ -5853,8 +6576,12 @@ It serves, on port 8418:
   on 2026-10-26 one cache sent a 4.0 GB clone (51 packs) at about 400 MB/s in all over 290 streams, about 48 minutes before any reached its last byte, past the fetch's 30-minute `FetchTimeout`, and every fetch failed and started over.
   Bounded, each stream takes its share among 32 and the queue drains at the same total rate.
 
-`/tar` answers only a request whose `Authorization: Bearer` is the cache's own token; any other is 401 and names nothing.
-`/healthz` and `/tar` name their repository in a `Legion-Repository` header on every answer.
+- `GET /packs`: served only where the cache's bucket is on ("The bucket", below): the listed set's refs, each with its file's exact bytes, and each of its packs and indexes with an address signed for it at this answer, good for 15 minutes (`workspace.PackManifest`).
+  It answers 503 while no set is listed, and when an address cannot be signed.
+  A cache with no bucket serves no `/packs`: it answers the mux's plain 404 there, which names no repository.
+
+`/tar` and `/packs` answer only a request whose `Authorization: Bearer` is the cache's own token; any other is 401 and names nothing.
+`/healthz`, `/tar` and `/packs` name their repository in a `Legion-Repository` header on every answer.
 Each fetch also points the clone's `HEAD` at the branch GitHub names as the default now, once the fetch has brought that branch, so a default branch renamed on GitHub is the one the cache publishes and its tar's `HEAD` names from the next tick.
 A fetch that fails is logged and tried at the next tick, and the cache stays ready on what it last fetched;
 a restarted cache whose volume holds its clone fetches into it, and serves it as it is when GitHub cannot be reached;
@@ -5864,11 +6591,11 @@ The cache keeps a fetch's failure in memory alone, since the next fetch reports 
 A first clone that fails is not recorded: that cache never turns Ready, and `legion state` shows it `failing` under `repositories`.
 
 An issue pod's `workspace-fetch` fills a fresh feed from its repository's cache alone ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-It asks the cache's health with no credential, takes nothing from a cache whose answer names another repository, so a cache pod replaced and its address reused by another repository's cache can put nothing into the feed, and presents the cache's token with its request for the tar alone.
+It asks the cache's health with no credential, takes nothing from a cache whose answer names another repository, so a cache pod replaced and its address reused by another repository's cache can put nothing into the feed, and presents the cache's token with its requests for `/packs` and the tar alone.
 It holds every pack and index it received to the checksums git wrote into them
 — each file's own trailing hash over its bytes, and the pack hash the index records, which must be that pack's
 — and checks every object the refs reach is there (`git fsck --connectivity-only`) before the feed is used, and a damaged or incomplete history fails the fetch.
-A pack that arrived without its index is indexed here instead (`git index-pack`).
+A pack the tar streamed without its index is indexed here instead (`git index-pack`); from the bucket each pack comes with its index, and none is indexed in the pod ("The bucket", below).
 Re-indexing every pack the cache wrote is what the feed no longer does: it inflates and rehashes every object, 8 to 12 minutes per issue pod on a 3.2 GB cache.
 The feed takes the index's names on the cache's word instead, which trusts every writer of the cache's indexes:
 `git index-pack`, which named every object by its content when `git fetch` received the pack from GitHub;
@@ -5912,8 +6639,8 @@ each `live[]` repository carries `cache` (`repo`, `sandbox`, `state` — `starti
 — `ready`, `address`, the cache's Service, while Ready behind its own Service, and from the last health read of the pod it runs now `head`, `lastFetchAt` and `bytes`, or `healthError`) once the cache exists, and `caches` lists the caches of repositories no live record names any more, each with `retainedUntil`.
 
 An issue pod's launch makes its repository's cache when there is none yet, and the daemon makes the cache of each repository a live record names at boot and on every orphan sweep after it, once a minute:
-a missing cache is created (its Sandbox `Suspended`, then its Secret owned by that Sandbox, then its pod template and `Running`), and a cache whose pod runs another image than the daemon's, runs as a ServiceAccount other than `runtime.kubernetes.pod.service_account`, has ended, or was left `Suspended`, or whose Sandbox's pod template reserves other than `runtime.kubernetes.repository_cache.resources` now says, gets a new pod while its Sandbox and volume stay, so a new release, a new account or a new reservation costs a pod, not a clone.
-The reservation is read from the Sandbox's pod template, never from the pod, since GKE Autopilot rewrites a pod's requirements at admission; the account is read from the pod, where the API server keeps a named account as written and writes `default` for a pod that names none.
+a missing cache is created (its Sandbox `Suspended`, then its Secret owned by that Sandbox, then its pod template and `Running`), and a cache whose pod runs another image than the daemon's, runs as a ServiceAccount other than the one a cache pod runs as now (`runtime.kubernetes.pod.service_account`, or `runtime.kubernetes.repository_cache.service_account` while the bucket is on), has ended, or was left `Suspended`, or whose Sandbox's pod template reserves other than `runtime.kubernetes.repository_cache.resources` now says, binds another bucket or account than the configuration does ("The bucket", below), or places its pod other than the daemon now would (a RuntimeClass other than `gvisor`, or a node selector or tolerations other than `runtime.kubernetes.scheduling`'s, such as the retired Legion pool's `legion.dev/pool` selector and toleration that a cache an earlier release made carries), gets a new pod while its Sandbox and volume stay, so a new release, a new account, a new reservation, a new bucket or a new placement costs a pod, not a clone.
+The reservation, the placement and the bucket are read from the Sandbox's pod template, never from the pod, since GKE Autopilot rewrites a pod's requirements at admission and RuntimeClass admission adds the class's own node selector and tolerations to the pod, and the template is the pod the controller makes next; the account is read from the template too, and from the pod as well, where the API server keeps a named account as written and writes `default` for a pod that names none.
 A pod still running is replaced only once it serves no stream:
 the daemon asks its `/healthz` first, whose `streams` counts the tars it is sending or holding in its queue, and while that is above 0 it logs `repository cache pod is replaced once it serves no
 stream` and leaves the pod to a later sweep, because the replacement would end every one of those tars, failing each fetch reading one and making its issue pod again.
@@ -5928,6 +6655,95 @@ A cache that a live record names loses the old annotation at that sweep.
 Each cache that loses the old annotation is logged once, at info, with its repository, the old value and what the sweep did.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
+
+**The bucket.**
+`runtime.kubernetes.repository_cache.bucket` and `runtime.kubernetes.repository_cache.service_account` keep each cache's packs in a Cloud Storage bucket, from which an issue pod's `workspace-fetch` downloads them, so a burst of new issue pods reads the bucket rather than the cache pod.
+Both are optional, and they are set together: both absent is off, and the loader refuses one without the other.
+`bucket` names the Cloud Storage bucket, and `service_account` names the Kubernetes ServiceAccount that the cache pods alone run as.
+With both set, every cache pod runs as `service_account`, and its `cache` container alone is told the bucket, as `LEGION_REPOSITORY_CACHE_BUCKET` (`repocache.BucketEnv`).
+Its argv, its Secret and its mounts are what they are without the bucket, and it mounts no ServiceAccount token: on GKE its Google identity is the Google service account that `service_account` is bound to through Workload Identity (below), whose email and tokens the node's metadata server gives the pod.
+No issue pod and no controller pod runs as that account or is told the bucket.
+An issue pod keeps `runtime.kubernetes.pod.service_account`, and the controller's pod keeps `runtime.kubernetes.pod.controller_service_account` where the file names one, else `pod.service_account`.
+The loader refuses a `service_account` that is the account the issue pods run as (`pod.service_account`, or `default` while that is unset), since the bucket's grant to that account would reach every issue pod, and one that is `pod.controller_service_account`, since the grant would reach the controller's pod.
+The cache writes each pack and its index to the bucket as its own identity, and answers an issue pod's `GET /packs`, on the bearer token `/tar` takes, with the refs and a signed address for each pack and each index, good for 15 minutes.
+A reader holds no grant on the bucket at all, so the pods that can read a repository's packs are the pods that hold its cache's token, as for `/tar`.
+`/tar` stays as it is.
+A fetch falls back to it whenever `/packs` is not served, its answer cannot be used, or a download or a check fails, so a bucket that is missing or broken never makes a fetch fail.
+It costs a fetch at most the attempt's 15 minutes (`workspace.BucketFetchTimeout`) more than the fetch took before the bucket:
+a cache with no bucket answers `/packs` 404 at once, a bucket that sends nothing holds the attempt for the 5-minute low-speed bound, and one that sends slowly, or a verification that is slow, holds it for the whole 15 minutes.
+That is why the fetch's budget (`workspace.FetchBudget`) grew by those 15 minutes.
+
+With the bucket on, the cache publishes its packs after each fetch that succeeds, its first clone included, and again after each repack that succeeds; a restarted cache whose first fetch fails publishes the clone it serves as it was.
+Each pack and its index go to `<owner>/<repo>/objects/pack/pack-<id>.pack` and `.idx`, the owner and the repository lower-cased, created only where no object of that name exists: one already there is taken only where its size, CRC32C and SHA-256 are the file's, and never replaced.
+The cache keeps one listed set, the refs and every pack with its index of one snapshot of its clone, which `/packs` answers from, and switches it to the clone's newest snapshot only once every pack and index of that snapshot is in the bucket whole.
+Until then, and when an upload fails, `/packs` answers the set before, whose refs are a refresh or more older; a fetch brings what they lack from GitHub.
+A refresh whose snapshot lists exactly the listed set's refs and objects keeps that set, so an answer being signed from it meanwhile is still served.
+A pack in the clone without its index, or an index without its pack, which a killed git can leave and git reads nothing of, is left out of the set and not uploaded, logged once by the process, while the rest of the snapshot is listed; no object of its name is deleted from the bucket while the clone holds it.
+Each publication is bounded by the shorter of `refresh_minutes` and 30 minutes, and a failure, a bucket the cache cannot open included, is logged as `publish the packs to bucket <bucket> failed; …` and tried again at the next refresh, while `/tar` and `/healthz` answer as they do with no bucket.
+An object of the repository's prefix that neither the clone nor the listed set holds is deleted, matching the generation the cache listed, no sooner than 30 minutes after the switch that first left it out, twice an address's life, so a download already under way keeps its object; a restarted cache counts those 30 minutes from its own first switch, never from an object's creation, and a delete that fails is tried again at the next refresh.
+The cache deletes nothing outside its prefix, nor a name under it that is no pack or index, and a cache the daemon retires deletes nothing in the bucket, whose retention the deployment sets.
+Each publication lists the bucket once, before its uploads, and uploads again each object that the listed set already names, that the set it leaves listed keeps, and that the list does not hold, whether it switches to a new set or keeps the one listed: a lifecycle rule or another writer deleted that object, and the cache logs `bucket <bucket> no longer held <object>, which the listed set names: uploaded it again`.
+A list that fails is logged and tried again at the next refresh; that publication still switches to a new snapshot, but uploads nothing again and retires nothing.
+One bucket serves the caches of one project's daemon alone: an object's name (`workspace.PackPrefix`) has no part for the project, so two daemons that cache one repository in one bucket delete each other's packs, each 30 minutes after it first finds them outside its own clone and set.
+A lifecycle rule of the bucket must not reach an object a set still lists: until a later publication puts the object back (one whose list of the bucket succeeds, or the first of a restarted cache), every fetch of that repository fails its download of it and falls back to `/tar`.
+`/packs` answers 503 until the first set is listed, and when an address cannot be signed; each answer signs a fresh address for every object, through IAM Credentials' `signBlob` as the cache's own account, a V4 `GET` of that object alone good for 15 minutes, and an answer whose set was switched while it signed is 503 too.
+`/packs` counts in no `/healthz` `streams`, and the cache logs no address, token or ref.
+The cache's ServiceAccount must be bound to a Google service account through Workload Identity: the ServiceAccount carries the annotation `iam.gke.io/gcp-service-account: <email>`, the Google service account's email, and that Google service account grants `roles/iam.workloadIdentityUser` to the member `serviceAccount:<project>.svc.id.goog[<namespace>/<service_account>]`, where `<project>` is the cluster's project, `<namespace>` is `runtime.kubernetes.namespace` and `<service_account>` is `service_account`.
+That Google service account needs, on the bucket, `storage.objects.list`, `storage.objects.get`, `storage.objects.create` and `storage.objects.delete`, and, on itself, `iam.serviceAccounts.signBlob` (`roles/iam.serviceAccountTokenCreator` granted to the account on itself).
+A ServiceAccount bound to no Google service account holds only the pool's federated principal, which has no email address, and GKE's metadata server then names the pool itself as the pod's account ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint) records what it answers).
+The cache signs as the account the metadata server names (`openBucketAt`, `repocache/bucket.go`), so IAM Credentials refuses every `signBlob` it asks, even where the bucket's own grants reach that principal: `/packs` answers 503 for good, every fetch fills its feed from `/tar` (`unavailable manifest: …`), and the cache's one sign of it is the failure it logs, the signing's at each answer (`sign the packs' addresses for <address>: …`), or, where the principal holds no grant on the bucket either, the publication's at each refresh (`publish the packs to bucket <bucket> failed; …`).
+
+An issue pod's `workspace-fetch` asks `/packs` once the cache is ready, presenting the cache's token, and reads the answer within one minute.
+It holds the whole answer to check before it asks for any object:
+the bucket is a bucket's name;
+it lists at least one ref and at least one object, as every whole set does, so a fetch never takes an empty answer and then brings the whole history from GitHub as its delta;
+each ref is a file a feed takes from a cache (`HEAD`, `packed-refs`, `refs/…`), outside `objects/pack/`, named once and no other ref's directory;
+each object is a pack or an index of the pod's own repository, `<owner>/<repo>/objects/pack/pack-<id>.pack` or `.idx`, named once, each pack with its index and each index with its pack, with a size and a SHA-256 of 64 lower-case hex digits;
+and each address is a `GET` of that object in that bucket at `https://storage.googleapis.com`, or, only while the cache's own address is a loopback one, as in a test or the burst Job beside a double of Cloud Storage, at a loopback `http://` address.
+It downloads each object from its address with a client of its own, which presents no bearer token and no Google credential, uses no proxy and follows no redirect: four at once, the packs first and the largest first, so a large pack never waits behind small indexes until its address expires.
+It checks each object's size and SHA-256 as the bytes reach the disk, stops a download at its first byte past the size, and ends one that falls below the low-speed bound of the cache's own stream (1 MiB in 5 minutes).
+It then writes each ref's bytes and checks the result as it does a tar that carried every index: each pack and its index against the checksums git wrote into them, and every object the refs reach.
+It indexes no pack: each index comes from the bucket, held to the SHA-256 the cache sent.
+The whole attempt, the ask of `/packs`, the downloads and the checks, has 15 minutes, the addresses' own life (`workspace.BucketFetchTimeout`), a bound of its own within the fetch's budget, so an attempt that fails late leaves `/tar`'s verification and the delta from GitHub their whole bounds.
+A verification that runs out of those minutes falls back to `/tar` like any other failure, with the reason `failed git verification: the bucket attempt's 15m0s bound ran out while checking the history is whole`.
+A repository of a short history verifies in seconds; one of a very long history, such as firefox's, can run past the 15 minutes on a pod short of CPU.
+
+Any failure of the attempt removes everything it wrote, and the fetch fills the feed from `/tar` instead, asked afresh with the cache's token, exactly as without a bucket; its log's `source=/tar reason=` line says why ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
+
+- `/packs is not served`: a 404 naming no repository, from a cache with no bucket or of a release before it.
+
+- `unavailable manifest: …`: `/packs` answered another status, such as 503 while the cache has listed no set or cannot sign, or no answer came.
+
+- `invalid manifest: …`: the answer is no manifest, lists no ref or no object, or a member of it does not hold, named.
+
+- `failed download: …`: an object's download failed, named with what the bucket answered (with Cloud Storage's own code, such as `ExpiredToken` for an address past its life or `SignatureDoesNotMatch`), a connection cut off, a download below the low-speed bound, a redirect, or the attempt's 15 minutes run out.
+
+- `wrong size: …` and `wrong SHA-256: …`: an object's bytes are not the ones the cache listed.
+
+- `failed write: …`: a write of what the bucket gave to the issue's volume failed.
+
+- `failed git verification: …`: a pack or an index whose checksums do not hold, a history the refs reach that is not whole, or a check of that history the attempt's 15 minutes ran out in.
+
+No reason names a signed address, its query, a token, or a ref's contents.
+A `/packs` that refuses the pod's token (401), and an answer that names another repository, fail the fetch as a `/tar` that does so fails it, and nothing falls back.
+A fetch whose own context ends during the attempt ends there, and does not ask `/tar`.
+
+A pod runs as the account it was created with for its whole life, so turning the pair on, turning it off, and a change of `bucket` alone or of `service_account` alone each give every cache one new pod, never a new clone, once its pod serves no stream (above).
+Turn the pair on in this order:
+
+1. Deploy a daemon and a worker image that carry it.
+   An earlier daemon refuses either key as an unknown key, and the cache of an earlier image ignores `LEGION_REPOSITORY_CACHE_BUCKET` and serves `/tar` alone.
+
+2. Create the bucket, the ServiceAccount that `service_account` names in the daemon's namespace, and the Google service account that ServiceAccount is bound to (above): the `iam.gke.io/gcp-service-account` annotation on the ServiceAccount, and `roles/iam.workloadIdentityUser` on the Google service account for the ServiceAccount's member.
+   Give that Google service account the grants above, on the bucket and on signing its own addresses, and grant them to it alone.
+   A ServiceAccount bound to no Google service account lets the cache pods start, but leaves `/packs` answering 503 and every fetch on `/tar` (above).
+   A ServiceAccount that does not exist keeps each replacement cache pod from starting, since the API server refuses a pod that names one: the cache's old pod is already gone, the cache stays `starting` in `legion state`, and every fresh feed of its repository waits on it.
+
+3. Set both keys in `legion.yaml` and restart the daemon.
+
+To turn it off, or before rolling back to a daemon that does not know the two keys, remove both keys and restart the daemon: each cache is given a pod on `runtime.kubernetes.pod.service_account` that is told no bucket, and serves `/tar` alone.
+An earlier daemon refuses a `legion.yaml` that still holds either key.
+The bucket's objects stay where they are, and nothing reads them until the pair is set again.
 
 **Room on the cache's volume.**
 A fetch or a repack fails for lack of space when git's error holds `No space left on device` or `Out of diskspace`, matched case-sensitively.
@@ -5997,7 +6813,7 @@ A role holding any other value is reported `stale_address` rather than `alive` (
 tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371`, `ENVOY_URL https://envoy.internal.example, now
 https://ENVOY.INTERNAL.EXAMPLE`, or `agent-secrets-token audience=agent-secrets expiry=3600s
 path=token, now audience=agent-secrets-next expiry=3600s path=token`).
-The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, adding `xxxxx@` when userinfo is present.
+The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, or, when userinfo is present, its scheme and `[a URL with credentials]`, since a password holding an unencoded `@` leaves its tail after the last `@`, where a host would be.
 Path, query and fragment never appear, which also protects a value an earlier daemon accepted before the current endpoint grammar refused queries and fragments, and a value that yields no scheme and host is named only `xxxxx`.
 `ENVOY_NATS_URL` is named entry by entry from the URLs the loader accepted, never by splitting the joined value, since raw commas are valid in userinfo.
 A role this daemon started always compares equal, so only the roles a daemon under another configuration started are ever reported, from the boot that re-adopts them; nobody runs a command for it.
@@ -6092,8 +6908,6 @@ metadata: { name: legion-tree-shell, namespace: legion }   # no legion.dev/* lab
 spec:
   runtimeClassName: gvisor
   automountServiceAccountToken: false
-  nodeSelector: { legion.dev/pool: legion }
-  tolerations: [{ key: legion.dev/pool, operator: Equal, value: legion, effect: NoSchedule }]
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
@@ -6149,7 +6963,7 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
   `tar` reads no configuration.
 
 So the pod runs only `tar`, and every `git` that touches the pod's bytes runs in a throwaway container on your machine with no network and no credential, inside the container's own filesystem.
-It reads the two archives from your directory and writes only a git bundle back, and fetching a bundle runs nothing.
+It reads the two archives from your directory and writes only a git bundle back, and fetching a bundle runs nothing; step 3 fetches it with git's object check.
 Run the steps from an empty directory, run no git on anything but the bundle outside the container, and delete the directory once the push is done:
 
 ```sh
@@ -6202,7 +7016,7 @@ git bundle create "/w/$K.bundle" "rescue-$K" --not --remotes=origin
 EOF
 # 3. In a clone of your own, fetched from GitHub first: read what the bundle adds, then push it.
 git fetch origin
-git fetch "<dir>/$K.bundle" "rescue-$K:refs/remotes/rescue/$K"
+git -c fetch.fsckObjects=true fetch "<dir>/$K.bundle" "rescue-$K:refs/remotes/rescue/$K"
 git log --stat --oneline "origin/legion/$K..rescue/$K"
 git push origin "refs/remotes/rescue/$K:refs/heads/legion/$K"
 ```
@@ -6219,8 +7033,10 @@ read the log's `--stat` before pushing, and refuse a change under `.github/workf
 The log fails when the issue never pushed `legion/<KEY>`; read `git log --stat --oneline rescue/<KEY>` then, and the push creates the branch.
 `git fetch` refuses the bundle when your clone lacks a commit it builds on, such as one since force-pushed away on GitHub;
 drop `--not --remotes=origin` and run step 2 again.
+`fetch.fsckObjects` has git check each object of the bundle before it stores any, and a malformed object refuses the fetch (`fatal: fsck error in packed object`); keep the pod then.
+Git makes that check of a bundle's objects from 2.46.0 on (`VERIFY_BUNDLE_FSCK`, `bundle.h`), so step 3 needs git 2.46 or later on your machine for it: an earlier git takes the option and fetches the bundle unchecked.
 `git push` refuses anything but a fast-forward of GitHub's branch; when it does, push to a branch of another name and merge from there.
-The pod's agents run while you copy, so finish steps 1 and 2 while it is still there, and repeat step 1 when step 2 refuses an archive;
+The pod's agents run while you copy, so finish steps 1 and 2 while it is still there, and repeat step 1 when step 2 refuses an archive or exits on a git error;
 step 2 starts in a fresh directory of the container each run.
 
 ### Running a workload in the cluster from a role
@@ -6697,7 +7513,7 @@ each answers for a different verb — creating a Sandbox, creating a pod, `exec`
 Two costs are shared and are the reason a role cleans up after itself rather than waiting for a deadline.
 One quota covers that whole namespace and is shared with the team's builds, so a workload left running is charged against both:
 measured on 2026-10-25, the namespace's quota for Jobs counted `requests.cpu` 4 for each of these workloads while it existed, 48 with twelve at once, and was back at 0 once the last of them was deleted.
-And every project's pods run as the account that project's configuration names (`service_account`), so the agents of every project that names the same account hold one identity: a password written into a Job is readable by every other agent of that identity, and any of them may delete any workload there.
+And every project's issue pods run as the account that project's configuration names (`service_account`), and so does its daemon-launched controller's pod unless `controller_service_account` names another, so the agents of every project that names the same account hold one identity: a password written into a Job is readable by every other agent of that identity, and any of them may delete any workload there.
 The other half is reach: the ingress rule admits the namespace Legion's pods run in rather than an identity, naming no pod and no port, so every pod there
 — every project's agents, with a Kubernetes credential or without one
 — reaches a labelled workload at its Service name, and the password in the Job, which every holder of the identity can read, is the only lock on it.
@@ -6708,14 +7524,14 @@ Narrowing the identity to a per-project one is dispatch://INFRA-153's work, not 
 Every container of a Legion pod carries a cpu and memory limit with a request no greater than it (`requirements`, `internal/daemon/kubernetes.go`), and an ephemeral-storage limit over a smaller ephemeral-storage request (the node-disk bound, below):
 an issue pod's `roles` container and both its init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
 — [Configuration](#configuration)), the controller's launcher the controller's (`runtime.kubernetes.resources.controller`), and the image probe's one container the probe's own fixed 500m / 1Gi, request equal to limit (`probeReservation`, [Configuration](#configuration)).
-At the default an issue pod reserves 3 CPU and 19 GiB, the init containers adding nothing:
+At the default an issue pod reserves 2 CPU and 8 GiB, the init containers adding nothing:
 a pod's effective request is the larger of its containers' sum and its largest init container, and they carry the same reservation.
 Every pod reserved is what the `resource-limits` row of [The deployment's capability report](#the-deployments-capability-report) measures, so on a Kubernetes deployment it is `present` with or without a `resources` block;
 its detail names the pods, if any, that are `Burstable`.
 
 One number frees nothing at run time.
 Under gVisor every process of a pod already used whatever the pod had free (below), so the pod's peak must fit its reservation:
-an issue pod on the production cluster, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
+an issue pod on the production cluster that still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran a review (2026-10-21).
 
 **Guaranteed or Burstable.**
 The kubelet's QoS class reads cpu and memory alone (the disk bound's request under its limit changes no pod's class).
@@ -6746,19 +7562,19 @@ with `issue: {memory: 32Gi, memory_request: 8Gi}` the pod requests 8Gi and never
 On a `Performance` node the ceiling is those requests rounded up to a machine type, and a lower request still picks a smaller, cheaper VM.
 To give an issue real headroom on Autopilot, raise its request rather than its limit alone.
 
-The defaults were sized from an issue pod on the production cluster (measured 2026-10-09, under `GOMAXPROCS=3`):
-`go test ./...` of `packages/daemon` peaks at about 1.45 GiB of summed RSS, a cold `go build ./...` at about 0.97 GiB, `bun test` of a plugin package at about 1.2 GiB, Biome and `bun install` at about 0.8 GiB each and `tsc` at about 0.75 GiB;
-a role's Oh My Pi process is about 1 GiB after half an hour of work, and a headless Chromium's largest process about 0.45 GiB.
-A lane-running role's Go test lane, its agent and a browser sum to about 3.9 GiB, at the limit of the 4Gi they were first given, and a `Guaranteed` pod OOM-killed mid-turn stalls its tree;
-so the implementer's and tester's 6Gi held its agent, one lane and a browser with room over that sum, the reviewer's 4Gi its agent, a browser and its review pair, and 1Gi each the architect, planner and merger.
-The `issue` default, 19 GiB, is the sum of those six figures.
+The `issue` default is the size INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with heavy builds and whole test suites run outside the pod ([Configuration](#configuration)).
+An issue pod on the production cluster that still ran its own builds was measured on 2026-10-09, under `GOMAXPROCS=3`:
+`go test ./...` of `packages/daemon` peaked at about 1.45 GiB of summed RSS, a cold `go build ./...` at about 0.97 GiB, `bun test` of a plugin package at about 1.2 GiB, Biome and `bun install` at about 0.8 GiB each and `tsc` at about 0.75 GiB.
+A role's Oh My Pi process was about 1 GiB after half an hour of work, and a headless Chromium's largest process about 0.45 GiB.
+A role's Go test lane, its agent and a browser summed to about 3.9 GiB, and a `Guaranteed` pod OOM-killed mid-turn stalls its tree.
+A deployment whose roles still run heavy builds and whole test suites in the pod sizes `issue` from those readings, not from the default.
 
 Legion sets no affinity itself (GKE Autopilot adds its own to an annotated pod, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
-each pod owns its volume and shares nothing with another pod, so the scheduler bin-packs it wherever the `legion` pool has room for its reservation, and Karpenter adds a node under the pool's limits when none has, of the smallest type the pool's requirements allow.
-In production (read 2026-10-08) those are `instance-cpu Gt 3` and `instance-memory Gt 65535`, so the floor is an 8-vCPU, 64 GiB type whose allocatable is about 7.9 CPU and 60.8 GiB:
-a 3 CPU / 19 GiB issue pod fits, two per node (7.9 / 3 by cpu, where 60.8 / 19 would place three), cpu the binding dimension.
-On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this two-per-node packing.
-The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else the pool has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+each pod owns its volume and shares nothing with another pod, so the scheduler bin-packs it wherever a node of the cluster has room for its reservation, and Karpenter adds a node under its NodePool's limits when none has, of the smallest type that NodePool's requirements allow.
+In production (read 2026-10-08) those were the `legion` NodePool's `instance-cpu Gt 3` and `instance-memory Gt 65535`, so its floor was an 8-vCPU, 64 GiB type whose allocatable is about 7.9 CPU and 60.8 GiB:
+a 2 CPU / 8 GiB issue pod fits, three per node (7.9 / 2 by cpu, where 60.8 / 8 would place seven), cpu the binding dimension.
+On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this three-per-node packing.
+The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else a node has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The **controller's** pod, whose Sandbox owns its claim, and an issue pod with a kept volume are the pods that wait on a volume when they are relaunched onto another node:
 each one's `ReadWriteOnce` volume must detach from the old node first, which shows as transient `FailedAttachVolume` or `Multi-Attach` events until the old pod is gone; then it runs on.
 Every other **issue** pod waits on neither: its disk is the pod's own generic ephemeral volume, so a replacement takes no predecessor's claim and nothing detaches (INFRA-80).
@@ -6776,32 +7592,33 @@ The reservation is the pod's working set, and its request is what the scheduler 
 Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform reached about 1.3 to 1.9 cores whether the pod reserved 2, 2.5 or 3 CPU (1.321, 1.367 and 1.392 cores over 300-second runs on one node, and 1.8227 cores in a running issue pod at a 3-CPU limit), so reserving more cpu there bought that workload little more work ([kubernetes/kubernetes#91665](https://github.com/kubernetes/kubernetes/issues/91665), "Actual CPU capacity is lower than assigned CPU capacity when gVisor sandbox is enabled").
 
 **The bound.**
-Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
-at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
+Concurrently running issue pods are bounded by the nodes the NodePool's `limits.cpu` and `limits.memory` let Karpenter make: Karpenter counts each node's whole capacity against those limits, not the pods' requests, and stops making nodes once a limit is reached ([NodePools](https://karpenter.sh/docs/concepts/nodepools/), `spec.limits`).
+Karpenter checks the limits eventually consistently, because it provisions in parallel, so a rapid scale-out can make nodes past a limit (the same page).
+At the defaults three pods fit a floor node, so `limits.cpu: 256` makes about 32 floor nodes and places about 96 two-CPU pods (less what the nodes' daemonsets hold), and a larger instance type places more, up to the 128 two-CPU pods that 256 CPU holds; `limits.memory` divided by 64 GiB, a floor node's memory, bounds the nodes too when that is the smaller, three pods to each (a `Burstable` issue pod's lower request places more on each node)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
 `admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue in a phase that keeps one (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
 So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing in `accepting`, `retro` or `merging`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk (a [kept volume](#a-kept-volume-on-a-microvm-pod) stays) while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
-A pod the pool cannot place stays `Pending`, unscheduled;
-once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same pool, and the claim fails once its launch failures run out
+A pod for which no node has room and no NodePool may add one stays `Pending`, unscheduled;
+once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same nodes, and the claim fails once its launch failures run out
 — no later than its registration deadline.
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 500m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
+Size the NodePool's limits for the nodes that bound needs, three default issue pods to a floor node, plus room for those two pods, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
 
-A pool with no room for the probe pod itself does not refuse the boot.
+A NodePool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
-once it has been so for longer than `worker_boot_timeout_seconds` — the same bound the liveness rules give an issue pod, long enough for Karpenter to add a node when the pool's limits allow one, so a cold pool scaling up is not read as full
+once it has been so for longer than `worker_boot_timeout_seconds` — the same bound the liveness rules give an issue pod, long enough for Karpenter to add a node when the NodePool's limits allow one, so a NodePool scaling up from cold is not read as full
 — the attempt ends waiting on capacity (`stuck`, `internal/runtime/sandbox/probe.go`).
 That stop can always fire within the attempt:
 the attempt's own budget is derived from `worker_boot_timeout_seconds` whenever `slow_command_timeout_seconds` would otherwise leave it less room (`ProbeBudget`, "Image size and pull time" above), so the attempt outlives the boot timeout by construction.
 Ending the attempt, its Sandbox deleted, the daemon logs `boot probe is waiting on capacity; running it again` with `probe=worker image`, the pod's name and the scheduler's own reason in `detail` (`probe pod
 legion-probe-<project>-<digest12> is Unschedulable: 0/83 nodes are available: 25 Insufficient cpu …`) and `retryIn`, the probe's longest interval, 5 min.
 It then creates the probe Sandbox again, as many times as it takes:
-such a wait is counted against none of the probe's six attempts (`bootprobe.Run`, `Outcome.Waiting`), since a full pool says nothing about the image and a daemon that exited would not make room.
+such a wait is counted against none of the probe's six attempts (`bootprobe.Run`, `Outcome.Waiting`), since nodes with no room say nothing about the image and a daemon that exited would not make room.
 The daemon stays up through it, but serves nothing yet:
 the probe runs before the API is served (`plan.probe` precedes `serve` in `internal/daemon/daemon.go`), so `legion state` answers nothing while the probe waits, and the log is where the wait shows.
 Once a probe pod is placed and passes, the `pool-capacity` row of [The deployment's capability report](#the-deployments-capability-report) records how many attempts waited and the scheduler's last reason, open until `capabilities.decided.pool-capacity` names a reason;
@@ -6819,7 +7636,7 @@ A pod past its limit is evicted — the offending issue's pod alone
 The request is what the scheduler counts against the node's allocatable ephemeral storage;
 at the default 6Gi it binds little, so a node's disk can be oversubscribed by the pods' limits.
 In production (read 2026-10-09) the Legion node class carries one 700Gi gp3 root device, and a node's allocatable ephemeral storage is about 629 GiB of it;
-with CPU and memory placing about two issue pods per node, their limits sum to about 160Gi of those 629 GiB, so the bound has room before any request is raised.
+with CPU and memory placing about three issue pods per node at the defaults, their limits sum to about 240Gi of those 629 GiB, so the bound has room before any request is raised.
 An operator with a known root volume raises `ephemeral_storage_request` toward the issue's expected use so the scheduler reserves disk and places no pod a full node could not hold.
 
 **GKE Autopilot's bound is per pod, not per node.**
@@ -7332,12 +8149,16 @@ The guard spares:
 - the shim, the generation the launcher started, while that process is the launcher's own executable run as `worker-shim`:
   once the launcher has reaped the shim, the kernel may give its pid to another process;
 
-- every direct child of the shim: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen;
+- the shim's own children: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen.
+  The shim reaps the orphans its tree leaves (`--reap-orphans`, [Daemon-launched controller](#daemon-launched-controller)), so an orphan of a command Oh My Pi ran becomes a direct child of the shim as well.
+  The launcher tells the shim's own children apart (`shimOwnChildren`): Oh My Pi is the oldest direct child that does not run the shim's `--agent-secrets-bin`, since every orphan descends from Oh My Pi's commands and is younger than it, and the renewer and keygen run that executable as `renew` and `keygen`.
+  Any other direct child of the shim is an adopted orphan, which the guard may end as it may end one that PID 1 adopted.
+  An orphan that runs that executable as `renew` or `keygen` is spared: that is the rule's cost;
 
 - Oh My Pi's helpers, each reached from Oh My Pi through a chain of helpers, by the rule of an issue pod:
   a process that runs Oh My Pi's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of the JavaScript eval tool.
 
-Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 adopted, and a shell that `kubectl exec` started with what it runs.
+Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 or the shim adopted, and a shell that `kubectl exec` started with what it runs.
 
 **Whom it tells.**
 Every process of the container is the controller's, spared or not.
@@ -7427,7 +8248,7 @@ A suspend and resume of the controller's claim (`legion claims suspend`, then `l
 - It does not lift any limit of the issue pod's guard ("What it does not do" above).
   Among them, it never ends memory that Oh My Pi holds in its own process, it never ends a process it cannot read, and it does not stop a fill faster than its margin.
   The controller's pod has no role namespaces, so a process that is not dumpable reads as the second kind of "It does not end a process it cannot read" above wherever it runs in that pod.
-  When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
+  When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session, unless the session has finished a turn and that death is its second end in a row before another finished turn, or the session is older than `controller_session_max_age_hours`, when the relaunch starts a fresh session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
 
 ### One session load at a time in an issue pod
 
@@ -7540,7 +8361,7 @@ it names the drift, the round's own id and the moment the round ends, it says th
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
 Each role the round asks that has not answered is asked once per round by an ask that reaches its session: the daemon marks the claim asked (the `update_tasked_at` column) when the publish reached a session, an ask that finds no live session on the role's topic marks nothing, the next sweep that finds the role ready asks it again, and no sweep asks a role while an ask of the round still waits for it in the outbox.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
-A claim that is queued, launching, registered but not ready, or suspended by an operator has no live session on its role's topic, so the sweep asks it nothing yet and writes no mark on it, and the round waits for it all the same.
+A claim that is queued, launching, registered but not ready, or under a suspension that holds (the operator's or the controller's) has no live session on its role's topic, so the sweep asks it nothing yet and writes no mark on it, and the round waits for it all the same.
 The first sweep after its agent is ready asks it.
 A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
@@ -7553,7 +8374,7 @@ That check comes first, so a role that answered and was then suspended ends ther
 A `failed` claim is left out the same way: it runs no turn on the pod, so the round neither asks it nor waits for it, and a retry brings it back into the round as any other claim.
 A claim whose launch waits on the round's pod is left out of the wait too: it runs no process there, so the round waits on no answer of it and never asks it ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker), under the transition file).
 A role that a project's pause stopped is suspended `released` too, but while the pause still owes that role a launch the role is the pause's and not this rule's: the round waits for it and asks it once its agent is ready (`roundClock.passesOver`, `podHolds.owes`, [Pausing a project](#pausing-a-project)).
-An operator's suspension is never passed over: the round waits for the operator whatever its bound (below).
+A suspension that holds — the operator's or the controller's — is never passed over: the round waits for a resume that lifts it whatever its bound (below).
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to do the first three steps and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
@@ -7576,12 +8397,12 @@ A Claude Code role has no report before its first `Stop`, so it holds the early 
 While the round waits, each role that has answered gets no next task (`answeredOpenRound`), and the round keeps its slot under `pod_update_max_open_rounds`.
 A service that a role started with a name is in no report: it holds nothing, and it goes with the pod.
 Each sweep that finds the round held this way logs `supervise: every worker of this update round has answered and no turn runs; the replacement waits for the background work its roles report, or for the round's bound`, with `background`, each role whose report names work that runs and the kinds it names, and `unreported`, each role with no report since its last turn.
-An operator's own suspension of a claim the round asks is the one wait that outlasts the bound: the daemon does not replace the pod until the operator resumes that claim (`heldByOperator`).
+A suspension that holds over an agent the round asks — the operator's or the controller's — is the one wait that outlasts the bound: the daemon does not replace the pod until a resume lifts that suspension (`heldClaims`).
 When the round ends, the daemon ends the pod (`ReplacePod`), each role in it is reported displaced and resumed uncharged on its own session, and the first of those resumes provisions a fresh pod from the current configuration.
 A replacement the bound made, with a claim unanswered, a turn running or a claim's report holding the round, is logged on a line of its own, `supervise pod update replaced at the bound`, which names the claims that answered and those that did not, and apart from them the roles whose reports held the round (`background`, `unreported`).
 The replacement asks once more, under the pod's own lock and immediately before it suspends anything, whether it is still due:
 the daemon reads the issue's claims from the store again — which is how a claim created since the sweep read its list, such as the next phase's role launched into the kept pod, is counted — and the holds of a project's pause on the pod, since a wake taken under the pause after the sweep's read can make the pause owe a role a launch, and it takes the same readings at the clock as it stands then.
-An operator's suspension aborts it at any moment, and before the bound so does a claim that has not answered, a turn that started, or a claim whose report holds the round, as the store reads them after the replacement waited for the pod's launch turn:
+A suspension that holds, the operator's or the controller's, aborts it at any moment, and before the bound so does a claim that has not answered, a turn that started, or a claim whose report holds the round, as the store reads them after the replacement waited for the pod's launch turn:
 nothing is suspended, the round stays open, and the next sweep decides again.
 A claim that has not answered is a claim the round asks that has not answered it, or a claim of the issue whose role a project's pause still owes a launch (`podHolds.owes`, below), whether or not that claim records a session (`unansweredClaims`): a launch that forgot the role's lost session records none until its new agent registers, and the pause kept the pod for that role's work.
 
@@ -7592,40 +8413,69 @@ A daemon of an earlier release that sends that frame still sends it to a shim of
 A `legion-v20.14.0` daemon then replaces the pod once every role it asked has answered and no turn runs, or at the round's bound, and it asks no role a second time: it reads no activity report.
 A daemon before `legion-v20.14.0` replaces the pod on its workers' answers, asking once more a worker whose standing answer was a turn's end.
 
-No role was asked to push what a claim the round passed over left on the disk.
-So where the round passed over a claim with a session that had not answered and whose work may be on the pod's disk (below), the replacement first reads the issue's workspace, once per round, through the role whose process the pod is replaced through (`readRoundWorkspace`, `runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame).
-This replacement reads only the claims with a session for what the round passed over: a claim the round passed over with no session, as one whose session was forgotten after an idle release suspended it, makes no read, and this replacement names it on neither its line nor the issue, though the other ends name it (below).
-For a claim whose launch waits on the round's pod, [The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker) says when the replacement reads the workspace and what the message on the issue names.
-The replacement reads the workspace only where every claim the round asks has answered and no turn runs, so a replacement that the bound lets through over a claim the round asks that has not answered, or over a running turn, makes no read; background work a role reports holds the replacement until the bound and does not stop the read.
-A claim that a project's pause still keeps and that the round does not ask, a launch that forgot the role's lost session, holds the replacement until the bound (above) and does not stop the read either: it runs no process in the pod, and the claim the round passed over still left its work there.
+Before every replacement a round makes, the daemon reads the issue's workspace (R7 of #5285, `readPodWorkspace`): through the role whose process the pod is replaced through (`runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame), and, where no role process runs in the pod (a replacement by issue, one a launch makes as the round's own, or one through a claim whose launch waits on the round's pod), through the pod's launcher (`runtime.PodWorkspaceReader`).
+No read goes through a claim whose launch waits on the round's pod, since that claim runs no process there ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
+The read's moment is taken before the claims the replacement rests on are read, and the replacement's last word under the pod's launch turn refuses it where a role of the issue started a turn after that moment.
 The read counts as work a commit under a workspace's working copy or under a local bookmark that no branch or tag on `origin` holds, and a change in the working copy (`workspaceWorkRevset`, `internal/shim/workspace_work.go`).
 An empty commit with no description is no work, so the empty working copies that every issue pod's clone keeps count for nothing.
 A commit that a fetch left visible is no work either: the clone keeps unreachable commits (`git.abandon-unreachable-commits = false`), so after any role's `jj git fetch` hundreds of other issues' commits are visible with no bookmark.
 Nor is a side head that no working copy and no bookmark reaches, although such a head can hold this issue's own unpushed work: that loss goes unnamed, and it is the cost of a read that names no other issue's commits.
-The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for, that had not answered and whose work may be on the pod's disk (below), a failed claim or a claim the round passed over (`notWaitedFor`), under `waitingOnThePodNotWaitedFor` each claim whose launch waits on the round's pod, that had not answered and whose work may be on the pod's disk, whether or not it records the round (`unwaitedOnThePod`, [The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), and what the read found, or why it made no read.
-Where the read found work or failed, the daemon writes one message on the issue that names each claim the round did not wait for and each claim whose launch waits on the round's pod that the read was made for ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), each with its state, and the commits, the change in the working copy or the read's error (`notAskedToPush`, `workspaceLostMessage`).
+The read is bounded by one sweep interval, and a read that runs out of it has failed; a shim or a launcher built before the read refuses the frame, and the daemon reads that as a read that failed.
+The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for, that had not answered and whose work may be on the pod's disk (below), a failed claim or a claim the round passed over (`notWaitedFor`), under `waitingOnThePodNotWaitedFor` each claim whose launch waits on the round's pod, that had not answered and whose work may be on the pod's disk, whether or not it records the round (`unwaitedOnThePod`, [The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), and what the read found.
+A replacement through a process names only the claims with a session for what the round passed over: a claim the round passed over with no session, as one whose session was forgotten after an idle release suspended it, is named on neither its line nor its notice, though the other ends name it (below).
 The decision to replace the pod reads a claim whose machine is deciding at that read as one that has not answered, because the decision can delete the pod's disk (`masked`).
-The read's gate, the replacement's line and the message read each claim with the answer it holds (`noticeGroup`): the read stops nothing in the pod, and the line and the message report what each claim answered.
-So a claim that answered while its machine was deciding gives no reason to read the workspace, and the line and the message do not name it.
-Where no claim needs a read, the line says that no read was made, and where no claim is left to name, the daemon writes nothing on the issue.
-A read that finds no work writes nothing on the issue either.
-Where the pod's disk is a kept volume that the issue's next pod mounts (`roundKeptVolume`), that message says the work is still on that volume rather than lost, as the message of a pod that went before its round does ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-The read pushes nothing and keeps nothing of the disk, so it holds to the decision above, and it changes no decision of the round: the replacement is made at the same sweep whatever the read found.
-The read is bounded by one sweep interval, and a read that runs out of it has failed.
-A shim built before the read passes the frame to its agent, which refuses it, and the daemon reads that refusal as a read that failed.
+The keep of the pod, the replacement's line and the architect's notice read each claim with the answer it holds (`noticeGroup`): the read stops nothing in the pod, and the line and the notice report what each claim answered.
+So a claim that answered while its machine was deciding is named on neither the line nor the notice.
 
-Everything a round decides comes from its claim columns, so a daemon restart resumes a round where it stood, and each claim shows it as `updateRound` and `updateHead` on every claim view, except to a caller in a pod whose claims record a plugin contract below 46, whose strict reader knows neither field: `GET /legion/v1/state` serves that caller, known by the pod that holds its address, the claim views without them.
-The sweep keeps four records of its own in memory and none in the store, and a restart costs each of them one thing (`reconcilePodUpdates`):
+A read that finds nothing lets the replacement go on.
+A read that finds work, or that fails, keeps the pod where the round is over a drift its roles can keep working under (`roundKeeps`): the round ends with no replacement, each claim that answered gets the task the round held, and the pod and its roles keep working on the old image and settings.
+The keep is recorded as an idle release's decline (`idle_release_declines`: the pod, the work, the moment), the open phase's worker, where it runs in the pod and the read could be made, or else the issue's architect (`workspace-kept`) is told once, and the sweep opens no new round over that pod while the record stands.
+The controller's `replace_pod` still opens one (`requestPodUpdate`), and that round's own read before its replacement keeps the pod again where it still finds work or fails.
+After each turn or start of a role of the issue, once that turn has ended, and an hour after a read that failed, the sweep reads the workspace again, without a round and as a step after its walk over the issues (`readKeptPod`); a read that finds nothing ends the record, and the next sweep may open a round.
+The sweep makes no such read while a claim of the issue records an open round, since that round reads the workspace itself before its replacement: a controller's request can open one between the walk and the read.
+A round is over a drift that breaks the pod where its recorded reasons open on `[breaks the pod] ` (`runtime.Breaks`): the runtime puts that mark on the reason of such a drift where it decides it, today a drift of the Kubernetes service account the pod runs as, or a drift of the pod's exchange identity where a launch into the pod is refused until its round replaces it, and a round records its marked reasons first.
+A launch into a pod that lacks the exchange identity waits for that pod's round where `dispatch_token_broker` is set and no transition file is named ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)), so a keep of such a pod could leave an issue whose only claim waits on it with nothing that runs.
+Any other drift of the exchange identity is one the pod's roles can keep working under: a token of another lifetime still trades, and where the identity is missing and no launch is refused, a role keeps the credential it had or carries the transition token.
+The refusal and the mark read one condition (`awaitsPodRound`, `packages/daemon/internal/runtime/sandbox/relaunch.go`); the mark reads it of the live pod that the drift read holds.
+A round over a drift that breaks the pod replaces the pod whatever the read finds, and a keep of the pod holds no such round back; a pod whose disk is a kept volume that the issue's next pod mounts is kept as any other pod is, since a replacement stops the turn that runs at the bound and its subagents although the volume keeps the files.
+Where such a replacement's read found work or failed, the issue's architect is told once what it took (`workspace-taken`): each commit and the working-copy change by name, or that no read could be made, and whether the work is gone or on a kept volume.
+A round over a drift the roles can keep working under replaces the pod only over its own clean read, so it tells the architect only where its finish takes another act's record of the same pod whose read found work or failed, a launch's own replacement that did not finish among them (`tellingRecord`); its notice then says that the round's own read found nothing and that the read it tells of was made for another act on the same pod.
+A round keeps the reasons it recorded at its open: a drift that breaks the pod and comes while a round is open is the next round's, which opens once the open round has ended.
+
+The daemon records each replacement that may take a disk before the runtime acts (`pod_replacements`): a round's replacement before its call to the runtime, so the last word under the pod's launch turn is the last decision before the suspension, a launch's replacement as the round's own, and a launch's own replacement where the read before it found work or could not be made (`TakenPod.Tells`); a launch's own replacement over a read that found nothing owes nobody a notice and is not recorded.
+Each record has an identity of its own (`operation`), never the pod's: two acts on one pod are two records, and no record is written over another.
+The one write over a standing record is a yield's (below), which moves the read of the record that yields onto the record it yields to and changes nothing of that record but its read.
+Each record names what its act takes and the uid of its target (`takes`, `target_uid`): a round's replacement, and a launch's replacement that keeps the issue's Sandbox, take the pod, which a Suspended Sandbox shows taken; a launch that deletes the issue's Sandbox with the kept volume it owns takes the volume, which only the absence of the Sandbox of that uid shows deleted, since the delete is foreground.
+A launch that deletes the issue's Sandbox and its kept volume over a live pod of that Sandbox records that it takes that pod too (`with_pod`, `WithPod`), so its record names two targets, the volume and the pod, and that one rule (`PodReplacement.Targets`) says which records each finish takes and which targets the sweep has decided.
+The architect is told that a disk is gone only once its target's end is confirmed: the launch tells the daemon what it took once the pod is gone and, for the volume, once the Sandbox is gone.
+The record holds the read made before the act, and it is deleted in the transaction that queues the architect's notice, so the notice is queued once whatever fails between.
+A target is taken once, so that delete takes every record that names a target the act took (`FinishPodReplacement`, which first locks every record of the issue in one statement, oldest first, so two finishes of one issue at once take the rows in one order and neither is aborted as a deadlock): two acts on one target, such as a replacement by issue and the launch that replaced the round's pod while it waited, or a launch that stopped before its delete and the next launch, tell the architect once.
+A launch's delete over a live pod takes the records of that pod's acts, a round's act on the pod takes the launch's record of that delete, and the next delete of the same Sandbox takes both.
+A round's act on the pod can take a launch's record of a delete that has not come yet, from a launch that suspended the Sandbox over the pod and stopped before its delete; the next launch's delete is then told from its own record's read, without that earlier launch's.
+A round's call (through a process or by issue) that found the pod already replaced by a launch as the round's own replacement forgets its own record, and the round ends as the launch's.
+A round's call that found the pod already taken by a launch's delete of its Sandbox, whose record stands, yields to that record: the round ends with no notice of its own, and in the same transaction the round's read moves onto the launch's record where it is the read that tells of the two, by the rule of every notice below, and the round's record goes, so one record stands for the one act.
+Of those two records, the launch's finish tells the same read whichever commits first, the yield or that finish; where a third record of the same act stands, the yield weighs two and the finish every record it takes, so a tie between reads of one weight can name another of the tied reads, never one that weighs less.
+The launch's finish then tells the architect once the Sandbox is gone, from the read that tells most of the records it takes, and where the Sandbox runs a pod on its volume again, the launch's record is forgotten and nobody is told, since nothing took the disk.
+A record a failed call, a stopped daemon or a refused notice leaves is finished at the start of a later sweep (`finishReplacements`), which has the runtime read the act under the pod's launch turn, from the API server and never from a store that may be stale (`runtime.ActReader`); a turn that a launch or a replacement holds leaves the record for a later sweep.
+The sweep reads the standing records newest first, but a launch's record of a delete over a live pod before every other record, whatever their ages, and finishes each target once, so the round ends once.
+Every finish, a call's, a launch's or the sweep's, tells the architect once, from the read of the records it takes that tells most: a read that found work over one that failed, a read that failed over one that found nothing, and of reads of one kind, the read of the newest record.
+The newest record is not always the last read before the take: a replacement by issue reads outside the pod's launch turn and records before it waits for that turn, so its record, over a read that failed, can be newer than a launch's whose read named commits; and of two reads that both found work, the newer record's can name fewer commits.
+A launch's own finish that takes a round's record ends that round as the launch's act, with no notice of its own, as the sweep does: a round's call that ran out of time on the pod's launch turn, which the launch held, leaves its record standing, and the launch's replacement of the pod takes it, so no later walk writes on the issue that the pod went before the round was over.
+Each of these ends, a yield's included, holds within one daemon run: the end is posted to the members' machines and kept in the daemon's memory, so a daemon that stops after the finish commits and before every member's machine has taken the end boots with the round restored from the claims and no record holding the issue, and its walk can end the round again as a pod that went, as after every round's own replacement.
+That end reads the issue's claims as their machines hold them, never from the store, so a store that cannot read the claims leaves no such round open.
+A record of a target the sweep has decided goes where the deciding finish took it, and where it is the record of a round whose record a launch's finish took, that round ends with no notice of its own; it stands where the deciding record stands, and it is the walk's where the walk ends the round as a launch's replacement.
+Where the act was made (for the pod: its Sandbox gone, Suspended, or running another pod; for the volume: the Sandbox of that uid gone), the round ends as that replacement from the read made before it, or the launch's notice goes out, and the pod is never read again nor kept; where the pod still runs, or the Sandbox of that uid runs a pod on its volume again, the record is forgotten under that turn, and the round decides afresh; a Suspended Sandbox of that uid leaves a volume's record standing.
+
+Everything a round decides comes from durable records, its claim columns, the decline row of an earlier keep and the unfinished `pod_replacements` row of its replacement, so a daemon restart resumes a round where it stood, and each claim shows it as `updateRound` and `updateHead` on every claim view, except to a caller in a pod whose claims record a plugin contract below 46, whose strict reader knows neither field: `GET /legion/v1/state` serves that caller, known by the pod that holds its address, the claim views without them.
+The sweep keeps three records of its own in memory and none in the store, and a restart costs each of them one thing (`reconcilePodUpdates`):
 
 - the pace of its openings (`podUpdateOpenings`): a daemon that has just booted opens its first round at its first sweep;
 
-- the read of the workspace that a round made before its replacement (`podUpdateWorkspace`), so a replacement that was refused or failed reads nothing again at a later sweep: a daemon that has just booted reads the workspace again before that replacement;
-
 - the rounds it has ended whose end a member's machine has not taken yet (`podUpdateEnded`): a daemon that has just booted makes such an end once more (below);
 
-- what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted reads a pod that a launch replaced as a pod gone, whose message names the same members (below).
+- what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted finishes a pod that a launch replaced as the round's own from that replacement's record in the store (above).
 
-A round, once opened, ends only by replacing its pod, or because that pod is gone.
+A round, once opened, ends by replacing its pod, by a keep over a read that found work or failed, or because that pod is gone.
 The drift returning to nothing — an operator rolled the release back — ends no round:
 the round has already told each role it asks to push its work, let its subagents and background jobs finish or stop them, push what they made and start no new work, so the pod is replaced all the same, and the round's message and its notice keep naming the reasons the round was opened for, which the round records (`roundReasons`).
 A role that has answered waits for that replacement.
@@ -7636,7 +8486,7 @@ A round open when the release that brought the bound is deployed starts its boun
 That release's migration `20261113110610_drop_claim_update_answer_marks` sets the opening of every claim in a pod round to the moment of the migration, and clears the claim's ask mark (`update_tasked_at`) and its notice mark (`update_told_at`).
 The earlier release wrote the ask mark when it queued its task, and this release reads it as the mark of its own Envoy message, so without the reset a tasked role would never get the message.
 A round open longer than `pod_update_grace_minutes` would also be past its bound at the first sweep, which would replace the pod before any role was asked.
-So each role of such a round that has not answered is asked once by this release, at the first sweep that finds it ready, and the round ends `pod_update_grace_minutes` after the deploy at the latest, an operator's suspension excepted.
+So each role of such a round that has not answered is asked by this release at the first sweep that finds it ready, and again at a later sweep while no ask has reached its session, and the round ends `pod_update_grace_minutes` after the deploy at the latest, unless a suspension that holds, the operator's or the controller's, is over one of its claims.
 The reset keeps each answer (`update_signalled_at`), the answers that the earlier release took from the end of a turn included, and this release asks no role whose claim holds an answer (`unaskedClaims`).
 The notice mark goes too, because the earlier release set it for another notice under the old clock.
 If the mark stayed, it would stop the one `update-stalled` notice that this release gives past the new bound.
@@ -7648,7 +8498,7 @@ Only a `ready_for_update` call answers the round.
 The migration drops two columns that every release from `legion-v19.16.0` on reads and writes, and it resets the open pod rounds of every project in the database, so deploy this release to every daemon that shares the database in the same change ([Rolling back the release whose update round ends at its bound](#rolling-back-the-release-whose-update-round-ends-at-its-bound)).
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
-`pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
+`pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`); the controller's `replace_pod` is held to both limits and to that gap as a sweep's opening is (`requestPodUpdate`).
 An issue holds one of those slots while a claim of it holds the round over the pod its claims record, or while its claims record two pods with a round open, which is a replacement in flight (`holdsOpenRound`).
 A round over a pod the claims no longer record holds none, since that pod is gone and the same sweep ends the round, and neither does a round whose claims record no pod at all.
 A round this daemon opened at an earlier sweep that no claim of the issue records yet holds a slot too, since it is an opening all the same: the post that carries a round to a machine is asynchronous, and a machine in a relaunch can take minutes to take it (`podUpdateOpenings`).
@@ -7664,14 +8514,15 @@ The sweep opens every round of its tick before it makes any pod replacement, and
 a replacement waits its pod out and a sweep interval at worst, so one made where it is decided would hold every issue behind it in the walk for those minutes, and the limit a minute would open one round per slow sweep rather than the rounds a minute the project asks for.
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
 
-A round that outlives its bound is told to the project's controller once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
-an operator's suspension of a claim the round asks, a pod replacement the cluster refuses (`ReplacePod`, or `ReplaceIssuePod` below), a pod the runtime cannot read (`tellUnreadPod`), no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
+A round that outlives its bound is told to the project's controller once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`, `tellUpdateStalled`).
+What holds it is a suspension that holds over an agent the round asks — the operator's or the controller's, each named with its holder and with who can resume it (`holdSentences`) — a pod replacement the cluster refuses (`ReplacePod`, or `ReplaceIssuePod` below), a pod the runtime cannot read (`tellUnreadPod`), no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim of the issue with a session that has not failed, a claim the round passed over included, with that claim's state and whether it answered (`noticeClaims`, `skill://legion-controller/references/escalation.md`).
-No process in the round's pod holds a round past its bound only where an operator's suspension holds a claim of the round, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement by issue below is refused or not offered.
-A pod the runtime cannot read decides nothing, so the round waits for a read that succeeds, and where an operator's suspension holds a claim of the same round, the notice names that suspension in place of the unread pod, since only that operator can end it.
+No process in the round's pod holds a round past its bound only where a suspension that holds is over an agent of the round, where the runtime cannot say which pod the issue's Sandbox holds, or where the replacement by issue below is refused or not offered.
+A pod the runtime cannot read decides nothing, so the round waits for a read that succeeds, and where a suspension that holds is over an agent of the same round, the notice names that suspension and its holder in place of the unread pod, since only a resume can end it.
 One round is told once, however many sweeps find it open.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
-An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
+A suspension that holds is the one hold the bound never steps over: the daemon replaces the pod only after a resume lifts each such suspension.
+Only the operator's needs the operator, who alone resumes it; the controller resumes its own.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.
 Where that disk is a kept volume that is still there, the message says that this work is still on the volume, and the issue's next pod mounts it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 Three readings say the pod went:
@@ -7730,7 +8581,7 @@ A pod with no role process in it has no process to replace it through, and a rol
 So the daemon replaces such a pod before any launch goes into it, wherever nothing holds the pod (`roundPodEnds`).
 Four things hold it:
 
-- an operator's suspension of a claim the round asks, at any time;
+- a suspension that holds over an agent the round asks — the operator's or the controller's — at any time;
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
@@ -7741,7 +8592,8 @@ Four things hold it:
 Any other claim that the ask never reached holds nothing, and neither does a claim the round passes over, even one the daemon suspended after its ask reached it.
 The sweep makes that replacement after its walk, through the runtime's `ReplaceIssuePod` (`replaceIssuePodForRound`), which ends the round's own pod of the issue's Sandbox as `ReplacePod` ends a pod, and replaces nothing where the issue has no Sandbox, where the Sandbox is suspended, or where it holds another pod.
 It reads the claims again before the pod's launch turn and under it, and gives the replacement up for that sweep while a claim's machine is in a decision, which can be a launch into the pod that has not recorded its process yet, while a claim records a process in the pod, or while something above holds the pod.
-No process can read the workspace first, so the replacement's line, and one message on the issue, name each member of the round that had not answered and whose work may be on the pod's disk (above), with a session now or with none, and say that nobody read the workspace; a round with no such member writes nothing on the issue (`lostClaims`).
+The pod's launcher reads the workspace first (`readPodWorkspace`), and that read decides the replacement as it decides one through a process (`roundKeeps`, above).
+The replacement's line names each member of the round that had not answered and whose work may be on the pod's disk (above), with a session now or with none (`lostClaims`), and where the replacement is made over a read that found work or failed, the issue's architect's `workspace-taken` notice names the same members.
 A member with no session now is named where an agent of it registered in the pod and it forgot that session since, as a launch that forgets the role's lost session does: that worker's unpushed work was on the disk.
 A member whose work cannot be on the pod's disk is left out, whatever it records by then, as a role that never ran an agent and is refused for the pod with no session is ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 A replacement by issue that the cluster refuses is retried at the next sweep, and past the bound it is told as a refused `ReplacePod` is.
@@ -7753,9 +8605,9 @@ Before the bound, the launch also keeps the pod where the launching claim itself
 Before the bound, the launch keeps the pod as well while the third thing above holds it (`podHolds.owes`).
 The launching claim is one such claim where the pause owes its own role the launch: it runs no process yet, with a session or with none.
 The pause kept the pod for that role's work, so neither the role's own launch, when the wake pacing lets it out, nor the launch of another role of the pod replaces it.
-The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line and the message of a replacement by issue (`endRoundALaunchReplaced`).
+The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line, and where the launcher's read found work or failed the notice, of a replacement by issue (`endRoundALaunchReplaced`).
 In every other case the launch goes into the kept pod: a launching claim that holds the ask is not asked again, any other launching claim is asked once its agent is ready, and before its bound the round waits for their answers and their turns, as for any claim.
-Once the round replaces that pod, each role launched into it is launched a second time, through the wake pacing: that is what keeping the pod for an unanswered ask, an operator's hold or a pause's hold costs.
+Once the round replaces that pod, each role launched into it is launched a second time, through the wake pacing: that is what keeping the pod for an unanswered ask, a suspension that holds or a pause's hold costs.
 A member that got a fresh session never saw its ask and does not answer it, so the round then keeps the pod until its bound.
 
 What a pod's disk carries is therefore the issue's work in progress and nothing more:
@@ -8007,20 +8859,28 @@ A project's pause holds a pod too, under `paused` or `pause_held` ([Pausing a pr
 
 The daemon releases a pod for a second reason: no claim of the issue is live at all, which leaves a pod no claim owns.
 A claim is live while it is not `failed`, not `retired` and not `suspended`, so an issue whose claims have all stopped holds a pod in which no role can take a turn
-— a root whose architect failed after three launch failures, for example, which holds its 3 CPU and 19 GiB until the issue closes.
+— a root whose architect failed after three launch failures, for example, which holds its 2 CPU and 8 GiB at the defaults until the issue closes.
 The daemon releases that issue's Sandbox once the issue has had no live claim for the same idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default), measured as the newest write to any claim row of the issue.
 This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the six role Secrets it owns.
 Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-It reads no workspace and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
-The daemon cannot read that workspace: it reads a workspace only over a role process, and a pod with no live claim runs none.
-It reads the decline of the issue's idle release instead:
+It changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
+It deletes the disk only after a read of the workspace found nothing that no branch or tag on origin holds.
+No role process runs in that pod, so the pod's launcher makes the read, with the count a role's shim makes: the release queues that workspace check first, and the teardown waits for it.
+A read that finds work keeps the pod (`unowned_unpushed_work`), and so does a read that cannot be made (`unowned_workspace_unread`), such as a pod whose launcher is older than the read and so does not say `readsWorkspace` in its hello.
+The issue's architect, the one that owns the issue (the notice route walks up the tree), gets one `workspace-kept` notice for each pod kept so, naming the state of each claim of the issue and what the read found; where that architect will not hold its role again (its claim failed, or its tree lingers or has closed), the project's controller gets the notice instead.
+A read that found work holds the pod until a start or a turn of a claim of the issue after that read, and the read the release then makes finds nothing; until the runtime holds another pod for the issue; or until the issue or its tree leaves the workflow or lingers.
+A failed read holds it the same way, and is also asked again after an hour.
+The daemon pushes and saves nothing.
+A start or a turn of a claim of the issue after the release's mark cancels the teardown, so a read a later turn could make stale deletes nothing.
+Where the Sandbox keeps a volume the issue's next pod mounts, the release deletes no disk, and it reads nothing.
+Before any read, the rule reads the decline of the issue's idle release:
 where the last read that could read the workspace found a commit or a change that origin does not hold, and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work.
-A start row into that same pod does not end the hold; where the runtime cannot say which pod it holds, a start row after the decline does.
+A start of a claim of the issue, or a turn of one, after that read ends the hold, in whichever pod it ran, since the role can have pushed the work; the release then has the launcher read the disk before it deletes anything, and a read that finds the same work keeps the pod again.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
-Of the reasons that hold such a pod past the idle period, the daemon writes four to its hold records, each under a name of its own:
-a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), and a decline says the disk holds unpushed work (`unowned_unpushed_work`).
-A project's pause adds a fifth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
+Of the reasons that hold such a pod past the idle period, the daemon writes five to its hold records, each under a name of its own:
+a claim of the issue still records a process (`unowned_claim_process`), a suspension that holds — the operator's or the controller's — is over a claim (`unowned_operator_suspended`, a name that says the operator's alone and stands for both), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), a decline or the launcher's read says the disk holds unpushed work (`unowned_unpushed_work`), and the launcher could not read the disk (`unowned_workspace_unread`).
+A project's pause adds a sixth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
@@ -8033,8 +8893,8 @@ The runtime also answers absent a Sandbox whose stored object carries a `deletio
 The release learns from the API server that its write is done, and the store learns it only when the watch delivers it, so without that answer the pass after a release can read the Sandbox as it was and release the pod a second time.
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
-An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
-The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
+A suspension that holds keeps the pod because it is one that the daemon never ends by itself (`RuleMayResume`).
+Its holder ends that pod, or a resume or a stop that outranks the holder does: resuming the agent starts the role in the pod that is still there, and stopping it retires the agent and leaves the issue to this rule.
 
 The daemon also closes the pod of a child that has left the workflow while its tree runs on, which neither release takes.
 The child's park or close is its one close:
@@ -8045,8 +8905,9 @@ it suspends each live claim for the daemon, which keeps the claim's session, and
 Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it:
 a read that finds nothing origin does not hold queues the stops and the suspension, and a read that finds work, or fails, records a decline and keeps the pod under `unpushed_work` or `workspace_unread`, with the role told once, as below.
 While that check waits on the lane the pass holds the pod as its own act under way (`releasing`), which no record counts.
-The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, with no read, since no role runs to read through, which no pass decided before;
-it keeps such a pod where a decline says its disk holds work that origin does not hold, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`).
+The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, which no pass decided before, with the read made by the pod's launcher, since no role runs to read through:
+the pass queues that workspace check alone, and a clean read queues the Sandbox suspension, fenced on the newest turn start the pass read, so a turn after the read leaves the suspension without acting.
+A read that finds work, or cannot be made, keeps the pod, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`, `unowned_workspace_unread`), and tells the issue's architect once for the pod (`workspace-kept`); so does a decline on record that says the disk holds work.
 A child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
 A pause keeps the pod (`paused`, `pause_held`), and so do a stopped claim that still records a process (`unowned_claim_process`) and an operator's suspension (`unowned_operator_suspended`).
 Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running:
@@ -8057,7 +8918,7 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 - the release reads the workspace through a live role's shim (the `workspace-work` frame, the read a pod update round makes too), and declines unless the workspace holds nothing that no branch or tag on origin holds (below);
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
-  That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
+  That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the two that hold (the operator's and the controller's) retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
   A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`).
   Once the runtime's stop of a claim's process has returned, the daemon deletes that session's Envoy registration with the clean stop ([Liveness rules](#liveness-rules)), so the listener reads the session `gone` at once, and a message to the session or to its role raises the wake.
   The exception is the daemon's own informational role message to a released role (`outbox.roleMessage`: the copy of a head's settled checks it sends to a role that settlement did not wake, a design gate's move, an approved round stuck on its merge state): the daemon does not publish it, so it raises no wake.
@@ -8101,15 +8962,34 @@ The wakes are these:
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
   Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  A publish through Envoy's API (`POST /v1/messages/publish`) that names no sender session is not kept: Envoy answers it `404`, since nothing could tell its sender if the copy expired, and it still wakes the role.
+  Envoy still keeps a copy that names no sender session in two other ways, and drops it at the end of its hour with a WARN line and a count on `envoy_role_kept_expired_total` but no message to anyone: a message published straight onto the role's NATS subject, and a person's message that Dispatch sent to a session whose role moved to another session, or to none, before the send arrived.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
-  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
+  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true` and no sender session, so Envoy keeps it for no role with no live holder and the hook prompt's outbox row keeps it instead.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
   Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
-  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
-  A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
+  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy answers it `404`, and its row tries again on its backoff until the woken session holds the role and takes it; a merge-queue removal message and a merge-forward message wait the same way until the woken session holds the role.
+
+  - A hook prompt's row waits while its role is being woken: its claim is released and its issue is still in the workflow with a tree that does not linger, so the row's own attempt wakes it, or its claim is launching under that wake or under the wake pacing's hold.
+    Otherwise it waits for one hour from the later of the hook's firing and the role's last ready, so a released role of an issue that has left the workflow gets no wake, and its row ends at that hour; a role whose claim failed or was retired is never published to, and the row ends at once.
+    The waiting row holds the pod from idle release only while its role has a claim on the issue that runs, is starting, or was suspended by an idle release, which the row's own first attempt wakes.
+    A row whose role has no claim, or whose claim was suspended for any other cause, holds no pod: such a role comes back only by a start or a resume, the operator's or the controller's, and either brings a pod of its own.
+    Either way the row tries again about once a minute on its backoff, so a role that does not come costs about 60 attempts in the hour, and Envoy answers each with a `404`, a WARN request line naming the outcome `role_no_source_session`, a refusal exception and a role wake report.
+    The row is kept in the daemon's own database, so a daemon that restarts inside the hour delivers the prompt to a session that holds the role after the restart, and ends it at the hour otherwise.
+    An ended prompt is named in a message on the issue that says, for each prompt, the hook, the move back the prompt was for, why it was not delivered and its words, and that no session received them.
+    That message is held for one hour from the first such end, and every prompt to the same role on the same issue that ends in that hour is added to it, so a role that is not coming gets one message an hour; the held message is the outbox row itself, so a restart of the daemon inside the hour adds to the same message.
+    The prompt that opens such a message also sends the issue's architect a `hook-prompt-undelivered` notice, which names the hook, the role, why, and when the message posts, so a role that is not coming makes one notice an hour as well.
+    A listener of an earlier release kept a hook prompt for the role's next holder and answered `202`, and the row ended there.
+    A daemon of an earlier release ends the row at the `404` of a listener that refuses the keep, so the prompt is lost: the daemon that waits ships to every deployment that publishes to the listener before that listener does (`scripts/e2e/hook-prompt-two-builds.sh` proves both outcomes).
+    Before a listener pin moves to that listener, run `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>` with the commit that carries the waiting daemon, and move the pin only when it prints `GATE OPEN`: it reads each project's running daemon image and opens only when every one holds that commit.
+
+  - A phase-ended message, which tells a parent's worker that the admission pass ended its phase, is published with keep and names no source session as a hook prompt is, so the listener that refuses such a keep answers it `404` too.
+    Its row waits the same way, for the same hour and under the same pod-hold rule, and reaches a session that holds the role inside it.
+    At its end it finishes with the log line `outbox phase-ended message finished undelivered: no live session holds the role` and a reason, and with no message on the issue, since the role's next task from the daemon names its phase anyway.
+    A listener of an earlier release kept the message on the role's kept lane for the role's next holder, and the row ended there.
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
@@ -8123,13 +9003,13 @@ It also waits while the merger is owed news of an approved new version whose cha
 It wakes the merger only once the gate is open and that change is recorded (`mergerWaitsForTheDesignGate` in `internal/daemon/outbox.go` reads `mergerNewsUnrecorded` in `internal/daemon/design_news.go`).
 That wait has a bound: after the reconcile's bounded attempts, the daemon records a change that Dispatch cannot read as unavailable, and a review history that it cannot read as unread.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
-The message wakes no merger that an operator suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
-It waits for that merger too, and it reaches the merger when the operator resumes the claim.
+The message wakes no merger that the operator or the controller suspended, since a wake starts only an agent whose claim is still `released` (`wakeForDelivery`, `internal/daemon/wake.go`).
+It waits for that merger too, and it reaches the merger when a resume lifts that suspension.
 While it waits, the message holds the issue's pod, as any row of the role-message lane does.
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
 A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
-Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — and the operator's `legion claims` commands.
+Every other path that suspends, resumes, stops or closes the agent of a released claim takes that agent over from the release, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's agent, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, and the controller's `suspend`, `resume_agent`, `stop` and `fresh_session`.
 The boot's resume by rule passes over a released claim (`booted`), and a wake or a backstop that came due while the daemon was down acts once the daemon has started.
 Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
@@ -8139,7 +9019,8 @@ A wake that arrives while the release runs cancels it, up to the moment the firs
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
 Each woken role is given one task or message that names the wake, so an agent reads why its pod came back.
 From the wake to the woken role's first turn is 5 minutes or less for 90% of wakes and 10 minutes or less for each one; a resume with no first turn 10 minutes after its wake writes a warning naming the issue, the role and the step it waits on.
-The 10 minutes of that warning run from the resume's stuck clock (`pod_resumes.clock_at`), which starts at the wake and moves to the moment the wake pacing lets the role's launch out, so a launch that waits its turn in a long pacing queue is not warned about for that wait.
+The 10 minutes of that warning run from the resume's stuck clock (`pod_resumes.clock_at`), which starts at the wake, stops while the role's launch waits in the wake pacing's queue (`pod_resumes.queued`), and starts again at the moment the pacing lets that launch out, so a launch that waits its turn in a long pacing queue is not warned about for that wait.
+A daemon's boot starts every clock that the daemon before it left stopped, since the queue went with that daemon.
 
 A release of a pod no claim owns suspends no claim, so it leaves no released claim and owes no wake.
 Its pod comes back at the next start of a claim of that issue, and that start builds the Sandbox, the pod and the workspace again.
@@ -8246,7 +9127,7 @@ A pod an earlier release took may have left its work in a saved bundle; such a b
 Then stop this release's daemon, and leave the claims in a state the earlier release acts on:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 update claims set suspended_by = 'daemon' where state = 'suspended' and suspended_by = 'released';
 commit;
@@ -8274,7 +9155,7 @@ The window is the gap between the pass that marks such a release and its teardow
 let the releases in flight finish before you stop this release's daemon, and then, with the daemon stopped, clear any mark still standing.
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 delete from issue_releases where kind = 'unowned';
 commit;
@@ -8291,16 +9172,25 @@ Migration `20261123050533_idle_release_keeps_no_workspace.up.sql` drops `workspa
 Before the upgrade, drain the releases in flight, and copy out every saved bundle worth keeping:
 a release that the earlier daemon marked and whose save ran, but whose teardown had not run, would take its pod after the upgrade with its bundle dropped.
 With the earlier daemon still running, wait until `select issue from issue_releases` prints no row, then stop it.
-For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, check it with `git bundle list-heads <KEY>.bundle`, and fetch it into a clone of the repository; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `PGPASSFILE=<pgpass file> psql '<postgres_url>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <dir>/<KEY>.bundle` ([Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand)), with `<dir>` the directory that command writes it to, check it with `git bundle list-heads <dir>/<KEY>.bundle`, and fetch it with git's object check into a clone of the repository fetched from GitHub first, as step 3 of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) fetches its bundle, with git 2.46 or later: `git -c fetch.fsckObjects=true fetch <dir>/<KEY>.bundle 'refs/legion-bundle/*:refs/remotes/bundle-<KEY>/*'`; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
 Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
-A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart'` prints 0.
-It is the last paragraph of the migration's header, and the two say the same statements:
+A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`), and one that a launcher reads (whose payload names `launcher` or `close`), is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, or the teardown (`issue_release`) or the suspension (`issue_suspend`) that a launcher's clean read lets through, whose payload names `podUid`, the pod that read found clean, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart' or payload ? 'podUid'` prints 0.
+Nor does the release before decode the notice kinds `workspace-kept` and `workspace-taken`, which a later release added with no migration of their own, so delete the unsent ones before the block, the copies queued for the controller among them: `delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('workspace-kept', 'workspace-taken')`.
+An update round of that later release can also have kept a pod for its disk (R7 of #5285): it records the keep as an idle release's decline (`idle_release_declines`), which the block below drops, so the release before holds no pod for it, and its next update round over the pod replaces the pod whatever its disk holds; first list the kept pods with `select issue, pod_uid, reason, commits, changed from idle_release_declines`, and have a role of each such issue push its work, or tell the issue's architect through Dispatch that the rollback will take it.
+A later migration, `20261125023041_idle_release_declines_told_pod.up.sql`, adds `idle_release_declines.told_pod`, the pod the issue's architect was told of by its `workspace-kept` notice; the release before it reads no such column and writes its rows without it, so a rollback to the release that keeps no saved workspace but whose launcher makes no read (contract 217) takes those two steps for the launcher's check rows, the rows that name `podUid` and the `workspace-kept` notices, and neither block.
+A later one again, `20261125023100_pod_replacements.up.sql`, adds `pod_replacements`, where the daemon records each replacement of an issue pod that may take a disk, from before the act until the architect's `workspace-taken` notice of it is queued; no earlier release reads it, and a row it still holds at the rollback is a notice the architect is not sent, so read them first with `select issue, pod_uid, record from pod_replacements` and tell each issue's architect, through Dispatch, what the row's read found.
+A rollback past all three runs the three migrations' way backs in one transaction, the newest first.
+The block below is the last paragraph of each migration's header, newest first, and they say the same statements:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
+drop table if exists public.pod_replacements;
+delete from public.schema_version where version = 20261125023100;
+alter table public.idle_release_declines drop column if exists told_pod;
+delete from public.schema_version where version = 20261125023041;
 create table public.workspace_bundles (issue text primary key, bundle bytea not null, size_bytes bigint not null, at timestamptz not null, head text not null, tips jsonb not null default '[]'::jsonb, bookmarks jsonb not null default '{}'::jsonb, release_id bigint not null check (release_id > 0), attempt_pod_uid text, attempt_at timestamptz, source_pod_uid text not null check (source_pod_uid <> ''), attempt_outcome text, constraint workspace_bundles_attempt_whole check ((attempt_pod_uid is null) = (attempt_at is null)), constraint workspace_bundles_attempt_outcome check (case when attempt_pod_uid is null then attempt_outcome is null else attempt_outcome in ('sent', 'refused_older') end));
 drop table public.idle_release_declines;
 alter table public.issue_releases drop column if exists turn_start;
@@ -8309,7 +9199,8 @@ commit;
 SQL
 ```
 
-It makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines` and `issue_releases.turn_start`, which the release before never reads, and deletes the migration's version row, so the next start of this release runs the migration again.
+It drops `pod_replacements` and `idle_release_declines.told_pod` and deletes those two migrations' version rows, makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines` and `issue_releases.turn_start`, which the release before never reads, and deletes the version row of `20261123050533`, so the next start of this release runs all three migrations again.
+A rollback to a release that has `20261125023041` and not `20261125023100` runs the first two statements alone.
 Every daemon that shares the database moves together, on the way up and on the way back, since these tables hold every project's rows.
 A bundle the earlier daemon saves after the rollback is dropped by that roll forward, so copy it out first as above.
 A pod this release started still runs a launcher with no restore: the earlier daemon's `launcher_bundle` slices close that launcher's connection, its start fails once, and the retry starts the role with the workspace the pod has, since the earlier daemon spent the bundle's one attempt on the first send.
@@ -8351,18 +9242,19 @@ Four gates hold the project's work:
 - no task leaves for a role but the controller, so a task that a claim holds stays with that claim, the retry of a turn that a provider refused included (`sendPending`, `internal/supervise/delivery.go`);
 
 - no outbox row that launches a role, hands it a task or a message, or starts or ends a production check's look is claimable (`pauseHolds`, `internal/record/outbox.go`).
-  These are the `supervise` rows whose op is `start`, and the rows of the kinds `notice`, `hook_prompt`, `role_message`, `update_ask`, `merge_forward`, `merge_queue_removal`, `check_wake`, `check_look` and `check_bound`.
+  These are the `supervise` rows whose op is `start`, and the rows of the kinds `notice`, `phase_ended`, `hook_prompt`, `role_message`, `update_ask`, `merge_forward`, `merge_queue_removal`, `check_wake`, `check_look` and `check_bound`.
   A held row takes no lease, so it keeps its place and spends no retry.
 
 **What still runs.**
 The pause never stops the controller, and it holds none of the controller's tasks, notices or ticks: the controller is the session that resumes the project and answers people meanwhile.
 Under `controller: operator` the daemon holds no controller claim, so nothing of this changes there.
-Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, and each row of another project on the same database.
+Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), the take-back of a stopped phase's task (a `supervise` row whose op is `retire_task`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, the Dispatch reads `pending_basis_seed` and `reparent_seed` among them, and each row of another project on the same database.
 The reconcile of a tree's news of its approved design (`design_changes`) is such a row: it reads Dispatch and records what changed, and it tells a role only by a news-only start, a `start` row that waits with the other held rows.
 The entry sweep's backstop for that news queues no reconcile while the project is paused, and its first tick after the resume queues one for each tree still owed news (`queueOwedDesignNews`, `internal/daemon/design_news.go`).
 The workflow still records what happens.
 A handoff, a review, a CI result or a merge moves its issue's phase as it does while the project runs, and the start that the move writes waits with the other held rows.
-`legion claims suspend`, `legion claims stop`, `legion issue status` and the controller's `set_status` still work, because none of them starts a turn.
+`legion claims suspend`, `legion claims stop`, `legion issue status` and the controller's `set_status` still work, because none of them starts a turn, and so do the controller's `stop` and `suspend`, two of the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one agent, named by its issue and role), which the daemon serves to the project's controller alone.
+A suspension of the controller's or the operator's and the pause's stop each keep their own source: the pause stops no agent such a suspension already holds, an agent the pause stopped that such a suspension then takes over stays suspended by it after the resume, and the resume brings back only what the pause stopped.
 
 **How each role stops.**
 The pause's transaction asks for the stop of each live role of the project but the controller: one stop record (`project_pause_stops`) and one `pause_stop` row in the outbox for each.
@@ -8389,7 +9281,7 @@ The stops themselves run in the outbox, so a pause of several hundred roles does
 
 Background work that a session still runs ends with its process.
 A stopped role's claim is `suspended` with the source `released`, the idle release's own (`supervise.SuspendedByReleased`), so `legion claims list` prints it as `suspended:released`.
-Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume it, a wake starts it again, and a park, a close, a linger or an operator's suspension takes it over.
+Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume its agent, a wake starts that agent again, and a park, a close, a linger, or a suspension by the operator or the controller takes the stopped agent over.
 Each stop is one store transaction (`projectPause.stopped`, `internal/daemon/pause.go`).
 It writes the claim and the stop's record, and with them:
 
@@ -8415,7 +9307,7 @@ These rules pass over it:
   The daemon writes each of the three names to its hold records ([Idle release](#idle-release));
 
 - an update round neither replaces a held pod nor reaches its bound.
-  The round waits and tells nobody, and no round opens over a held pod.
+  The round waits and tells nobody, and no round opens over a held pod, the one the controller's `replace_pod` asks for included: while the project is paused that request is refused 409 `PROJECT_PAUSED` before the daemon is asked, and over a held pod it is refused 409 `POD_HELD_BY_PAUSE`, for the hold of a pause that began after that check as for a hold the resume left on a pod none of whose roles runs yet (`openPodUpdateUnderLimits`, `internal/daemon/podupdate.go`, and `postRequestedPodUpdate`, `internal/daemon/podupdate_request.go`).
   The round's bound moves later by the time the pod was held, and a hold that ended at the resume or at a role's ready counts on until the wake pacing lets out the last launch that the pause held for a role of the pod, a held delivery's wake after the resume included (`roundBound` and `heldUntil`, `internal/daemon/podupdate.go`).
   So a round replaces no pod while a role of it whose launch the pause held still waits its turn in the pacing, and the roles get what was left of the round's grace from that let-out.
   The round's own ask (`update_ask`) is queued only for a role that is ready (`askRound`, `internal/daemon/podupdate.go`), so it brings back no role that the pause stopped before the ask was queued.
@@ -8471,7 +9363,7 @@ A second pause that begins before the role is back holds the row again, and the 
 A later stop of the role that is still open, or that ended cancelled, taken over or failed, changes nothing.
 A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop.
 A role message that a pause held for a role that no pause stopped, such as one that an idle release had released before the pause, finishes undelivered and wakes nothing, as on main.
-A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded after that stop, any suspension of the role but a release (a park, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded after that stop, any suspension of the role but a release (a park, a close, a linger, a suspension by the operator or the controller, or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
 An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
 The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.
@@ -8537,7 +9429,8 @@ The daemon logs four messages, each with the claim it is about where it has one:
   On every other daemon, a resume is never refused for the configuration.
 
 - While the project is paused, an operation that would start a turn of a role other than the controller answers 409 `PROJECT_PAUSED`, with the pause that stands, and changes nothing.
-  These are the controller's `compact` and `fresh_session`, and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
+  These are the controller's `compact`, `fresh_session`, `retry`, `resume_agent` and `replace_pod`, and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
+  The refusal's sentence ends by naming what lifts the pause: the controller's `resume` operation, which names no issue, or the operator's `legion project resume`.
 
 A caller whose plugin speaks a contract below the one that added the pause is served each of these refusals as the plain failure, its `code` and `error` alone, with no `setting`, `pause` or `lastPause`, and is served the release records' resumes without their `pause`.
 The contract the caller states in its request decides that, or, where it states none, the claims of the pod it asks from, as on the state (`placedByPod`, `internal/api/shaping.go`).
@@ -8578,7 +9471,7 @@ To that release, a held pod in which no role is live is a pod no claim owns, and
 List the pods that are still held, with the project's Dispatch key in place of `<KEY>`:
 
 ```sh
-psql '<postgres_dsn>' -XAt -c "select issue from project_pause_pod_holds where project = '<KEY>' and ended_at is null order by issue"
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -XAt -c "select issue from project_pause_pod_holds where project = '<KEY>' and ended_at is null order by issue"
 ```
 
 For each issue that it prints, resume one claim of that issue (`legion claims list`, then `legion claims resume --claim <token>`), and run the query again until it prints nothing: a hold ends when the resumed role is ready.
@@ -8629,12 +9522,12 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   for a `Failed` pod the last 20 log lines of the failing container (the init container when it exited non-zero, else the main one) are quoted in the daemon log;
 
 - `Pending` with the `workspace-fetch` or `workspace-init` init container **running** → **alive**, whatever the pod's age:
-  the pod is provisioning its working copy (`workspace-fetch`'s wait for the repository cache, then its stream and verification under one `workspace.FetchTimeout` and its delta under another, rather than `workspace.CommandTimeout`, all within `workspace.FetchBudget` ([Trust model](#trust-model-the-provisioning-token)), then `workspace-init`'s shared clone of the feed, whose steps that follow the repository's size share one `workspace.CloneTimeout`, the issue's own checkout under `workspace.CheckoutTimeout`, and its other commands, each up to `workspace.CommandTimeout`;
+  the pod is provisioning its working copy (`workspace-fetch`'s wait for the repository cache, then its attempt on the cache's bucket under `workspace.BucketFetchTimeout`, the verification of what the cache's `/tar` streamed under one `workspace.FetchTimeout` and its delta under another, rather than `workspace.CommandTimeout`, all within `workspace.FetchBudget` ([Trust model](#trust-model-the-provisioning-token)), then `workspace-init`'s shared clone of the feed, whose steps that follow the repository's size share one `workspace.CloneTimeout`, the issue's own checkout under `workspace.CheckoutTimeout`, and its other commands, each up to `workspace.CommandTimeout`;
   it waits on no other pod and takes no lock, since the clone it provisions is the issue's own, on the issue's own volume), and a live initialiser is a live process
   — as the tmux runtime's own in-process provisioning is.
   The launch that created the pod waits for the role's launcher, which starts only once every init container has finished.
   Until it first sees an init container running it waits `worker_boot_timeout_seconds`, the image pull's bound;
-  from then on, `worker_boot_timeout_seconds` counted from the last moment it saw one running, and never longer than that plus `workspace.FetchBudget`, `workspace.CloneTimeout` and `workspace.CheckoutTimeout` together (280 min;
+  from then on, `worker_boot_timeout_seconds` counted from the last moment it saw one running, and never longer than that plus `workspace.FetchBudget`, `workspace.CloneTimeout` and `workspace.CheckoutTimeout` together (295 min;
   `sandbox.Runtime.ProvisionBound`) from the first (`awaitRoleLauncher`, `internal/runtime/sandbox/relaunch.go`):
   each term is the real bound of one step whose duration follows the repository's size, and the three run one after the other, `workspace-fetch`'s whole fetch, then `workspace-init`'s shared clone of the feed, then the issue's own checkout.
   The fetch started no later than that first sighting, the shared clone after the fetch ended and the checkout after the clone, so the three end inside the bound, each failing on its own, naming why, when it runs out of its own
@@ -8649,15 +9542,15 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   — wait behind it, while other issues' rows and the issue's own board writes and notices run meanwhile.
   During a GitHub outage that is the fetch's five attempts and four waits, about 2 minutes when GitHub refuses at once and about 12½ minutes when every connect times out (127 s each), after which the fetch fails and the launch ends;
   each relaunch of the claim then holds the issue's lifecycle lane as long again, and the issue's later lifecycle rows wait on it.
-  A repository cache that is slow to become ready and a transfer that keeps making progress can hold the launch for the fetch's whole 190 minutes, `workspace-init`'s shared clone of the feed, for a large repository, up to 30 more, and the issue's own checkout of that repository up to 60 after that.
+  A repository cache that is slow to become ready and a transfer that keeps making progress can hold the launch for the fetch's whole 205 minutes, `workspace-init`'s shared clone of the feed, for a large repository, up to 30 more, and the issue's own checkout of that repository up to 60 after that.
   Each launch try is bounded inside the runtime (`sandbox.Runtime.LaunchBound`, `internal/runtime/sandbox/relaunch.go`) at the sum of the try's waits and bounded calls
   — three boot timeouts; the repository cache's waits, five more boot timeouts and the calls of one other ensure of the cache that may hold its turn ahead of the try;
   the launcher wait's backstop of twice the boot timeout plus `sandbox.Runtime.ProvisionBound`;
   the termination grace; and the try's client calls at their 30 s timeout
-  — about 5 h 50 min at the defaults; a try that reaches it is charged a launch failure and the next try runs, while a try the daemon's own stop ends is still charged nothing.
+  — about 6 h 5 min at the defaults; a try that reaches it is charged a launch failure and the next try runs, while a try the daemon's own stop ends is still charged nothing.
   Once the launch returns, the boot watchdog re-arms on the claim, bounded by its registration deadline (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, default 360 s, 6 min):
   under Kubernetes, the deadline carries an added bound of `sandbox.Runtime.ProvisionBound` until the shim's first hello, and from there the daemon re-arms the base deadline alone, the same one a tmux pane runs under throughout.
-  A pod that never says hello is retired at the launch's return plus the base deadline plus the bound, armed as one (286 min at the defaults);
+  A pod that never says hello is retired at the launch's return plus the base deadline plus the bound, armed as one (301 min at the defaults);
   one that says hello and never registers is retired at hello plus the base deadline alone (6 min from the hello);
   and one whose agent registers and never says it is ready is retired at its registration plus the base deadline alone (6 min from the registration, again from a daemon restart that finds it registered), then resumed as the same session one generation later and counted as a launch failure.
   A tmux pane carries no bound to begin with, since it starts the agent at once with no init phase.
@@ -8716,10 +9609,10 @@ That clean stop deletes the session's record, so the listener reads the session 
 Without it, the session of an Oh My Pi process that died or was released reads `live` until its record expires, since the session bucket's maximum age, 5 minutes by default, equals the live window.
 Where `ENVOY_SESSION_MAX_AGE` keeps the record past the live window, that session reads `unresponsive` instead until the gone horizon, an hour by default, and there the stop also has the role reaper release the role claim the session held at its next pass instead of an hour later, and the issue claims become another agent's at once instead of 20 minutes after the session last registered.
 The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
-A suspension whose own stop ends a live process sends the same read and the same delete: an idle release, any other suspension by the daemon or by an operator, and a tree root's own exit, each once the runtime's stop of that process has returned (`supervise.Deps.SessionGone`).
+A suspension whose own stop ends a live process sends the same read and the same delete: an idle release, any other suspension by the daemon, the operator or the controller, and a tree root's own exit, each once the runtime's stop of that process has returned (`supervise.Deps.SessionGone`).
 Its moment is when that stop returned, and both runtimes answer that stop only once the process has ended, so on clocks that agree the process's last heartbeat is stamped before that moment.
 A stop the runtime refused sends nothing, because that process may still be running, and a delete then would take a live session's registration away until its next heartbeat.
-No wake acts on a claim the daemon or an operator suspended ([Idle release](#idle-release)).
+No wake acts on an agent that the daemon, the operator or the controller suspended ([Idle release](#idle-release)).
 After its stop, an Envoy direct message to that session is stored for the stopped session, and a person's targeted Dispatch message to it is recorded `queued`: the listener stores it, or Dispatch publishes it on the session's agent subject itself when no store of the listener's holds the session.
 The session reads either message if the claim is resumed within the stream's 72 hours.
 The delete names the ended process's own registration rather than a moment alone, because the claim is relaunched under the same session id, after a death by the very decision that asks for the stop and after a suspension by a later wake or resume:
@@ -8778,18 +9671,18 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
 
 - Every other provisioning command is bounded by `workspace.CommandTimeout` (5 minutes, fixed), the commands that hold a bound of their own excepted — `workspace.CommandTimeout` names them where it is declared (`internal/workspace/config.go`), and the `workspace-init` bullet below states each one that runs there — but a transfer's duration follows the repository's size and the network's speed, not a fixed step in provisioning:
   once the fetch may start — at once, or once the repository cache is ready, after a wait of at most 130 minutes, which covers the cache's own first clone
-  — the cache's stream and its verification run under one `workspace.FetchTimeout` (30 minutes), and every attempt of the transfer from GitHub and its reads of GitHub's `HEAD` under another, each given what remains of its own, so the fetch's waits, transfers and checks end within `workspace.FetchBudget` (190 minutes).
+  — the attempt on the cache's bucket runs under `workspace.BucketFetchTimeout` (15 minutes) for all of it, the verification of what the cache's `/tar` streamed, when that attempt failed, under one `workspace.FetchTimeout` (30 minutes), and every attempt of the transfer from GitHub and its reads of GitHub's `HEAD` under another, each given what remains of its own, so the fetch's waits, transfers and checks end within `workspace.FetchBudget` (205 minutes).
   A transfer that fails transiently is run again:
   git's fatal exit (128) with a cause line
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, a URL's userinfo and query removed whole and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's query removed, a URL whose authority carries userinfo shown as its scheme and `[a URL with credentials]`, and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name
   — fails the fetch at once (`transientCloneFailure`, `internal/workspace/fetch.go`).
-  The launch waits for the pod's launchers while any init container runs, up to `sandbox.Runtime.ProvisionBound` (280 minutes) plus its boot timeout from when it first sees one running (above, "Liveness rules"), so the fetch, its wait and retries included, spends no launch failure.
+  The launch waits for the pod's launchers while any init container runs, up to `sandbox.Runtime.ProvisionBound` (295 minutes) plus its boot timeout from when it first sees one running (above, "Liveness rules"), so the fetch, its wait and retries included, spends no launch failure.
   After a fetch that ran its whole budget, the shared clone's 30 minutes and the issue's checkout's hour are what is left of the sum, and `workspace-init`'s other commands come out of that hour and the boot timeout beyond it.
   The fetch reads the token from its file anew as every transfer attempt from GitHub starts, taking the file as it stands then, and the gh refresher's minute brings every live issue pod's provisioning Secret to the implement App's current lease (`refreshProvisioningToken`, `internal/runtime/sandbox/ghcredential.go`), Pending or Running, whatever its fetch has already done, the cache's token beside it kept, logging `sandbox
   runtime: provisioning token refreshed`; the daemon re-mints a lease once less than 20 minutes of it remain (`internal/appauth/appauth.go`) and the kubelet rewrites the projected file within its sync period, so a delta after a long wait on the repository cache, or a retry late in a long fetch, presents a token that is still good.
@@ -8967,10 +9860,10 @@ a refusal is boot's own, on stderr, and exits 1.
   It deletes its Sandbox when it ends, a SIGTERM or SIGINT included; after a SIGKILL, or one cut off mid-create, the Sandbox ends at its `shutdownTime`.
 
 - **Capacity.**
-  It waits on room in the Legion pool without limit, as the daemon's probe does (a waiting attempt counts against no retry), so the caller bounds it:
+  It waits on room on the cluster's nodes without limit, as the daemon's probe does (a waiting attempt counts against no retry), so the caller bounds it:
   a CI job's timeout, or `timeout <duration> legion probe-boot …`.
   The daemon's own probe runs at boot, before it launches any pod;
-  probe-boot runs while the daemon serves, so its pod (`probeReservation`) competes with live issue pods for the pool's capacity until it finishes, and on a pool with a hard cap it can delay an issue pod's launch or relaunch.
+  probe-boot runs while the daemon serves, so its pod (`probeReservation`) competes with live issue pods for the nodes' capacity until it finishes, and on a pool with a hard cap it can delay an issue pod's launch or relaunch.
 
 A change to the worker pod (a new projected token, a ConfigMap mount, a variable) is proven with it, run as the daemon's identity, on a cluster that admits Legion's pods before any daemon restarts on it:
 a pod the cluster would not admit, mount or start fails here as it would fail the daemon's boot.
@@ -9001,14 +9894,14 @@ This section is the retired TypeScript daemon's, which now refuses `runtime: kub
 what follows is the block it read before
 — for the pods Legion runs today see [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod), and for the live settings [Configuration](#configuration), the Go daemon's.
 The Go coordinator (`packages/daemon`, LEGION-208) reads the same `runtime.kubernetes` key with different rules, and refuses the examples below as written:
-its runtime selects the Legion pool itself, so `scheduling.node_selector` may not set `legion.dev/pool`;
+`scheduling.node_selector` may not set `legion.dev/pool`, since Legion's pods share the cluster's general nodes and that label would set them apart on nodes of their own;
 `resources` is keyed by role, with no `role_profiles`;
 `storage_class` is required, and a `gateway` block is refused as removed (LEGION-270:
 a pod's model route is the operator's `pod` below); every pod dials the worker stream at `tcp://<advertise_host, or bind with
 none set>:<worker_stream_port>`, so that address must be one pods reach, never `0.0.0.0` or loopback
 — `bind` itself may be `0.0.0.0` only once `advertise_host` names the address instead, so a daemon whose own pod restarts onto a new IP can still bind every interface and be reached through its Service;
 and no Legion URL a pod is handed (`daemon_url`, `envoy_url`, `dispatch_url`, each `nats_urls` entry) may name a loopback or unspecified host (`packages/daemon/internal/config/kubernetes.go`).
-It also reads `runtime.kubernetes.pod` — `env`, `volumes` (each one `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` (read-only unless `read_only: false`), and `service_account` — which it adds to every pod, the image probe's included, refusing any name or path of Legion's own or the worker image's;
+It also reads `runtime.kubernetes.pod` — `env`, `volumes` (each one `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` (read-only unless `read_only: false`), and `service_account` — which it adds to every pod, the image probe's included, refusing any name or path of Legion's own or the worker image's, and `controller_service_account`, which the daemon-launched controller's pod alone runs as in place of `service_account`;
 and the top-level `provider_keys` maps each variable Oh My Pi reads to a key of the providers Secret, of which every pod then mounts those keys alone, for the shim to export.
 Legion holds no model route: everything a pod's Oh My Pi needs to reach a model
 — a `models.yml`, a settings overlay in `PI_CONFIG_FILES`, a token — is the operator's, through `pod` and `provider_keys`.
@@ -9057,7 +9950,7 @@ the command runs with the daemon's environment plus `exec.env`, its `status.toke
 uid `legion` on the devbox receives the instance role through IMDS, so no credential file exists.
 
 Every Legion pod is annotated `karpenter.sh/do-not-disrupt: "true"`, which stops consolidation and drift from evicting it;
-a NodePool's `expireAfter` is forceful in Karpenter v1 and must be `Never` for Legion's pool, provisioned by your infrastructure-as-code.
+a NodePool's `expireAfter` is forceful in Karpenter v1 and must be `Never` for every NodePool whose nodes run Legion's pods, provisioned by your infrastructure-as-code.
 
 The block is file-only: there are no `LEGION_KUBERNETES_*` environment keys, and `LEGION_RUNTIME` never outranks the file (a disagreement is logged once and ignored).
 Defaults (root spec §3):
@@ -9145,14 +10038,13 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **A project with no live record** boots and serves all the same, and its boot logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
 
-- **`runtime.kubernetes.pod`** has four keys.
+- **`runtime.kubernetes.pod`** has five keys.
   `env` is variables set in the agent's container.
   `volumes` are each one `secret`, `config_map`, `projected`, `persistent_volume_claim` (a claim of the daemon's namespace, by `name`) or `nfs` (`server` and `path`) source, never an inline `csi` volume ([Network shares](#network-shares));
   a `secret` or `config_map` source may set `default_mode`, the octal mode of every file it projects, such as `0440` in place of Kubernetes' default 0644 ([Configuration](#configuration));
   a projected `service_account_token` must last at least 600 s, the least the API server issues, and its `audience` may not still hold a `${…}` placeholder, which nothing expands.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
-  `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not.
-  Changing it reaches a running pod only by replacing it, which the item after this one describes.
+  `service_account` and `controller_service_account` each have an item of their own below.
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
   no role's agent keeps its Oh My Pi state there any more
@@ -9171,12 +10063,23 @@ each issue's pod (every role of it alike) and the image probe's.
   a `models.yml` and a settings overlay from a ConfigMap, and a mounted token its key command reads.
   Its README lists what an operator supplies and how `pod` and `provider_keys` compose.
 
+- **`runtime.kubernetes.pod.service_account`** is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount).
+  It may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not, and it must be a ServiceAccount's name, a DNS-1123 subdomain, as `repository_cache.service_account` must ([Configuration](#configuration)), or the loader refuses it naming the key and the value (`runtime.kubernetes.pod.service_account "<value>" is no ServiceAccount's name: …`), rather than the API server refusing every pod.
+  Changing it reaches a running pod only by replacing it, which the item **A change of `runtime.kubernetes.pod.service_account`** below describes.
+
+- **`runtime.kubernetes.pod.controller_service_account`** is the fifth key of `runtime.kubernetes.pod`.
+  `controller_service_account` is the ServiceAccount the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod"); unset, that pod runs as `service_account` like every other pod, and every other pod — each issue pod, the image probe's and each repository cache's while `runtime.kubernetes.repository_cache.bucket` is unset — runs as `service_account` whether or not it is set.
+  It may neither be blank nor still hold a `${…}` placeholder, as `service_account` may not (`runtime.kubernetes.pod.controller_service_account "${…}" is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`), and it is refused unless `controller: daemon`, the one setting under which the daemon launches the controller's pod (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`).
+  It must be a ServiceAccount's name, a DNS-1123 subdomain, and any other value is refused with the rule that name follows (`runtime.kubernetes.pod.controller_service_account "<name>" is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`).
+  The controller's pod is held to it as the other pods are to `service_account`: a controller pod running as any other account, `service_account` included, is warned of at boot and replaced at the next launch of the controller (`accountDrift`), so setting, changing or dropping it moves the controller's pod, and only that pod, at its next launch, and under the secrets broker that move costs the controller's role its session name as a change of `service_account` costs each role its own (the item below).
+  `legion config check` names both accounts on a line of its own when it is set (`controller service account: the controller's pod runs as <account> (runtime.kubernetes.pod.controller_service_account); every other pod runs as <account> (runtime.kubernetes.pod.service_account)`), and while `runtime.kubernetes.repository_cache.bucket` is set it names the cache's account too (`…; every other pod but a repository cache's runs as <account> (runtime.kubernetes.pod.service_account); a repository cache's pod runs as <account> (runtime.kubernetes.repository_cache.service_account)`).
+
 - **A change of `runtime.kubernetes.pod.service_account`** reaches a running pod only by replacing it ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)):
-  an update round replaces each issue pod a claim names, the next launch of the controller's role replaces the controller's pod, and a repository cache's pod is replaced at the first boot, sweep or new issue pod of its repository that finds it serving no stream;
+  an update round replaces each issue pod a claim names, the next launch of the controller's role replaces the controller's pod where `controller_service_account` is unset, and a repository cache's pod is replaced at the first boot, sweep or new issue pod of its repository that finds it serving no stream, unless `runtime.kubernetes.repository_cache.bucket` is set, under which a cache's pod runs as `runtime.kubernetes.repository_cache.service_account` and a change of this key leaves it alone ([The repository cache](#the-repository-cache), "The bucket");
   the sweep does not replace the pod of the cache of a repository no live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
   An issue pod's disk goes with its pod.
   Under the secrets broker the replacement also costs each live role its session name, until `BROKER_SESSION_ACCOUNT_PAIRS` pairs the old account with the new:
-  the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item after it).
+  the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item **Moving the daemon's pods to another ServiceAccount under the secrets broker**).
 
 - **Dispatch's public dashboard.**
   Every pod reaches Dispatch at `dispatch_url`, usually an in-cluster address nobody outside the cluster can open.
@@ -9184,6 +10087,10 @@ each issue's pod (every role of it alike) and the image probe's.
   every link an agent's `dispatch` command prints, which agents repeat in Slack replies, pull requests and comments, then points there, and a pasted dashboard link on either address resolves.
   Load refuses, naming it, a value that is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens (no `xn--` label, no trailing dot, a last label that is not a number), a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535:
   a rule narrower than the agents' URL parser, so a value load accepts never turns Dispatch off in an agent.
+  It refuses an `@` after the host too, in the path, the query or the fragment: that is where a credential holding a `/`, `?` or `#` written as the user lands, its head read as the host every link would name.
+  Percent-encode such a credential's `/`, `?` and `#`, or give the dashboard address with no credential.
+  A refused value with an `@`, a `?` or a `#` is named without its userinfo, query and fragment.
+  A query or a fragment loads: an agent's links then fall back to `dispatch://` references.
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
@@ -9193,8 +10100,8 @@ each issue's pod (every role of it alike) and the image probe's.
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
-  a backward move into its phase, the first run of a re-admitted tree (the root's promotion, or the admission pass that finds the tree running when its design gate opened first), or a production check's look after the issue's merge;
-  the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
+  a backward move into its phase, the admission pass's return of a parent from `awaiting_children` into its phase once no Dispatch child under it is open, the first run of a re-admitted tree (the root's promotion, or the admission pass that finds the tree running when its design gate opened first), or a production check's look after the issue's merge;
+  the retry of a held issue is a fifth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
   Each of these brings the worker back in the session the claim kept.
 
 - **The Legion machine-user sign-in.**
@@ -9230,8 +10137,22 @@ each issue's pod (every role of it alike) and the image probe's.
   nothing is paced then and no bound of this kind holds, which is what the live proofs under `scripts/e2e` set.
   What the pacing holds at any moment is on the state's `wakesWaiting`, which `legion state` prints as its `wakes waiting:` line.
 
+- **The order those wakes go out in** is the daemon's: each paced wake waits in one of two queues in front of that bucket (`Pacer`, `internal/wakepace/pacer.go`).
+  The first queue holds the wake of a role that has an Envoy message waiting and the relaunch of a role whose own process died.
+  The second holds every other paced wake: a resume by rule, the relaunch of a role whose pod was replaced under it, a stale-plugin relaunch and the catch-up that a start writes in place of a launch.
+  At each turn of the bucket the pacing lets out the wake at the head of the first queue, except that while both queues hold wakes the turn after three first-queue wakes in a row goes to the head of the second, so the second queue keeps one turn in four.
+  No two wakes are let out in one turn, so the queues change the order of a wave and never its rate.
+  A wake carries a message when its `start` row's wake kind is `role_message` or `agent_message`, or when the Envoy listener reports such a wake for its claim while the wake waits, whatever the claim's state.
+  The daemon stores that mark on the claim (`claims.message_mark_at`) in the transaction that set it, and the mark stands until the role's next turn, so a restart keeps it and the boot places that claim's relaunch in the first queue.
+  Envoy keeps a role's message for one hour, and with one queue a wake that was raised behind a restart's backlog could wait longer than that, so the role came back to nothing (dispatch://INFRA-5682).
+  A first-queue wake with k first-queue wakes ahead of it runs within k + 2 + ⌊k/3⌋ turns of its mark.
+  A waiting wake holds a place in its queue and no moment of its own, so each `dueAt` of `wakesWaiting` is the pacing's estimate, at the read, of the moment it lets that place out, as the queues stand.
+  A change to the queues or to the pace can move that moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later.
+  The line `supervise: wake ran` names the `queue` that a paced wake came from, `message` for the first and `other` for the second, and `turnsWaited`, the turns the pacing ran from the wake's join to its let-out.
+  A message wake that the pacing lets out more than 45 minutes after its mark writes that line as a warning, with `lateForMessage`.
+
 - **AskGate's time limit** is the operator's too.
-  Every pod loads pi-envoy, whose AskGate reviews each Dispatch write of a role's main agent before it posts.
+  Every pod loads pi-envoy, whose AskGate reviews each gated write that a role's main agent sends with a `dispatch` command, before the write posts (pi-envoy's README, "AskGate", lists the gated commands).
   Its review must finish inside Oh My Pi's limit for one `tool_call` handler, `extensionHandlers.toolCallTimeoutMs`, and the gate holds its deadline 5,000 ms under that limit:
   the room its handler still needs for an aborted call's usage report and its entry.
   The Dispatch decision record is no part of it, since it runs after the handler has returned.
@@ -9243,10 +10164,12 @@ each issue's pod (every role of it alike) and the image probe's.
   A limit under 15,000 ms leaves no room for a verdict:
   the gate does not bind there, and a gate that did not load refuses every Dispatch write it would have reviewed.
   The gate binds in a pod because the pod has Dispatch; one without it gets no gate.
-  The pod's `dispatch` command enforces the review:
-  while the gate is bound, a gated write that is not one literal `dispatch` call the gate reviewed (a pipe other than one trailing `head` or `tail`, a script, `python3 -c`, an eval cell's process) is refused by the CLI, in block mode, for want of the single-use marker the gate mints.
-  It reviews the writes of a cooperating agent and is no sandbox:
-  it does not cover a direct HTTP request to Dispatch, an older or a different CLI, or a process of the pod's own user that removes the CLI's AskGate record or a marker, acts as another session id or state directory, or otherwise goes around the CLI (pi-envoy's README, "What AskGate is not").
+  The pod's `dispatch` command enforces the review for each gated command:
+  while the gate is bound, a gated write of a `dispatch` command that is not one literal `dispatch` call the gate reviewed (a pipe other than one trailing `head` or `tail`, a script, `python3 -c`, an eval cell's process) is refused by the CLI, in block mode, for want of the single-use marker the gate mints.
+  `dispatch proxy` is not a gated command, so the comment POST it sends for its command passes no review and needs no marker, in block mode too (`packages/envoy-client/README.md`, "`dispatch proxy`").
+  Dispatch's server checks no marker, so a role that holds the bearer of `DISPATCH_TOKEN_FILE` can already send the same comment with `curl` and no review.
+  AskGate reviews the writes of a cooperating agent and is no sandbox:
+  it does not cover the comment POST of `dispatch proxy`, a direct HTTP request to Dispatch, an older or a different CLI, or a process of the pod's own user that removes the CLI's AskGate record or a marker, acts as another session id or state directory, or otherwise goes around the CLI (pi-envoy's README, "What AskGate is not").
 
 - **Turning AskGate off in a pod:** put `{"askgate":{"enabled":false}}` in the `envoy.json` that the pod's pi-envoy reads.
   The image sets `OMP_PROFILE=legion`, so Oh My Pi sets `PI_CODING_AGENT_DIR` to the profile's agent directory in its own process, and pi-envoy reads `/home/legion/.omp/profiles/legion/agent/envoy.json`.
@@ -9511,9 +10434,9 @@ each issue's pod (every role of it alike) and the image probe's.
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
   `none` before the first login finishes, `issued` while a credential that has not expired is held (a renewal that failed beside it included), or `failed` (daemon API contract 22).
   Pod enrollment fails closed and retries until a login succeeds.
-  After a login given no HTTP answer, or a 5xx answer from the broker or its front door (the broker is down, out of reach, or cannot reach its database), the daemon waits 2 s before the next, doubling each time to at most 10 s, so after an outage it logs in again within about 10 s of the broker serving.
+  After a login given no HTTP answer, or a 408, a 429 or a 5xx from the broker or its front door, the daemon waits 2 s before the next, doubling each time to at most 10 s, so it logs in again within about 10 s of the broker serving; after a 429, at least its `Retry-After`, at most 5 minutes.
   Every other transport failure — a refused or reset connection, a timeout, an unreachable network, a resolver that failed for any other reason — is the broker out of reach too, and takes that same short wait.
-  After a login the broker refused (a 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
+  After a login the broker refused (any other 4xx), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
   On both schedules it waits whether or not it still holds a credential, and a successful login resets both waits.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience <the broker's audience> --duration 1h`:
@@ -9597,7 +10520,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - An operator settles what the boot names; each `legion claims` command below also takes `--operator-token-file`.
   For each claim in an Error line's `claims` that is not the rightful holder, the operator gives it a new session with `legion claims forget-session --claim <token> --session <session>`, as its state allows.
-  A suspended claim is then resumed with `legion claims resume --claim <token>`; a queued one launches by itself; a failed one is retried with `legion claims retry --claim <token>`, except a failed controller, which the controller keeper retries; and a retired one gets the forget alone, since it was stopped on purpose.
+  A suspended claim is then resumed with `legion claims resume --claim <token>`; a queued one launches by itself; a failed one is retried with `legion claims retry --claim <token>`, except a failed controller, which the controller keeper retries unless it failed under `cyber_policy`, where that same retry launches its agent again in a new session; and a retired one gets the forget alone, since it was stopped on purpose.
   A resume asked before the forget is refused `409`, naming the forget to run, and the claim stays suspended and is charged nothing: a relaunch that resumed its session would be refused at every try until the claim failed.
   A claim working or launching under a held suspension takes no forget until the suspension lands, at its turn's end or its registration deadline, and a claim launching uncertainly takes none until its launch settles.
   A claim whose suspension failed is still live and takes no forget either: suspend it with `legion claims suspend --claim <token>` once its runtime answers, or stop its pod or pane by hand, then give it a new session or record it as the holder as below.
@@ -9654,9 +10577,9 @@ each issue's pod (every role of it alike) and the image probe's.
   So it keeps one project's session grants from another project's pods only while each project's daemon logs in as an account of its own.
   Changing a daemon's login ServiceAccount strands every carried grant of its sessions: the daemon's next enrollment of a session spells the new account, which matches none of the rows enrolled under the old one, so their grants are swept at the carry window's end and the sessions ask again.
 
-- The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above).
+- The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above), the daemon-launched controller's pod as `runtime.kubernetes.pod.controller_service_account` where the file names one.
   A broker configured with that account for `legion-daemon`, such as `BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:<the account the pods run as>`, gives a secret tagged `owner=legion-daemon` to every such pod at once and to no other session (the broker's concepts page, "Owner and tier").
-  When the daemon's pods run as several accounts, as they do while a change of `service_account` moves them, the setting names each in a `legion-daemon=` entry of its own.
+  When the daemon's pods run as several accounts, as they do while a change of `service_account` moves them or where the controller's own is another, the setting names each in a `legion-daemon=` entry of its own.
   The broker refuses to start with a namespace's `default` account in `BROKER_SERVICES`, since every pod there that names no account runs as it, so pods that receive service-owned secrets name a dedicated account.
   The daemon's own ServiceAccount, which logs in, is a different account from its pods', and it is named in `BROKER_SERVICE_LOGINS`, not `BROKER_SERVICES`;
   the broker refuses to start with an account in `BROKER_SERVICE_LOGINS` that is a namespace's `default`, since every pod running as it could then log in as the daemon.
@@ -9664,6 +10587,8 @@ each issue's pod (every role of it alike) and the image probe's.
   such a login enrols the one pod whose token made it, and any other pod UID is refused `403 POD_SELF_ENROLL_ONLY`;
   that enrolment states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`, since the pods of one account enrol under one principal, so a name such a pod picked would be a sibling pod's and the enrolment would take that sibling's grants.
   Without the block, pods carry none of this.
+
+- **Turning the block on, changing it, and turning it off.**
   An older worker image is refused at the image probe: the block's pod variables are daemon API contract 8.
   A pod's agent-secrets volumes are fixed when it is created, so turning the block on, or changing its `audience` or `token_expiry_seconds`, reports every running workflow role stale at the restart that brings the change, and each issue pod is replaced with its roles moving into the new one together ([A pod whose address moved](#a-pod-whose-address-moved)).
   Turning the block off revokes no enrollment.
@@ -9684,7 +10609,7 @@ each issue's pod (every role of it alike) and the image probe's.
   or `broker: the token exchange took a session name from the account paired with its own` where the pod's own token exchange took the name before the pod enrolled, and the enrollment then logs no take of its own.
   So before changing `service_account`, give the broker both settings and redeploy it:
   the new account's `legion-daemon=` entry in `BROKER_SERVICES` (above), without which the broker refuses each pod of that account `403 POD_NOT_LAUNCHED`, and the pair, which its start line then names, `session account pairs state=on pairs=<pairs>`.
-  Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
+  Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, or in `BROKER_EXCHANGE_JOB_ACCOUNTS` where its pods write as a job and for no person, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
   A pair works both ways, so moving the pods back needs no change of the setting.
   A pair added after a role's enrollment was refused takes effect at that role's next enrollment, which the daemon makes at the shim's next hello, on a redial of its connection or at the claim's next generation (above):
   the old enrollment's grants and pending requests come across while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after that enrollment ended, and its withheld secrets come across at that next enrollment whenever it comes.
@@ -9754,8 +10679,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The one other key a pod mounts is `NATS_NKEY_SEED`, when the daemon has a NATS nkey seed:
   the operator puts the `legion-pane` seed there, and every pod reads it through `NATS_NKEY_SEED_FILE`, which the shim does not export ([Configuration](#configuration)).
   (The TypeScript daemon's [providers Secret](#the-providers-secret) mounts every key; the Go runtime does not.)
-  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret and keys.
+  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret, the settings whose keys every pod mounts (`provider_keys.<VAR>`, `runtime.kubernetes.session_dsn_secret`) and the setting whose key is missing, never a key of the Secret.
   A `provider_keys` variable that anything else in the pod sets is refused at load.
+  A `provider_keys` variable must be upper case (upper-case letters, digits and underscores, not starting with a digit), as every provider's variable is; one with a lowercase letter is refused at load as `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment variable name …`.
 
 - **Settings order.**
   Oh My Pi reads `PI_CONFIG_FILES` in order, each overlay outranking the ones before it and all of them outranking a repository's `.omp/config.yml`.
@@ -9810,24 +10736,26 @@ An issued token carries these claims and no others:
 - `person` — the person the session acts for.
 
 - `service` — the service a token that names no person is, and nothing for a token that names one.
-  That service is a machine's fleet, the service a read entry names, or the account of a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<account>==`), which that token acts as and Dispatch records its writes under.
+  That service is a machine's fleet, the service a read entry names, the account of a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<account>==`), which that token acts as and Dispatch records its writes under, or, for a job's token, the identity its job entry lists: a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address.
 
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person` or `none`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
+- `project_scope` — `named`, `person`, `none` or `public`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
   Only a read entry's token carries `none`, and that token writes nothing.
   A token carrying a narrowed word writes nothing either.
+  Only a job's token carries `public`: it reaches every public project, which no list names, and the private projects `projects` lists.
 
-- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
-  A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one.
+  A `person` token whose trade named none, a machine's token that names a service and no person, and a read entry's `none` token carry none.
 
 - `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, and `read person` for such a token that carries `read-person` and names a person.
-  Every other token carries none.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, `read person` for such a token that carries `read-person` and names a person, and `legion-status` for the token of a `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>`, a Legion daemon's own entry, whose trade did not ask for `read`.
+  Dispatch reads `legion-status` (`DISPATCH_LEGION_STATUS_SCOPE`).
+  Every other token carries none, whatever session it carries.
 
 - `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.
   Every other token, and such a token whose trade named no cut, carries none.
@@ -9843,8 +10771,10 @@ The token it mints for a trade that asks for no scope holds the scope `read` and
 That token reads every read of Dispatch's read class that needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its documents, comments and asks.
 No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
-The entry decides the scope of a trade that asks for none.
-A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes.
+A `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>` mints a token that holds the scope `legion-status` as well (`isLegionDaemon`, `oauthwire.LegionDaemonSessionPrefix`), and no read entry does, whatever session it fixes.
+The broker reads the session the entry fixes, case included, and never a session the request names, so a pod of an entry that fixes no session gets no `legion-status` whatever session it names.
+The entry decides the scope of a trade that asks for none, and a request that names `legion-status` is refused `invalid_scope`, under every entry.
+A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes, so a Legion daemon's trade that asks for `read` holds no `legion-status`.
 Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade); a cut on a trade that does not ask for `read`, a later one, one at the zero time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and one in any other form are refused `invalid_request`.
 A token that holds `read` is never the subject of a trade.
 It is never bound to a key a live launcher credential is bound to: a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.
@@ -9854,7 +10784,17 @@ A driver that renews a copy's read token keeps the sign-in trading ordinarily as
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
-A request under an entry may name that entry's project or nothing, and is refused when it names any other; a token that names no person is refused any project.
+A request under an entry that names a person may name that entry's project or nothing, and is refused when it names any other; a machine's token that names no person is refused any project.
+A job entry gives each of those three kinds a job's list in place of a person and a project (`exchange.JobProjects`):
+`BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod (`<service account>=<projects>[=<session>]`), `BROKER_EXCHANGE_JOB_WORKFLOWS` for a workflow run (`<repository>=<workflow path>=<ref>=<projects>[=<session>]`) and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine (`<service account email>=<projects>[=<session>]`, of an account `BROKER_VM_SERVICES` lists).
+`<projects>` is one project key, or `public` followed by `,<key>` for each of at most 16 private projects; `public` counts toward none.
+The token a job entry mints names the listed identity as its service and no person, holds no OAuth scope, and carries the entry's project scope and whole list, whatever the request names: `named` and its one project, or `public` and its private projects.
+A request under a job entry may name no project or only projects of the list, and is refused when it names any other, a public project's key under a `public` entry included, since the broker cannot tell a public project's key from a key no project holds.
+The broker asks Dispatch nothing for a job's token: the operator's entry chose the list, and it names no person whose sight of a project there is to check.
+A job entry that fixes no session takes the session the trade names, and the broker refuses a trade that names none; a job pod's entry that fixes no session takes a registration as a person's pod entry does, and one that fixes its session refuses a registration `409 SESSION_FIXED`.
+The launcher credential a machine's job trade mints still records the account's `BROKER_VM_SERVICES` service.
+Every machine of a `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` account trades for a job's token and writes to Dispatch as the job, for no person, so list an account there only when every machine that runs as it is the job's.
+The broker refuses to start on an identity that a job setting and the setting of its kind that names a person both list, and on an account that `BROKER_EXCHANGE_JOB_ACCOUNTS` and `BROKER_EXCHANGE_READ_ACCOUNTS` both list, because one identity has one answer.
 A machine login's token needs no entry at all: the person is the login's approver and the scope is `person` (`Set.Machine`).
 A person's own Google identity token needs the machine's own as the actor token, of an account an entry lists (`Set.Person`):
 the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gives, the scope is `person`, and the token names that person and that machine.
@@ -9887,15 +10827,20 @@ It authenticates with its own Kubernetes service-account token, or, on a machine
 The answer carries `active` and, for a live token, those claims, `exp`, `client_id` and `jkt` (`Introspection`, `packages/envoy/internal/cipher/oauth/introspect.go`).
 
 A broker that sets none of `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_GOOGLE_OIDC_AUDIENCE` accepts no pod's token, no workflow run's token and no machine's identity token, and says so at boot with the log line `token exchange state=unconfigured`.
-With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`) and machine entries included (`packages/envoy/cmd/cipherd/main.go`).
+With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`), machine entries (`machines`) and job entries (`job_accounts`, `job_workflows`, and `job_machines`, which `machines` counts too) included (`packages/envoy/cmd/cipherd/main.go`).
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/cipher/oauth/exchange.go`).
-For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/cipher/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its section "Exchange a pod's token".
+For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/cipher/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its sections "Exchange a pod's token" and "Exchange a job's token".
 
 Of what Legion runs, the operator-launched controller can present such a token, and under `dispatch_token_broker: true` so can the daemon and each role it starts in a pod that carries the exchange identity ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 Without that setting, a pod, the daemon and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes, and a tmux pane always does, since a tmux daemon is refused the setting.
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
-Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
-A `person` token's list of projects limits no Dispatch write at this release.
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names (`packages/envoy/internal/dispatch/api/broker_token.go`).
+A `named` token whose entry names one project writes every project's objects that a token naming no project may write.
+The one exception is a private project that the token does not name.
+Such a write writes nothing, and the token gets the answer of a target that does not exist at the same check.
+Dispatch still refuses such a token a write to a target that resolves to no project or to nothing (`packages/envoy/internal/dispatch/api/project_scope.go`, `packages/envoy/cmd/dispatch/README.md`).
+A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
+Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
 It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
@@ -9920,7 +10865,8 @@ A deployment that sets it also gives the daemon these:
 
 - **The secrets broker** lists the daemon's ServiceAccount in `BROKER_EXCHANGE_ACCOUNTS` with an entry that names the daemon's project, a person and the fixed session `legion-daemon:<PROJECT>`:
   `<the daemon's ServiceAccount>=<PROJECT>=<person>=legion-daemon:<PROJECT>`.
-  Dispatch refuses every write of a token that names no person (`SIGN_IN_REQUIRED`), every write to an issue of another project (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  Dispatch refuses a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  The project that the entry names does not limit the token's writes to that project.
   An entry that fixes its session needs no pod-session registration.
 
 - **Dispatch** decides broker tokens (`DISPATCH_AGENT_SECRETS_URL`, [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue)), and its `DISPATCH_PROOF_ORIGINS` names the in-cluster address that every daemon and pod calls it at, where that address is not the origin of `DISPATCH_SERVER_URL`.
@@ -9951,7 +10897,10 @@ The boot refuses, in words that name the cause:
   The boot logs any other failed trade and tries it again;
 
 - a `whoami` answer whose session is not `legion-daemon:<PROJECT>`, whose project is not the daemon's, or whose owner is `null`.
-  Each of these refusals names the `403` or the `SIGN_IN_REQUIRED` that Dispatch would answer every write of the daemon's with, and says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
+  The session refusal names the `403 ACTOR_SESSION_MISMATCH` that Dispatch would answer every write of the daemon's with.
+  The project refusal says that the token's project is not the daemon's, which is a fault of the exchange entry.
+  The owner refusal says that an exchange entry that names a project names the person it acts for.
+  Each refusal says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
 
 The boot logs one line that names the credential, and never a token: `legion daemon's Dispatch credential`, with `credential=broker`, the `session` and, where one is named, `transitionFile`.
 Without the setting the line carries `credential=file` and the `file`.
@@ -9971,6 +10920,8 @@ The daemon reads the file at boot and never calls Dispatch with it.
 A launch into such a live pod carries the transition token as every launch carried the shared token before: as `DISPATCH_TOKEN` in its start command, which its role reads through `DISPATCH_TOKEN_FILE`, and with no `DISPATCH_TOKEN_BROKER`.
 A launch into a pod that carries the exchange identity never carries it, with the file named or not.
 The daemon replaces such a pod with its update round, as it replaces every pod whose configuration drifted, and a launch never replaces it.
+With the transition file named, the exchange identity's drift does not break the pod: no launch into the pod is refused, so its roles keep working under the drift, and a read that finds work or fails keeps the pod (`roundKeeps`) until a later read finds nothing and a later round replaces it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+A pod whose exchange token differs from the one a pod built now projects only in its lifetime still trades (`carriesExchangeIdentity`), and its drift does not break the pod either, with the file named or not.
 
 With no transition file named, a launch into a live pod that carries no exchange identity is refused before anything of the pod is touched: `pod <name> carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it` (`runtime.ErrAwaitingPodRound`).
 The supervisor charges the claim nothing.
@@ -9991,17 +10942,20 @@ It may also be there if an earlier pod mounted the same kept volume and the clai
 So where such a claim had not answered the round, the daemon names it as having lost what it did not push, with a session now or with none.
 A waiting claim whose work cannot be on the pod's disk is named nothing: a role that never ran an agent and is refused for the pod with no session, one that a project's pause stopped and that never ran an agent, and, where the store does not mark the pod's disk as holding work from before the pod, one whose session an agent registered in another pod only.
 The replacement's Info line, `supervise: the pod of this update round is replaced and the round is over`, names under `waitingOnThePodNotWaitedFor` each waiting claim that had not answered and whose work may be on the pod's disk, whether or not it records the round (`unwaitedOnThePod`).
-The daemon's message on the issue names such a claim only where it records the round, and what the replacement reads first turns on whether a process of another claim runs in the pod (`lostWaitingClaims`):
+The architect's `workspace-taken` notice names such a claim only where it records the round, and who reads the workspace before the replacement turns on whether a process of another claim runs in the pod (`lostWaitingClaims`):
 
 - Where no claim records a process in the pod, the sweep replaces the pod through the waiting claim, or the claim's own next try replaces it first where nothing holds the pod (`roundPodEndsAtLaunch`).
-  No process runs in the pod to read the workspace through, so neither replacement reads it.
-  Its message names each member of the round that had not answered and whose work may be on the pod's disk, such a claim among them, and it says that no process of these roles ran in the pod (`lostClaims`).
-  That holds where a claim's own try replaced the pod, of that claim and of any other member: by the next sweep such a member can record a process in the new pod, and a session once its new agent registers there, and the message names it only where its work may be on the disk of the pod that went.
-  Where no member is left to name, as where the sweep replaces the pod through a waiting claim with no session that is its issue's only claim, the daemon writes nothing on the issue.
+  No role process runs in the pod, so the pod's launcher reads the workspace before either replacement (`readPodWorkspace`), and never the waiting claim.
+  Where the replacement is made over a read that found work or failed, the notice names each member of the round that had not answered and whose work may be on the pod's disk, such a claim among them (`lostClaims`).
+  That holds where a claim's own try replaced the pod, of that claim and of any other member: by the next sweep such a member can record a process in the new pod, and a session once its new agent registers there, and the notice names it only where its work may be on the disk of the pod that went.
+  Where no member is left to name, as where the sweep replaces the pod through a waiting claim with no session that is its issue's only claim, the notice names no role.
 
 - Where a process of another claim runs in the pod, the claim's next try cannot replace the pod, since a launch keeps a pod that a claim records a process in (`keepAtLaunch`).
-  The sweep replaces the pod through that process, and first reads the workspace through it for a waiting claim that records the round, had not answered and whose work may be on the pod's disk, under the same conditions as for a claim the round passed over ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-  The message names that claim only where the read found work or failed.
+  The sweep replaces the pod through that process, which reads the workspace first.
+  Where the replacement is made over a read that found work or failed, the notice names that claim beside the claims the round did not wait for (`notAskedToPush`).
+
+With no transition file named, the drift of a pod that carries no exchange identity breaks the pod (`awaitsPodRound`): every launch into it is refused, so a keep of the pod could leave a waiting claim that is its issue's only claim with no way to run again.
+Its round replaces the pod after the read of its workspace whatever the read finds, and tells the issue's architect what the read found ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 
 Where the pod goes before its round is over, the daemon's message that the pod went names such a claim by the same rule, with the other members that had not answered and whose work may be on the pod's disk (`lostClaims`).
 That holds where the pod is recreated from the issue's Sandbox without the exchange identity, and the runtime refuses each claim's retry again for the pod in its place: a role that never ran an agent and is refused for the pod that went with no session is named for it nothing, whatever pod it waits on by then.
@@ -10117,8 +11071,8 @@ the Go tmux daemon takes over the Kubernetes daemon's claims once every pod of t
 **`--resume` keeps the same-agent invariant, and the table is what keeps it.**
 The tmux runtime looks for the recorded session file on the daemon host, in the other folders of the same sessions directory and of the pane's own sessions directory too.
 A session found nowhere is a session no store holds, whether or not `take_over` is set:
-the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect, to the controller and to the new agent in its own prompt (dispatch://INFRA-714 R8), so a lost session is loud rather than silent.
-Oh My Pi itself does not refuse: verified against the pinned build (`omp --resume=<missing path> --mode rpc`), it exits 0, answers `ready`, and runs as a fresh agent, with no error frame and no mention of the file.
+the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect and to the new agent in its own prompt, so a lost session is loud rather than silent.
+Oh My Pi refuses too: measured on the pinned build (`omp --resume=<missing path> --mode rpc`), it prints `Error: Session "<path>" not found.` on stderr, writes no frame, and exits 1 (`main.ts` opens a resume by path with `throwIfMissing: true` and ends the process on that error, `exitForSessionResolutionError`).
 Under Kubernetes there is no file to look for and no init container that looks for one:
 every session is a row in the session database, and the pod's disk, which dies with the pod, never holds a transcript.
 The role's own launcher makes the check instead, inside the pod and before it starts the child:
@@ -10126,7 +11080,7 @@ it looks the recorded session up in the table through the mounted URL file and n
 A table that holds no such session (`gone`) is that session gone, and the daemon starts the fresh agent above.
 A table that does not exist, or a store that does not answer (`store-unreachable`), is a deployment fault that says nothing about the session:
 the claim keeps it, nothing is charged, the start is tried again every minute, and the issue and the controller are told at once and then hourly until the store answers.
-Should a resume by its file reach Oh My Pi with its row gone anyway, it starts a fresh session with a new id that the daemon refuses to register (`409 Worker respawn must resume the same agent session`), so the pod exits and the launch failure is counted there.
+Should a resume by its file reach Oh My Pi with its row gone anyway, Oh My Pi exits 1 with `Session "<path>" not found.` before it registers anything, so the pod's launch fails and is counted there.
 Either way the respawn fails loudly rather than quietly starting a new agent under the old role token (see [Selecting the store](#selecting-the-store)).
 A claim can record a session and no file of it: every release from `legion-v18.0.1` up to, and not including, `legion-v20.5.0` cleared the file at each issue close and kept the session id (dispatch://INFRA-4108).
 Such a claim on Oh My Pi is resumed by its id, and never started as a fresh agent while it records the session, because the daemon refuses the registration of any other session on it.
@@ -10142,9 +11096,10 @@ Through such a launcher the daemon names no session and no file, and the agent's
 That launcher reads no row and tells the agent that its workspace was not recreated, so the daemon's own prompt for that launch says that the workspace may have been recreated since the session last ran.
 Where that start does not register as the recorded session, because its process ends first or the registration deadline passes, the next try forgets the session, and neither that end nor the forget is charged.
 Oh My Pi ends such a start with exit code 1 when no row holds the id, on both builds measured, `18.18.6-sami.20261117-013345` and `18.18.6-sami.20261119-162325` (dispatch://INFRA-4108/comment/c0824089-87ef-4e1b-80e2-016a08e4133f).
-The second, the build this release pins, also ends it with exit code 1, after a wait of up to 35 s, while another live Oh My Pi holds the session, since the daemon sets `OMP_SESSION_EXCLUSIVE=1` on every Oh My Pi resume.
+The second, and the build this release pins (`18.18.6-sami.20261126-110039`, read in its source), also end it with exit code 1, after a wait of up to 35 s, while another live Oh My Pi holds the session, since the daemon sets `OMP_SESSION_EXCLUSIVE=1` on every Oh My Pi resume.
 A row whose recorded directory is gone ends such a start with exit code 1 on the first build only: in RPC mode the pinned build resumes that row in place, under the same id.
-The issue, its architect and the controller are told, with the notice kind `session-forgotten`, that the pod's launcher could not look the session up and that Oh My Pi did not resume it by its id.
+The issue and its architect are told, with the notice kind `session-forgotten`, that the pod's launcher could not look the session up and that Oh My Pi did not resume it by its id.
+The controller is not told, as it is not told of a lost session.
 No pod is replaced and nothing waits for one: a replacement deletes the pod's disk with the unpushed work of every role whose process has stopped, and a wait for the pod's update round has no end in a pod where no other role runs.
 A process that an earlier release started for such a claim can still register after the boot as a new session, on that release's older plugin contract.
 The daemon refuses it `409` as before, charges nothing for its end, and the next launch takes one of the ways above.
@@ -10185,7 +11140,8 @@ Containers, in order:
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
    `ok: false` fails the delivery exactly as a failed `metaedit` does on tmux.
-   The metaedit fills an empty author, and `jj git push` refuses a commit with an empty author.
+   The metaedit fills an empty author.
+   `jj git push` refuses a commit with an empty author, but the push step of `legion jj` first gives such a commit the author of the role that its `Legion-Role` trailer names, where the step's rules let it (`docs/deployment.md`).
 
 Volumes and mounts:
 
@@ -10312,7 +11268,7 @@ controller start has none to start`): one controller runs per project.
 
 **The claim.**
 The controller is one claim, `legion-<project>-controller`, on the role `controller` with no issue and no tree.
-It is supervised like any claim: a pod that dies is relaunched and resumes the same Oh My Pi session, within `launch_failure_limit`;
+It is supervised like any claim: a pod that dies is relaunched and resumes the same Oh My Pi session, within `launch_failure_limit`, unless the session has finished a turn and that death is its second end in a row before another finished turn, or the session is older than `controller_session_max_age_hours`, when the relaunch starts a fresh session;
 a daemon that restarts re-adopts the running pod and launches no second one.
 A claim whose budget ran out fails, as any claim does, and the daemon retries it with fresh budgets after a minute, doubling the wait at each retry that fails again up to thirty minutes, and resetting it once the controller is ready.
 `legion claims list` shows the claim; the workflow never sees it.
@@ -10334,10 +11290,14 @@ a token no launch resolves is refused as an invalid boot token, the operator's c
 in an architect's or phase worker's session it needs the operator's capability like any other takeover, and stops before any daemon call without one.
 
 **The pod.**
-Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool, under gVisor or, where `runtime.kubernetes.sandbox.type` is `microvm`, in a GKE Sandbox microVM ([Pods in microVMs](#pods-in-microvms)), with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
+Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, under gVisor or, where `runtime.kubernetes.sandbox.type` is `microvm`, in a GKE Sandbox microVM ([Pods in microVMs](#pods-in-microvms)), with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
 Its one container, `controller`, runs `legion launcher --role controller`:
 it authenticates to the worker stream with its own launcher token and starts and stops the controller's `legion worker-shim` and Oh My Pi, on the pod baseline (`--pod-safety`:
 the two session-placing variables, [Settings order](#operator-configuration), and Oh My Pi's profile directory made under its state home, `/legion/scratch/state/controller`), on the daemon's command, as an issue pod's launcher does each role's, so a relaunch in a healthy pod is a new generation of that child rather than a new pod.
+The launcher adds `--reap-orphans` to that shim's command (`reapingShim`, `internal/launcher/launcher.go`), and to no shim under role-init.
+With it the shim makes itself the child subreaper of everything it starts and reaps the orphans its process group leaves, rather than the launcher, the container's PID 1, reaping them from a group of its own, which under the cluster's gVisor could make the shim's group read as orphaned and hang it up ([Each role in namespaces of its own](#anatomy-of-a-sandbox-pod) says how).
+Every child the shim waits for itself (Oh My Pi, the secrets keygen and renewer) starts through one guard that this reaper passes over (`internal/subreaper`), so no such child's exit is taken from its own wait.
+The memory guard of this pod tells the shim's own children from the orphans the shim adopts, and may end an adopted orphan as it may end one that PID 1 adopted ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 In a microVM its launcher is also given `--microvm` and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, the metadata endpoint's two flags, and then serves that endpoint from the projected token it mounts at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Its role Secret, `legion-<project>-controller-controller-boot`, holds the launcher's token and its gh bundle (each owner's `github-hosts-<owner>` and `github-config-<owner>`, the review App's read-only `hosts.yml` and `config.yml` for every owner that App is installed on and for an owner a configured rename moved a repository away from, each token reaching every repository that owner's installation holds, `github-renames`, the bundle's configured renames, and `github-default`, the first owner), refreshed every minute as every role's are, and is the only Secret its launch writes:
 there is no provisioning `-boot` Secret.
@@ -10353,17 +11313,23 @@ It runs no init container (`controllerPod.initContainers`): nothing on its volum
 The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no tree's cleanup lists it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
-It runs as the operator's ServiceAccount (`runtime.kubernetes.pod`), the same account as every issue pod, and it is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps that account to `legion-daemon`.
+It runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, and as the operator's `runtime.kubernetes.pod.service_account`, the same account as every issue pod, where it does not, so a deployment that names no controller account runs its controller exactly as before (`controllerPod.serviceAccount` in `podkind.go`, `podTemplate` in `manifest.go`).
+The account a running controller pod is held to is that same one: a pod on any other, `service_account` included while the key names another, is warned of at boot and replaced at the controller's next launch, since no update round covers the controller's pod (`accountDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)); every other pod is held to `service_account` whatever the key says, but a repository cache's pod while `runtime.kubernetes.repository_cache.bucket` is set, which is held to `runtime.kubernetes.repository_cache.service_account`.
+The image probe's pod runs as `service_account`, so the probe at boot does not check that the controller's account exists:
+create that ServiceAccount in `runtime.kubernetes.namespace` before naming it.
+It is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps the account it runs as to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
+With `agent_secrets.exchange_audience` set, the controller's pod also projects an exchange token of its own account and trades it as an issue pod does (`exchangeTokenProjection`, `manifest.go`), and the broker refuses a pod-sessions registration of an account that neither `BROKER_EXCHANGE_ACCOUNTS` nor `BROKER_EXCHANGE_READ_ACCOUNTS` lists (`403 POD_ACCOUNT_NOT_LISTED`, `packages/envoy/internal/cipher/api/handlers_pod_sessions.go`).
+So a controller given an account of its own loses that trade unless one of those two lists names its account too.
 Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
 Once that token carries the tag `project-channels=slack`, a session whose credential names a private Dispatch project gets it only behind the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's owner named and on nothing else, so a private project's controller posts only to its project's channels and cannot read a Slack thread with it.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
 "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:
 Karpenter never consolidates or replaces for drift the node it runs on, though issue pods can still be scheduled onto that node;
-GKE Autopilot holds off a scale-down or node-upgrade eviction of the pod for up to seven days ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) has what it does not stop), after which Autopilot may evict it like any other pod, and it is relaunched and resumes the same session like any claim's pod that dies ("The claim", above).
+GKE Autopilot holds off a scale-down or node-upgrade eviction of the pod for up to seven days ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) has what it does not stop), after which Autopilot may evict it like any other pod, and it is relaunched and resumes the same session like any claim's pod that dies ("The claim", above), unless the session has finished a turn and that death is its second end in a row before another finished turn, or the session is older than `controller_session_max_age_hours`, when the relaunch starts a fresh session (`controller_turn_bound_minutes` and `controller_session_max_age_hours` above say the rest).
 Its agent is told `LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_PROJECT`, `LEGION_DAEMON_URL`, the Envoy, NATS and Dispatch settings, `LEGION_SLACK_CHANNELS`, the project's Slack channels comma-separated and empty for none (the runtime's, always set, and refused in `runtime.kubernetes.pod.env` and `provider_keys`, so no list but the project's reaches it;
 its plugin subscribes to each channel's mention topic while the session holds the controller role, registered with no listener, and a resume first drops every Slack topic an earlier session registered (a restored one would outlive the role), so a resume or relaunch hears the channels the launch names and no others;
-the list is one of the addresses the runtime records per generation, so a daemon restarted with another `slack_channels` re-adopts the controller as an address that moved and relaunches it, resuming its session;
+the list is one of the addresses the runtime records per generation, so a daemon restarted with another `slack_channels` re-adopts the controller as an address that moved and relaunches it, resuming its session, or starting a fresh one when the session is older than `controller_session_max_age_hours`;
 `legion controller start` drops an inherited value, and any controller but this one ignores it), the launch secrets' `<NAME>_FILE` pointers, and the six gh variables exactly as each role of an issue pod is told them (`LEGION_GH_OWNERS_DIR=/var/run/legion/gh`, `GH_CONFIG_DIR` its first owner's directory there, `LEGION_GH_PATH=/usr/local/bin/gh`, `GH_TOKEN=""`, `GITHUB_TOKEN=""`, `GH_HOST=""`) and the git credential entries every role of an issue pod is told ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and nothing of a tree, an issue or a checkout.
 Its system prompt is the controller's role prompt, a part saying it runs headless in a pod, the daemon's `Design gate steps:` line, the project's repositories sentence, the project's `Slack channels:` line after it when `slack_channels` names any, and the deployment instructions.
 Its one container, the launcher, carries the controller's reservation
@@ -10383,7 +11349,7 @@ The container mounts the writer token at `/var/run/legion/roles/session-writer`,
 It mounts nothing at the fixed paths of the single-role form: `/var/run/legion/launcher`, `/var/run/legion/private`, `/var/run/legion/state`, `/var/run/legion/gh` and `/var/run/legion/agent-secrets`.
 role-init starts the controller's generation in namespaces of its own and binds the controller's own gh, private, state and agent-secrets key directories back at those paths, but not its launcher token.
 So the controller's agent finds each directory where it always has, and it reads neither the writer token nor the launcher token.
-The roles-dir form changes five things for the controller:
+The roles-dir form changes six things for the controller:
 
 - The memory guard knows the controller's processes by the `role-init` above them, as an issue pod's guard knows each role's (`podClassifier`), in place of `controllerClassifier`, and it spares what an issue pod's guard spares in a role.
   Before the daemon's first answer it runs at an issue pod's defaults, and that answer hands it `runtime.kubernetes.memory_guard.controller_pod`'s settings, as in the single-role form (`launcherHelloAck`).
@@ -10396,6 +11362,9 @@ The roles-dir form changes five things for the controller:
 
 - A process that the controller's generation leaves running after its shim exits gets role-init's drain: SIGTERM over the role's namespace, two seconds (`roleNamespaceDrain`), then SIGKILL (`runRoleShim`, `internal/launcher/roleinit_linux.go`).
   In the single-role form, the launcher as PID 1 gives such a process up to `--stop-grace` (`cleanExitedGeneration`).
+
+- The orphans the controller's shim and Oh My Pi leave are reaped by role-init, inside the process group the shim shares with role-init, and the shim is not given `--reap-orphans` (`runRoleShim`).
+  In the single-role form the shim reaps them itself.
 
 - The controller's home overlay, its `/tmp` and `/var/tmp` and its own config home are on the role homes volume, a disk `emptyDir` that counts against the controller pod's ephemeral storage ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
 
@@ -10419,7 +11388,7 @@ A Send from the Agents page is answered in the conversation that page shows.
 Wakes reach it as they reach the operator's controller: it subscribes to `notifications.legion.<project>.controller` once it holds the role.
 
 **Switching back.**
-To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.
+To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.
 At boot, before it re-adopts or relaunches anything, that daemon stops the controller's claim the earlier boot left, unless it is retired already:
 its Sandbox is released and the claim retires (`legion claims list` shows it `retired`), logged as `controller: stopping the controller an earlier boot under controller: daemon launched; this daemon
 leaves the controller to its operator`.
@@ -10448,8 +11417,8 @@ With the row present, every agent's `read_record` fails, and the operator's cont
 So the fallback from `controller: daemon` is `controller: operator` on this release, never the previous image.
 A revert that cannot be avoided goes in this order:
 
-1. Remove `controller` and `runtime.kubernetes.resources.controller` from `legion.yaml`:
-   the earlier release refuses both as unknown keys, and without them this release runs `controller: operator`.
+1. Remove `controller`, `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account` from `legion.yaml`:
+   the earlier release refuses each as an unknown key, and without them this release runs `controller: operator`.
    Restart this release with that file and let it boot once.
    Do not skip this boot: only this release ends the stopped controller's registration.
    It also releases the controller's Sandbox and volume itself, which the earlier release's orphan sweep would otherwise do at its first boot:

@@ -129,6 +129,9 @@ type mergeWaitReadableLive struct {
 // approval that follows it, the two issues the same state carries no wait for at all, and the
 // answer that ends the wait.
 func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newMergeWaitReadableLive(t)
 	r.step("merge-wait-appears", r.mergeWaitAppears)
 	r.step("a-confirming-read-moves-the-stamp", r.aConfirmingReadMovesTheStamp)
@@ -140,9 +143,9 @@ func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
 
 // newMergeWaitReadableLive boots the daemon over the script's broker with the three issues already
 // recorded, each in reviewing and holding its tree's admission slot: the one the proof drives, on
-// an open pull request GitHub answers `blocked` for; the one whose reviewer requests changes in
-// step 5; and the one whose pull request the record holds closed, its reviewer's approval standing
-// at the head it was closed on.
+// an open pull request GitHub answers `draft` for, a state its round does not end on; the one
+// whose reviewer requests changes in step 5; and the one whose pull request the record holds
+// closed, its reviewer's approval standing at the head it was closed on.
 func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	t.Helper()
 	proof := newLiveProof(t, "scripts/e2e/merge-wait-readable.sh")
@@ -158,10 +161,12 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 		openedAt: opened, pushedAt: opened.Add(30 * time.Minute),
 	}
 	r.github = newMergeWaitGitHub(t)
-	// GitHub answers `mergeable: true` for a head it holds on a check or a review the repository
-	// requires as surely as for one it would merge now, which is what makes `mergeable_state` the
-	// only answer that tells those two apart (record.PullRequest.MergeState).
-	r.github.open(r.stuckNumber, claim.IssueBranch(r.stuck), mergeWaitFirstHead, true, "blocked", r.openedAt)
+	// GitHub answers `mergeable: true` for a draft as surely as for a head it would merge now, which
+	// is what makes `mergeable_state` the only answer that tells those two apart
+	// (record.PullRequest.MergeState). A `blocked` head would not do for the stuck round: a
+	// `blocked` answer either ends the round or waits quietly, and only one with a review request
+	// open is told of (classify.MergeOutcomeOf).
+	r.github.open(r.stuckNumber, claim.IssueBranch(r.stuck), mergeWaitFirstHead, true, "draft", r.openedAt)
 	r.github.open(r.movingNumber, claim.IssueBranch(r.moving), mergeWaitMovingHead, true, "blocked", r.openedAt)
 	r.seed()
 	// The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so the start a
@@ -279,7 +284,7 @@ func (r *mergeWaitReadableLive) token(issue string, role claim.Role) claim.Token
 
 // Step 1. The round waits, and the state says what on. CI settles the head's own two checks, every
 // run GitHub reported on it concluded, and the reviewer approves that head, which GitHub answers
-// `blocked` for: the round is one the daemon reads GitHub for, so the issue's view carries a
+// `draft` for: the round is one the daemon reads GitHub for, so the issue's view carries a
 // mergeWait naming the head, the state, when it was read, when GitHub last moved the pull request
 // and how many of the fence's runs are this head's own; and, once the daemon has told the
 // architect and the reviewer the round is stuck, the head and state it told them of.
@@ -290,15 +295,15 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 		r.stuckNumber, mergeWaitShort(mergeWaitFirstHead))
 	r.publishReview(r.stuckNumber, "approved", mergeWaitFirstHead)
 	r.note("drove the reviewer's APPROVE of %s, the head the pull request stands at, while GitHub answers that head mergeable_state %q",
-		mergeWaitShort(mergeWaitFirstHead), "blocked")
+		mergeWaitShort(mergeWaitFirstHead), "draft")
 
 	wait := r.waitForWait(r.stuck, "the merge wait of "+r.stuck+" with the stuck round told of",
 		func(got *api.MergeWaitView) bool { return got != nil && got.ToldHead != "" })
-	if wait.WaitsOn != mergeWaitFirstHead || wait.MergeState != "blocked" {
-		t.Fatalf("%s waits on %s/%s, want the approved head %s blocked", r.stuck, wait.WaitsOn, wait.MergeState, mergeWaitFirstHead)
+	if wait.WaitsOn != mergeWaitFirstHead || wait.MergeState != "draft" {
+		t.Fatalf("%s waits on %s/%s, want the approved head %s draft", r.stuck, wait.WaitsOn, wait.MergeState, mergeWaitFirstHead)
 	}
 	if wait.StateReadAt == nil {
-		t.Fatalf("%s's merge wait carries no stateReadAt, want the moment of the read that answered blocked", r.stuck)
+		t.Fatalf("%s's merge wait carries no stateReadAt, want the moment of the read that answered draft", r.stuck)
 	}
 	if wait.HeadUpdatedAt == nil || !wait.HeadUpdatedAt.Equal(r.openedAt) {
 		t.Fatalf("%s's merge wait carries headUpdatedAt %v, want GitHub's clock for the pull request, %v", r.stuck, wait.HeadUpdatedAt, r.openedAt)
@@ -306,8 +311,8 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 	if wait.CheckRuns != 2 {
 		t.Fatalf("%s's merge wait counts %d check runs of the head, want the head's own two", r.stuck, wait.CheckRuns)
 	}
-	if wait.ToldHead != mergeWaitFirstHead || wait.ToldState != "blocked" {
-		t.Fatalf("%s's merge wait was told stuck at %s/%s, want %s blocked", r.stuck, wait.ToldHead, wait.ToldState, mergeWaitFirstHead)
+	if wait.ToldHead != mergeWaitFirstHead || wait.ToldState != "draft" {
+		t.Fatalf("%s's merge wait was told stuck at %s/%s, want %s draft", r.stuck, wait.ToldHead, wait.ToldState, mergeWaitFirstHead)
 	}
 	issue := r.issue(r.stuck)
 	r.note("read back: %s is in %s, its pull request #%d at %s with mergeState %q, and its mergeWait is %s",
@@ -324,7 +329,7 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 // asked the daemon to read since step 1, so the stamp stands where that step left it; a
 // settlement of the same head — its two checks re-run and concluded the same way — asks for a
 // read of the round again (workflow's askMergeState, which Apply calls after every such fact,
-// whatever the handler recorded), GitHub answers the same `blocked` about the same head, and the
+// whatever the handler recorded), GitHub answers the same `draft` about the same head, and the
 // only thing the record takes from that answer is when it was read.
 //
 // This is the sentence the proof exists for, and the read is driven by a fact that moves nothing
@@ -351,7 +356,7 @@ func (r *mergeWaitReadableLive) aConfirmingReadMovesTheStamp() {
 
 	r.publishChecks(r.stuckNumber, mergeWaitFirstHead, "lint", "unit")
 	r.note("drove CI's settlement of the same head again, lint and unit re-run and concluded the same way, which asks the daemon to read GitHub for the round again; GitHub answers the same %q about the same head, the base has not moved under it, and nothing the wait is judged by has changed",
-		"blocked")
+		"draft")
 	wait := r.waitForWait(r.stuck, "a read of "+r.stuck+" later than "+before.StateReadAt.Format(time.RFC3339Nano),
 		func(got *api.MergeWaitView) bool {
 			return got != nil && got.StateReadAt != nil && got.StateReadAt.After(*before.StateReadAt)
@@ -463,12 +468,12 @@ func (r *mergeWaitReadableLive) aPushMovesTheHead() {
 		r.github.refusals(r.stuckNumber), r.stuck, mergeWaitShort(wait.WaitsOn), wait.HeadUpdatedAt.Format(time.RFC3339), wait.CheckRuns)
 
 	r.github.withhold(r.stuckNumber, false)
-	r.github.answers(r.stuckNumber, true, "blocked")
+	r.github.answers(r.stuckNumber, true, "behind")
 	r.publishBasePush()
 	answered := r.waitForWait(r.stuck, "the first answering read of "+mergeWaitSecondHead,
 		func(got *api.MergeWaitView) bool { return got != nil && got.StateReadAt != nil })
-	if answered.WaitsOn != mergeWaitSecondHead || answered.MergeState != "blocked" {
-		t.Fatalf("the first read of the new head left %s waiting on %s/%s, want %s blocked", r.stuck, answered.WaitsOn, answered.MergeState, mergeWaitSecondHead)
+	if answered.WaitsOn != mergeWaitSecondHead || answered.MergeState != "behind" {
+		t.Fatalf("the first read of the new head left %s waiting on %s/%s, want %s behind", r.stuck, answered.WaitsOn, answered.MergeState, mergeWaitSecondHead)
 	}
 	r.note("read back: GitHub answered again and the stamp appeared — %s", mergeWaitLine(answered))
 }
@@ -501,7 +506,7 @@ func (r *mergeWaitReadableLive) theNegativeControl() {
 }
 
 // Step 6. The wait ends when GitHub answers a state the issue may advance on. A settlement does
-// not end it — on a head GitHub answers `blocked` for, the settlement that concludes the head's
+// not end it — on a head GitHub answers `behind` for, the settlement that concludes the head's
 // checks moves the round from waiting to stuck, and both of those wait — so what ends it is the
 // read: GitHub answers `clean`, the approval that has stood throughout ends the round, and the
 // issue leaves reviewing with no mergeWait key behind it.

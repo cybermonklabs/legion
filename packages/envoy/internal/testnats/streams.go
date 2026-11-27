@@ -19,7 +19,7 @@ import (
 // jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. A create of a
 // stream of more than one copy on a cluster is answered from the stream's first leader, once its
 // members have elected one (processStreamLeaderChange), and on a loaded machine that election can
-// come after jetStreamWait, or the answer never come (sendCreate). Such a create goes through
+// come after jetStreamWait, or the answer never come (SendCreate). Such a create goes through
 // Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
@@ -51,15 +51,11 @@ func (c *Cluster) MemberJetStream(t testing.TB, i int) natsgo.JetStreamContext {
 	return js
 }
 
-// CreateStream creates the stream config names on a connection of its own to the cluster, sending
-// the create until the cluster answers it (sendCreate), and fails the test with the cluster's
-// refusal. The connection retries its first dial as it reconnects after a drop, every
+// CreateStream creates the stream config names on a connection of its own to the cluster
+// (CreateStreamOn). The connection retries its first dial as it reconnects after a drop, every
 // retryInterval: a create sent before it has connected waits in it, as on a loaded machine whose
 // members take longer than dialTimeout to answer a dial, and a create whose answer a drop lost is
-// sent again on it. A stream the cluster already holds under the name with another configuration
-// is refused as "stream name already in use", and the failure then names each field config sets
-// that the stream the cluster holds sets otherwise (streamDifference): a send again of this
-// create is answered with the stream it made, so that refusal is never this create's own stream.
+// sent again on it.
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
 	conn, err := natsgo.Connect(c.URL(), natsgo.Timeout(dialTimeout), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(retryInterval))
@@ -67,11 +63,23 @@ func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 		t.Fatalf("connect to the cluster to create stream %s: %v", config.Name, err)
 	}
 	defer conn.Close()
+	CreateStreamOn(t, conn, config)
+}
+
+// CreateStreamOn creates the stream config names on conn, sending the create until the cluster
+// answers it (SendCreate), and fails the test with the cluster's refusal. conn is the connection
+// whose grant the create is made under. A stream the cluster already holds under the name with
+// another configuration is refused as "stream name already in use", and the failure then names
+// each field config sets that the stream the cluster holds sets otherwise (streamDifference): a
+// send again of this create is answered with the stream it made, so that refusal is never this
+// create's own stream.
+func CreateStreamOn(t testing.TB, conn *natsgo.Conn, config natsgo.StreamConfig) {
+	t.Helper()
 	js, err := conn.JetStream(natsgo.MaxWait(createSendWait))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	err = sendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
+	err = SendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
 		_, err := js.AddStream(&config)
 		return err
 	})
@@ -464,10 +472,20 @@ func Copies(cluster *natsgo.ClusterInfo) int {
 	return 1 + len(cluster.Replicas)
 }
 
-// settled reports whether cluster shows n settled copies: a leader and n-1 replicas, every one
-// current with the leader and none offline. Every wait below settles on it.
+// leaderServes reports whether cluster names a leader that takes a write, for a group of copies
+// copies. nats-server names a group's new leader before that leader takes a write, and reports
+// LeaderSince only once it does (bus's leaderNotServing gives the server lines), so a group of
+// more than one copy has a serving leader only with LeaderSince set; one copy has no Raft node,
+// reports none, and its named member serves.
+func leaderServes(cluster *natsgo.ClusterInfo, copies int) bool {
+	return cluster != nil && cluster.Leader != "" && (copies <= 1 || cluster.LeaderSince != nil)
+}
+
+// settled reports whether cluster shows n settled copies: a leader that takes a write
+// (leaderServes), and n-1 replicas, every one current with the leader and none offline. Every wait
+// below settles on it.
 func settled(cluster *natsgo.ClusterInfo, n int) bool {
-	return cluster != nil && cluster.Leader != "" && len(cluster.Replicas) == n-1 &&
+	return leaderServes(cluster, n) && len(cluster.Replicas) == n-1 &&
 		!slices.ContainsFunc(cluster.Replicas, func(peer *natsgo.PeerInfo) bool { return !peer.Current || peer.Offline })
 }
 
@@ -504,13 +522,14 @@ func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consu
 }
 
 // AwaitStreamLeader waits, until the test's deadline (awaitInfo), until stream has a leader other
-// than not, the server_name of a member the test stopped or "" for any, and returns its info.
+// than not, the server_name of a member the test stopped or "" for any, that takes a write
+// (leaderServes), and returns its info.
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
+	return awaitInfo(t, fmt.Sprintf("stream %s had no leader other than %q that takes writes", stream, not),
 		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
 		func(info *natsgo.StreamInfo) bool {
-			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not
+			return leaderServes(info.Cluster, info.Config.Replicas) && info.Cluster.Leader != not
 		},
 		describeStream)
 }
@@ -541,10 +560,11 @@ func describeCopies(configured int, cluster *natsgo.ClusterInfo) string {
 }
 
 // describeCluster names every peer the cluster reports and the state settled reads: the leader,
-// and each replica's name, whether it is current with the leader, whether it is offline, how long
-// since it was last active and how far behind it is. A wait that ran out prints this because
-// printing the info itself prints the ClusterInfo as an address, so no CI log of a failed wait
-// could name the peer that was behind.
+// when it took the lead (LeaderSince, "none" while it takes no write yet: leaderServes), and each
+// replica's name, whether it is current with the leader, whether it is offline, how long since it
+// was last active and how far behind it is. A wait that ran out prints this because printing the
+// info itself prints the ClusterInfo as an address, so no CI log of a failed wait could name the
+// peer that was behind.
 func describeCluster(cluster *natsgo.ClusterInfo) string {
 	if cluster == nil {
 		return "the server reported no cluster for it"
@@ -558,8 +578,12 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 		peers = append(peers, fmt.Sprintf("%s current=%t offline=%t active=%s lag=%d",
 			peer.Name, peer.Current, peer.Offline, peer.Active, peer.Lag))
 	}
-	return fmt.Sprintf("%d copies reported, leader %q, replicas [%s]",
-		Copies(cluster), cluster.Leader, strings.Join(peers, "; "))
+	since := "none"
+	if cluster.LeaderSince != nil {
+		since = cluster.LeaderSince.UTC().Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("%d copies reported, leader %q since %s, replicas [%s]",
+		Copies(cluster), cluster.Leader, since, strings.Join(peers, "; "))
 }
 
 // awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and

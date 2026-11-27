@@ -45,9 +45,10 @@ type ReleasedName struct {
 // carries nothing of them and, where the daemon registers pod sessions, that it released the
 // session names among them. A broker that still carries some is a 409 naming each enrollment and
 // when it ends, or saying there are more than its answer lists (a supervise.RefusedError holding
-// a supervise.NamesCarriedError, which operatorFailure answers); a broker that does not answer
-// either question a 503 (supervise.ErrCarryUnanswered, supervise.ErrReleaseUnanswered), which a
-// run again can change; a broker that refuses the question for good a 502
+// a supervise.NamesCarriedError, which operationFailure answers); a broker that does not answer
+// either question, or answers with an outage (a 5xx, a 408 or a 429), a 503
+// (supervise.ErrCarryUnanswered, supervise.ErrReleaseUnanswered), which a run again can change; a
+// broker that refuses the question for good (a 4xx other than a 408 or a 429) a 502
 // (supervise.ErrCarryRefused), which a run again answers the same unless the broker is rolling,
 // and one that refuses the release for good a 502 too (supervise.ErrReleaseRefused). None frees
 // anything, and each 502 and 503 is logged as an operator request that failed, naming the
@@ -84,7 +85,7 @@ func (s *server) releaseNames(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusServiceUnavailable, "release-names refused: "+err.Error()+"; "+releaseUnansweredRemedy)
 		return
 	case err != nil:
-		s.operatorFailure(w, r, "release-names", token, err)
+		s.operationFailure(w, r, supervise.SuspendedByOperator, "release-names", token, err)
 		return
 	}
 	answer := ReleasedNames{Claim: token, Freed: make([]ReleasedName, len(released.Freed)), Checked: released.Checked, Abandoned: released.Abandoned}

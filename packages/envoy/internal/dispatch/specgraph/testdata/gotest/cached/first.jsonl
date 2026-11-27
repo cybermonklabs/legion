@@ -1,0 +1,14 @@
+{"Time":"2026-11-16T23:45:12.16132105Z","Action":"start","Package":"example.com/acme/gotest/cached"}
+{"Time":"2026-11-16T23:45:12.178041867Z","Action":"run","Package":"example.com/acme/gotest/cached","Test":"TestA"}
+{"Time":"2026-11-16T23:45:12.178099505Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:12.17811908Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"    cached_test.go:9: the answer is kept\n"}
+{"Time":"2026-11-16T23:45:12.178133205Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:12.178136768Z","Action":"pass","Package":"example.com/acme/gotest/cached","Test":"TestA","Elapsed":0}
+{"Time":"2026-11-16T23:45:12.178147802Z","Action":"run","Package":"example.com/acme/gotest/cached","Test":"TestB"}
+{"Time":"2026-11-16T23:45:12.178150211Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"=== RUN   TestB\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:12.178153499Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"    cached_test.go:13: not here\n"}
+{"Time":"2026-11-16T23:45:12.178158125Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"--- SKIP: TestB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:12.178160132Z","Action":"skip","Package":"example.com/acme/gotest/cached","Test":"TestB","Elapsed":0}
+{"Time":"2026-11-16T23:45:12.178162705Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:12.179519452Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"ok  \texample.com/acme/gotest/cached\t0.018s\n"}
+{"Time":"2026-11-16T23:45:12.183312751Z","Action":"pass","Package":"example.com/acme/gotest/cached","Elapsed":0.022}

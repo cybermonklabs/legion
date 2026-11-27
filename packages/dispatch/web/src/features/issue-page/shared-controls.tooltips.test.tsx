@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
@@ -62,6 +62,7 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -217,6 +218,13 @@ interface Stubs {
 }
 
 let stubs: Stubs;
+
+// A control's stored words - a step's reason, a person's line - are drawn by the lazy Markdown
+// engine, and the rows read each element's marks as soon as the control mounts. The rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   stubs = {
@@ -1172,8 +1180,12 @@ const priorityLineAtCap: Mount = {
       />
     );
   },
-  settle: async (view) => {
+  settle: async (view, user) => {
     await within(view.container).findByRole("alert");
+    // Outside `NoTooltips` the chips show ten, then a "+N" that shows the rest (INFRA-5200's
+    // `CappedGroup`); each of the twenty sets its title once shown.
+    const more = within(view.container).queryByRole("button", { name: /^\+10, show all/ });
+    if (more !== null) await user.click(more);
   },
 };
 
@@ -1207,6 +1219,7 @@ const repoNothingResolved: Mount = {
         key: "CORE",
         name: "Core",
         open_asks: 0,
+        proven_sessions: false,
       },
     ]);
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
@@ -1529,7 +1542,12 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [
     mountNamed("GitHubLink, a pull request, a plain link and an unsafe one"),
-    ["owner/repository#7: Ship it", "https://example.com/notes", "Unsafe external link"],
+    [
+      "owner/repository#7: Ship it",
+      "https://example.com/notes",
+      // The whole address, and why it is no link (INFRA-5200, c-review F4).
+      "Unsafe external link, not opened: javascript:alert(1)",
+    ],
   ],
   [
     githubUnread,
@@ -2013,12 +2031,23 @@ function boxHolds(element: Element, value: string): boolean {
   );
 }
 
+/** The element a holder of a value draws it as: the holder itself, unless the holder is a
+ *  Markdown body's (`MarkdownBody`), which takes no class, so its caller draws the value as the
+ *  element with the author-text mark around the body, whose classes are the value's. A body
+ *  with no such element around it is read as itself. */
+function valueDrawnBy(holder: Element): Element {
+  return (
+    holder.closest(".dispatch-markdown")?.parentElement?.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) ??
+    holder
+  );
+}
+
 /**
  * Each value `mount` draws among `drawn`: every element with the author-text mark, and each
- * element holding one of `mount.values` in its own text, or a text box holding it as its value or
- * its placeholder. A value inside `sr-only` is read aloud and drawn in no row, and a native
- * `<option>` is drawn by the browser's own list, which no class wraps, so neither is read.
- * `missing` takes each value of `mount.values` that nothing draws.
+ * element holding one of `mount.values` in its own text (`valueDrawnBy`), or a text box holding
+ * it as its value or its placeholder. A value inside `sr-only` is read aloud and drawn in no row,
+ * and a native `<option>` is drawn by the browser's own list, which no class wraps, so neither is
+ * read. `missing` takes each value of `mount.values` that nothing draws.
  */
 function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[]): Element[] {
   const shown = drawn.filter((element) => element.closest(".sr-only, select") === null);
@@ -2028,7 +2057,7 @@ function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[])
       (element) => ownText(element).includes(value) || boxHolds(element, value)
     );
     if (holders.length === 0) missing.push(`${mount.name}: draws no ${value}`);
-    for (const holder of holders) values.add(holder);
+    for (const holder of holders) values.add(valueDrawnBy(holder));
   }
   return [...values];
 }
@@ -2301,43 +2330,53 @@ interface DrawnPair {
   readonly text: string;
 }
 
+/** Whether an attribute is a class an element is drawn with: its own `className`, or the class
+ *  a component it mounts draws one of its parts with (the shared text field's `fieldClassName`,
+ *  `labelClassName` and `hintClassName`), which is drawn where the component is. */
+const CLASS_ATTRIBUTE = /^(?:className|[a-z][A-Za-z]*ClassName)$/;
+
+/** The expression an attribute's value is: what its braces hold, or its string. */
+function attributeExpression(attribute: ts.JsxAttribute): ts.Expression | undefined {
+  const value = attribute.initializer;
+  return value === undefined
+    ? undefined
+    : ts.isJsxExpression(value)
+      ? value.expression
+      : ts.isStringLiteral(value)
+        ? value
+        : undefined;
+}
+
 /** Each page colour pair the elements of `file` that read an `ON_PAGE` entry draw, in each state
  *  of theirs and of the elements around them: the text an element's class gives it, else the
  *  nearest around it; on the ground its class gives it, else each ground of the nearest element
  *  around it that draws one in every look it can take, with the grounds of the looks on the way
- *  that draw one; else the page's grounds. */
+ *  that draw one; else the page's grounds. A component's class of one of its parts
+ *  (`CLASS_ATTRIBUTE`) is read as an element of its own where the component is drawn; only its
+ *  `className` is around what the component holds. */
 function onPagePairs(file: ParsedSource): DrawnPair[] {
   const pairs: DrawnPair[] = [];
   const visit = (node: ts.Node, around: readonly (readonly PageLook[])[]) => {
-    const opening = ts.isJsxElement(node)
-      ? node.openingElement
+    const attributes = ts.isJsxElement(node)
+      ? node.openingElement.attributes.properties
       : ts.isJsxSelfClosingElement(node)
-        ? node
-        : undefined;
-    const classAttribute = opening?.attributes.properties.find(
-      (attribute): attribute is ts.JsxAttribute =>
-        ts.isJsxAttribute(attribute) && attribute.name.getText() === "className"
-    );
-    const value = classAttribute?.initializer;
-    const expression =
-      value === undefined
-        ? undefined
-        : ts.isJsxExpression(value)
-          ? value.expression
-          : ts.isStringLiteral(value)
-            ? value
-            : undefined;
-    if (opening === undefined || expression === undefined) {
-      ts.forEachChild(node, (child) => visit(child, around));
-      return;
-    }
-    const looks = classStrings(expression, file).flatMap((className) => {
-      const look = pageLook(className);
-      return look === undefined ? [] : [look];
-    });
-    const entries = onPageEntries(expression, file);
-    if (entries.length > 0) {
-      const line = file.source.getLineAndCharacterOfPosition(opening.getStart()).line + 1;
+        ? node.attributes.properties
+        : [];
+    let held: readonly PageLook[] | undefined;
+    for (const attribute of attributes) {
+      if (!ts.isJsxAttribute(attribute) || !CLASS_ATTRIBUTE.test(attribute.name.getText())) {
+        continue;
+      }
+      const expression = attributeExpression(attribute);
+      if (expression === undefined) continue;
+      const looks = classStrings(expression, file).flatMap((className) => {
+        const look = pageLook(className);
+        return look === undefined ? [] : [look];
+      });
+      if (attribute.name.getText() === "className") held = looks;
+      const entries = onPageEntries(expression, file);
+      if (entries.length === 0) continue;
+      const line = file.source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
       const states = new Set(
         [...looks, ...around.flat()].flatMap((look) => ["", ...look.bg.keys(), ...look.text.keys()])
       );
@@ -2353,7 +2392,7 @@ function onPagePairs(file: ParsedSource): DrawnPair[] {
         }
       }
     }
-    ts.forEachChild(node, (child) => visit(child, [looks, ...around]));
+    ts.forEachChild(node, (child) => visit(child, held === undefined ? around : [held, ...around]));
   };
   visit(file.source, []);
   return pairs;

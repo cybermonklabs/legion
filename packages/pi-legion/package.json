@@ -3,6 +3,7 @@
   "version": "18.14.1",
   "license": "Apache-2.0",
   "type": "module",
+  "//": "Test guards. The `test` script runs `bun test --parallel=4`, which sets no --timeout: test-timeout-preload.ts declares 300000 ms inside each worker (setDefaultTimeout + @legion/test-fixtures/deadline declareGuard), and a plain `bun test` keeps Bun's 5000 ms (bunfig.toml). The cold role-pane row of extensions/legion-background-subagent-omp.test.ts needs more than 5000 ms in every mode (a cold Oh My Pi pane start and NATS registration read 5-6 s unloaded), so it takes COLD_PANE_GUARD_MS = 300000 of its own: useRowGuard for the shared wait, `test`'s third argument for Bun's row kill, and the afterEach's own hook timeout, whose raw-await cleanup (killing omp, stopping the stub server) also outlasts 5000 ms under load. The value is well above twice the reading, for dev-box load.",
   "omp": {
     "extensions": [
       "extensions/legion.ts"
@@ -20,11 +21,11 @@
     "agents"
   ],
   "scripts": {
-    "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
+    "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --parallel --timeout 300000 --preload @legion/test-fixtures/row-deadline",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
+    "test": "bun test --parallel=4",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

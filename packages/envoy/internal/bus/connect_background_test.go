@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stoppedNATS is a NATS server with JetStream that a test started and then stopped, and its URL:
@@ -114,13 +115,10 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 		_, err := client.SubscribeCore(lane, func(*natsgo.Msg) { core.Add(1) })
 		subscribed <- err
 	}()
-	select {
-	case err := <-subscribed:
-		if err != nil {
-			t.Fatalf("a core subscription before the first connection: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("SubscribeCore waited for a connection the server cannot give")
+	// The server stays down until the wait ends, so a SubscribeCore that waits for a connection
+	// never returns, and the wait names it.
+	if err := testwait.Receive(t, "SubscribeCore to return without waiting for a connection the server cannot give", subscribed); err != nil {
+		t.Fatalf("a core subscription before the first connection: %v", err)
 	}
 
 	srv.Start(t)
@@ -149,6 +147,8 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 type shortAcknowledgementClock time.Duration
 
 func (c shortAcknowledgementClock) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	// The bound under test, not a wait: c is the publish's own deadline, which the row makes pass
+	// (300 ms) to show the publish ends within it rather than waiting for a connection.
 	return context.WithTimeout(parent, time.Duration(c))
 }
 
@@ -279,7 +279,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	_, allowed := testnats.User(t)
 	refused, _ := testnats.User(t)
 	uri := testnats.StartNkeyAuthorized(t, allowed)
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 	const refusal = "envoy nats authorization refused"
 	clock := &reconnectErrClock{now: time.Now()}
 	name := "refusal-test-" + t.Name()
@@ -287,7 +287,8 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 		bus.WithName(name),
 		bus.WithEnvironment(lookupOf(map[string]string{"NATS_NKEY_SEED": refused})),
 		bus.WithReconnectErrClock(clock.Now),
-		bus.WithConnectInBackground())
+		bus.WithConnectInBackground(),
+		bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect with a refused credential: %v", err)
 	}

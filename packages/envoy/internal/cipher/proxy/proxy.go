@@ -44,6 +44,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -103,15 +104,21 @@ type GrantSource interface {
 	// name and slot and answered again after, so a command that asks for one scope twice - and
 	// a second pod that exchanges that scope for itself - reads back the same string.
 	AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error)
+	// AirlockRules is the airlock's rules as the live policy holds them: the profiles file's
+	// kinds, and the binding of each name whose secret's proxy tag names one. A tag changes at
+	// runtime, so the proxy reads them on each request and each CONNECT rather than once at
+	// boot (requests.Machine.AirlockRules).
+	AirlockRules() proxyrules.Rules
 }
 
 // Options is what a Server is built from.
 type Options struct {
-	// Rules is the airlock's rules file, read once at boot: which hosts each secret may reach
-	// and in which headers.
-	Rules proxyrules.Rules
-	// Grants is the broker's own two reads, in production a *requests.Machine.
+	// Grants is the broker's own reads, in production a *requests.Machine: the grant behind a
+	// connection, its values, the policy version and the airlock's rules.
 	Grants GrantSource
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 	// CA signs the certificate of each bound host.
 	CA *Authority
 	// Idle is BROKER_AIRLOCK_IDLE_SECONDS: how long one connection may go with no byte in
@@ -186,22 +193,22 @@ type Options struct {
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
 	// the check that both halves belong to.
 	KeepValues bool
-	// NoKind turns off the azure kind's exchange of a command's token request and the AWS
-	// signing, so an entry whose kind names one of them takes the plain header swap instead, and
-	// a request carrying the federated token's placeholder in a header is still refused
-	// (serveBound). BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two
-	// kinds belong to.
+	// NoKind turns off the exchange of a command's token request and the AWS signing, so a
+	// binding whose way is exchange or sign takes the plain header swap instead, and a request
+	// carrying the federated token's placeholder in a header is still refused (serveBound).
+	// BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two ways belong
+	// to.
 	NoKind bool
-	// AzureAuthority is the host of the token authority every exchange of the azure kind is
-	// made at (azure.go): a host name in lower case with no port, which the host of a token
-	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
-	// login.microsoftonline.com. A token request to any other host an azure entry binds is
-	// refused, and so is an access slot that names one, since the exchange carries the broker's
-	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
-	// whose token authority is a stand-in.
+	// AzureAuthority is the host of the token authority every exchange is made at (azure.go): a
+	// host name in lower case with no port, which the host of a token request's connection,
+	// ASCII lower-cased, must equal exactly, and "" for Microsoft's, login.microsoftonline.com. A
+	// token request to any other host an azure-login name's kind binds is refused, and so is an
+	// access slot that names one, since the exchange carries the broker's federated token.
+	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack, whose token
+	// authority is a stand-in.
 	AzureAuthority string
 	// DPoPKey is the pod's own key, which the proxy signs the DPoP proof of each request to a
-	// host whose entry is of kind dpop with (mintedTransport): made at the broker's start, held
+	// host whose binding is a dpop block with (mintedTransport): made at the broker's start, held
 	// in this process alone, and the key every token this pod mints for a minted capability's
 	// grant is bound to. Nil refuses every request to such a host, since no proof can be made.
 	DPoPKey *ecdsa.PrivateKey
@@ -210,8 +217,8 @@ type Options struct {
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
 // live grant.
 type Server struct {
-	rules  proxyrules.Rules
 	grants GrantSource
+	hold   *hold.Gate
 	ca     *Authority
 	idle   time.Duration
 	watch  time.Duration
@@ -279,7 +286,8 @@ type Server struct {
 
 	// values is each grant's real values, read once per grant on this pod and held until the
 	// reread of one of its names drops it (DropName) or a minted value nears its expiry
-	// (grantValues, mintAgainBefore).
+	// (grantValues, mintAgainBefore); a grant's whole entry leaves by the one rule valuesFor's doc
+	// states, once the grant's end has passed.
 	valuesMu sync.Mutex
 	values   map[string]*grantValues
 
@@ -333,8 +341,8 @@ type decryptedKey struct{}
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
 func New(o Options) *Server {
 	s := &Server{
-		rules:         o.Rules,
 		grants:        o.Grants,
+		hold:          o.Hold,
 		ca:            o.CA,
 		idle:          o.Idle,
 		watch:         o.Watch,
@@ -505,7 +513,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // serveProxy is the whole of the outer server: a proxy request, a credential that proves a live
-// grant, and then either a tunnel or a bound host.
+// grant of a person Dispatch does not hold, and then either a tunnel or a bound host.
 func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// A request that is neither CONNECT nor an absolute-URL proxy request is somebody treating
 	// this port as an ordinary web server. It serves nothing of its own, not even a health
@@ -537,6 +545,13 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 			// The broker's own refusal of this grant, in its own words (grantRefusal).
 			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
 		}
+		return
+	}
+	// The person the grant's session acts for, asked of the hold before anything else of the
+	// request is read: a connection a held person opens is refused, a tunnel no less than a bound
+	// host, and so is each of their plain requests (holdRefusal).
+	if status, code, why := s.holdRefusal(r.Context(), grant.Operator); status != 0 {
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, status, code, why)
 		return
 	}
 	// Every dial below this point is made for this grant, and the lines it writes name it
@@ -694,6 +709,34 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
 }
 
+// holdUnreadable is the message of the line a check of the hold that decided nothing logs, with
+// the gate's own error, which no answer carries (holdRefusal, carryRefusal).
+const holdUnreadable = "airlock proxy: whether Dispatch holds a person could not be read"
+
+// holdRefusal is the status, the code and the words a request is refused with when the person
+// its grant's session acts for (requests.AirlockConnection's Operator) is one the hold refuses,
+// by the gate's Verdict (hold.Verdict.Refusal), and zero for a person it serves and for a grant
+// whose enrollment names no person - a pod's own, a machine's own session. A held person is 403
+// MEMBERSHIP_HELD. Every kind that decides nothing is 503 HOLD_UNCHECKABLE, a held answer the
+// broker could not keep among them, since the broker could serve that person in a later outage of
+// Dispatch. A request reads it after the connection read and before any value of the grant, so a
+// held person's request reaches neither the values this pod holds nor the store's.
+//
+// The 503 names the failure by its kind in fixed words (hold.Verdict.Words) and never in the
+// gate's own words, which hold a Postgres error's database user, name and address when the broker
+// could not read or keep an answer, as grantRefusal's 503 holds none of the read's: those words go
+// to the log.
+func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, string) {
+	if person == "" {
+		return 0, "", ""
+	}
+	v := s.hold.Decide(ctx, person)
+	if v.Kind != hold.Served && v.Kind != hold.Held {
+		s.log.Error(holdUnreadable, "person", person, "error", v.Err)
+	}
+	return v.Refusal()
+}
+
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://, or that sent an https URL to the proxy as it is rather than
 // as a CONNECT.
@@ -730,9 +773,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	r.URL = &forwarded
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
-	// port an entry's hosts speak about, while the refusal below is about no port at all: a
+	// port a kind's hosts speak about, while the refusal below is about no port at all: a
 	// value may not cross in the clear whatever port it was asked for on.
-	if len(s.candidates(grant, host, 443)) > 0 {
+	if len(candidates(s.grants.AirlockRules(), grant, host, 443)) > 0 {
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would
 		// cross the network in the clear, and no rule of the airlock says a secret may. The
 		// command asks again over https, where the proxy's own certificate covers it.
