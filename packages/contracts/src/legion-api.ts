@@ -2270,12 +2270,18 @@ const legionSuspendedBy = z.enum([
  * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
  * though the daemon always writes it. The three enumerations are the entry's enumerated rows
  * (`enumeratedRows` of `contracts/20261125182642_agent-actions.json`), each whole at the
- * agent-actions contract. */
+ * agent-actions contract. `phaseNotRestarted` (the claim-start entry, dispatch://INFRA-5649) is
+ * what the controller's `retry` did that the state cannot say: the retry of a failed or retired
+ * phase worker whose phase's start waits for its issue's admission slot, which the issue does not
+ * hold, so the claim stays `failed` or `retired` until the slot comes; the sentence names the
+ * issue, and the issues it waits on where there are any. It is absent on every other answer, and a
+ * caller below that entry is served the answer without it. */
 export const LegionAgentActionResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES).optional(),
   suspendedBy: legionSuspendedBy.optional(),
   suspensionHeld: z.literal(true).optional(),
   suspensionHeldBy: legionSuspendedBy.optional(),
+  phaseNotRestarted: z.string().optional(),
 });
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue

@@ -255,5 +255,30 @@
     "ok": false,
     "why": "a document's block, then an issue message's",
     "problem": "is a block of a message: a block[] attribute points only at a block of a document"
+  },
+  {
+    "attribute": "parent",
+    "value": "dispatch://CORE-1/spec#b-x",
+    "ok": true,
+    "why": "a parent of one block"
+  },
+  {
+    "attribute": "parent",
+    "value": "",
+    "ok": true,
+    "why": "no parent"
+  },
+  {
+    "attribute": "parent",
+    "value": "dispatch://CORE-1/spec#b-x dispatch://CORE/artifact/handbook-md#b-y",
+    "ok": false,
+    "why": "a parent of two blocks",
+    "problem": "holds 2 references; a block has one parent, so it holds at most one"
+  },
+  {
+    "attribute": "needs",
+    "value": "dispatch://CORE-1/spec#b-x dispatch://CORE/artifact/handbook-md#b-y",
+    "ok": true,
+    "why": "a needs of two blocks, which only the parent's rule would refuse"
   }
 ]

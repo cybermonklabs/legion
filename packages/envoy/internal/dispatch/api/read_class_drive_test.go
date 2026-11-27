@@ -523,40 +523,42 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 //
 // A tracer on the whole pool the server and the broker-token verifier share records every
 // statement on any context (poolStatements), and each read-only request is sent in a window: it
-// opens before the request and closes no sooner than 2 s after the answer and once the pool has
-// run no write for 500 ms, and a window still open at 20 s fails the row. The window must hold no
-// write a read may not make (readMayWrite), wherever it ran; it must hold the request's own
-// credential check, the insert that spends the broker token's proof or the lookup of the personal
-// token; and it must hold the statement the row's drive names, unless the drive says why the
-// handler reads from memory. Each read-only answer must equal its writer's, status and body, but
-// for the members the row's drive lists as volatile, each with its reason, and but for a row
-// whose answer describes the credential (whoami), whose credential's members are held to the
-// read-only credential's own answer.
+// opens before the request and closes only after its read stages, statistics refreshes, roster
+// fetches, startup marker and detached writes have completed. Work still running at 20 s fails
+// the row. The window must hold no write a read may not make (readMayWrite), wherever it ran; it
+// must hold the request's own credential check, the insert that spends the broker token's proof
+// or the lookup of the personal token; and it must hold the statement the row's drive names,
+// unless the drive says why the handler reads from memory. Each read-only answer must equal its
+// writer's, status and body, but for the members the row's drive lists as volatile, each with
+// its reason, and but for a row whose answer describes the credential (whoami), whose credential's
+// members are held to the read-only credential's own answer.
 //
 // The rows are dealt, in the table's order, to as many worlds as go test runs tests at once
 // (driveWorldsFor), each a seeded store, a server and a tracer of its own (newDriveWorld). The
 // worlds run at once and each sends its rows one after another, so a window reads its own world's
 // pool alone and holds no statement of a row another world sends beside it.
+// Statements between windows are checked too. Each world finishes with a two-second observation
+// after its last row, so an unregistered worker cannot escape by writing between requests or
+// after the last response. Such a failure may name the following row or the end of the world,
+// rather than the row that started the worker.
+// The writing-token oracle's own context and its descendants are exempt from gap policy, as in
+// the base test: a writing results read may persist metadata. Unmarked work is never exempt,
+// including an unregistered worker that writes while the oracle is serving.
 //
 // In each world, before its first row, a calibration window, GET /api/v1/limits under the
-// deployment's shared token, which writes nothing, must hold no write at all: no duty of the rig
-// writes while a row is driven. Then the pre-check must see, each in its own window, one insert
+// deployment's shared token, joins known workers and observes two more seconds for an unknown
+// background writer. It must hold no write. Then the pre-check must see, in its own windows, an insert
 // into text_trees (the first read of a version no other test or world has shown), one upsert of
 // route_roster on the server's own context (a read of a stale roster), and the term statistics
 // refresh a related read starts on the server's own context, so a tracer that sees nothing, or
 // sees the request's own context alone, fails before any row.
 //
 // DISPATCH_READ_DRIVE_ROWS narrows the run to the rows it names, separated by commas (each
-// "GET <pattern>"); unset, every read row runs, which takes minutes,
-// about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
-// and the pre-check run either way.
+// "GET <pattern>"); unset, every read row runs. The calibration and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
-	// Not parallel: it holds every window and every personal pair to a wall-clock bound
-	// (driveWindowLimit, agentTokenUse's minute), and run among this package's parallel tests on
-	// CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
-	// missed its 3 s beside it (envoy-go-race-api job 137929719893). Its rows run at once among
-	// themselves, each world on its own, while the package's parallel tests wait for the serial
-	// ones to end.
+	// Not parallel: it holds every request and all its workers to driveWindowLimit and every
+	// personal pair to agentTokenUse's minute. Each isolated world's rows run one after another
+	// while the package's parallel tests wait for the serial tests to end.
 	rows, drives := drivenRows(t, readWritesNothing)
 	worlds := driveWorldsFor(len(rows))
 	// The worlds run inside one subtest, which ends only once every world has: go test stops a
@@ -577,6 +579,8 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 						world.driveRead(t, name, drives[name], &tally)
 					})
 				}
+				tail := world.tracer.window(t, "after the world's last row", driveCalibrationWindow, func() {})
+				requireReadsWrites(t, "after the world's last row", nonOracleStatements(tail))
 				writes := make([]string, 0, len(tally.writes))
 				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
 					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
@@ -589,24 +593,21 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 }
 
 // driveWorldsFor is how many worlds the read drive deals its rows to: one for each test go test
-// runs at once (-parallel), and never more than there are rows. A row is mostly its two pairs'
-// fixed waits, 5 s at least (each read-only window open driveWindowAfterAnswer after its answer,
-// each writer's request followed by driveWindowQuiet): in envoy-go-race-api job 139402324284 its
-// 114 rows took 5.05 to 5.76 s each, 582 s of the test's 595 s, one after another on one world.
-// Rows on worlds of their own wait at the same time.
+// runs at once (-parallel), and never more than there are rows. Each world has its own store,
+// server and completion barriers.
 func driveWorldsFor(rows int) int {
 	parallel, _ := flag.Lookup("test.parallel").Value.(flag.Getter).Get().(int)
 	return max(1, min(rows, parallel))
 }
 
-// calibrate is the calibration row: GET /api/v1/limits under the deployment's shared token, whose
-// request writes nothing, in a window that must hold no write. A write in it is a duty of the rig
-// writing while nothing asked it to, which would land in any row's window.
+// calibrate joins the known workers of GET /api/v1/limits under the shared token, then observes
+// the whole pool for driveCalibrationWindow. A write in that interval catches a background
+// source the completion barriers do not name, even though this request itself writes nothing.
 func (w *driveWorld) calibrate(t *testing.T) {
 	t.Helper()
-	w.tracer.quiet(t, "before the calibration row")
+	w.tracer.settle(t, "before the calibration row")
 	var response *httptest.ResponseRecorder
-	statements := w.tracer.window(t, "the calibration row", func() {
+	statements := w.tracer.window(t, "the calibration row", driveCalibrationWindow, func() {
 		request := drivenRequest(httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil))
 		request.Header.Set("Authorization", "Bearer agent-token")
 		response = w.rig.serve(request)
@@ -627,9 +628,9 @@ func (w *driveWorld) precheck(t *testing.T) {
 	readOnly := w.brokerSend("the machine login's narrowed token", w.readOnly)
 	send := func(what, target string) []drivenStatement {
 		t.Helper()
-		w.tracer.quiet(t, "before "+what)
+		w.tracer.settle(t, "before "+what)
 		var response *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
+		statements := w.tracer.window(t, what, 0, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
@@ -688,12 +689,12 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 	for _, pair := range w.pairs() {
 		readOnly, writer := pair[0], pair[1]
 		what := readOnly.who + " on " + target
-		w.tracer.quiet(t, "before "+what)
+		w.tracer.settle(t, "before "+what)
 		if readOnly.personal {
 			w.startPersonalPair(t)
 		}
 		var answer *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
+		statements := w.tracer.window(t, what, 0, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
 		tally.statements += len(statements)
 		for _, write := range requireReadsWrites(t, what, statements) {
@@ -714,8 +715,10 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 			t.Errorf("%s: the window holds no statement matching %s among %d: the tracer did not see the handler's read:\n%s",
 				what, drive.statement, len(statements), statementList(statements))
 		}
-		answered := w.rig.serve(writer.request(t, target))
-		w.tracer.quiet(t, "after "+writer.who+" on "+target)
+		oracle := writer.request(t, target)
+		oracle = oracle.WithContext(context.WithValue(oracle.Context(), writingOracle{}, true))
+		answered := w.rig.serve(oracle)
+		w.tracer.settle(t, "after "+writer.who+" on "+target)
 		if answer.Code != status {
 			t.Errorf("%s: answered %d %s, want %d", what, answer.Code, cutBody(answer.Body.String()), status)
 		}
@@ -780,9 +783,9 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			if before := stored(t, world, drive); before != 0 {
 				t.Fatalf("before the drive the store holds %d of what %s writes, want none", before, name)
 			}
-			world.tracer.quiet(t, "before "+target)
+			world.tracer.settle(t, "before "+target)
 			var answer *httptest.ResponseRecorder
-			statements := world.tracer.window(t, target, func() { answer = world.rig.serve(writer.request(t, target)) })
+			statements := world.tracer.window(t, target, 0, func() { answer = world.rig.serve(writer.request(t, target)) })
 			if answer.Code != http.StatusOK {
 				t.Fatalf("GET %s answered %d %s", target, answer.Code, cutBody(answer.Body.String()))
 			}
