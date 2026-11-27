@@ -65,6 +65,20 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	killed := procgroup.Configure(cmd)
 	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
 	// the start still reads as a timeout below.
+	// PLANT (control commit, never for merge): RunCommand waits this long between starting the
+	// command and waiting for it, on the first call of the process alone, so the command's reap
+	// comes that much after its own exit. procgroup.Run waits once start has answered.
+	if delay := plantReapDelayOnce("cmd-reap-delay"); delay > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT cmd-reap-delay fired: %s between %s's start and its wait\n", delay, strings.Join(args, " "))
+		inner := start
+		start = func(cmd *exec.Cmd) (func(), error) {
+			done, err := inner(cmd)
+			if err == nil {
+				time.Sleep(delay)
+			}
+			return done, err
+		}
+	}
 	err := procgroup.Run(cmd, start)
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
