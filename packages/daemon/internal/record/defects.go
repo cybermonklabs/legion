@@ -217,8 +217,8 @@ func (s *Postgres) WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, 
 		return false, fmt.Errorf("withdraw defect %d of %s: a withdrawal says why", id, issue)
 	}
 	tag, err := tx.Exec(ctx, `update defects set withdrawn_at = $4, withdraw_reason = $3
-		where issue = $1 and id = $2 and kind = $5 and withdrawn_at is null and merged_at is null`,
-		issue, id, reason, at, string(DefectKindDefect))
+		where issue = $1 and id = $2 and kind = any($5) and withdrawn_at is null and merged_at is null`,
+		issue, id, reason, at, []string{string(DefectKindDefect), string(DefectKindRequest)})
 	if err != nil {
 		return false, fmt.Errorf("withdraw defect %d of %s: %w", id, issue, err)
 	}

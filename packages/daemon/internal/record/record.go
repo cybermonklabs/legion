@@ -2977,6 +2977,26 @@ type Store interface {
 	// whether one stood, so a confirmation allows one rerun alone. PutMergeSnapshot and every
 	// clear of a generation take it as well, and PutIssue keeps it.
 	ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error)
+	// PendingMergeRead is issue's standing merge_read row, locked until the transaction ends, nil
+	// for none: the request that waits for its merge read.
+	PendingMergeRead(ctx context.Context, tx pgx.Tx, issue string) (*PendingMergeRead, error)
+	// QueueMergeRead queues read as its issue's one merge_read row where none stands, and answers
+	// whether it queued one.
+	QueueMergeRead(ctx context.Context, tx pgx.Tx, read MergeRead, now time.Time) (bool, error)
+	// RequestMergeRead writes a later request's asker and text over issue's standing merge_read row,
+	// and answers whether one stood. The caller judges that the request is a person's.
+	RequestMergeRead(ctx context.Context, tx pgx.Tx, issue string, requester claim.Role, request string) (bool, error)
+	// RefreshMergeRead asks issue's standing merge_read row for one read of the issue's links, due at
+	// now, and answers whether one stood.
+	RefreshMergeRead(ctx context.Context, tx pgx.Tx, issue string, now time.Time) (bool, error)
+	// CancelMergeRead deletes issue's standing merge_read row, and answers whether one stood.
+	CancelMergeRead(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// UnreadMergeReads is each standing merge_read row of project whose read ended unread or
+	// stopped, by issue.
+	UnreadMergeReads(ctx context.Context, tx pgx.Tx, project string) ([]PendingMergeRead, error)
+	// MarkMergeUnreadTold records at as the moment the controller was last told of merge_read row
+	// id's empty read (MergeRead.ToldAt).
+	MarkMergeUnreadTold(ctx context.Context, tx pgx.Tx, id int64, at time.Time) error
 	// PutDefect records a reason of a next change of the issue (Defect) and answers its id.
 	PutDefect(ctx context.Context, tx pgx.Tx, defect Defect) (int64, error)
 	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
@@ -2996,9 +3016,10 @@ type Store interface {
 	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
 	// this read and this write.
 	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
-	// WithdrawDefect ends the open reported defect id of issue with reason, at at. It answers false
-	// where issue holds no such defect: none of that id, one of another kind than a reported
-	// defect, one already withdrawn, or one a merged change carried. The reason is required.
+	// WithdrawDefect ends the open reported defect or request id of issue with reason, at at. It
+	// answers false where issue holds no such row: none of that id, a check's or a production
+	// check's reason, one already withdrawn, or one a merged change carried. The reason is
+	// required. Who may end a request is the workflow's to judge (a person's request is refused).
 	WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error)
 	// CarryDefects marks each open defect of ids on issue as carried by generation: the change
 	// of that generation takes it, so its merge starts no second change for it.
