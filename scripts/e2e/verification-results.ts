@@ -178,6 +178,9 @@ const onePassWaitMs = 120_000;
 /** How long the setup waits for the delivery intake to bind its durable after the server answers. */
 const intakeBindWaitMs = 60_000;
 const pollMs = 250;
+/** How long a read waits for the server's log line of a request it made after the command that
+ *  made it ended: the server logs a request once it has answered it (resultsAnsweredAt). */
+const requestLogWaitMs = 1_000;
 
 const person = "alice";
 const session = "verification-results-e2e";
@@ -4743,6 +4746,21 @@ function logLength(): number {
   return readFileSync(dispatchLog).length;
 }
 
+/** The first line the server wrote to its log past byte `offset` for which `match` holds, read
+ *  every pollMs up to `waitMs` (awaitTrue), or undefined where none comes in that time. */
+async function logLineSince(
+  offset: number,
+  match: (line: string) => boolean,
+  waitMs: number
+): Promise<string | undefined> {
+  let found: string | undefined;
+  await awaitTrue(async () => {
+    found = readFileSync(dispatchLog).subarray(offset).toString("utf8").split("\n").find(match);
+    return found !== undefined;
+  }, waitMs);
+  return found;
+}
+
 /** The line `dispatch delivery: NATS consumer bound` of the durable delivery-events, the first the
  *  server wrote after the byte `offset` of its log, and the stream sequence it names (`start_seq`):
  *  where the start's intake bound. It waits for the line as the setup waits for the bind, and fails
@@ -4751,23 +4769,15 @@ async function bindSince(
   offset: number,
   step: string
 ): Promise<{ readonly line: string; readonly seq: number }> {
-  const deadline = Date.now() + intakeBindWaitMs;
-  for (;;) {
-    const line = readFileSync(dispatchLog)
-      .subarray(offset)
-      .toString("utf8")
-      .split("\n")
-      .find((text) =>
-        text.includes('msg="dispatch delivery: NATS consumer bound" name=delivery-events ')
-      );
-    if (line !== undefined) {
-      return { line, seq: Number(/ start_seq=(\d+)/.exec(line)?.[1] ?? Number.NaN) };
-    }
-    if (Date.now() >= deadline) {
-      setupFailed(step, `the server logged no bind of delivery-events in ${intakeBindWaitMs} ms`);
-    }
-    await Bun.sleep(pollMs);
+  const line = await logLineSince(
+    offset,
+    (text) => text.includes('msg="dispatch delivery: NATS consumer bound" name=delivery-events '),
+    intakeBindWaitMs
+  );
+  if (line === undefined) {
+    setupFailed(step, `the server logged no bind of delivery-events in ${intakeBindWaitMs} ms`);
   }
+  return { line, seq: Number(/ start_seq=(\d+)/.exec(line)?.[1] ?? Number.NaN) };
 }
 
 /** The intake's durable of pull request events, delivery-events, as the server reports it, or
@@ -4875,7 +4885,7 @@ async function headRows(repository?: string): Promise<string[]> {
   return rows === "" ? [] : rows.split("\n");
 }
 
-/** One call the fake took, as its log keeps it (fake-github.ts's `Call`). */
+/** One call the fake took, as its log keeps it (fake-github-fixture.ts's `Call`). */
 interface FakeCall {
   readonly asks?: string;
   readonly installation?: number;
@@ -5453,22 +5463,20 @@ function resultLineAt(printed: string, commit: string): string {
 /** Reads `dispatch results --issue <key>` every pollMs until `accept` holds of what it printed, or
  *  until `waitMs` past `from` (milliseconds since the epoch, an event's publish). It answers the
  *  last text, whether `accept` held of it, `ended`, how long after `from` that read's command
- *  ended, and `ms`, how long after `from` the results route answered that read: the time the
- *  server's log gives its GET (resultsAnsweredAt). The command's own start takes seconds on a
- *  loaded machine, and none of it is the route's: on 2026-11-27, at a load of 280 on 288 CPUs, the
- *  route answered a read 4.0 s after the event, in 36 ms, and the command ended 7.7 s after it.
- *  Where `accept` never held, or the log holds no such line, `ms` is `ended`. */
+ *  ended, and `answered`, how long after `from` the results route answered that read: the `time=`
+ *  of the server's log line of its GET (resultsAnsweredAt). `answered` still holds the start of
+ *  that read's own `dispatch` command, which sends its GET only once it runs; it leaves out what
+ *  the command does after the answer (it renders, prints and exits), which on 2026-11-27, at a
+ *  load of 280 on 288 CPUs, was 3.7 s of a read the route answered 4.0 s after the event. It is
+ *  undefined where `accept` never held, or the server logged no such GET within requestLogWaitMs.
+ *  `ms`, what a bound is held to, is `answered` where there is one and `ended` otherwise, so a
+ *  missing line never makes a read look sooner; readTimeText says which. */
 async function awaitResults(
   key: string,
   accept: (printed: string) => boolean,
   from: number,
   waitMs = headReadWaitMs
-): Promise<{
-  readonly ended: number;
-  readonly met: boolean;
-  readonly ms: number;
-  readonly text: string;
-}> {
+): Promise<HeadRead> {
   let offset = logLength();
   let text = await resultsCommand(key);
   while (!accept(text) && Date.now() - from < waitMs) {
@@ -5478,28 +5486,42 @@ async function awaitResults(
   }
   const ended = Date.now() - from;
   const met = accept(text);
-  const answered = met ? await resultsAnsweredAt(key, offset) : undefined;
-  return { ended, met, ms: answered === undefined ? ended : answered - from, text };
+  const answeredAt = met ? await resultsAnsweredAt(key, offset) : undefined;
+  const answered = answeredAt === undefined ? undefined : answeredAt - from;
+  return { answered, ended, met, ms: answered ?? ended, text };
+}
+
+/** One read of awaitResults: its text, whether it showed what was awaited, and its times. */
+interface HeadRead {
+  readonly answered?: number;
+  readonly ended: number;
+  readonly met: boolean;
+  readonly ms: number;
+  readonly text: string;
+}
+
+/** A read's times in the words a head check prints, after the moment they count from ("it"): the
+ *  route's answer and the command's end, or the command's end alone where the server logged no
+ *  GET of it, or that the read never showed what was awaited. */
+function readTimeText(read: HeadRead): string {
+  if (!read.met) return `no read showed it; the last command ended ${read.ended} ms after it`;
+  return read.answered === undefined
+    ? `the server logged no GET of the read that showed it; that command ended ${read.ended} ms after it`
+    : `the route answered ${read.answered} ms after it, and the command ended ${read.ended} ms after it`;
 }
 
 /** When the results route answered the first GET of `key`'s results that the server logged past
- *  byte `offset` of its log, from the line's `time=`, in milliseconds since the epoch. The server
- *  logs a request once it has answered it, so the line can land after the command has ended: the
- *  read waits up to a second for it, and answers undefined where none comes. */
+ *  byte `offset` of its log, from the line's `time=`, in milliseconds since the epoch, or undefined
+ *  where none comes within requestLogWaitMs (logLineSince). */
 async function resultsAnsweredAt(key: string, offset: number): Promise<number | undefined> {
   const path = ` path=/api/v1/issues/${key}/results `;
-  const deadline = Date.now() + 1_000;
-  for (;;) {
-    const logged = readFileSync(dispatchLog)
-      .subarray(offset)
-      .toString("utf8")
-      .split("\n")
-      .find((line) => line.includes('msg="dispatch: request" method=GET ') && line.includes(path));
-    const at = logged === undefined ? undefined : /^time=(\S+) /.exec(logged)?.[1];
-    if (at !== undefined) return Date.parse(at);
-    if (Date.now() >= deadline) return undefined;
-    await Bun.sleep(50);
-  }
+  const logged = await logLineSince(
+    offset,
+    (line) => line.includes('msg="dispatch: request" method=GET ') && line.includes(path),
+    requestLogWaitMs
+  );
+  const at = logged === undefined ? undefined : /^time=(\S+) /.exec(logged)?.[1];
+  return at === undefined ? undefined : Date.parse(at);
 }
 
 /** An issue of a head check in `project`, with the before_merge check k1, in `repo` where it is

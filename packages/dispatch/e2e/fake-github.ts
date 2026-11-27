@@ -615,7 +615,7 @@ const server = Bun.serve({
       countCheckRunRead(fullName, sha);
       const fault = repo.check_run_faults?.[sha];
       if (fault !== undefined && "status" in fault) {
-        return Response.json({ message: "Server Error" }, { status: fault.status });
+        return githubError(fault.status);
       }
       if (fault !== undefined) {
         // Bun.serve closes a connection idle for 10 s, as long as Dispatch's own read deadline:
