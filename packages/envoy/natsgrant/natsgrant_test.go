@@ -58,11 +58,11 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 	require.Equal(t, want.Subscribe, got.Subscribe, "%s subscribe", name)
 }
 
-// withListenerState is want with the listener state bucket's subjects for machineID
+// withStateBuckets is want with the listener state bucket's subjects for machineID
 // (natsgrant.ListenerState) and the last-seen bucket's (natsgrant.LastSeen) where listenerGrant
 // puts them, just before the interest bucket's purge. The fixture was written before those
 // buckets joined the grant, and is never regenerated.
-func withListenerState(t *testing.T, want set, machineID string) set {
+func withStateBuckets(t *testing.T, want set, machineID string) set {
 	t.Helper()
 	at := slices.Index(want.Publish, interestPurge)
 	require.NotEqual(t, -1, at, "the fixture's publish list holds no %s", interestPurge)
@@ -71,7 +71,7 @@ func withListenerState(t *testing.T, want set, machineID string) set {
 }
 
 // knownSessionPurge is the other entry every set built on listenerGrant has gained since the merge
-// base the fixture records, beside the state buckets' subjects (withListenerState): the
+// base the fixture records, beside the state buckets' subjects (withStateBuckets): the
 // known-session store's purge of its replaced chunks' markers (internal/kvchunk,
 // session.KnownSessions.purgeChunkMarkers), right after the interest bucket's purge.
 const (
@@ -93,7 +93,7 @@ func sinceMergeBase(t *testing.T, base set, name string) set {
 
 // Every set this package builds is, element for element and in order, the set infra/core built at
 // the merge base, so moving them here rewrites no hub's rendered authorization; the changes since
-// are the listener state and last-seen buckets' subjects (withListenerState) and the
+// are the listener state and last-seen buckets' subjects (withStateBuckets) and the
 // known-session bucket's purge (sinceMergeBase), each added to every set built on listenerGrant,
 // and the one grant Dispatch gained (withLegionStateDurable), added to the Dispatch set alone, so
 // every row compares the full list.
@@ -106,10 +106,10 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			want set
 			got  natsgrant.Permissions
 		}{
-			"Listener":     {withListenerState(t, base.Listener[id], id), natsgrant.Listener(id)},
-			"ListenerHost": {withListenerState(t, base.ListenerHost[id], id), natsgrant.ListenerHost(id)},
-			"Dispatch":     {withLegionStateDurable(t, withListenerState(t, base.Dispatch[id], id)), natsgrant.Dispatch(id)},
-			"Host":         {withListenerState(t, base.Host[id], id), natsgrant.Host(id)},
+			"Listener":     {withStateBuckets(t, base.Listener[id], id), natsgrant.Listener(id)},
+			"ListenerHost": {withStateBuckets(t, base.ListenerHost[id], id), natsgrant.ListenerHost(id)},
+			"Dispatch":     {withLegionStateDurable(t, withStateBuckets(t, base.Dispatch[id], id)), natsgrant.Dispatch(id)},
+			"Host":         {withStateBuckets(t, base.Host[id], id), natsgrant.Host(id)},
 		} {
 			name := name + "(" + strconv.Quote(id) + ")"
 			requireSet(t, sinceMergeBase(t, pair.want, name), pair.got, name)
@@ -126,7 +126,7 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 // (dispatch://INFRA-3931), which DispatchDurables names after the two the fixture holds, so its
 // four calls follow delivery-jobs' in the publish list. Nothing else of the set moves here: the
 // listener state and last-seen buckets' subjects and the known-session purge are
-// withListenerState's and sinceMergeBase's.
+// withStateBuckets's and sinceMergeBase's.
 func withLegionStateDurable(t *testing.T, dispatch set) set {
 	t.Helper()
 	after := slices.Index(dispatch.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS.delivery-jobs.>")
@@ -176,6 +176,12 @@ func subscribes(t *testing.T, grant natsgrant.Permissions, subject string) bool 
 		return false
 	}
 	return slices.ContainsFunc(grant.Subscribe, func(allow string) bool { return natsserver.SubjectMatchesFilter(subject, allow) })
+}
+
+// admits reports whether an entry of entries, a grant's allow list, covers subject
+// (bus.SubjectContains).
+func admits(entries []string, subject string) bool {
+	return slices.ContainsFunc(entries, func(entry string) bool { return bus.SubjectContains(entry, subject) })
 }
 
 // While the measurement job's inbox moves under the reply root, its grant admits it under both:
@@ -405,9 +411,6 @@ func TestEachEdgeMachineHoldsItsOwnInboxesAndReceipts(t *testing.T) {
 		a, b := edge(t, pair[0], "PRIV"), edge(t, pair[1], "PRIV")
 		inboxOfB := natsgrant.EdgeInboxPrefix(pair[1]) + ".nuid"
 		receiptOfB := natsgrant.EdgeRelayReplyPrefix(pair[1]) + ".nuid"
-		admits := func(entries []string, subject string) bool {
-			return slices.ContainsFunc(entries, func(entry string) bool { return bus.SubjectContains(entry, subject) })
-		}
 		require.True(t, admits(b.Subscribe, inboxOfB), "%s does not subscribe its own inbox %s", pair[1], inboxOfB)
 		require.False(t, admits(a.Subscribe, inboxOfB), "%s subscribes %s's inbox %s", pair[0], pair[1], inboxOfB)
 		require.True(t, admits(b.Subscribe, receiptOfB), "%s does not subscribe its own receipt %s", pair[1], receiptOfB)
@@ -450,9 +453,6 @@ func TestTheEdgeGrantRefusesAMachineOrProjectsItCannotName(t *testing.T) {
 // find one.
 func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 	edge, listener := edge(t, "m", "PRIV"), natsgrant.Listener("m")
-	admits := func(entries []string, subject string) bool {
-		return slices.ContainsFunc(entries, func(pattern string) bool { return bus.SubjectContains(pattern, subject) })
-	}
 	for _, subject := range []string{
 		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
 		"notifications.github.acme.pub.pr.1.opened",
@@ -519,9 +519,6 @@ func TestTheLastSeenRecordsAreGrantedInTheirOwnBucketAlone(t *testing.T) {
 		for name, grant := range map[string]natsgrant.Permissions{
 			"Listener": natsgrant.Listener(id), "ListenerHost": natsgrant.ListenerHost(id), "Dispatch": natsgrant.Dispatch(id), "Host": natsgrant.Host(id),
 		} {
-			admits := func(subject string) bool {
-				return slices.ContainsFunc(grant.Publish, func(pattern string) bool { return bus.SubjectContains(pattern, subject) })
-			}
 			for _, subject := range []string{
 				"$JS.API.STREAM.INFO.KV_envoy_last_seen",
 				"$JS.API.STREAM.CREATE.KV_envoy_last_seen",
@@ -530,7 +527,7 @@ func TestTheLastSeenRecordsAreGrantedInTheirOwnBucketAlone(t *testing.T) {
 				"$KV.envoy_last_seen.seen.ses_a",
 				"$KV.envoy_last_seen.seen.=0123456789abcdef0123456789abcdef",
 			} {
-				require.True(t, admits(subject), "%s(%q) does not publish %s", name, id, subject)
+				require.True(t, admits(grant.Publish, subject), "%s(%q) does not publish %s", name, id, subject)
 			}
 			for _, subject := range []string{
 				"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.ses_a",
@@ -541,7 +538,7 @@ func TestTheLastSeenRecordsAreGrantedInTheirOwnBucketAlone(t *testing.T) {
 				"$JS.API.CONSUMER.CREATE.KV_envoy_last_seen.watch",
 				"$JS.API.STREAM.PURGE.KV_envoy_last_seen",
 			} {
-				require.False(t, admits(subject), "%s(%q) publishes %s", name, id, subject)
+				require.False(t, admits(grant.Publish, subject), "%s(%q) publishes %s", name, id, subject)
 			}
 		}
 	}

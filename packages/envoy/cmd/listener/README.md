@@ -196,7 +196,7 @@ it fails with messages missing on v2.10.29.
 
 The lines to read are `listener lease acquired` (with `from`:
 `absent`, `released` or `expired`, and `settle`, `stale_binding`, `hand_back` - the term is a hand-back candidate - and `replaced`, the revision its mark would be keyed by), `listener lease term must settle; receiving at
-once and holding what arrives until the durable's outstanding messages are in hand` (with `cap` and `hand_back`), `durable still push-bound by an earlier lease holder; receiving beside it`, `settle hold ended;
+once and holding what arrives until the durable's outstanding messages are in hand` (with `cap` and `hand_back`, and `adopted` when a lease that joined holds the term it took over), `durable still push-bound by an earlier lease holder; receiving beside it`, `settle hold ended;
 delivering the held messages in stream order` (with `outcome` `settled`, `cap` or `handed back`, `held_ms`, `messages`, `ack_pending` and `hand_back_marked`), `settle hold: hand-back mark read
 failed; holding on` (with `error`), `durable receiving` (with `lease`, `waited_ms` and `settle`), `handed the durable's messages back to the next holder` (with `handed_back`, `lingered_ms`, `linger_end` `receiving holder seen`, `not taken` or `timeout`, `renaked_repeats`, `dropped_repeats`, `hand_back_marked` and, when that is false, `no_mark`:
 why no mark was written), `cancelling the message in hand after the shutdown grace` (with `grace`), `the message
@@ -508,10 +508,10 @@ That grant names only the machine's own keys, `lease.listener-<machine id>`, `ha
 that is a subject's reach, and what every listener user of the fleet can still do to the whole bucket is in `packages/envoy/infra/README.md` ("Permission sets").
 The same grants hold the `envoy_last_seen` bucket, every session's last-seen record, with the same rights each machine held on those records when they were in `envoy_listener`: the bucket stream's info, create and update, and a write and a read by key of every session's `seen.*` record (`natsgrant.LastSeen`).
 A hub's users gain it only when envoy-infra renders their grant again; a pod whose grant lacks it serves all the same, keeping last-seen in its own process, and opens the bucket once the grant carries it ("Start" above).
-It reads each of its other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
+The grant reads each of the listener's other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
 So the listener reads back each write it must stamp, the lease's acquiring write and a session registration in `envoy_sessions`, by key, and counts it as its own only at the revision it wrote;
 another revision there means a newer write landed first.
-A listener whose grant refuses the bucket does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, with the `retry_in` of its next try, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
+A listener whose grant refuses `envoy_listener` does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, with the `retry_in` of its next try, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
 `/healthz` says so in `lease`: `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"`.
 The shared state above falls back to the pod's own: the ledger is in process, and the role-claim grace counts from the pod's own start.
 Last-seen is the last-seen bucket's, which a pod without the lease opens all the same when its grant carries it, and keeps in process when it does not.

@@ -523,23 +523,29 @@ func KVWrite(bucket string) []string {
 // trusts them with every reply. dispatch://INFRA-840's plan replaces the shared reply subscription
 // and the update grant.
 func ListenerState(machineID string) []string {
-	stream := kvStream + bus.ListenerStateBucket
 	durable := bus.ListenerDurable(machineID)
-	keys := []string{
+	return keyedBucketCalls(bus.ListenerStateBucket,
 		bus.ListenerLeaseKey(machineID),
-		bus.ListenerHandBackPrefix(durable) + "*",
-		bus.ListenerLedgerPrefix(durable) + "*.*",
-	}
+		bus.ListenerHandBackPrefix(durable)+"*",
+		bus.ListenerLedgerPrefix(durable)+"*.*",
+	)
+}
+
+// keyedBucketCalls are the calls of a listener that opens bucket and reads and writes keys of it
+// by key alone (ListenerState, LastSeen): its stream's info, create and update, then a direct get
+// of each of keys, then a write of each, in the order keys come.
+func keyedBucketCalls(bucket string, keys ...string) []string {
+	stream := kvStream + bucket
 	calls := []string{
 		jsAPI + "STREAM.INFO." + stream,
 		jsAPI + "STREAM.CREATE." + stream,
 		jsAPI + "STREAM.UPDATE." + stream,
 	}
 	for _, key := range keys {
-		calls = append(calls, jsAPI+"DIRECT.GET."+stream+"."+kvSubjects+bus.ListenerStateBucket+"."+key)
+		calls = append(calls, jsAPI+"DIRECT.GET."+stream+"."+kvSubjects+bucket+"."+key)
 	}
 	for _, key := range keys {
-		calls = append(calls, kvSubjects+bus.ListenerStateBucket+"."+key)
+		calls = append(calls, kvSubjects+bucket+"."+key)
 	}
 	return calls
 }
@@ -575,15 +581,7 @@ func ListenerState(machineID string) []string {
 // fleet writes and reads all of it, and can purge it or change its configuration through the
 // update the raises need, as ListenerState says of the listener state bucket.
 func LastSeen() []string {
-	stream := kvStream + bus.LastSeenBucket
-	key := bus.LastSeenPrefix + "*"
-	return []string{
-		jsAPI + "STREAM.INFO." + stream,
-		jsAPI + "STREAM.CREATE." + stream,
-		jsAPI + "STREAM.UPDATE." + stream,
-		jsAPI + "DIRECT.GET." + stream + "." + kvSubjects + bus.LastSeenBucket + "." + key,
-		kvSubjects + bus.LastSeenBucket + "." + key,
-	}
+	return keyedBucketCalls(bus.LastSeenBucket, bus.LastSeenPrefix+"*")
 }
 
 // KVRead are the calls a reader of one bucket makes and nothing that writes it: the bucket's

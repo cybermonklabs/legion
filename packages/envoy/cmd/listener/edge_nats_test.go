@@ -58,11 +58,11 @@ func startEdgeListenerProcess(t *testing.T, binary, uri, machineID, projects, br
 // the subject it names.
 var edgeServerViolation = regexp.MustCompile(`(Publish|Subscription) Violation - .*?Subject "([^"]*)"`)
 
-// listenerStateRequests are the requests on the listener state bucket (bus.ListenerStateBucket)
+// stateBucketRequests are the requests on the listener state bucket (bus.ListenerStateBucket)
 // or the last-seen bucket (bus.LastSeenBucket) a nats-server's log holds refused
 // (edgeServerViolation), each as its kind and subject: a JetStream API call that names either
 // bucket's stream, or a write of one of its keys.
-func listenerStateRequests(log string) []string {
+func stateBucketRequests(log string) []string {
 	var found []string
 	for _, match := range edgeServerViolation.FindAllStringSubmatch(log, -1) {
 		subject := match[2]
@@ -205,9 +205,9 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 	}
 	_ = probe.Flush()
 	waitFor(t, "the server to log its refusal of "+provoked+", so its log is read", func() bool {
-		return slices.Contains(listenerStateRequests(granted.Log()), "Publish "+provoked)
+		return slices.Contains(stateBucketRequests(granted.Log()), "Publish "+provoked)
 	})
-	for _, request := range listenerStateRequests(granted.Log()) {
+	for _, request := range stateBucketRequests(granted.Log()) {
 		if request != "Publish "+provoked {
 			t.Fatalf("the server refused the edge listener %s on the %s or %s bucket: an edge listener opens neither and sends nothing there:\n%s",
 				request, bus.ListenerStateBucket, bus.LastSeenBucket, edge.Output.String())

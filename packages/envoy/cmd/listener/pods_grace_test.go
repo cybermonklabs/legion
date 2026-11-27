@@ -46,7 +46,7 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 	}
 	t.Cleanup(registry.StopWatch)
 	elapsed.Store(0)
-	seen, err := openLastSeen(t.Context(), stateKV.Conn(), 1, lastSeenMaxAge)
+	seen, err := openLastSeen(t.Context(), client.Conn, 1, lastSeenMaxAge)
 	if err != nil {
 		t.Fatalf("open pod %s's last-seen bucket: %v", instance, err)
 	}

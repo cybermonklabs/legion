@@ -77,16 +77,7 @@ func openListenerState(ctx context.Context, conn *nats.Conn, replicas int, wait 
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.ListenerStateBucket, err)
 	}
-	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
-		Bucket:   bus.ListenerStateBucket,
-		History:  1,
-		TTL:      listenerStateMaxAge,
-		Storage:  nats.FileStorage,
-		Replicas: replicas,
-	})
-	if err == nil {
-		err = bus.RaiseMaxAge(ctx, conn, js, bus.ListenerStateBucket, listenerStateMaxAge)
-	}
+	kv, err := ensureAgedBucket(ctx, conn, js, bus.ListenerStateBucket, replicas, listenerStateMaxAge)
 	if err == nil {
 		return kv, nil
 	}
@@ -94,6 +85,25 @@ func openListenerState(ctx context.Context, conn *nats.Conn, replicas int, wait 
 		return bus.KeyValue{}, fmt.Errorf("%w: %w", errListenerStateRefused, violation)
 	}
 	return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.ListenerStateBucket, err)
+}
+
+// ensureAgedBucket is the create and the raise of one bucket's open (openListenerState,
+// openLastSeen): it creates bucket at replicas with file storage, age as its MaxAge and one value
+// per key when it does not exist, and raises a found bucket that keeps its keys for a shorter age
+// to age (bus.RaiseMaxAge), under ctx and over js, the caller's. It returns the create's or the
+// raise's error as it came, which the caller wraps or reads for a refusal.
+func ensureAgedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, age time.Duration) (bus.KeyValue, error) {
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
+		Bucket:   bucket,
+		History:  1,
+		TTL:      age,
+		Storage:  nats.FileStorage,
+		Replicas: replicas,
+	})
+	if err == nil {
+		err = bus.RaiseMaxAge(ctx, conn, js, bucket, age)
+	}
+	return kv, err
 }
 
 // publishViolation captures the subject of the server's refusal of a publish.

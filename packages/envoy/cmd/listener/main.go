@@ -1666,17 +1666,19 @@ func bucketRefusal(buckets []string, err, before, after error) (string, error) {
 }
 
 // refusesBucket reports whether err is the server's refusal of a publish to a subject of KV bucket
-// bucket: a JetStream API call on its stream KV_<bucket>, or a write to one of its keys,
-// $KV.<bucket>.<key>.
+// bucket (bucketSubject).
 func refusesBucket(err error, bucket string) bool {
 	if err == nil || !errors.Is(err, nats.ErrPermissionViolation) {
 		return false
 	}
 	match := publishViolation.FindStringSubmatch(err.Error())
-	if match == nil {
-		return false
-	}
-	subject, stream := match[1], ".KV_"+bucket
+	return match != nil && bucketSubject(match[1], bucket)
+}
+
+// bucketSubject reports whether subject is one of KV bucket bucket's: a JetStream API call on its
+// stream KV_<bucket>, or a write to one of its keys, $KV.<bucket>.<key>.
+func bucketSubject(subject, bucket string) bool {
+	stream := ".KV_" + bucket
 	return strings.HasSuffix(subject, stream) || strings.Contains(subject, stream+".") ||
 		strings.HasPrefix(subject, "$KV."+bucket+".")
 }
@@ -2565,7 +2567,7 @@ func runListener(credentialWait time.Duration) {
 	lastSeenCtx, stopLastSeen := context.WithCancel(context.Background())
 	var lastSeenTried <-chan struct{}
 	if edge == nil {
-		lastSeenTried = startLastSeenBucket(lastSeenCtx, client, cfg.NATSReplicas, grantName(edge), sessions, logger)
+		lastSeenTried = startLastSeenBucket(lastSeenCtx, client, cfg.NATSReplicas, sessions, logger)
 	} else {
 		logger.Info(lastSeenNotOpenedLine, slog.String("bucket", bus.LastSeenBucket))
 	}

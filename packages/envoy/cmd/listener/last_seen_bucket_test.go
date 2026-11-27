@@ -44,8 +44,9 @@ func lastSeenStreamAge(t *testing.T, conn *natsgo.Conn) time.Duration {
 // one value per key and the MaxAge its records need at the default session settings, 4 h 15 min
 // (lastSeenMaxAge). A single test server cannot hold three replicas, and refuses the create for
 // exactly that, an answer of the cluster's state (bus.ClusterStateAnswer), which shows the
-// configured count is what the create asks for and that the open's loop waits that answer out
-// rather than ending (startLastSeenBucket).
+// configured count is what the create asks for. The open's loop waits that answer out
+// (startLastSeenBucket), as
+// TestTheLastSeenBucketsOpenWaitsOutTheClustersStateAndOpensOnceItTakesTheBucket shows.
 func TestLastSeenBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	t.Parallel()
 	t.Run("one replica", func(t *testing.T) {
@@ -102,9 +103,6 @@ func TestTheLastSeenBucketOutlivesTheLastSeenWindow(t *testing.T) {
 	}
 	t.Cleanup(sessions.StopWatch)
 	allowance := store.InterestReapAllowance(store.InterestReapGrace)
-	if ttlWindow := sessions.TTL() + allowance; lastSeenMaxAge < ttlWindow {
-		t.Fatalf("the last-seen bucket's age is %s, want at least the session TTL plus the interest reaper's allowance, %s", lastSeenMaxAge, ttlWindow)
-	}
 	window := sessions.LastSeenWindow() + allowance
 	if lastSeenMaxAge < window {
 		t.Fatalf("the last-seen bucket's age is %s, want at least the session's last-seen window (the TTL and its last-seen retention) plus the interest reaper's allowance, %s", lastSeenMaxAge, window)
@@ -178,7 +176,7 @@ func TestALongerSessionTTLRaisesTheLastSeenBucketsAge(t *testing.T) {
 			t.Fatalf("the bucket keeps a record for %s, want the default %s", got, lastSeenMaxAge)
 		}
 		sessions, age := longer(t, client.Conn)
-		tried := startLastSeenBucket(t.Context(), client, 1, listenerGrant, sessions, logging.NewWithWriter(leaseTestMachine, io.Discard))
+		tried := startLastSeenBucket(t.Context(), client, 1, sessions, logging.NewWithWriter(leaseTestMachine, io.Discard))
 		testwait.Receive(t, "the last-seen bucket's first try to end", tried)
 		if got := lastSeenStreamAge(t, client.Conn); got != age {
 			t.Fatalf("the bucket keeps a record for %s after the open, want it raised to %s", got, age)
@@ -238,10 +236,7 @@ func TestOpeningTheLastSeenBucketRaisesAShorterMaxAge(t *testing.T) {
 // hub's grant rendered before those buckets joined it.
 func withoutBuckets(grant testnats.Grant, buckets ...string) testnats.Grant {
 	grant.Publish.Allow = slices.DeleteFunc(slices.Clone(grant.Publish.Allow), func(subject string) bool {
-		return slices.ContainsFunc(buckets, func(bucket string) bool {
-			stream := "KV_" + bucket
-			return strings.HasSuffix(subject, "."+stream) || strings.Contains(subject, "."+stream+".") || strings.HasPrefix(subject, "$KV."+bucket+".")
-		})
+		return slices.ContainsFunc(buckets, func(bucket string) bool { return bucketSubject(subject, bucket) })
 	})
 	return grant
 }
@@ -490,14 +485,7 @@ const leaseJoinTry = listenerStateOpenSends*listenerStateRequestWait + time.Seco
 func TestAPodWhoseAccountHasNoRoomForTheLastSeenBucketServesAndOpensItOnceASlotIsFree(t *testing.T) {
 	t.Parallel()
 	const machineID = "box-last-seen-account"
-	_, uri := testnats.StartConfig(t, streamLimitAccount, []string{"-js"}, false)
-	uri = asListenerUser(t, uri)
-	conn := testnats.Connect(t, uri)
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatalf("JetStream in the listener's account: %v", err)
-	}
+	uri, js, _ := accountAtItsStreamLimit(t, 0)
 	binary := cmdtest.Build(t, "envoy-listener")
 	first := startListenerProcess(t, binary, uri, machineID, "ENVOY_INSTANCE_ID=pod-account-first")
 	first.waitHealthy(t)
@@ -561,15 +549,16 @@ func TestTheLastSeenBucketsOpenWaitsOutTheClustersStateAndOpensOnceItTakesTheBuc
 	logs := &cmdtest.LockedBuffer{}
 	ctx, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
-	tried := startLastSeenBucket(ctx, client, 3, listenerGrant, sessions, logging.NewWithWriter("box-last-seen-cluster", logs))
+	tried := startLastSeenBucket(ctx, client, 3, sessions, logging.NewWithWriter("box-last-seen-cluster", logs))
 	testwait.Receive(t, "the last-seen bucket's first try to end", tried)
 
 	tries := func() []map[string]any {
 		return linesIn(logs.String(), clusterStateLine, map[string]any{"bucket": bus.LastSeenBucket, "setting": bus.ReplicasEnvVar + "=3"})
 	}
 	testwait.WithinPolling(t, 30*time.Second, 200*time.Millisecond, "the open to log the cluster's answer twice", func() bool { return len(tries()) >= 2 })
+	found := tries()
 	for index, wait := range []string{"1s", "2s"} {
-		record := tries()[index]
+		record := found[index]
 		if text, _ := record["error"].(string); record["retry_in"] != wait || record["code"] != float64(10005) || !strings.Contains(text, "no suitable peers for placement") {
 			t.Fatalf("try %d = %v, want retry_in %s, code 10005 and the server's text", index+1, record, wait)
 		}
@@ -607,9 +596,7 @@ func TestTheLastSeenBucketsOpenWaitsOutTheClustersStateAndOpensOnceItTakesTheBuc
 	testwait.WithinPolling(t, durableRefusedRetryCap+lastSeenOpenBound+10*time.Second, 200*time.Millisecond, "the open to create the bucket once the third server joined", func() bool {
 		return len(linesIn(logs.String(), lastSeenOpenedLine, map[string]any{"bucket": bus.LastSeenBucket})) == 1
 	})
-	if info := testnats.AwaitStreamCopies(t, js, "KV_"+bus.LastSeenBucket, 3); testnats.Copies(info.Cluster) != 3 {
-		t.Fatalf("the last-seen bucket holds %d copies, want the 3 asked for", testnats.Copies(info.Cluster))
-	}
+	testnats.AwaitStreamCopies(t, js, "KV_"+bus.LastSeenBucket, 3)
 	const after = "ses_last_seen_cluster_after"
 	if err := sessions.Put(after, session.SessionEntry{Port: 4243, MachineID: "box-last-seen-cluster"}); err != nil {
 		t.Fatalf("register %s: %v", after, err)

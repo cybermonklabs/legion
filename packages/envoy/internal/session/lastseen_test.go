@@ -18,8 +18,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// lastSeenBucket opens the last-seen bucket over conn, as the listener does (cmd/listener's
-// openLastSeen): one value per key, kept for a default registry's last-seen window.
+// lastSeenBucket opens the last-seen bucket over conn: one value per key, kept for a default
+// registry's last-seen window (the listener's own open, cmd/listener's openLastSeen, keeps them
+// the interest reaper's allowance longer).
 func lastSeenBucket(t *testing.T, conn *natsgo.Conn) bus.KeyValue {
 	t.Helper()
 	js, err := conn.JetStream()

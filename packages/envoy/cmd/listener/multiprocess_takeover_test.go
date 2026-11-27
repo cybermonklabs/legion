@@ -967,7 +967,7 @@ func mpStartLateGrant(t *testing.T) *mpLateGrant {
 	lateSeed, late := testnats.User(t)
 	grantedSeed, granted := testnats.User(t)
 	server := testnats.StartGranted(t,
-		testnats.GrantedUser{Public: late, Grant: mpWithoutListenerState(whole)},
+		testnats.GrantedUser{Public: late, Grant: withoutBuckets(whole, bus.ListenerStateBucket)},
 		testnats.GrantedUser{Public: granted, Grant: whole})
 	mpSeeds.Store(server.AdminURL, lateSeed)
 	t.Cleanup(func() { mpSeeds.Delete(server.AdminURL) })
@@ -988,14 +988,6 @@ func (g *mpLateGrant) grant(t *testing.T) time.Time {
 // and the last of two entries for one variable is the one a process gets.
 func (g *mpLateGrant) grantedEnv() string { return "NATS_NKEY_SEED=" + g.grantedSeed }
 
-// mpWithoutListenerState is grant without a subject of the listener state bucket.
-func mpWithoutListenerState(grant testnats.Grant) testnats.Grant {
-	grant.Publish.Allow = slices.DeleteFunc(slices.Clone(grant.Publish.Allow), func(subject string) bool {
-		return strings.Contains(subject, "KV_"+bus.ListenerStateBucket) || strings.Contains(subject, "$KV."+bus.ListenerStateBucket+".")
-	})
-	return grant
-}
-
 // mpRecords is every record of a pod's output whose msg is msg, decoded.
 func mpRecords(output, msg string) []map[string]any {
 	var records []map[string]any
@@ -1010,11 +1002,6 @@ func mpRecords(output, msg string) []map[string]any {
 	}
 	return records
 }
-
-// mpJoinTry bounds a try of the listener state bucket the grant refused that was in flight when the
-// grant came: the open waits listenerStateOpenSends of listenerStateRequestWait at most, and a
-// second for the rest of it.
-const mpJoinTry = listenerStateOpenSends*listenerStateRequestWait + time.Second
 
 // mpJoined waits for pod to log line, one of the lines a pod that delivered without a lease logs as
 // it joins the lease (leaseJoinedHolderLine, leaseJoinedStandbyLine), once the grant applied at
@@ -1033,7 +1020,7 @@ func mpJoined(t *testing.T, pod *mpPod, line string, granted time.Time) time.Tim
 func mpJoinedWithin(t *testing.T, pod *mpPod, line string, granted time.Time, rounds time.Duration) time.Time {
 	t.Helper()
 	var joined time.Time
-	mpEventually(t, durableRefusedRetryCap+mpJoinTry+rounds, pod.instance+" to join the lease once its grant carried the listener state bucket", func() bool {
+	mpEventually(t, durableRefusedRetryCap+leaseJoinTry+rounds, pod.instance+" to join the lease once its grant carried the listener state bucket", func() bool {
 		records := mpRecords(pod.Output.String(), line)
 		if len(records) == 0 {
 			return false
@@ -1053,9 +1040,9 @@ func mpJoinedWithin(t *testing.T, pod *mpPod, line string, granted time.Time, ro
 		}
 		backoff = parsed
 	}
-	if took := joined.Sub(granted); took > backoff+mpJoinTry+rounds {
+	if took := joined.Sub(granted); took > backoff+leaseJoinTry+rounds {
 		t.Fatalf("%s joined the lease %s after its grant carried the bucket, past the %s wait it was in, a try's %s and its rounds' %s", pod.instance,
-			took.Round(time.Millisecond), backoff, mpJoinTry, rounds)
+			took.Round(time.Millisecond), backoff, leaseJoinTry, rounds)
 	}
 	t.Logf("%s joined the lease %s after the grant, out of a %s wait", pod.instance, joined.Sub(granted).Round(time.Millisecond), backoff)
 	return joined
@@ -1098,7 +1085,7 @@ func mpStartLateGrantRow(t *testing.T, name string, start func(t *testing.T, bin
 		sent := publisher.all()
 		return len(sent) >= 20 && serving.tookAll(sent[:20])
 	})
-	mpEventually(t, durableRefusedRetryCap+mpJoinTry, "pod-a to try the listener state bucket again", func() bool {
+	mpEventually(t, durableRefusedRetryCap+leaseJoinTry, "pod-a to try the listener state bucket again", func() bool {
 		return len(mpRecords(a.Output.String(), listenerStateRefusedLine)) > 0
 	})
 	return &mpLateGrantRow{grant: grant, binary: binary, a: a, serving: serving, sessions: sessions, publisher: publisher, stop: stop}

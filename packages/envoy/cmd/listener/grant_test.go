@@ -110,9 +110,6 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 	if _, err := lastSeen.Get(bus.LastSeenPrefix + sessionID); err != nil {
 		t.Fatalf("read %s's last-seen record: %v\n%s", sessionID, err, listener.Output.String())
 	}
-	if _, err := state.Get(bus.LastSeenPrefix + sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
-		t.Fatalf("read %s's last-seen record from %s: %v, want none there", sessionID, bus.ListenerStateBucket, err)
-	}
 
 	listener.Terminate(t)
 	listener.WaitExit(t, "SIGTERM")

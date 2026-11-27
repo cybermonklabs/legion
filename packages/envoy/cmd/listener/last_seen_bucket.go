@@ -72,16 +72,7 @@ func openLastSeen(ctx context.Context, conn *nats.Conn, replicas int, age time.D
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.LastSeenBucket, err)
 	}
-	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
-		Bucket:   bus.LastSeenBucket,
-		History:  1,
-		TTL:      age,
-		Storage:  nats.FileStorage,
-		Replicas: replicas,
-	})
-	if err == nil {
-		err = bus.RaiseMaxAge(ctx, conn, js, bus.LastSeenBucket, age)
-	}
+	kv, err := ensureAgedBucket(ctx, conn, js, bus.LastSeenBucket, replicas, age)
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.LastSeenBucket, err)
 	}
@@ -121,20 +112,21 @@ const (
 //
 // It never ends the process. A try the NATS grant refuses (bus.ErrPublishDenied, which
 // openLastSeen returns as the refusal arrives) is tried again after the wait logGrantRefusal
-// returns, which logs lastSeenRefusedLine with grant, the name of the NATS user's grant
-// (grantName); a try answered from the cluster's state (bus.ClusterStateAnswer) after the wait
-// logClusterState returns; a try the account's JetStream limits or the server's own failure refuse
-// (bus.AccountStateAnswer, where the bucket's byte limit is the listener's code and no setting)
-// after the wait logAccountState returns, which logs lastSeenAccountStateLine; and any other
-// failure, a try lastSeenOpenBound ended included, after startRetry with one WARN,
-// lastSeenOpenFailedLine. Each of the three refusals' waits starts at durableBindPoll and doubles up
-// to durableRefusedRetryCap, so a grant, a cluster or an account that takes the bucket after the
-// pod started is picked up within one wait and one try, with no restart.
+// returns, which logs lastSeenRefusedLine with grant, listenerGrant, the grant of every listener
+// that opens the bucket (an edge listener opens none); a try answered from the cluster's state
+// (bus.ClusterStateAnswer) after the wait logClusterState returns; a try the account's JetStream
+// limits or the server's own failure refuse (bus.AccountStateAnswer, where the bucket's byte
+// limit is the listener's code and no setting) after the wait logAccountState returns, which logs
+// lastSeenAccountStateLine; and any other failure, a try lastSeenOpenBound ended included, after
+// startRetry with one WARN, lastSeenOpenFailedLine. Each of the three refusals' waits starts at
+// durableBindPoll and doubles up to durableRefusedRetryCap, so a grant, a cluster or an account
+// that takes the bucket after the pod started is picked up within one wait and one try, with no
+// restart.
 //
 // Every try and every wait runs under ctx, which the shutdown ends (listenerParts.stopLastSeen):
 // the loop reads ctx as soon as a try returns, before it reads the try's result, so a try the stop
 // cut logs nothing and gives the registry nothing, and a wait the stop cut ends the loop at once.
-func startLastSeenBucket(ctx context.Context, client *bus.Client, replicas int, grant string, sessions *session.SessionRegistry, logger *logging.Logger) <-chan struct{} {
+func startLastSeenBucket(ctx context.Context, client *bus.Client, replicas int, sessions *session.SessionRegistry, logger *logging.Logger) <-chan struct{} {
 	firstTry := make(chan struct{})
 	tried := sync.OnceFunc(func() { close(firstTry) })
 	go func() {
@@ -157,7 +149,7 @@ func startLastSeenBucket(ctx context.Context, client *bus.Client, replicas int, 
 			if code, ok := bus.ClusterStateAnswer(err); ok {
 				wait = logClusterState(logger, &clusterWait, bucket, replicas, code, err)
 			} else if errors.Is(err, bus.ErrPublishDenied) {
-				wait = logGrantRefusal(logger, &refusedWait, lastSeenRefusedLine, err, bucket, slog.String("grant", grant))
+				wait = logGrantRefusal(logger, &refusedWait, lastSeenRefusedLine, err, bucket, slog.String("grant", listenerGrant))
 			} else if code, ok := bus.AccountStateAnswer(err, true); ok {
 				wait = logAccountState(logger, &stateWait, lastSeenAccountStateLine, code, err, bucket)
 			} else {
