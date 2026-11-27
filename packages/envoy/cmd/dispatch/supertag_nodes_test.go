@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
 	drift.report(t)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
+	requireEveryBlockTypeCarriesTheFilesVersion(t, ctx, pool, file)
 	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx)
 	requireNoRouteOrCommandWritesAType(t)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
@@ -213,6 +215,7 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
 	drift.report(t)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
+	requireEveryBlockTypeCarriesTheFilesVersion(t, ctx, pool, file)
 	if after := backfilledRows(t, ctx, pool); !slices.Equal(backfilled, after) {
 		t.Errorf("the migrations after %d moved what the backfill wrote\nbefore: %v\nafter:  %v", backfillVersion, backfilled, after)
 	}
@@ -596,6 +599,37 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 		t.Fatalf("no type node carries an attribute value, so the comparison of rows with their tuples proved nothing")
 	}
 	t.Logf("every type node's %d attribute value(s) are the newest value tuples out of it", compared)
+}
+
+// requireEveryBlockTypeCarriesTheFilesVersion holds each block type's supertag node to the file's
+// version, the version every type migration moves all the block types to together, as
+// 20261123080000 and each later one state. The schema the nodes build takes the highest version any
+// of them carries (schemanodes.Read), so a migration that forgot one type, leaving its row and its
+// version tuple both at the version before, leaves the served version right and every other check
+// here true; this check names the type it forgot. A row and its newest value tuple agree already
+// (requireTypeNodeValuesAreTheirTuples), so the row is read. A store with no block type fails,
+// since then nothing was compared.
+func requireEveryBlockTypeCarriesTheFilesVersion(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema) {
+	t.Helper()
+	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindSupertag)
+	if err != nil {
+		t.Fatalf("read the supertag nodes: %v", err)
+	}
+	want := strconv.Itoa(file.Version)
+	compared := 0
+	for _, node := range nodes {
+		if blockType, _ := node.Attributes["block_type"].(bool); !blockType {
+			continue
+		}
+		compared++
+		if got, carried := node.Attributes["version"]; !carried || fmt.Sprint(got) != want {
+			t.Errorf("block type %s carries version %v, and %s declares version %s: a type migration moves every block type's supertag node to the file's version, and writes %s",
+				node.ID, got, blockSchemaFile, want, typeMigrationShape)
+		}
+	}
+	if compared == 0 {
+		t.Fatalf("the store holds no block type's supertag node, so no version was compared with the file's")
+	}
 }
 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,
