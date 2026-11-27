@@ -79,14 +79,17 @@ func TestKnownSessionsAnswerByIDAndByTopic(t *testing.T) {
 // TouchWithin moves a record's last_seen and keeps its content; a session the store knows nothing
 // of writes nothing.
 func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
-	clock := time.Now()
-	known := openKnown(t, func() time.Time { return clock })
+	// The store's sweeper reads the clock on its own goroutine, in its marker pass every
+	// kvchunk.MarkerGrace until the store stops (sweepUntilStopped), so the test moves the clock
+	// through knownClock's lock.
+	clock := &knownClock{at: time.Now()}
+	known := openKnown(t, clock.Now)
 	topics := []string{"notifications.team.deploy-squad"}
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: "ses_touch", Topics: topics}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	first, _ := known.Get("ses_touch")
-	clock = clock.Add(KnownSessionRefreshAge + time.Minute)
+	clock.set(clock.Now().Add(KnownSessionRefreshAge + time.Minute))
 	if err := known.TouchWithin(context.Background(), "ses_touch"); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
@@ -94,8 +97,8 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 	if !ok {
 		t.Fatal("the touched record is gone")
 	}
-	if moved.LastSeen != clock.UnixMilli() || moved.LastSeen == first.LastSeen {
-		t.Errorf("last_seen = %d, want the clock's %d (was %d)", moved.LastSeen, clock.UnixMilli(), first.LastSeen)
+	if moved.LastSeen != clock.Now().UnixMilli() || moved.LastSeen == first.LastSeen {
+		t.Errorf("last_seen = %d, want the clock's %d (was %d)", moved.LastSeen, clock.Now().UnixMilli(), first.LastSeen)
 	}
 	if !slices.Equal(moved.Topics, topics) {
 		t.Errorf("topics = %v, want the record's own %v", moved.Topics, topics)
@@ -151,8 +154,11 @@ func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holding
 // record is past the retention here before the bucket's TTL removes it. Get and MatchEach answer no
 // such record, and it costs its memory until the next sweep.
 func TestKnownSessionsAnswerNoRecordPastTheRetention(t *testing.T) {
-	clock := time.Now()
-	known, cache := observedKnown(t, func() time.Time { return clock })
+	// The store's sweeper reads the clock on its own goroutine, in its marker pass every
+	// kvchunk.MarkerGrace until the store stops (sweepUntilStopped), so the test moves the clock
+	// through knownClock's lock.
+	clock := &knownClock{at: time.Now()}
+	known, cache := observedKnown(t, clock.Now)
 	delivered := cache.holdApply(t, "ses_old")
 	delivered.open()
 	if err := known.RecordWithin(context.Background(), KnownSession{
@@ -169,7 +175,7 @@ func TestKnownSessionsAnswerNoRecordPastTheRetention(t *testing.T) {
 			return false
 		}
 	})
-	clock = clock.Add(KnownSessionRetention + time.Hour)
+	clock.set(clock.Now().Add(KnownSessionRetention + time.Hour))
 	if _, ok := known.Get("ses_old"); ok {
 		t.Error("Get answered a record older than the retention")
 	}
@@ -1016,8 +1022,9 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 
 // knownSessionMemoryBound is what the records, their revision fence and the subject index of
 // 100,000 sessions may cost in memory. Each session here carries its agent subject, which no other
-// session shares, and one of ten team topics, which is the shape the store holds in production:
-// one unique pattern per session plus a handful of shared ones. The measurement on this machine
+// session shares, one of ten team topics, and the principal it registered as, one of ten, which is
+// the shape the store holds in production: one unique pattern per session plus a handful of shared
+// ones, and a few principals that many sessions share. The measurement on this machine
 // (linux/amd64, go1.27), over the watcher's copy (kvwatch.Copy), was 89,710,800 bytes, 85.6 MiB,
 // 897 bytes a record. The bound is 128 MiB: room for the allocator's own slack and for a Go
 // release that grows a map's header, while still failing a change that makes a record or an index
@@ -1043,6 +1050,7 @@ func TestKnownSessionsMemoryForAHundredThousandRecords(t *testing.T) {
 			Capabilities: []string{"aside"},
 			Topics:       []string{"notifications.agent." + sessionID, fmt.Sprintf("notifications.team.squad-%d", i%10)},
 			LastSeen:     now,
+			Principal:    fmt.Sprintf("person-%d@example.com", i%10),
 		})
 		if err != nil {
 			t.Fatalf("encode %s: %v", sessionID, err)
