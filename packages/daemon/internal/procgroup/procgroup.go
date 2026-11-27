@@ -160,14 +160,8 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 // last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
 // so the poll can only send fewer signals than the kill alone did.
 func groupOutlivedGrace(group int) bool {
-	for deadline := time.Now().Add(StopGraceNow()); ; time.Sleep(stopPoll) {
-		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
-			return false
-		}
-		if !time.Now().Before(deadline) {
-			return true
-		}
-	}
+	time.Sleep(StopGraceNow()) // CONTROL ONLY: the whole grace is slept out
+	return !errors.Is(syscall.Kill(group, 0), syscall.ESRCH)
 }
 
 // KilledByContext wraps cmd.Cancel, which exec runs once cmd's context ends before Wait has seen
