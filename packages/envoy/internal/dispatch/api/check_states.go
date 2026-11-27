@@ -353,7 +353,9 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 
 // dueMarksOf is the ids of issue's due marks, and of each mark a settle kept in the fence's wait
 // (reads_from) however late it falls due, so any settle of the issue that resolves what such a
-// mark waits for deletes it, and the most failures any of them counts.
+// mark waits for deletes it, and the most failures any of them counts. The fence of a test handoff
+// (awaitCheckStatesSettled) reads its marks here too, so it waits for exactly the marks a settle
+// deletes.
 func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, int, error) {
 	var marks []int64
 	var failures int
@@ -363,6 +365,18 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 		return nil, 0, fmt.Errorf("read the due marks of %s: %w", issue, err)
 	}
 	return marks, failures, nil
+}
+
+// checkStatesSerial is issue's check states serial: how many check.state_changed events it holds,
+// 0 before its first. A settle counts on from it in the transaction that appends the events
+// (publish), and the fence of a test handoff answers it (awaitCheckStatesSettled), so both read it
+// by this one statement.
+func checkStatesSerial(ctx context.Context, q queryer, issue string) (int64, error) {
+	var serial int64
+	if err := q.QueryRow(ctx, `select coalesce((select serial from check_state_serials where issue_key = $1), 0)`, issue).Scan(&serial); err != nil {
+		return 0, fmt.Errorf("read the check states serial of %s: %w", issue, err)
+	}
+	return serial, nil
 }
 
 // formerHeadsHeld is the start of a statement over the open pull requests of an issue, given as
@@ -961,9 +975,9 @@ func (c *checkStatesSettler) publish(
 	if err != nil {
 		return nil, err
 	}
-	var serial int64
-	if err := tx.QueryRow(ctx, `select coalesce((select serial from check_state_serials where issue_key = $1), 0)`, issue).Scan(&serial); err != nil {
-		return nil, fmt.Errorf("read the check states serial of %s: %w", issue, err)
+	serial, err := checkStatesSerial(ctx, tx, issue)
+	if err != nil {
+		return nil, err
 	}
 	var events []model.Event
 	appendState := func(payload model.CheckStateChangedEventPayload) (int64, error) {

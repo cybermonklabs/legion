@@ -35,10 +35,11 @@ func (s *server) awaitCheckStatesSettled(ctx context.Context, issue string) (ser
 		return 0, err
 	}
 	schedule := s.checkStatesSchedule
-	var marks []int64
-	if err := pool.QueryRow(ctx, `
-		select coalesce(array_agg(id), '{}') from check_states_owed
-		where issue_key = $1 and (due_at <= now() or reads_from is not null)`, issue).Scan(&marks); err != nil {
+	// The marks a settle deletes, read by the settle's own predicate (dueMarksOf), so the fence
+	// waits for exactly those: a mark the two read apart would let a handoff through before its
+	// states are published, or hold it for one no settle reads.
+	marks, _, err := dueMarksOf(ctx, pool, issue)
+	if err != nil {
 		return 0, fmt.Errorf("read the check states marks of %s the handoff waits for: %w", issue, err)
 	}
 	deadline := time.Now().Add(schedule.fenceWait)
@@ -69,8 +70,5 @@ func (s *server) awaitCheckStatesSettled(ctx context.Context, issue string) (ser
 		case <-timer.C:
 		}
 	}
-	if err := pool.QueryRow(ctx, `select coalesce((select serial from check_state_serials where issue_key = $1), 0)`, issue).Scan(&serial); err != nil {
-		return 0, fmt.Errorf("read the check states serial of %s: %w", issue, err)
-	}
-	return serial, nil
+	return checkStatesSerial(ctx, pool, issue)
 }
