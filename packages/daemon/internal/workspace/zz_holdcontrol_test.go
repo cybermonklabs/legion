@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,17 +33,21 @@ type hogRecord struct {
 
 // DIAG: hold is what the control did and when, on CLOCK_BOOTTIME.
 type hold struct {
-	mu      sync.Mutex
-	sawPath time.Duration
-	ended   time.Duration
-	hogs    []hogRecord
+	mu         sync.Mutex
+	sawPath    time.Duration
+	ended      time.Duration
+	hogs       []hogRecord
+	endedPath  string
+	endedWrite error
 }
 
 // CONTROL (never merged): holdOnCPU0 starts hogs busy loops pinned to CPU 0, the machine's own
-// load and no process of the runner's, and ends them once path exists, or at the test's end.
+// load and no process of the runner's, and ends them once path exists, or at the test's end:
+// every loop is signalled before any is waited for, and once every loop is reaped it writes the
+// file at h.endedPath, at which the row passes its budget.
 func holdOnCPU0(t *testing.T, hogs int, path string) *hold {
 	t.Helper()
-	h := &hold{}
+	h := &hold{endedPath: filepath.Join(filepath.Dir(path), "hold-ended")}
 	var procs []*exec.Cmd
 	for range hogs {
 		cmd := exec.Command("taskset", "-c", "0", "sh", "-c", "while :; do :; done")
@@ -58,15 +63,21 @@ func holdOnCPU0(t *testing.T, hogs int, path string) *hold {
 			for i, cmd := range procs {
 				at := bootNow()
 				_ = cmd.Process.Signal(syscall.SIGKILL)
+				h.mu.Lock()
+				h.hogs[i].kill = at
+				h.mu.Unlock()
+			}
+			for i, cmd := range procs {
 				_ = cmd.Wait()
 				reaped := bootNow()
 				h.mu.Lock()
-				h.hogs[i].kill, h.hogs[i].reaped = at, reaped
+				h.hogs[i].reaped = reaped
 				h.mu.Unlock()
 			}
 			h.mu.Lock()
 			h.ended = bootNow()
 			h.mu.Unlock()
+			h.endedWrite = os.WriteFile(h.endedPath, nil, 0o600)
 		})
 	}
 	t.Cleanup(end)

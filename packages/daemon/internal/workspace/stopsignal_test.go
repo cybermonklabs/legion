@@ -82,7 +82,6 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
 		budget := time.Second
-		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
 		// DIAG (never merged): the leader writes its pid at $5.pid, and its trap writes, at $5.trap,
@@ -91,8 +90,10 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := testexec.MarkStart(`"$3"`) + `; printf '%s\n' "$$" >"$5.pid"; : >"$1"; trap 'read -r tu </proc/uptime; read -r ts </proc/self/schedstat; rm -f "$1"; read -r ou </proc/uptime; read -r os </proc/self/schedstat; printf "%s\n%s\n%s\n%s\n" "$tu" "$ts" "$ou" "$os" >"$5.trap"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
 		// CONTROL (never merged): the machine holds the command on CPU 0's run queue, at nice 19
-		// behind 16 busy loops, until it reports that it is running.
+		// behind 16 busy loops, until it reports that it is running. The budget passes once the
+		// hold is over, every busy loop reaped (h.endedPath).
 		h := holdOnCPU0(t, 16, ready)
+		ctx := budgetPassedOnceExists(t, h.endedPath)
 		w := watchStop(t, ready, diag+".pid", h)
 		t.Logf("DIAG pressure before the call: %s", pressure(dir))
 		anchorWall, anchorBoot := time.Now(), bootNow()
