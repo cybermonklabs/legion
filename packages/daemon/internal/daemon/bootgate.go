@@ -956,7 +956,8 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	// which procgroup.Err passes through. A probe that handles its SIGTERM and leaves inside the
 	// grace is the budget killing it, judged below like any other budget kill, not a probe that
 	// could not be run.
-	timedOut := killed()
+	_ = killed
+	timedOut := attempt.Err() != nil // CONTROL ONLY: timed out read from the attempt's error
 	end := procgroup.Ended(err)
 	if runErr := procgroup.Err(err); runErr != nil && !timedOut && end.Signal == "" {
 		return ran{}, runErr
