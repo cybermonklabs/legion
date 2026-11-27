@@ -192,6 +192,21 @@ function tied(block: string): TreeAnswerNode {
   return decision(block, { decision: { links: [shaped(specRef("s1"))] } });
 }
 
+/** The decision block `block` of the spec, waiting for review and tied to `S1` as `tied` writes
+ *  it, its words last changed at `at`: the review list stands newest first. */
+function tiedAt(block: string, at: string): TreeAnswerNode {
+  return decision(block, { decision: { changed_at: at, links: [shaped(specRef("s1"))] } });
+}
+
+/** `count` decisions of the review list (`tiedAt`), `older-1` to `older-<count>`, each older than
+ *  the one before it and every one older than `tied`'s, so the list draws them in that order
+ *  after `tied`'s decisions. */
+function olderDecisions(count: number): TreeAnswerNode[] {
+  return Array.from({ length: count }, (_, at) =>
+    tiedAt(`older-${at + 1}`, `2026-11-10T11:${String(59 - at).padStart(2, "0")}:00Z`)
+  );
+}
+
 /** The decisions view read's answer holding `decisions`, each a node its query took
  *  (`role: "query"`), as the server's view answers each decision of the issue. */
 function decisionsView(decisions: readonly TreeAnswerNode[]): TreeAnswer {
@@ -790,28 +805,44 @@ test("a press of the kept answer's next-page control while a Keep's read of the 
   }
 });
 
-// The landing of that press (`NextViewPage`): a Keep moves the kept decision's row from the
-// review list to the reader's own part, each part its own element, so the Keep's read, which the
-// press waits for and which answers before the next page does, draws that row anew. The press
-// lands on the first row of a node not drawn as it was made: the next page's third decision,
-// never the kept one, which was drawn then.
+// The landing of that press (`NextViewPage`), on a review list of 21 entries, of which the
+// Decisions view draws the first 20 (`DecisionsFilterBody.tsx`' `PAGE`). The reader keeps the
+// later decision, one of the 20, and presses while the Keep's read is out. That read, which the
+// press waits for and which answers before the next page does, moves the kept decision's row
+// from the review list to another part, each part its own element, so it draws that row anew,
+// and with the kept decision gone from the review list it draws the list's old 21st entry, which
+// was drawn nowhere as the press was made. Neither takes the focus: the press brought neither.
+// The next page holds a third decision, newer than every entry, which the review list draws
+// first, and the press lands on its row, the one row of the next page.
 test("a press of the kept answer's next-page control while a Keep's read is out puts the focus on the next page's first row, not on the kept decision's", async () => {
   const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
   const keepRead = Promise.withResolvers<TreeAnswer>();
   const nextPage = Promise.withResolvers<TreeAnswer>();
+  const older = olderDecisions(19);
   let viewReads = 0;
   spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
     if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
     if (query.cursor !== undefined) return nextPage.promise;
     viewReads += 1;
     return viewReads === 1
-      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
+      ? Promise.resolve(
+          pagedAnswer(decisionsView([tied("first"), tied("later"), ...older]), "page-2")
+        )
       : keepRead.promise;
   });
   const later = decisionNode("later").id;
   const third = decisionNode("third").id;
+  // The review list's 21st entry, its oldest.
+  const oldest = decisionNode("older-19").id;
   const rowOf = (id: string) =>
     document.querySelector(`[data-decisions-body] [data-node-row][data-node-id="${id}"]`);
+  // Each row the focus goes to, by its node's id.
+  const focused: string[] = [];
+  const noteFocus = (event: FocusEvent): void => {
+    const row = (event.target as Element).closest?.("[data-node-row]");
+    focused.push(row?.getAttribute("data-node-id") ?? "no row");
+  };
+  document.addEventListener("focusin", noteFocus);
   const user = userEvent.setup();
   try {
     const view = drawStage("");
@@ -819,6 +850,7 @@ test("a press of the kept answer's next-page control while a Keep's read is out 
     await waitFor(() =>
       expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
     );
+    expect(rowOf(oldest), "the review list drew its 21st entry, past its first 20").toBeNull();
     await user.click(await keepOf(later));
     await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
     await waitFor(() =>
@@ -833,7 +865,7 @@ test("a press of the kept answer's next-page control while a Keep's read is out 
     // The Keep's read answers with the later decision kept, as the server answers it, and is
     // drawn before the next page lands.
     await act(async () =>
-      keepRead.resolve(pagedAnswer(decisionsView([tied("first"), keptLater()]), "page-2"))
+      keepRead.resolve(pagedAnswer(decisionsView([tied("first"), keptLater(), ...older]), "page-2"))
     );
     await waitFor(() =>
       expect(
@@ -841,11 +873,22 @@ test("a press of the kept answer's next-page control while a Keep's read is out 
         "the Keep's read did not draw the later decision out of the review list"
       ).not.toBe("review")
     );
+    await waitFor(() =>
+      expect(
+        rowOf(oldest),
+        "once the kept decision left the review list, the list drew no row of its old 21st entry"
+      ).not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(
+      focused,
+      "the press put the focus on the row of the entry the Keep's read uncovered, which the next page did not bring"
+    ).not.toContain(oldest);
     await act(async () =>
       nextPage.resolve({
         ...decisionsView([]),
         cursor: null,
-        nodes: [{ ...tied("third"), role: "query" }],
+        nodes: [{ ...tiedAt("third", "2026-11-10T13:00:00Z"), role: "query" }],
       })
     );
     await waitFor(() =>
@@ -857,6 +900,7 @@ test("a press of the kept answer's next-page control while a Keep's read is out 
       "the press put the focus on another row than the next page's first, the kept decision's"
     ).toBe(third);
   } finally {
+    document.removeEventListener("focusin", noteFocus);
     cleanup();
     keep.mockRestore();
   }
@@ -1198,6 +1242,90 @@ test("a press of the next-page control that reads nothing leaves no landing arme
     cleanup();
     frames.restore();
     keep.mockRestore();
+  }
+});
+
+// A press whose next page draws no row of its own (`NextViewPage`). The first page of the
+// decisions view read holds the review list's 20 entries, all of which the Decisions view draws
+// (`DecisionsFilterBody.tsx`' `PAGE`), and names a next page. That page holds two decisions older
+// than every entry, which the review list, newest first, stands past its first 20, so the view
+// draws no row of either, and the press's landing ends once the view has drawn the answer they
+// merged into. A later read of the view, as an event starts one, reads both pages again, and the
+// next page answers the first of the two with words changed since, newer than every entry: the
+// view draws its row among the first 20, and the focus stays on the first entry's row, where the
+// stage put it and where the press, which takes no focus, left it. The page's frames are held for
+// the whole case: the page reads a next page for the decisions it marks only once it has drawn
+// (`useReadUnloadedPages`, decision 538), so the press is the one reader of the next page, and
+// the landing's end waits on no frame.
+test("a press whose merged page draws no row of its own ends its landing, so a row a later read draws takes no focus", async () => {
+  const pages: string[] = [];
+  // Whether the next page answers the first of its decisions with its words changed.
+  let changed = false;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    if (query.cursor !== undefined) {
+      pages.push(query.cursor);
+      return Promise.resolve({
+        ...decisionsView([]),
+        cursor: null,
+        nodes: [
+          tiedAt("past", changed ? "2026-11-10T13:00:00Z" : "2026-11-10T10:00:00Z"),
+          tiedAt("past-2", "2026-11-10T09:00:00Z"),
+        ].map((node): TreeAnswerNode => ({ ...node, role: "query" })),
+      });
+    }
+    return Promise.resolve(
+      pagedAnswer(decisionsView([tied("first"), tied("later"), ...olderDecisions(18)]), "page-2")
+    );
+  });
+  const first = decisionNode("first").id;
+  const past = `[data-decisions-body] [data-node-row][data-node-id="${decisionNode("past").id}"]`;
+  const user = userEvent.setup();
+  const frames = framesByHand();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage("", { client });
+    const control = () => view.container.querySelector<HTMLElement>("[data-tree-more]");
+    await waitFor(() =>
+      expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
+    );
+    await waitInAct(20);
+    // The stage puts the focus on the list's first row, and a press takes none (`NextViewPage`).
+    expect(focusedRow(), "the focus is not on the first entry's row as the press is made").toBe(
+      first
+    );
+    const focus = document.activeElement;
+    const press = control()?.querySelector<HTMLElement>("button");
+    if (press != null) await user.click(press);
+    await waitFor(() => expect(pages, "the press read no next page").toEqual(["page-2"]));
+    await waitFor(() =>
+      expect(control(), "the view did not draw the answer the last page merged into").toBeNull()
+    );
+    expect(
+      document.querySelector(past),
+      "the view drew a row of the next page's decisions past the review list's first 20"
+    ).toBeNull();
+    expect(document.activeElement, "a press that drew no row moved the focus").toBe(focus);
+
+    changed = true;
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: viewKey(KEY, "decisions") });
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector(past),
+        "the later read drew no row of the decision whose words changed"
+      ).not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(pages, "the later read did not read the next page again").toEqual(["page-2", "page-2"]);
+    expect(focusedRow(), "the press's landing put the focus on a row a later read drew").toBe(
+      first
+    );
+    expect(document.activeElement, "the focus left the first entry's row").toBe(focus);
+  } finally {
+    cleanup();
+    frames.restore();
   }
 });
 

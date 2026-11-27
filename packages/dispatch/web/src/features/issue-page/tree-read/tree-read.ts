@@ -20,6 +20,8 @@ import type { Query as RouteQuery } from "../../../api/paths";
 import {
   CONVERSATION_KINDS,
   conversationTreeKey,
+  issueAskThreadsQuery,
+  issueQuery,
   issueTreeKey,
   TREE_FILTERS,
   type TreeFilter,
@@ -45,8 +47,10 @@ import {
   compareCommentPositions,
   mergeCommentPage,
   mergeTreePages,
+  nodeIdsIn,
   nodesRemaining,
   type TreeBlock,
+  treeIdOfNode,
 } from "./tree-nodes";
 
 /**
@@ -1010,7 +1014,10 @@ function pagedQuery(
 
 /** The next pages out, by client, each by its query and the cursor it reads
  *  (`readNextTreePage`). */
-const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<boolean>>>();
+const treePagesOut = new WeakMap<
+  QueryClient,
+  Map<string, Promise<ReadonlySet<string> | undefined>>
+>();
 
 /**
  * Reads the page after the last one `read`'s answer of issue `key` holds (R15): one request with
@@ -1034,7 +1041,8 @@ const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<boolean>>>();
  * again reads as far (`readTree`). A query an event or a write had marked stale stays marked, so
  * the read it owes is still made. A refused page leaves the answer as it was, and the press may
  * be made again. A view read at a `version` (`viewQuery`) reads its next page at that version
- * too, under its own key. It answers whether it merged a page: false where it read nothing, and
+ * too, under its own key. It answers the ids the page's tree draws the nodes the merged page
+ * brought by (`nodesBrought`), and undefined where it merged no page: where it read nothing, and
  * where the page it read landed once the answer had moved on.
  */
 export function readNextTreePage(
@@ -1042,26 +1050,24 @@ export function readNextTreePage(
   key: string,
   read: PagedRead,
   version?: number
-): Promise<boolean> {
+): Promise<ReadonlySet<string> | undefined> {
   const { query, queryKey } = pagedQuery(key, read, version);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   if (held === undefined) {
     // The read out brings the answer whose next page the press asks for.
     const cached = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
     const out = cached?.state.fetchStatus === "fetching" ? cached.promise : undefined;
-    if (out === undefined) return Promise.resolve(false);
+    if (out === undefined) return Promise.resolve(undefined);
     const again = () => readNextTreePage(queryClient, key, read, version);
     return out.then(again, again);
   }
   const cursor = nextTreeCursor(held);
-  if (cursor === undefined) return Promise.resolve(false);
+  if (cursor === undefined) return Promise.resolve(undefined);
   return joinedPage(treePagesOut, queryClient, `${hashKey(queryKey)} ${cursor}`, () =>
     api.getIssueTree(key, { ...query, cursor }).then((answered) => {
       const now = queryClient.getQueryData<TreeAnswer>(queryKey);
       const cached = queryClient.getQueryCache().find({ exact: true, queryKey });
-      if (now === undefined || cached === undefined || nextTreeCursor(now) !== cursor) {
-        return false;
-      }
+      if (now === undefined || cached === undefined || nextTreeCursor(now) !== cursor) return;
       const walk = treePagesOf.get(cached);
       const asked = new Set([...(walk?.cursors ?? []), cursor]);
       nextCursorOf(key, query, answered, asked);
@@ -1071,18 +1077,44 @@ export function readNextTreePage(
         walked: (walk?.walked ?? now.nodes?.length ?? 0) + (answered.nodes?.length ?? 0),
       });
       writeKeepingStale(queryClient, cached, queryKey, mergeTreePages([now, answered]));
-      return true;
+      return nodesBrought(queryClient, key, now, answered);
     })
   );
+}
+
+/**
+ * The ids the page draws the rows of the nodes `page` brought by, `page` being a next page merged
+ * into `held`: each node of it that `held` did not hold, since a node the page repeats - a parent
+ * or a context node the answer held already - is no node it brought. Each is the id its rows are
+ * drawn by, from the issue read and the asks read the page holds, which the tree is built from
+ * (`tree-nodes.ts`' `nodeIdsIn`): a decision and a statement by its block in its document, an ask
+ * by the block the asks read names it was indexed from. Where the page holds no issue read, each
+ * is read off the node alone (`treeIdOfNode`). It sends no read.
+ */
+function nodesBrought(
+  queryClient: QueryClient,
+  key: string,
+  held: TreeAnswer,
+  page: TreeAnswer
+): ReadonlySet<string> {
+  const had = new Set((held.nodes ?? []).map(({ id }) => id));
+  const issue = queryClient.getQueryData(issueQuery(key).queryKey);
+  const asks = queryClient.getQueryData(issueAskThreadsQuery(key).queryKey);
+  const idOf =
+    issue === undefined
+      ? (node: TreeAnswerNode) => treeIdOfNode(node, key)
+      : nodeIdsIn({ asks, issue });
+  return new Set((page.nodes ?? []).filter(({ id }) => !had.has(id)).map(idOf));
 }
 
 /** The next page of a read whose answer names one (`cursor`, R15): how many nodes the read holds
  *  after the pages read (`left`, the answer's `remaining`, undefined where it gives none), and
  *  how to read it (`readNextTreePage`), one request however often it is asked while that page is
- *  out, answering whether it merged a page. */
+ *  out, answering the ids the tree draws the nodes of the page it merged by, and undefined where
+ *  it merged none. */
 export interface NextTreePage {
   readonly left: number | undefined;
-  readonly read: () => Promise<boolean>;
+  readonly read: () => Promise<ReadonlySet<string> | undefined>;
 }
 
 /** The next page of the outline read the page holds (`OutlineChoice`), for the control after the
@@ -1117,7 +1149,8 @@ function useNextPage(
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
   const left = answer === undefined ? undefined : nodesRemaining(answer);
   const readNext = useCallback(
-    () => (read === undefined ? Promise.resolve(false) : readNextTreePage(queryClient, key, read)),
+    () =>
+      read === undefined ? Promise.resolve(undefined) : readNextTreePage(queryClient, key, read),
     [key, queryClient, read]
   );
   return useMemo(
@@ -1247,8 +1280,8 @@ export function useReadUnloadedPages(
     // The dropped Decisions answer may still be drawn, but cannot start a page read.
     const { queryKey } = pagedQuery(issue.key, read, undefined);
     if (queryClient.getQueryData(queryKey) !== answer) return;
-    // A next page's read answers whether it merged one, which the reading does not read: each
-    // page merged draws the page again, and the caller says again whether it still wants one.
+    // A next page's read answers the ids of the nodes it merged, which the reading does not read:
+    // each page merged draws the page again, and the caller says again whether it still wants one.
     const asked: Promise<unknown> = next
       ? readNextTreePage(queryClient, issue.key, read)
       : readOlderComments(queryClient, issue.key, read);

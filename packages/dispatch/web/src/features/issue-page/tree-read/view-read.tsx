@@ -31,6 +31,7 @@ import {
   subscribeTreeFreshness,
   TREE_VIEWS,
   type TreeView,
+  useLoadView,
   useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
@@ -243,13 +244,18 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  * The control after a view's last row while its view read answers a next page (R15), in the
  * view's own measure: it says how many nodes the read holds after the pages read
  * (`NextPageWords`), and a press, or Enter on it, reads the next page (`useNextViewPage`), whose
- * rows the view draws where the read's order puts them, and puts the focus on the first row of a
- * node the view did not draw as the press was made, once it is drawn, unless the reader acts
- * first. A row is told by its node (`data-node-id`), not by its element: a read the press waits
- * for can draw a row it held anew, as a Keep moves its decision from one part of the Decisions
- * view to another. A press that merges no page (`readNextTreePage`) lands nowhere. A press takes
- * no focus from where it was (`preventDefault` on `mousedown`), since the control goes once no page
- * is left. Nothing while the view's answer names no next page.
+ * rows the view draws where the read's order puts them, and puts the focus on the first row the
+ * view draws of a node that page brought (`readNextTreePage`), told by its node (`data-node-id`),
+ * once it is drawn, unless the reader acts first. No other row takes the focus, whatever draws it:
+ * not one the read the press waits for draws, as a Keep's read draws the kept decision anew in
+ * another part of the Decisions view and the entry its going uncovers, nor one a later read
+ * draws. So the landing ends where the press merges no page or the page is refused, and once the
+ * view has drawn the answer the page merged into with no row of the page there, as where the
+ * Decisions view draws the page's entries past the pages of entries a part draws. Whether the
+ * view has drawn that answer is looked at after each render of this control, which draws from the
+ * view's answer as the view does, and in no frame. A press
+ * takes no focus from where it was (`preventDefault` on `mousedown`), since the control goes once
+ * no page is left. Nothing while the view's answer names no next page.
  */
 export function NextViewPage({
   filter,
@@ -259,39 +265,67 @@ export function NextViewPage({
   issueKey: string;
 }): ReactNode {
   const next = useNextViewPage(issueKey, filter);
+  const queryClient = useQueryClient();
+  // The view's answer as this render draws it, which the view draws its rows from in the same
+  // render (`useLoadView`), and as the last render drew it.
+  const answer = useLoadView(issueKey, filter).data;
+  const drawnAnswer = useRef(answer);
   const box = useRef<HTMLDivElement | null>(null);
-  // The landing on the first row of a new node a press waits for, which the reader's next act,
-  // another press, the press merging no page or the control leaving the page ends.
+  // The landing on the first row of the page a press merges, which the reader's next act,
+  // another press, the press merging no page, the view drawing that page with no row of it, or
+  // the control leaving the page ends; and its look, after each render, at what the view draws.
   const landing = useRef<AbortController | undefined>(undefined);
+  const look = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => landing.current?.abort(), []);
+  useLayoutEffect(() => {
+    drawnAnswer.current = answer;
+    look.current?.();
+  });
   if (next === undefined) return null;
   const press = (): void => {
     const view = box.current?.parentElement;
     if (view == null) return;
     landing.current?.abort();
-    const before = new Set(
-      [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].map((row) => row.dataset.nodeId)
-    );
     const acts = abortOnReaderAct();
     landing.current = acts;
+    // The ids the view draws the rows of the page's nodes by, once the page has merged: none
+    // before.
+    let page: ReadonlySet<string> = new Set();
     // The view draws the page's rows in a render after the answer lands, so each change of what it
-    // draws is looked at until a row of a node it did not draw before is there.
+    // draws is looked at until a row of the page is there.
     const drawn = new MutationObserver(() => {
-      const row = [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find(
-        (one) => !before.has(one.dataset.nodeId)
-      );
+      const row = rowOfPage(view, page);
       if (row === undefined) return;
       acts.abort();
       moveToRow(row);
     });
     drawn.observe(view, { childList: true, subtree: true });
     acts.signal.addEventListener("abort", () => drawn.disconnect());
+    // Once the view draws the answer the cache holds, which holds the merged page, the landing
+    // ends, on the page's first row where the view draws one.
+    const { queryKey } = viewQuery(issueKey, filter);
+    const ends = (): void => {
+      if (drawnAnswer.current !== queryClient.getQueryData(queryKey)) return;
+      const row = rowOfPage(view, page);
+      acts.abort();
+      if (row !== undefined) moveToRow(row);
+    };
+    acts.signal.addEventListener("abort", () => {
+      if (look.current === ends) look.current = undefined;
+    });
     // A press that merged no page lands nowhere. A refused page, or one that names a cursor the
     // read asked for already, leaves the answer as it was (`readNextTreePage`), and the control
     // stays for another press.
     next.read().then(
       (merged) => {
-        if (!merged) acts.abort();
+        if (acts.signal.aborted) return;
+        if (merged === undefined) {
+          acts.abort();
+          return;
+        }
+        page = merged;
+        look.current = ends;
+        ends();
       },
       () => acts.abort()
     );
@@ -314,6 +348,13 @@ export function NextViewPage({
 /** A row a view draws, the outline's (`NodeRow.tsx`) or one of its own that carries the mark,
  *  each with its node's id (`data-node-id`). */
 const VIEW_ROW = "[data-node-row]";
+
+/** The first row `view` draws of a node of `page`, told by its node's id. */
+function rowOfPage(view: HTMLElement, page: ReadonlySet<string>): HTMLElement | undefined {
+  return [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find(
+    (row) => row.dataset.nodeId !== undefined && page.has(row.dataset.nodeId)
+  );
+}
 
 /** The outline's tree itself (`IssueTree.tsx`), by its name. */
 const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;
