@@ -591,8 +591,14 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 	t.Helper()
 	dir := t.TempDir()
 	logPath, cache, stub := filepath.Join(dir, "log"), filepath.Join(dir, "cache"), filepath.Join(dir, "bun")
+	// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=hold stalls each install 4.5 s while it holds the lock.
+	stallHold := ""
+	if os.Getenv("LEGION_TEST_CONTROL_STALL") == "hold" {
+		stallHold = "sleep 4.5\n"
+	}
 	body := "#!/bin/sh\n" +
 		"printf 'start %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
+		stallHold +
 		"sleep 0.3\n" +
 		"printf 'end %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
 		"exit 0\n"
@@ -619,6 +625,10 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 			"LEGION_TEST_LOG="+logPath,
 			"LEGION_TEST_ID="+id,
 		)
+		// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=start-b starts b's script 600 ms after a's.
+		if id == "b" && os.Getenv("LEGION_TEST_CONTROL_STALL") == "start-b" {
+			time.Sleep(600 * time.Millisecond)
+		}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
