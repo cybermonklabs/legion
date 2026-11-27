@@ -37,6 +37,13 @@ function reachableRows(nodes: readonly HTMLElement[]): HTMLElement[] {
   return nodes.filter((node) => node.closest("details:not([open])") === null);
 }
 
+/** The index one step from `at` through a list of `count` rows: its neighbour, clamped at both
+ *  ends; from no row (`at` of -1), the first going down and the last going up. */
+export function roveIndex(count: number, at: number, delta: 1 | -1): number {
+  if (at === -1) return delta === 1 ? 0 : count - 1;
+  return Math.max(0, Math.min(count - 1, at + delta));
+}
+
 /**
  * Moves keyboard focus one step through the rows of `nodes` the reader can reach: from
  * `current` to its neighbour, clamped at both ends; when nothing in the list holds focus, to
@@ -52,11 +59,5 @@ export function roveFocus(
     return;
   }
   const at = current === null ? -1 : reachable.indexOf(current);
-  const next =
-    at === -1
-      ? delta === 1
-        ? 0
-        : reachable.length - 1
-      : Math.max(0, Math.min(reachable.length - 1, at + delta));
-  reachable[next]?.focus();
+  reachable[roveIndex(reachable.length, at, delta)]?.focus();
 }

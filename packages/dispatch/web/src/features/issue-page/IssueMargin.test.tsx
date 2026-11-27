@@ -3217,9 +3217,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
 });
 
 // Outside the new issue page Referenced by is as on every other page: a read that fails after the
-// list answered draws its line over that list, and Retry is disabled while the read it sent is
-// out.
-test("outside Details, Referenced by draws its line over the list it holds, and its Retry is disabled while the read it sent is out", async () => {
+// list answered draws its line over that list, and Retry is held while the read it sent is out,
+// never disabled, as it is in Details.
+test("outside Details, Referenced by draws its line over the list it holds, and its Retry is held while the read it sent is out", async () => {
   const user = userEvent.setup();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
@@ -3244,9 +3244,12 @@ test("outside Details, Referenced by draws its line over the list it holds, and 
     getReferences.mockImplementationOnce(() => new Promise(() => undefined));
     await user.click(retry);
     await waitFor(() =>
-      expect(retry, "Retry outside Details is not disabled while its read is out").toBeDisabled()
+      expect(retry, "Retry outside Details is not held while its read is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
-    expect(retry, "Retry outside Details reads aria-disabled").not.toHaveAttribute("aria-disabled");
+    expect(retry, "Retry outside Details is disabled while its read is out").not.toBeDisabled();
   } finally {
     view.unmount();
     queryClient.clear();
@@ -3315,11 +3318,12 @@ test("closing References or Details takes an open Referenced by list, and its re
 });
 
 // Details' reads of the titles of the issues this one waits on, of what waits on it and the
-// titles of those, of what references it and of the projects, whose gated steps a top-level
-// issue's approvals name and whose default repository the Repository row suggests, are each read
-// again by the events that change them (`api/event-refresh.ts`), so in Details a window focus
-// past the app's 30 s staleness reads none of them again. The reader's state keeps the app's
-// defaults, so its second read shows the focus was handled.
+// titles of those, of what references it and of the projects, whose default repository the
+// Repository row suggests, are each read again by the events that change them
+// (`api/event-refresh.ts`), so in Details a window focus past the app's 30 s staleness reads none
+// of them again. A top-level issue's gated steps come with the issue's own read
+// (`approval_gate`), so the projects are read for the Repository row alone. The reader's state
+// keeps the app's defaults, so its second read shows the focus was handled.
 test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by or project again", async () => {
   const user = userEvent.setup();
   const { getIssue, getMyState, restore } = stubIssueApi();

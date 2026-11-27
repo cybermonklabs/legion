@@ -29,13 +29,15 @@ import (
 // person per thread, maintained by the triggers 0095-0097 install, so the Reply reads touch only
 // the person's own rows, each state through its own partial index: user_threads_unread (0095)
 // under state=unread, user_threads_inbox (20261105093502) under state=inbox and
-// user_threads_dismissed (20261105093503) under state=dismissed. An Agent row is one of the
-// person's one-off messages to an agent session - a BTW, a broadcast's copy, or a Send or Aside
-// the session did not take as a turn of its live conversation - holding a reply from that
+// user_threads_dismissed_replied (20261123085248) under state=dismissed. An Agent row is one of
+// the person's one-off messages to an agent session - a BTW, a broadcast's copy, or a Send or
+// Aside the session did not take as a turn of its live conversation - holding a reply from that
 // session; its dismissal is a row of user_agent_thread_dismissed (20261105093505), since an Agent
 // row has no user_threads row to carry one.
 //
-// A thread stays in the Inbox, read or not, until the person dismisses it (api/inbox_dismiss.go):
+// A thread stays in the Inbox, read or not, until the person dismisses it (api/inbox_dismiss.go)
+// or answers or replies in it, which dismisses it in the write's own transaction (inboxwrite.Record,
+// the own-answer rule, R1):
 // state=inbox answers what is in it, state=dismissed what has been taken out of it, and
 // state=unread, the default, answers the unread rows the Inbox's count reads.
 //
@@ -58,10 +60,10 @@ import (
 //
 // The ask is excluded by a test keyed on the thread's own id rather than by two left joins over
 // the row's kind and issue, so every column this filter reads of user_threads is one the state's
-// own index holds and the read above it can answer from that index alone (myRepliesPage). An ask's
-// thread id is the ask's own id, which is what makes the id enough to key the test on. The ask is
-// open as the Inbox picks it (askOpenOf: its row's state and its node's), so the two lists leave
-// out and list the same asks.
+// own index holds, and the read above it reads the table for no test of this filter's
+// (myRepliesPage). An ask's thread id is the ask's own id, which is what makes the id enough to
+// key the test on. The ask is open as the Inbox picks it (askOpenOf: its row's state and its
+// node's), so the two lists leave out and list the same asks.
 //
 // It and the statements built on it are vars, not consts, because askOpenOf builds its read of
 // the ask's node from graphstore.CurrentTupleRead.
@@ -84,12 +86,19 @@ var myRepliesOwner = `
 // each statement below reads its own index. A prepared statement reaches a generic plan after five
 // executions, so the parameter would cost every Inbox read a scan of every row of the caller's.
 //
-// "Dismissed" is exactly `dismissed_at is not null`: user_threads_record clears the mark when
-// somebody else writes again (migration 20261105093501), so no read compares the two marks.
+// "Dismissed" is `dismissed_at is not null` over the threads the Inbox state could list: the ones
+// somebody else wrote in after the person took part. That is what replied_at records - the newest
+// write anyone else made in the thread since the person's row began (migration 0095), never a
+// write of the person's own - so the Inbox state and this one both require it. user_threads_record
+// clears the mark when somebody else writes again (migration 20261105093501), so no read compares
+// the two marks. A person's own answer, review or reply dismisses its thread for them
+// (inboxwrite.Record, the own-answer rule, R1) whether or not anybody else wrote there since they
+// took part; a thread it dismissed with no such write, such as an approval request they review,
+// carries the mark and a null replied_at, and is a row of neither state.
 var (
 	myRepliesUnread    = myRepliesOwner + ` and u.unread`
 	myRepliesInbox     = myRepliesOwner + ` and u.replied_at is not null and u.dismissed_at is null`
-	myRepliesDismissed = myRepliesOwner + ` and u.dismissed_at is not null`
+	myRepliesDismissed = myRepliesOwner + ` and u.replied_at is not null and u.dismissed_at is not null`
 )
 
 // myRepliesDismissedCursor resumes a Dismissed page where the last one ended ($5 the dismissal
@@ -136,14 +145,18 @@ var (
 // than once per row. "Somebody else" is user_threads_login, the function the triggers key a row
 // on, so the count and the row's own unread flag can never disagree about who wrote a write.
 //
-// It is read in two steps. The first picks the page's thread ids out of the state's own index and
-// nothing else: every column that step reads of user_threads - the login it narrows by, the mark it
-// orders by and the thread id - is one the state's partial index holds, and its only other test is
-// keyed on the thread id too (myRepliesOwner), so the read is an index-only scan of that index in
-// the order the state answers in, with no sort and no row of the table touched. The second fetches
-// the rows the cut kept, by their primary key. One step would be neither: with the Inbox's own read
-// taking every undismissed row, a plan that fetches each row as it walks the index costs more than
-// one that scans the table, so the planner scans it - 101,540 rows read to answer 1,540 of them at
+// It is read in two steps. The first picks the page's thread ids out of the state's own index: the
+// login it narrows by, the mark it orders by and the thread id are columns the state's partial
+// index holds, and its only other test is keyed on the thread id too (myRepliesOwner). Under
+// state=dismissed the step tests replied_at as well (myRepliesDismissed), and the state's index,
+// user_threads_dismissed_replied (20261123085248), holds only rows whose replied_at is not null,
+// so the planner takes that test from the index's predicate. Under every state those are every
+// column the step reads of user_threads, so the read is an index-only scan of that index in the
+// order the state answers in, with no sort and no row of the table touched, and under
+// state=dismissed it meets no row the state leaves out. The second step fetches the rows the cut
+// kept, by their primary key. One step would be neither: with the Inbox's own read taking every
+// undismissed row, a plan that fetches each row as it walks the index costs more than one that
+// scans the table, so the planner scans it - 101,540 rows read to answer 1,540 of them at
 // INFRA-450's a14 seed - and sorts what it keeps.
 //
 // Neither step carries an order over the joins: the route sorts the two kinds of row together
@@ -177,8 +190,9 @@ const myRepliesPageRows = `
 
 // myRepliesPageCut and myRepliesDismissedCut are the two orders a state is read in, which are the
 // two the states' indexes answer in: newest reply first for the Inbox's own states, newest
-// dismissal first for the Dismissed view. Each cuts the read to $4 rows before any row of the
-// table is fetched, so a page costs one primary-key read and one set of joins per row it answers.
+// dismissal first for the Dismissed view. Each cuts the read to $4 rows before the second step
+// fetches any row of the table, so a page costs one primary-key read and one set of joins per row
+// it answers (myRepliesPage).
 const myRepliesPageCut = `
 		order by u.replied_at desc, u.thread_id desc
 		limit $4`

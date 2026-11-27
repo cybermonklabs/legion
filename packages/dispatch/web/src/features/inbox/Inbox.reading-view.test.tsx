@@ -9,9 +9,10 @@ import { beforeAll, expect, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Issue, OpenAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
@@ -46,6 +47,14 @@ beforeAll(async () => {
 
 installInboxApiMocks();
 
+/** An unassigned ask row on an unassigned issue. */
+function orphanAsk(id: string, key: string, question: string): OpenAskRow {
+  return issueAsk(
+    { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
+    null
+  );
+}
+
 test("below 1280 px the page lists short rows, and a row the reader opens is read in place of the list until Inbox takes them back to it", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -72,11 +81,18 @@ test("below 1280 px the page lists short rows, and a row the reader opens is rea
     const view = await screen.findByTestId("inbox-reading-view");
     expect(address()).toBe("/?item=ask-b");
     expect(within(view).getByTestId("ask-ask-b")).toBeTruthy();
-    // In place of the list and the header above it, which stay mounted, hidden.
+    // In place of the list and the header line's search box, which stay mounted, hidden; the
+    // title and Answered by you stay drawn.
     expect(list.closest("[hidden]")).not.toBeNull();
     expect(
       screen.getByRole("searchbox", { hidden: true, name: "Search asks" }).closest("[hidden]")
     ).not.toBeNull();
+    expect(
+      screen.getByRole("heading", { hidden: true, level: 1, name: "Inbox" }).closest("[hidden]")
+    ).toBeNull();
+    expect(
+      screen.getByRole("link", { hidden: true, name: "Answered by you" }).closest("[hidden]")
+    ).toBeNull();
     // The row the reader picked went with the list, so the view takes the focus.
     expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
 
@@ -216,17 +232,20 @@ test("below 1280 px a snooze from the reading view's head reads the next row, an
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
     await user.click(shortRow("ask-a"));
     const view = await screen.findByTestId("inbox-reading-view");
-    await user.selectOptions(
-      within(view).getByLabelText("Snooze CORE-1: Which approach?"),
-      "tomorrow"
+    await pickIn(
+      user,
+      () => within(view).getByLabelText("Snooze CORE-1: Which approach?"),
+      "Tomorrow"
     );
 
     await waitFor(() => expect(address()).toBe("/?item=ask-b"));
-    await user.selectOptions(
-      within(screen.getByTestId("inbox-reading-view")).getByLabelText(
-        "Snooze CORE-2: Which format?"
-      ),
-      "tomorrow"
+    await pickIn(
+      user,
+      () =>
+        within(screen.getByTestId("inbox-reading-view")).getByLabelText(
+          "Snooze CORE-2: Which format?"
+        ),
+      "Tomorrow"
     );
 
     await waitFor(() => expect(address()).toBe("/"));
@@ -267,6 +286,56 @@ test("below 1280 px a short row's checkbox marks the row without opening it, and
     await screen.findByText("2 selected");
     for (const id of ["ask-a", "ask-b"]) {
       expect((within(shortRow(id)).getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+    }
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// Below 1280 px with a row open, the page hides the list under the row's reading view, so the
+// selection bar's hand-off reads the view. Clear selection lands the focus on the view's own
+// checkbox for the open row, and not on a checkbox in the hidden list, from which a browser drops
+// the focus to the page's body: with the open row marked last, and with another row, hidden in the
+// list, marked last.
+test("below 1280 px with a row open and a row marked, Clear selection on the bar lands the focus on the reading view's own checkbox", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    for (const marked of ["ask-b", "ask-a"]) {
+      // Marked in the list, then `ask-b` opened.
+      await user.click(within(shortRow(marked)).getByRole("checkbox"));
+      await screen.findByText("1 selected");
+      await user.click(shortRow("ask-b"));
+      const view = await screen.findByTestId("inbox-reading-view");
+      expect(view.getAttribute("data-inbox-reading-row")).toBe("ask-b");
+      const mark = within(view).getByRole("checkbox", { name: /^Select / });
+      expect((mark as HTMLInputElement).checked).toBe(marked === "ask-b");
+
+      await user.click(screen.getByRole("button", { name: "Clear selection" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull()
+      );
+      await waitFor(() => expect(mark).toHaveFocus());
+      expect(mark).not.toBeChecked();
+      // The view the reader opened still stands: the press took nothing but the marks.
+      expect(view.isConnected).toBe(true);
+
+      await user.click(within(view).getByRole("button", { name: "Back to the Inbox list" }));
+      await waitFor(() =>
+        expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument()
+      );
     }
   } finally {
     unmount();
@@ -569,9 +638,9 @@ test("below 1280 px `h` on a focused ask row opens its view at the head's Snooze
     screen.getByTestId("inbox-pane-scroller").focus();
     await user.keyboard("x");
     expect(within(view).getByRole("checkbox", { name: /^Select / })).toBeChecked();
-    expect(screen.getByRole("group", { name: "Selected rows" })).toHaveTextContent("1 selected");
+    expect(screen.getByRole("toolbar", { name: "Selected rows" })).toHaveTextContent("1 selected");
     await user.keyboard("h");
-    expect(screen.getByRole("combobox", { name: "Snooze selected asks" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Snooze selected asks" })).toHaveFocus();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -694,14 +763,9 @@ test("below 1280 px `1`-`9` and `y` on a focused ask row open it and act in its 
 
 test("below 1280 px the reader's own Assign to me under Unassigned moves the view to the next row, as the column does, and says nothing left", async () => {
   const user = userEvent.setup();
-  const orphan = (id: string, key: string, question: string) =>
-    issueAsk(
-      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
-      null
-    );
   const rows = [
-    orphan("ask-oa", "CORE-3", "First orphan?"),
-    orphan("ask-ob", "CORE-4", "Second orphan?"),
+    orphanAsk("ask-oa", "CORE-3", "First orphan?"),
+    orphanAsk("ask-ob", "CORE-4", "Second orphan?"),
   ];
   let served: OpenAskRow[] = rows;
   const listOpenAsks = mockInboxReads(() => served);
@@ -920,14 +984,9 @@ test("below 1280 px an open row that leaves on its own brings the list back at i
 
 test("below 1280 px an open row the reader's own Assign to me left in the list, withdrawn later, brings the list back and says it left", async () => {
   const user = userEvent.setup();
-  const orphan = (id: string, key: string, question: string) =>
-    issueAsk(
-      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
-      null
-    );
   const rows = [
-    orphan("ask-oa", "CORE-3", "First orphan?"),
-    orphan("ask-ob", "CORE-4", "Second orphan?"),
+    orphanAsk("ask-oa", "CORE-3", "First orphan?"),
+    orphanAsk("ask-ob", "CORE-4", "Second orphan?"),
   ];
   let served: OpenAskRow[] = rows;
   const listOpenAsks = mockInboxReads(() => served);
@@ -974,6 +1033,65 @@ test("below 1280 px an open row the reader's own Assign to me left in the list, 
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(address()).toBe("/?assignee=everyone");
     expect(screen.getByText("This item left your Inbox.")).toBeTruthy();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A write marks its ask as the reader's own while it is pending or failed (`AskWrites.live`): a
+// refused Assign to me is still the reader's write, so the row leaving after it is their own
+// move, and the view moves on as it does for a write that is out.
+test("below 1280 px an open row whose own Assign to me was refused, withdrawn later, moves the view to the next row and says nothing left", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    orphanAsk("ask-oa", "CORE-3", "First orphan?"),
+    orphanAsk("ask-ob", "CORE-4", "Second orphan?"),
+  ];
+  let served: OpenAskRow[] = rows;
+  const listOpenAsks = mockInboxReads(() => served);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  // Everyone: no assignee narrowing, so the question stays listed through the write.
+  const { queryClient, unmount } = renderInbox("/?assignee=everyone");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-oa", "ask-ob"]));
+    await user.click(shortRow("ask-oa"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.unhover(shortRow("ask-oa"));
+    await user.click(within(view).getByRole("button", { name: "Assign CORE-3 to me" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-3", { assignee: "alice" }, keyedAttempt)
+    );
+    await act(async () => {
+      save.reject(
+        new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-3 is closed; reopen it first" })
+      );
+      await save.promise.catch(() => undefined);
+    });
+    // Refused: the question is still listed and open, with the reason on it.
+    expect(await within(view).findByRole("alert")).toHaveTextContent(
+      "CORE-3 is closed; reopen it first"
+    );
+    expect(address()).toBe("/?item=ask-oa&assignee=everyone");
+
+    // The agent then withdraws it. The refused write is still the reader's, so the view moves to
+    // the next row and says nothing left.
+    served = [rows[1] as OpenAskRow];
+    await act(async () => {
+      await refetchInboxReads(queryClient);
+    });
+    await waitFor(() => expect(address()).toBe("/?item=ask-ob&assignee=everyone"));
+    expect(screen.getByTestId("inbox-reading-view").getAttribute("data-inbox-reading-row")).toBe(
+      "ask-ob"
+    );
+    expect(screen.queryByText("This item left your Inbox.")).toBeNull();
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -1160,11 +1278,12 @@ test("below 1280 px clearing the agent filter beside the column keeps a row's wa
     await user.click(shortRow("ask-a"));
     await screen.findByTestId("inbox-reading-view");
 
-    // Widened, the header shows again with the filter's chip. Clearing it pushes an entry, as a
-    // link does, that is no row's opening.
+    // Widened, the header shows again with the filter's chip in the bar, the shared removable
+    // chip (`FilterChip`). Clearing it pushes an entry, as following a link does, that is no
+    // row's opening.
     act(() => width.setWidth(1440));
     await screen.findByTestId("inbox-pane");
-    await user.click(screen.getByRole("link", { name: "Clear agent filter" }));
+    await user.click(screen.getByRole("button", { name: /^Remove Asks from .+ filter$/ }));
     await waitFor(() => expect(params().get("agent")).toBeNull());
     expect(params().get("item")).toBe("ask-a");
 

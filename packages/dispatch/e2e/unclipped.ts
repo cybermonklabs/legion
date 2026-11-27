@@ -43,6 +43,20 @@ export async function assertWhole(locator: Locator): Promise<void> {
   expect(clips, clips.join(", ")).toEqual([]);
 }
 
+/** Fails the row where `locator`'s own box scrolls sideways: its content wider than its box. A
+ *  box whose overflow scrolls is checked itself, which `assertWhole` does not do for an empty
+ *  box or for a box under its first leaf. */
+export async function assertNoSidewaysScroll(locator: Locator, what: string): Promise<void> {
+  const { client, scroll } = await locator.evaluate((element) => ({
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+  }));
+  expect(
+    scroll,
+    `${what} scrolls sideways: ${scroll} px of content in ${client} px`
+  ).toBeLessThanOrEqual(client);
+}
+
 /**
  * Nothing on the page is wider than the viewport the browser was given. A phone zooms out to fit
  * a page wider than the device, and which measure that zoom moves depends on the page: the

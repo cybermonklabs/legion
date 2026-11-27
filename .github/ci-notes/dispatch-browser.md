@@ -373,13 +373,13 @@ budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
-again at this change's head, the suite holds 1,427 rows in 194 files, which is two
+again at this change's head, the suite holds 2,108 rows in 247 files, which is two
 listings rather than one: the three `-alone` projects are out of the default selection
-since dispatch://INFRA-1280, so a command that names no project lists 1,373 rows in 191
-files and one that names those three lists the other 54, in 3 files. The ten projects
-this job's shard command (.github/scripts/dispatch-browser-shard-suite.sh) names hold 1,353 rows in 190 files; the four of those the
-pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
-`visual` projects hold 20, which the visual job runs one row at a time, and the 54
+since dispatch://INFRA-1280, so a command that names no project lists 2,056 rows in 243
+files and one that names those three lists the other 52, in 4 files. The ten projects
+this job's shard command (.github/scripts/dispatch-browser-shard-suite.sh) names hold 2,033 rows in 242 files; the four of those the
+pull-request lane names hold 1,778, of which that lane's `@pr` grep selects 291. The two
+`visual` projects hold 23, which the visual job runs one row at a time, and the 52
 wall-clock rows are the alone job's.
 
 ## Why the leg count stands in two places
@@ -855,9 +855,10 @@ pgvector; the binaries directory is set on the command line, not in this step's
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
 legs run is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs both wall-clock specs (`packages/dispatch/e2e/configurations.ts#clockSpecNames`:
-heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
-that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
+chromium-alone runs every wall-clock spec (`packages/dispatch/e2e/configurations.ts#clockSpecNames`:
+agent-workspace-timing, heavy-bodies, inbox-dismissed-timing and nested-directive, the list
+`clockSpecPattern` is built from, which is that project's `testMatch`), firefox-alone and
+webkit-alone run heavy-bodies alone.
 And `packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
 answers `undefined` on `count === 1`. A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is

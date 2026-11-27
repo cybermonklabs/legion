@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `GET /api/v1/me/inbox?state=dismissed` answers at most 200 entries: 200 where no `limit` is
+  sent, and a refusal naming `limit` above 200.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: me-inbox-dismissed-bound

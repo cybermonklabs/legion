@@ -167,21 +167,35 @@ export const realStackReasons: Record<string, string> = {
   "held-sends.e2e.ts": "sends refused by the server and held across pages",
   "hover-preview.e2e.ts":
     "the row it keeps is a phone gesture read in the iphone configuration, which no stub project repeats",
+  "inbox-answer-dismisses.e2e.ts":
+    "the person's own answer or reply is a write whose dismissal the server records in the same transaction, and somebody else's write brings the row back, both of which only a live server does",
   "inbox-approval-message.e2e.ts":
     "the reading pane draws the document under review from its live room",
   "inbox-cli.e2e.ts": "runs `dispatch inbox` against the server and compares it with the page",
+  "inbox-compose.e2e.ts":
+    "each send is a write the server delivers through the fake listener, and the outcomes it draws are the server's own deliveries, its broadcast's exclusions and its recorder's queued envelope, which only a live server makes",
   "inbox-decline.e2e.ts":
     "every decline is a write the server takes and the surfaces re-read; the kind it refuses to decline is the server's; the note's bound is the route's",
   "inbox-dismiss.e2e.ts": "dismiss and restore writes, bulk requests, refusals and reloads",
+  "inbox-dismissed-timing.e2e.ts":
+    "times the first page the server answers over thousands of dismissed threads the server's own dismiss wrote, follows the cursor it answers to the next pages, and restores a row through that route; its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
+  "inbox-dismissed-window.e2e.ts":
+    "holds the focus over a window of a thousand dismissed threads the server's own dismiss wrote, and restores a row through that route from another tab while the page is open; a recording holds neither the pages nor the live update",
   "inbox-drawer.e2e.ts": "answers an ask in the drawer",
   "inbox-mark-all.e2e.ts": "mark-all is a server write, including its refusal",
   "inbox-pane-scroll.e2e.ts":
     "every row draws the document in its live room; another session's edit, a reply and an event committed elsewhere must reach the open page, and a resumed socket's gap must refresh the reads it holds; an approval row reads the version the server names latest against the approval it is marked against",
+  "inbox-quoted-range.e2e.ts":
+    "the pane draws each document from its live room with the comment's mark lit in it, and the anchor the server orphans when another session deletes the quoted words is what the pane falls back to",
+  "inbox-range-select.e2e.ts":
+    "each range ends in a dismiss, a restore or a snooze the server takes and the list reads again; a thread arrives live inside a run, and another tab's dismiss reaches the open page",
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
+  "inbox-thread-order.e2e.ts":
+    "the Inbox draws its rows and their threads from the one read (`GET /api/v1/me/inbox`), which no committed recording holds",
   "inbox-thread-pane.e2e.ts":
     "opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay",
   "inbox-threads.e2e.ts":
@@ -336,10 +350,12 @@ export const realStackReasons: Record<string, string> = {
     "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
+  "table-controls.e2e.ts":
+    "the Agents page folds a session by its last_seen against the clock and the Delivery page reads a window of dates, both of which a recording freezes; the rest count seeded rows against each other - a filter's count beside each of its values, the number waiting on the reader, the pager's total - and write before they read: a column resize, a reorder and a visibility kept for the reader, a Board disclosure and an Artifacts narrowing read back after a reload, and Mark all read",
   "task-items.e2e.ts": "asserts inside the live document editor",
   "text-typed-blocks.e2e.ts": "the live document editor, including typing a new option",
   "threads-order.e2e.ts":
-    "two live documents, each with its own room; the margin sits on the live document",
+    "two live documents, each with its own room; the margin sits on the live document; the reading pane draws the anchored comment thread inside its document's live room, which the stub layer does not serve",
   "threads.e2e.ts":
     "replies, resolve and reopen, edits, retractions and suggestion accepts, all server writes",
   "typed-block-content-rule.e2e.ts": "pastes into the live document editor",

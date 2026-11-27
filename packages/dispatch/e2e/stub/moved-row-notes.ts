@@ -36,7 +36,13 @@ export const newInTheStubbedLayer: Readonly<Record<string, string>> = {
   "layout-rule.stub.e2e.ts": NEW_IN_THE_STUBBED_LAYER,
 };
 
-/** The rows the sentence above is false for, keyed by the spec file and the title the listing
+/** What the map says of a row INFRA-3135 (cybermonklabs/legion#3729) wrote for the stubbed layer:
+ *  no copy of it ran before, so it has no assertions from before a move for `unchangedByTheMove`
+ *  to speak of. */
+const newInInfra3135 =
+  "new in INFRA-3135 (cybermonklabs/legion#3729): written for the stubbed layer with no copy before it, so no move touched it";
+
+/** The rows `unchangedByTheMove` is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
   "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
@@ -63,4 +69,16 @@ export const movedRowNotes: Record<string, string> = {
     "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
+  "table-controls.stub.e2e.ts › each page draws every shared control its design gives it, and no other @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › each page draws one row of controls, and nothing else between its title and its first row @phone @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › each page's pager, selection bar and column filters take the size the page passes: compact on the List, comfortable on the Inbox @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › no narrowing, panel, display menu or selection moves the first row of a list @phone @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › one search box and chip across the Inbox and the Board, one bar trigger across the Board and the List, and the List's compact row behaving alike @pr":
+    newInInfra3135,
+  "table-controls.stub.e2e.ts › the Inbox is rows with their marks and no table, and opening one opens the reading pane at its own width @pr":
+    newInInfra3135,
 };

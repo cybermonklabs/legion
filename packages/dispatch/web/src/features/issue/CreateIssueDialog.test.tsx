@@ -1,17 +1,19 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
+import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { CreateIssueInput, Issue } from "../../api/types";
+import type { CreateIssueInput, Issue, Project } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -23,7 +25,7 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-const projects = [
+const projects: Project[] = [
   {
     created_at: "2026-09-10T00:00:00Z",
     key: "CORE",
@@ -65,14 +67,16 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
-/** The dialog, its project list and its related-item check answered here. */
+/** The dialog, its project list and its related-item check answered here; `readProjects` answers
+ *  the project list, at once by default. */
 function renderDialog(
   user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
   path = "/",
-  onClose = () => {}
+  onClose = () => {},
+  readProjects: () => Promise<Project[]> = () => Promise.resolve(projects)
 ) {
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
+  const listProjects = spyOn(api, "listProjects").mockImplementation(readProjects);
   // Every row types a title, so the dialog's related-item check is answered here instead of
   // reaching the network.
   const relatedItems = spyOn(api, "relatedItems").mockResolvedValue({
@@ -106,10 +110,13 @@ function renderDialog(
 }
 
 /** Waits until the project read has answered and the dialog has picked its first project: the
- *  select is drawn at once and empty, and Create does nothing while no project is picked. */
+ *  Project list's trigger is drawn at once with no project, and Create does nothing while no
+ *  project is picked. */
 async function projectPicked(): Promise<void> {
-  const select = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Project" });
-  await waitFor(() => expect(select.value).toBe(projects[0]?.key));
+  const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+  await waitFor(() =>
+    expect(trigger).toHaveAccessibleName(`Project ${projects[0]?.key} · ${projects[0]?.name}`)
+  );
 }
 
 test("preselects the route's project, submits title and spec, and opens the created issue", async () => {
@@ -125,14 +132,16 @@ test("preselects the route's project, submits title and spec, and opens the crea
     () => (closed += 1)
   );
   try {
-    const select = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Project" });
-    await waitFor(() => expect(select.value).toBe("OPS"));
+    const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+    await waitFor(() => expect(trigger).toHaveAccessibleName("Project OPS · Operations"));
     const create = screen.getByRole("button", { name: "Create" });
-    expect(create).toHaveAttribute("disabled");
+    // With no title there is nothing to create: Create is held, not disabled.
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    expect(create).not.toHaveAttribute("disabled");
 
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("  Ship the keymap  ");
-    expect(create).not.toHaveAttribute("disabled");
+    expect(create).not.toHaveAttribute("aria-disabled");
     await view.user.click(screen.getByRole("textbox", { name: /Spec/ }));
     await view.user.paste("One line of spec.");
     await view.user.click(create);
@@ -257,6 +266,179 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
     expect(calls.map((call) => call.force)).toEqual([undefined, true]);
   } finally {
     view.unmount();
+  }
+});
+
+// While the create is out, the field or the button the reader submitted from is held -
+// `aria-disabled`, and a field read-only - never disabled (`pressHeld`). A disabled control drops
+// the focus to the page's body in a browser, out of the open modal dialog. So the pressed control
+// keeps the focus through the create, and a second press sends nothing.
+test.each([
+  { label: "Title", name: "Title", press: "{Enter}", role: "textbox" },
+  { label: /^Spec/, name: "Spec", press: "{Control>}{Enter}{/Control}", role: "textbox" },
+  { label: "Create", name: "Create", press: "{Enter}", role: "button" },
+] as const)("$name, held while the create is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  name,
+  press,
+  role,
+}) => {
+  const calls: CreateIssueInput[] = [];
+  // The create's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<Issue>();
+  const view = renderDialog(userEvent.setup(), (input) => {
+    calls.push(input);
+    return answer.promise;
+  });
+  try {
+    await projectPicked();
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Held create");
+    await pressHeld(view.user, screen.getByRole(role, { name: label }), {
+      name,
+      press,
+      sent: () => calls.length,
+    });
+  } finally {
+    await act(async () =>
+      answer.resolve(issue(calls[0] ?? { project: "CORE", title: "Held create" }, "CORE-9"))
+    );
+    view.unmount();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The Create issue dialog's Project is such a list: its options are every project,
+// which grow with the deployment. Opened inside the dialog, it holds a text box of its own, and a
+// word typed into it leaves only the projects that match. Escape there closes the list alone,
+// with the focus back on its trigger inside the dialog; a pick sets the project the issue is
+// filed in, and puts the focus back on the trigger too.
+test("the Create issue dialog's Project list holds a text box that narrows the projects, and a pick files the issue there", async () => {
+  const calls: CreateIssueInput[] = [];
+  let closed = 0;
+  const view = renderDialog(
+    userEvent.setup(),
+    async (input) => {
+      calls.push(input);
+      return issue(input, "OPS-8");
+    },
+    "/projects/CORE",
+    () => (closed += 1)
+  );
+  try {
+    const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+    await waitFor(() => expect(trigger).toHaveAccessibleName("Project CORE · Core"));
+    const before = new Set(textBoxes());
+    await view.user.click(trigger);
+    await waitFor(() =>
+      expect(screen.queryAllByRole("option", { name: /^OPS\b/ }).length).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Project list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getByRole("option", { name: /^CORE\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await view.user.type(own[0] as HTMLElement, "oper");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^CORE\b/ }),
+        `"oper" leaves CORE in the Project list`
+      ).toHaveLength(0)
+    );
+    await view.user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Create issue" })).toBeTruthy();
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAccessibleName("Project CORE · Core");
+    expect(closed).toBe(0);
+
+    await view.user.click(trigger);
+    await view.user.click(within(panelOf(trigger)).getByRole("option", { name: /^OPS\b/ }));
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAccessibleName("Project OPS · Operations");
+
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Crane check");
+    await view.user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(calls).toEqual([{ project: "OPS", title: "Crane check" }]));
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 12: a list whose read is out or failed says so. While the projects are being
+// read the Project list says they are loading, and after the read failed that they could not be
+// loaded, and it never calls an unread list empty.
+test("the Create issue dialog's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
+  const read = Promise.withResolvers<Project[]>();
+  const view = renderDialog(
+    userEvent.setup(),
+    async (input) => issue(input, "CORE-9"),
+    "/",
+    () => {},
+    () => read.promise
+  );
+  try {
+    const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+    await view.user.click(trigger);
+    const panel = panelOf(trigger);
+    expect(within(panel).getByRole("listbox")).toHaveTextContent("Loading projects…");
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+
+    await act(async () => {
+      read.reject(new Error("projects unreachable"));
+      await read.promise.catch(() => undefined);
+    });
+    expect(await within(panel).findByText("Could not load projects.")).toBeTruthy();
+    expect(within(panel).queryByText("Loading projects…")).toBeNull();
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Project list is no longer disabled while it has no project to offer, so it can say why;
+// that lets nobody file an issue in no project. With no project picked - the read still out,
+// failed, or answering none - Create stays disabled whatever the title, and the form's own submit
+// sends nothing.
+test("with no project picked, Create stays disabled and the dialog files nothing", async () => {
+  for (const [state, readProjects] of [
+    ["still being read", () => new Promise<Project[]>(() => {})],
+    ["failed", () => Promise.reject(new Error("projects unreachable"))],
+    ["empty", () => Promise.resolve([])],
+  ] as const) {
+    const calls: CreateIssueInput[] = [];
+    const view = renderDialog(
+      userEvent.setup(),
+      async (input) => {
+        calls.push(input);
+        return issue(input, "CORE-9");
+      },
+      "/",
+      () => {},
+      readProjects
+    );
+    try {
+      const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
+      if (state !== "still being read") {
+        await waitFor(() => expect(trigger).toHaveTextContent("Choose a project"));
+      }
+      expect(trigger, `with the projects ${state}`).not.toHaveAccessibleName(/·/);
+      await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+      await view.user.paste("Nowhere to file");
+      expect(
+        screen.getByRole("button", { name: "Create" }),
+        `with the projects ${state}`
+      ).toHaveAttribute("disabled");
+      // The form's own submit: user-event has no form for it.
+      fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
+      await act(async () => {});
+      expect(calls, `with the projects ${state}`).toEqual([]);
+    } finally {
+      view.unmount();
+    }
   }
 });
 

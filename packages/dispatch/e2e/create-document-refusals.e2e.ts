@@ -12,6 +12,7 @@ import {
   listIssueArtifacts,
   patchIssue,
 } from "./api";
+import { barAction } from "./filters";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
 
@@ -49,7 +50,7 @@ test("a title the issue already holds is refused by the control, by its name and
   const held = (await listIssueArtifacts(issue.key)).length;
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  await page.getByRole("button", { name: "New document" }).click();
+  await (await barAction(page, "New document")).click();
   const form = newDocumentForm(page);
   // The write compares the title with each document by name and by slug, and the control says
   // so before it writes: both spellings name the one document that holds the title.
@@ -92,7 +93,7 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
   });
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  await page.getByRole("button", { name: "New document" }).click();
+  await (await barAction(page, "New document")).click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill("Plan.md");
   await form.getByRole("button", { name: "Create" }).click();
@@ -143,25 +144,30 @@ test("a closed issue refuses both ways to add a document, in one sentence", asyn
   const held = (await listIssueArtifacts(issue.key)).length;
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  const create = page.getByRole("button", { name: "New document" });
-  const upload = page.getByRole("button", { exact: true, name: "Upload" });
+  // Both are actions of the tab's control bar, items of its More below 640 px of the bar's width,
+  // as here (R8).
+  const create = await barAction(page, "New document");
+  const upload = page.getByRole("menuitem", { exact: true, name: "Upload" });
   await expect(create).toBeVisible();
   await expect(upload).toBeVisible();
 
   await patchIssue(issue.key, { status: "done" });
   const refusal = "This issue is closed. Reopen it to add a document.";
-  // One line covers the whole strip, and every control in it says that line.
+  // One line under the bar covers both, and each says that line.
   await expect(create).toHaveAttribute("aria-disabled", "true");
-  await expect(create).toHaveAttribute("title", refusal);
+  await expect(create).toHaveAccessibleDescription(refusal);
   await expect(upload).toHaveAttribute("aria-disabled", "true");
-  await expect(upload).toHaveAttribute("title", refusal);
-  await expect(page.getByText(refusal, { exact: true })).toHaveCount(1);
+  await expect(upload).toHaveAccessibleDescription(refusal);
 
   // `force`: the refusal is `aria-disabled`, which Playwright reads as not enabled, and the
   // press a person can still make is exactly what this reads - it opens no form.
   await create.click({ force: true });
   await expect(newDocumentForm(page)).toHaveCount(0);
   expect(await listIssueArtifacts(issue.key)).toHaveLength(held);
+  // Shut, More's items no longer say it under their names: the line under the bar is the one.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu", { name: "More" })).toHaveCount(0);
+  await expect(page.getByText(refusal, { exact: true })).toHaveCount(1);
 });
 
 // SLOW(>=2s): the project's document list opened in the browser, a refusal read in it and the

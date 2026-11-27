@@ -1,18 +1,22 @@
 import { graphNodeKey, issueReferenceSections } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { memo, type ReactNode, useId, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { memo, type ReactNode, useCallback, useId, useMemo, useRef } from "react";
+import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
+import type { BarActionProps, BarActionRefusal } from "../../components/BarAction";
+import { textGlyph } from "../../components/bar-look";
+import { ControlRow } from "../../components/ControlRow";
+import { CONTROL, controlIn, namedControlIn } from "../../components/control-names";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useCappedAddressParam, usePageAddress } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
   borderDefault,
   dangerText,
-  inputClasses,
   linkHoverText,
   linkText,
   textMutedOnSurface,
@@ -37,9 +41,14 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
-import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
-import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
-import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
+import { ArtifactDropZone, ArtifactUploadStaging, useArtifactUpload } from "./ArtifactUpload";
+import { CLOSED_ISSUE_DOCUMENT_REFUSAL, useNewDocument } from "./CreateDocument";
+import {
+  ARTIFACTS_NOT_LOADED,
+  CLOSED_ISSUE_REMOVE_REFUSAL,
+  RemoveDocument,
+  removalIsOffered,
+} from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -458,18 +467,36 @@ function ArtifactRow({
   );
 }
 
-/** The issue's artifacts: a control that makes a document, an upload that a closed issue refuses
- *  before a file is picked, and every artifact the issue holds. */
+/** **Upload**'s glyph, drawn before its words where the control bar draws it. */
+const UPLOAD_GLYPH = textGlyph("↑");
+
+/** **Upload**'s label, which the bar's action is named by (`BarAction`) and found by. */
+const UPLOAD_LABEL = "Upload";
+
+/**
+ * The issue's artifacts: a control bar (`ControlRow`) of the search box and two actions, **New
+ * document** and **Upload**, which a closed issue refuses, and every artifact the issue holds.
+ * Below 640 px of the bar's width both actions are items of **More**; the bar has no trigger and
+ * no chip, since its one narrowing is the words typed. What the actions open stands under the
+ * bar, outside it: the New document form and a staged file's summary and its own Upload. While a
+ * file is staged the bar offers no **Upload**: the staged file's own is the one press that stores
+ * it, and two buttons of one name would do two things.
+ */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
-  const { pathname } = useLocation();
+  const { pathname } = usePageAddress();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
-  const [filter, setFilter] = useState("");
-  // One sentence covers every control of the strip: a closed issue takes neither a new document
-  // nor an upload, and both controls are described by this line.
+  // The words that narrow the list live in the address (`?q=`), so a reader who reloads, shares
+  // the tab or comes back to it finds the list narrowed the way they left it.
+  const [filter, setFilter] = useCappedAddressParam("q");
+  // One sentence covers both actions of the bar: a closed issue takes neither a new document
+  // nor an upload, and both actions are described by the line under the bar that says it.
   const closedRefusalId = useId();
-  const closedRefusal = isClosed ? CLOSED_ISSUE_DOCUMENT_REFUSAL : null;
-  const upload = useArtifactUpload({ issue: issueKey ?? "" }, { refusal: closedRefusal });
+  const refusal: BarActionRefusal | undefined = isClosed
+    ? { id: closedRefusalId, words: CLOSED_ISSUE_DOCUMENT_REFUSAL }
+    : undefined;
+  const upload = useArtifactUpload({ issue: issueKey ?? "" }, { refusal: refusal?.words ?? null });
+  const tab = useRef<HTMLDivElement>(null);
   const artifacts = useQuery({
     enabled: issueKey !== undefined,
     queryKey: ["artifacts", issueKey],
@@ -502,6 +529,33 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
       }),
     [artifacts.data]
   );
+  // The New document form hands the focus back, as it closes, to the action that opened it: the
+  // bar's first action, or **More** where the bar holds its actions there. One function for every
+  // render, since the form's effect reads it (`TitleForm`).
+  const opener = useCallback(
+    () =>
+      tab.current === null
+        ? null
+        : (controlIn(tab.current, CONTROL.barAction) ?? controlIn(tab.current, CONTROL.moreMenu)),
+    []
+  );
+  const newDocument = useNewDocument({
+    documents: orderedArtifacts,
+    opener,
+    owner: { issue: issueKey ?? "" },
+    refusal,
+  });
+  // The staged file's line hands the focus it goes with - its Upload landed, its Cancel pressed -
+  // to the bar's **Upload**, which the same commit draws again among the bar's actions, found by
+  // its name, or to **More** where the bar holds its actions there (`ArtifactUploadStaging`).
+  const uploadAction = useCallback(
+    () =>
+      tab.current === null
+        ? null
+        : (namedControlIn(tab.current, CONTROL.barAction, UPLOAD_LABEL) ??
+          controlIn(tab.current, CONTROL.moreMenu)),
+    []
+  );
   const filterQuery = filter.trim().toLocaleLowerCase();
   const visibleArtifacts =
     filterQuery === ""
@@ -521,37 +575,35 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     return <p className={`pt-3 text-sm ${textMutedOnSurface}`}>Loading artifacts…</p>;
   }
   if (artifacts.isError) {
-    return <p className={`pt-3 text-sm ${dangerText}`}>Could not load artifacts.</p>;
+    return <p className={`pt-3 text-sm ${dangerText}`}>{ARTIFACTS_NOT_LOADED}</p>;
   }
 
+  const actions: BarActionProps[] = [
+    newDocument.action,
+    ...(upload.pendingFile === null
+      ? [{ icon: UPLOAD_GLYPH, label: UPLOAD_LABEL, onPress: upload.openPicker, refusal }]
+      : []),
+  ];
+
   return (
-    <div className="space-y-3 pt-3">
-      {/* One control strip: what narrows the list on the left, what adds to it on the right. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="block min-w-48 flex-1">
-          <span className="sr-only">Filter artifacts</span>
-          <input
-            aria-label="Filter artifacts"
-            className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder="Filter artifacts"
-            type="search"
-            value={filter}
-          />
-        </label>
-        <CreateDocument
-          documents={orderedArtifacts}
-          owner={{ issue: issueKey }}
-          refusal={closedRefusal}
-          refusalShownBy={closedRefusalId}
-        />
-        <ArtifactUploadRow refusalShownBy={closedRefusalId} upload={upload} />
-        {closedRefusal === null ? null : (
-          <span className={`text-xs ${textMutedOnSurface}`} id={closedRefusalId}>
-            {closedRefusal}
-          </span>
-        )}
-      </div>
+    <div className="space-y-3 pt-3" ref={tab}>
+      <ControlRow
+        actions={actions}
+        search={{
+          label: "Filter artifacts",
+          onChange: setFilter,
+          placeholder: "Filter artifacts",
+          value: filter,
+        }}
+      />
+      {/* What the bar's actions open stands under the bar, outside it. */}
+      {newDocument.form}
+      <ArtifactUploadStaging handBack={uploadAction} upload={upload} />
+      {refusal === undefined ? null : (
+        <p className={`text-xs ${textMutedOnSurface}`} id={refusal.id}>
+          {refusal.words}
+        </p>
+      )}
       {/* A references read that fails - a read cut at the server's bound among them, which the
           shared retry policy leaves to this Retry - says so rather than hiding the section. */}
       {references.isError ? (

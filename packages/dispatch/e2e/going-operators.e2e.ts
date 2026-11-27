@@ -1,6 +1,8 @@
 import { createComment, createIssue, createProject, patchIssue } from "./api";
+import { controlRow, openFilterPanel } from "./filters";
 import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
+import { REMOVE_CHIP } from "./table-controls";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -147,43 +149,57 @@ test("each chip narrows the same list and reads back in the words the person cho
     const dialog = page.getByRole("dialog", { name: "Search" });
     const search = page.getByRole("combobox", { name: "Search" });
     const options = dialog.getByRole("option");
-    const chips = dialog.getByTestId("search-filters");
+    // The chips stand in the bar's own control bar, beside the box the words are typed in, as
+    // many as its line has room for and the rest behind one `+N more`; the Filter panel lists
+    // every one at its top, with its remove control, whatever the line holds (R8).
+    const bar = controlRow(dialog);
 
-    // The row the four chips are added from, before any of them is used: a bar without it
+    // The bar the four chips are added from, before any of them is used: a bar without it
     // fails here rather than at a click on a control that does not exist.
-    await expect(chips).toBeVisible();
+    await expect(bar).toBeVisible();
     await search.fill("astrolabe");
     await expect(options).toHaveCount(5);
 
-    await dialog.getByRole("button", { name: "Project" }).click();
-    await dialog.getByRole("button", { name: "INFRA" }).click();
+    // The four narrowings are added from the panel the row's one **Filter** trigger opens, and
+    // `AnchoredPanel` portals that panel to the body rather than into the dialog.
+    const narrow = await openFilterPanel(page, dialog);
+    await narrow.getByRole("button", { exact: true, name: "Project" }).click();
+    await page
+      .getByRole("listbox", { name: "Project options" })
+      .getByRole("option", { name: "INFRA" })
+      .click();
     await expect(options).toHaveCount(4);
 
-    await dialog.getByRole("button", { name: "Status" }).click();
-    await dialog.getByRole("button", { name: "Todo" }).click();
+    await narrow.getByRole("button", { exact: true, name: "Status" }).click();
+    await page
+      .getByRole("listbox", { name: "Status options" })
+      .getByRole("option", { name: "Todo" })
+      .click();
     await expect(options).toHaveCount(3);
 
-    await dialog.getByLabel("Author").fill("alice");
-    await dialog.getByLabel("Author").press("Enter");
+    await narrow.getByLabel("Author").fill("alice");
+    await narrow.getByLabel("Author").press("Enter");
     await expect(options).toHaveCount(2);
 
-    await dialog.getByLabel("Updated since").fill(since.value);
+    await narrow.getByLabel("Updated since").fill(since.value);
     await expect(options).toHaveCount(1);
     await expect(options.first()).toContainText("case is ready");
 
     // Each chip says what it narrowed by in the words it was chosen with, and none of them was
-    // written into the words the person typed.
-    await expect(chips).toContainText("Project INFRA");
-    await expect(chips).toContainText("Status Todo");
-    await expect(chips).toContainText("Author alice");
-    await expect(chips).toContainText(`Updated since ${since.text}`);
-    await expect(chips).not.toContainText("project:INFRA");
+    // written into the words the person typed. The panel, still open, lists them all at its top.
+    const chips = narrow.getByRole("button", { name: REMOVE_CHIP });
+    await expect(chips).toHaveCount(4);
+    await expect(chips.filter({ hasText: "Project INFRA" })).toHaveCount(1);
+    await expect(chips.filter({ hasText: "Status Todo" })).toHaveCount(1);
+    await expect(chips.filter({ hasText: "Author alice" })).toHaveCount(1);
+    await expect(chips.filter({ hasText: `Updated since ${since.text}` })).toHaveCount(1);
+    await expect(chips.filter({ hasText: "project:INFRA" })).toHaveCount(0);
     await expect(search).toHaveValue("astrolabe");
 
     // A chip comes off on its own, and the rows it was holding back come back.
-    await dialog.getByRole("button", { name: "Remove Author alice" }).click();
+    await narrow.getByRole("button", { name: "Remove Author alice filter" }).click();
     await expect(options).toHaveCount(2);
-    await expect(dialog.getByLabel("Author")).toBeVisible();
+    await expect((await openFilterPanel(page, dialog)).getByLabel("Author")).toBeVisible();
   } finally {
     await context.close();
   }

@@ -17,3 +17,12 @@ export async function openIssue(page: Page, key: string, title: string): Promise
 export function onBody(page: Page): Promise<boolean> {
   return page.evaluate(() => document.activeElement === document.body);
 }
+
+/** Leaves the control a shortcut just focused: a single letter never fires while an `INPUT`,
+ *  `TEXTAREA` or `SELECT` holds focus, so each row starts from the page itself. `body.focus()`
+ *  would not do it - `body` takes no focus, so the control keeps it - and the page is asserted
+ *  back on `body` because that state is what the row after it tests. */
+export async function leaveFocus(page: Page): Promise<void> {
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect.poll(() => onBody(page)).toBe(true);
+}

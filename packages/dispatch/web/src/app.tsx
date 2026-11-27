@@ -29,6 +29,7 @@ import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { buildInboxPath } from "./features/inbox/inbox-route";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -56,7 +57,6 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
-  buildInboxPath,
   buildPersonPath,
   buildProjectPath,
   liveViewSessionOf,
@@ -295,31 +295,22 @@ function ShellMessagePage({ children, title }: { children?: ReactNode; title: st
 }
 
 /**
- * The Inbox page, in two named groups in this order:
- *
- * - **Heading**: the page's title, then **Answered by you**. Too narrow for both on one line,
- *   the link moves whole to a line of its own under the title; the title never shortens.
- * - **Inbox**: the list and the row the reader is reading (`Inbox`), below the heading at every
- *   width. From the reading column's width, and below it while the reader has a row open, it
- *   fills the height left under the heading (`useInboxFillsViewport`); otherwise the page
- *   scrolls as one document.
+ * The Inbox page: the Inbox alone (`Inbox`), which draws the page's heading as its own header
+ * line - the page's title, the search box and **Answered by you** (`InboxHeader`) - above the
+ * list and the row the reader is reading. From the reading column's width, and below it while the
+ * reader has a row open, it fills the height left under the shell's navigation
+ * (`useInboxFillsViewport`); otherwise the page scrolls as one document.
  */
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
   // From the reading pane's width, and below it while a row's reading view is open, the page
-  // fills the viewport (`fillsViewport` below) and the Inbox divides the height left under the
-  // heading; otherwise the page scrolls as ever.
+  // fills the viewport (`fillsViewport` below) and the Inbox divides the height left under its
+  // header; otherwise the page scrolls as ever. The Inbox draws the page's header line itself,
+  // its title as the page's `h1` (`InboxHeader`): the search box in it is the Inbox's.
   const fillsViewport = useInboxFillsViewport();
   return (
     <section className={fillsViewport ? "flex min-h-0 flex-1 flex-col" : undefined}>
-      {/* Only the page links to the answers page; the drawer's Inbox stays a peek. */}
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={ANSWERS_PATH}>
-          Answered by you
-        </Link>
-      </div>
-      <Inbox />
+      <Inbox header={{ kind: "page" }} />
     </section>
   );
 }
@@ -947,10 +938,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // One count on one control: the work waiting on the reader and the threads they have not
   // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
   // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
-  // from this bar stays beside it, without the count it used to carry.
-  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
+  // from this bar stays beside it, without the count it used to carry. Until every read the
+  // count adds up has answered (`useInboxCount`) the control is drawn without a number.
+  const counted = inboxCount !== undefined && inboxCount !== 0;
+  const inboxLabel = counted ? `Inbox ${inboxCount}` : "Inbox";
   const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
+    counted ? `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}` : railHoverBg
   }`;
 
   return (

@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import type { IssuePriority } from "../../api/types";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
 import {
@@ -12,22 +13,29 @@ import {
   priorityBadge,
 } from "../../theme/classes";
 import {
+  badgeReachHandlers,
   badgeSelectBadge,
+  badgeSelectHeaderTrigger,
   badgeSelectHeaderWrapper,
-  badgeSelectOverlay,
   badgeSelectPageBadge,
+  badgeSelectPageTrigger,
   badgeSelectPageWrapper,
+  badgeSelectTrigger,
   badgeSelectWrapper,
 } from "./badge-select";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
-const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
-  { label: "Unset", value: null },
-  { label: "P0", value: 0 },
-  { label: "P1", value: 1 },
-  { label: "P2", value: 2 },
-  { label: "P3", value: 3 },
-];
+/** The option that stands for no priority: a pick of it unsets the issue's priority. */
+const UNSET = "";
+
+/** The options in the order the list offers them: Unset, then P0 to P3 by their digits. */
+const PRIORITY_OPTIONS: readonly string[] = [UNSET, "0", "1", "2", "3"];
+
+const PRIORITY_TRIGGER_ATTRIBUTE = "data-issue-priority";
+const PRIORITY_MARKS: ListMarks = { trigger: { [PRIORITY_TRIGGER_ATTRIBUTE]: "" } };
+/** The priority list's trigger, which the Board's `p` and the issue page's `p`, `0`-`3` and
+ *  Escape find it by: the shared list hands out no element of its own. */
+export const PRIORITY_TRIGGER_SELECTOR = `[${PRIORITY_TRIGGER_ATTRIBUTE}]`;
 
 /**
  * The priority editor for a surface that owns no write of its own - a list row, a board card,
@@ -48,16 +56,23 @@ export function PriorityControl({
 
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
- * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
- * pick P0–P3 or Unset — the same picker on desktop and iPhone. The select is laid invisibly over
- * the badge so the tap target stays 44 px (32 px from `md`) while the badge keeps its size, and
- * the wrapper draws the keyboard focus ring. `write` goes through `useIssuePriority`, so every
- * surface gets the same optimistic update, rollback and list refetch. The select stays enabled
- * while a save is in flight: a disabled control drops the focus it holds and leaves the tab
- * order, and a pick made meanwhile is queued behind the save rather than refused. A press on the
- * select stays on the select: a board card is a drag activator, and a held tap on the badge must
- * open the picker, not lift the card. The select is labelled `Priority of <KEY>`; the board's `p`
- * reaches it through the focused card.
+ * "Priority" tag when unset), and the badge is the trigger of the shared list's single pick
+ * (`MultiSelect`) of Unset and P0–P3, whose text box narrows them as the reader types. It is the
+ * same list on desktop and iPhone. The trigger fills the wrapper's tap target, 44 px (32 px from
+ * `md`), while the badge keeps its size, and the wrapper draws the keyboard focus ring. The
+ * trigger is named `Priority of <KEY>` and then the badge's words, and it carries the mark
+ * `PRIORITY_TRIGGER_SELECTOR` finds: the board's `p` reaches it through the focused card, and the
+ * issue page's keys reach it in the header.
+ *
+ * `write` goes through `useIssuePriority`, so every surface gets the same optimistic update,
+ * rollback and list refetch. A pick of the priority the issue holds writes nothing, as a
+ * `<select>` set to the value it holds fires nothing. The trigger takes a press while a save is
+ * in flight, and a pick made meanwhile is queued behind the save rather than refused. While the
+ * host's `disabled` holds, the trigger is `aria-disabled` and never `disabled`, so it keeps the
+ * reader's focus: a press of it opens no list, and a pick from a list that stood open as the hold
+ * began writes nothing. A press on the trigger, or in the list it opens, stays out of the row,
+ * card or header under it (`badgeReachHandlers`): a board card is a drag activator, and a held
+ * tap on the badge must open the list, not lift the card.
  *
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
@@ -67,7 +82,7 @@ export function PriorityControl({
  *
  * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
  * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
- * quiet grey while it has none. The select over it is the same either way.
+ * quiet grey while it has none. The list under it is the same either way.
  */
 export function PriorityEditor({
   disabled = false,
@@ -81,7 +96,9 @@ export function PriorityEditor({
   write: IssuePriorityWrite;
 }): ReactNode {
   const page = usePageWords();
+  const [open, setOpen] = useState(false);
   const priority = write.shown;
+  const value = priority === null ? UNSET : String(priority);
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
@@ -96,52 +113,58 @@ export function PriorityEditor({
   const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
-  // and its wrapper narrows to the line rather than keep its width. The header variant is the
-  // new page's shape alone, so it wraps on every surface.
+  // and its wrapper and the trigger in it narrow to the line rather than keep their width. The
+  // header variant is the new page's shape alone, so it wraps on every surface.
   return (
     <>
       <span
         className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+        {...badgeReachHandlers()}
       >
-        {variant === "header" ? (
-          <span
-            aria-hidden="true"
-            className={`inline-flex min-w-0 max-w-full items-center gap-[5px] text-sm leading-5 font-semibold [overflow-wrap:anywhere] ${
-              priority === null ? pageQuietText : pageInkText
-            }`}
-            {...mark}
-          >
-            <PriorityBars priority={priority} />
-            {label}
-          </span>
-        ) : (
-          <span
-            aria-hidden="true"
-            className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
-            {...mark}
-          >
-            {label}
-          </span>
-        )}
-        <select
-          aria-label={`Priority of ${issueKey}`}
-          className={badgeSelectOverlay}
-          disabled={disabled}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onTouchStart={(event) => event.stopPropagation()}
-          onChange={(event) => {
-            const { value } = event.target;
-            write.submit(value === "" ? null : (Number(value) as IssuePriority));
+        <MultiSelect
+          ariaDisabled={disabled}
+          chevron={false}
+          emptyMessage="No priority matches that."
+          label={`Priority of ${issueKey}`}
+          marks={PRIORITY_MARKS}
+          mode="single"
+          onOpenChange={(next) => setOpen(next && !disabled)}
+          onPick={(picked) => {
+            if (disabled || picked === value) return;
+            write.submit(picked === UNSET ? null : (Number(picked) as IssuePriority));
           }}
-          value={priority ?? ""}
+          open={open}
+          optionLabel={(option) => (option === UNSET ? "Unset" : `P${option}`)}
+          options={PRIORITY_OPTIONS}
+          searchLabel="Search priorities"
+          triggerClassName={
+            variant === "header"
+              ? badgeSelectHeaderTrigger
+              : page === null
+                ? badgeSelectTrigger
+                : badgeSelectPageTrigger
+          }
+          value={value}
         >
-          {priorityOptions.map((option) => (
-            <option key={option.label} value={option.value ?? ""}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          {variant === "header" ? (
+            <span
+              className={`inline-flex min-w-0 max-w-full items-center gap-[5px] text-sm leading-5 font-semibold [overflow-wrap:anywhere] ${
+                priority === null ? pageQuietText : pageInkText
+              }`}
+              {...mark}
+            >
+              <PriorityBars priority={priority} />
+              {label}
+            </span>
+          ) : (
+            <span
+              className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+              {...mark}
+            >
+              {label}
+            </span>
+          )}
+        </MultiSelect>
       </span>
       {write.failed ? (
         <QueryError

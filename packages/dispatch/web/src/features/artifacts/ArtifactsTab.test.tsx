@@ -1,16 +1,21 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { displayTree } from "../../__tests__/display-trees";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Artifact,
+  ArtifactUploadResponse,
   DisplayTree,
   IssueReferences,
   IssueReferencesAnswer,
@@ -71,14 +76,33 @@ const noReferences: IssueReferences = {
   truncated: false,
 };
 
+/** The tab's own address: its path, and its query, which is where its filter lives. */
 function Location() {
-  return <output data-testid="location">{useLocation().pathname}</output>;
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <output data-testid="location">{pathname}</output>
+      <output data-testid="location-search">{search}</output>
+    </>
+  );
 }
 
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferencesAnswer | Error = noReferences,
-  isClosed = false
+  {
+    isClosed = false,
+    queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    }),
+    search = "",
+  }: {
+    readonly isClosed?: boolean;
+    /** The query client the tab reads through, a plain one unless the case needs the app's own. */
+    readonly queryClient?: QueryClient;
+    /** The query the tab is opened at, as a reload or a shared link hands it over. */
+    readonly search?: string;
+  } = {}
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences");
@@ -87,11 +111,10 @@ function renderTab(
   } else {
     getIssueReferences.mockResolvedValue(references);
   }
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
   const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
+    <MemoryRouter
+      initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
+    >
       <QueryClientProvider client={queryClient}>
         <ArtifactsTab isClosed={isClosed} />
         <Location />
@@ -128,12 +151,14 @@ test("renders one row per artifact with no compare controls", async () => {
 
 // W41. A closed issue takes neither a new document nor an upload, and Dispatch would refuse an
 // upload only after its whole body went up: the tab refuses both before a file is picked, with
-// the reason on each control - and on the one line beside them, for a reader with no pointer -
-// and a file dropped on it is not staged. W46. The hidden file input is disabled too, so no
-// keyboard path opens a chooser whose file is ignored.
+// the reason on each action of the control bar - and on the one line under the bar, outside it,
+// for a reader with no pointer - and a file dropped on it is not staged. W46. The hidden file
+// input is disabled too, so no keyboard path opens a chooser whose file is ignored.
 test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
-  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, {
+    isClosed: true,
+  });
   // Spied on HTMLElement, the prototype that owns the method: spying on HTMLInputElement would
   // leave an own property behind that shadows every later spy on HTMLElement.
   const pick = spyOn(HTMLElement.prototype, "click");
@@ -149,6 +174,12 @@ test("a closed issue's Artifacts tab refuses a new document and an upload before
     const line = screen.getByText(refusal);
     expect(upload.getAttribute("aria-describedby")).toBe(line.id);
     expect(create.getAttribute("aria-describedby")).toBe(line.id);
+    // Both are actions of the control bar, and the line that says why stands under it.
+    for (const action of [create, upload]) {
+      expect(action).toHaveAttribute("data-control", "bar-action");
+      expect(bar().contains(action)).toBe(true);
+    }
+    expect(bar().contains(line)).toBe(false);
     await user.click(create);
     expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
     await user.click(upload);
@@ -237,6 +268,181 @@ test("New document on an issue refuses a title the issue already holds", async (
       "An artifact on this issue already holds that title: diagram.png."
     );
     expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// INFRA-3135. The focus follows the form: New document opens it with the focus in Title, so the
+// title is typed at once, and Cancel closes it with the focus back on New document, the control
+// that opened it, rather than dropped on the page.
+test("New document puts the focus in Title, and Cancel gives it back to New document", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+/** The tab's control bar itself. */
+function bar(): HTMLElement {
+  return controlBar("the Artifacts tab");
+}
+
+// R8. The bar holds the search box and the actions New document and Upload, and what each action
+// opens stands under it, outside it: the New document form, and a staged file with its summary,
+// its own Upload and Cancel. While a file is staged the bar offers no Upload of its own, so one
+// button named Upload is drawn, the one that stores the file; Cancel brings the bar's back.
+test("New document's form and a staged file stand under the bar, and the bar offers no Upload while a file is staged", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    expect(within(bar()).getAllByRole("button")).toEqual([
+      within(bar()).getByRole("button", { name: "New document" }),
+      within(bar()).getByRole("button", { name: "Upload" }),
+    ]);
+
+    await user.click(within(bar()).getByRole("button", { name: "New document" }));
+    const form = screen.getByRole("form", { name: "New document" });
+    expect(bar().contains(form)).toBe(false);
+    await user.click(within(form).getByRole("button", { name: "Cancel" }));
+
+    await user.upload(
+      screen.getByLabelText("Upload artifact"),
+      new File(["notes"], "notes.md", { type: "text/markdown" })
+    );
+    const summary = await screen.findByRole("textbox", { name: "Summary (optional)" });
+    expect(bar().contains(summary)).toBe(false);
+    expect(screen.getAllByRole("button", { name: "Upload" })).toHaveLength(1);
+    expect(within(bar()).queryByRole("button", { name: "Upload" })).not.toBeInTheDocument();
+    expect(within(bar()).getByRole("button", { name: "New document" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).not.toBeInTheDocument();
+    expect(within(bar()).getByRole("button", { name: "Upload" })).toBeTruthy();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// R8 put the staged file's line under the bar, outside it, so the bar's own hand-off no longer
+// covers it: the line hands off the focus it goes with itself. Its Upload, pressed by the
+// keyboard, keeps the focus while the upload is out; the upload lands, the line goes, and the
+// focus is on the bar's Upload, drawn again in the same commit, rather than on the page's body.
+// Its Cancel hands the focus there too.
+test("a staged file's Upload and Cancel hand the focus to the bar's Upload as the line goes", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  // The issue holds no notes.md yet, so this upload has no base to name.
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+  const stage = async () => {
+    await user.upload(
+      screen.getByLabelText("Upload artifact"),
+      new File(["notes"], "notes.md", { type: "text/markdown" })
+    );
+    return screen.findByRole("textbox", { name: "Summary (optional)" });
+  };
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    const summary = await stage();
+    await waitFor(() => expect(ownerArtifactText).toHaveBeenCalledTimes(1));
+    screen.getByRole("button", { name: "Upload" }).focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(summary).not.toBeInTheDocument());
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(within(bar()).getByRole("button", { name: "Upload" })).toHaveFocus();
+
+    await stage();
+    screen.getByRole("button", { name: "Cancel" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).not.toBeInTheDocument();
+    expect(within(bar()).getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    ownerArtifactText.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// INFRA-3135. The same by the keyboard alone: Tab reaches the filter box and then New document,
+// and Enter opens the form with the focus in Title; Tab twice reaches Cancel, and Enter closes
+// the form with the focus back on New document, so the next Tab goes on to Upload rather than
+// starting again from the top of the page.
+test("New document by the keyboard: Enter puts the focus in Title, and Cancel gives it back", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A close the reader has moved away from is not the form's to undo. While Create is out they go
+// to the filter box; the write answers, the form closes and the document opens, and the focus
+// stays in the filter box rather than going back to New document.
+test("New document leaves the focus where the reader moved it while Create was out", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const answer = Promise.withResolvers<ArtifactUploadResponse>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(answer.promise);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    // The title goes where the opening put the focus.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalled());
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+
+    answer.resolve(madeResponse());
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/issues/CORE-1/artifacts/design-notes"
+      )
+    );
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    expect(filter).toHaveFocus();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -401,6 +607,53 @@ test("the filter input narrows rows by name and kind", async () => {
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+// The tab's filter is part of the address, so a reader who reloads, shares the tab or walks
+// back to it finds the same narrowed list rather than the whole one.
+test("the filter rides in the address: absent until set, and found again after a reload", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+  };
+  const typed = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    // Nothing the reader has not asked for: the address holds no `q` until one is typed.
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+    await user.paste("notes");
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe("?q=notes"));
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    typed.view.unmount();
+    typed.listArtifacts.mockRestore();
+    typed.getIssueReferences.mockRestore();
+  }
+
+  // The same address opened afresh, as a reload hands it over: the box holds those words and
+  // the list is already narrowed by them, before anybody types.
+  const reloaded = renderTab([artifact, notes], noReferences, { search: "?q=notes" });
+
+  try {
+    await screen.findByTestId("artifact-notes-md");
+    expect(screen.getByRole("searchbox", { name: "Filter artifacts" })).toHaveValue("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+  } finally {
+    reloaded.view.unmount();
+    reloaded.listArtifacts.mockRestore();
+    reloaded.getIssueReferences.mockRestore();
   }
 });
 
@@ -1098,15 +1351,83 @@ test("a refused removal shows the server's sentence on the row", async () => {
   }
 });
 
+// `DispatchQueryClient` answers the invalidation of the idle document list after a removal with
+// the list's own fetch, which TanStack pauses while the browser is offline, and no request
+// deadline runs while a fetch is paused. So Remove's hold through that read has a timer of its
+// own, the request deadline (`REQUEST_DEADLINE_MS`): a row's Remove whose removal landed offline
+// is free again then, and the row says the list is not read yet and why. Once the network
+// returns, the list is read and the row goes.
+test("offline, a row's Remove whose removal landed is free again at the request deadline, and the row says why", async () => {
+  const online = onlineManager.isOnline();
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  // The removal's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const removal = Promise.withResolvers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    listArtifacts.mockResolvedValue([]);
+    return removal.promise;
+  });
+  const row = await screen.findByTestId("artifact-design-notes");
+  const remove = within(row).getByRole("button", { name: "Remove" });
+  const reads = listArtifacts.mock.calls.length;
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+    removal.resolve();
+    await tick(1_000);
+    expect(queryClient.getQueryState(["artifacts", "CORE-1"])?.fetchStatus).toBe("paused");
+    expect(remove.textContent).toBe("Removing…");
+    // Held, never disabled, so a Remove pressed by keyboard keeps the focus: a press of it does
+    // nothing.
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).not.toBeDisabled();
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
+
+    // The removal landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(remove.textContent).toBe("Removing…");
+
+    await tick(2_000);
+    expect(remove.textContent).toBe("Remove");
+    expect(remove).not.toHaveAttribute("aria-disabled");
+    expect(listArtifacts.mock.calls.length).toBe(reads);
+    expect(within(row).getByRole("alert").textContent).toBe(
+      "Could not load artifacts. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
+  } finally {
+    // The tab and its reads go before the network returns, so no read paused offline goes on.
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
 // A file artifact is refused by the same test a document that holds writing is refused by, so
 // its row offers no press that is always refused; a closed issue says why before the press.
 test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
   const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
-  const { getIssueReferences, listArtifacts, view } = renderTab(
-    [artifact, notes],
-    noReferences,
-    true
-  );
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact, notes], noReferences, {
+    isClosed: true,
+  });
 
   try {
     const picture = await screen.findByTestId("artifact-diagram-png");

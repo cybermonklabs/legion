@@ -10,6 +10,8 @@
  */
 import { expect } from "@playwright/test";
 
+import { CONTROL, NARROW_BELOW } from "../web/src/components/control-names";
+import { control, controlRow } from "./filters";
 import { inboxList, inboxPane } from "./inbox-pane";
 import {
   bandHeadings,
@@ -26,6 +28,7 @@ import {
   valuesOf,
 } from "./inbox-view";
 import { stubbed } from "./stub/stub-test";
+import { barDesign, designOf, readBar } from "./table-controls";
 
 /** The eleven rows, and when each was last written in - what `newest` orders by, which the two
  *  reads answer. The map travels as its entries, a scene being JSON. */
@@ -34,7 +37,7 @@ const test = stubbed(async () => {
   return { ...seeded, at: [...(await lastActivity())] };
 });
 
-test("a row wears its marks without overlap, shows its issue key whole, and the bar holds three buttons @pr", async ({
+test("a row wears its marks without overlap, shows its issue key whole, and the bar holds the switch, Filter, View and More, with New message last @pr", async ({
   page,
   scene,
 }) => {
@@ -113,14 +116,31 @@ test("a row wears its marks without overlap, shows its issue key whole, and the 
   }
   expect(lefts.size).toBe(1);
 
-  // The bar carries three buttons and no other control of this issue's.
+  // The bar carries the page's own controls and no other control of this issue's, in its design's
+  // order (`barDesign`): the switch, whose Blocked on you carries the count the blocked-on-you
+  // banner carried (INFRA-3135, R7), Filter, View - an item of More where the bar is narrow -
+  // More, which holds Mark all read, and New message, the bar's last control.
   await page.goto("/");
   await expect(page.locator("[data-inbox-row]").first()).toBeVisible();
-  await expect(page.locator("[data-inbox-bar] button")).toHaveText([
-    "Filter",
-    "Mark all read",
-    "View",
-  ]);
+  const bar = controlRow(page);
+  // The count stands for the asks that wait on the reader, so the bar is read once it says them.
+  await expect(bar.getByRole("button", { name: /^Blocked on you: 5 items\b/ })).toBeVisible();
+  const reading = await readBar(bar);
+  const narrow = reading.width < NARROW_BELOW;
+  expect(designOf(reading), `the bar, ${Math.round(reading.width)}px wide`).toEqual(
+    barDesign("Inbox", narrow)
+  );
+  expect(reading.controls[1]?.shown, "Blocked on you's words").toBe(
+    narrow ? "You · 5" : "Blocked on you 5"
+  );
+  await control(bar, CONTROL.moreMenu).click();
+  const more = page.getByRole("menu", { name: "More" });
+  for (const item of narrow ? ["View", "Mark all read"] : ["Mark all read"]) {
+    await expect(
+      more.getByRole("menuitem", { exact: true, name: item }),
+      `More holds no ${item}`
+    ).toBeVisible();
+  }
 });
 
 test("each of the five fields filters, bands and orders the list @pr", async ({ page, scene }) => {
@@ -138,8 +158,9 @@ test("each of the five fields filters, bands and orders the list @pr", async ({ 
     const options = await openField(page, field);
     const offeredOptions = options.getByRole("option");
     // The assignee field offers one row more than its values: `Unassigned` is offered always and
-    // first, whatever the list holds (`features/inbox/AssigneeFilter.tsx`), and every project
-    // names a default assignee, so no row the server answers is nobody's and that row reads 0.
+    // first, whatever the list holds (the Assignee field of `features/inbox/Inbox.tsx`), and
+    // every project names a default assignee, so no row the server answers is nobody's and that
+    // row reads 0.
     const offered = values.length + (field === "assignee" ? 1 : 0);
     // `count()` waits for nothing, so the popover's rows are waited for before they are
     // counted: every value of this field, plus `none` where the field has one.

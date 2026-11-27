@@ -19,10 +19,11 @@ import (
 )
 
 // POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back. A
-// thread stays in the Inbox, read or not, until they dismiss it, as an email stays until it is
-// archived: reading it and pressing Mark all read leave it there, and this route alone takes it
-// out. A new write by somebody else brings a dismissed thread back, unread; the person's own reply
-// does not, so a reply they send from the Dismissed view leaves the thread there.
+// thread stays in the Inbox, read or not, until they dismiss it or answer or reply in it, as an
+// email stays until it is archived: reading it and pressing Mark all read leave it there. The
+// person's own answer or reply takes it out as this route does, with no second press: its writer
+// marks the thread dismissed in the write's own transaction (inboxwrite.Record, steps 5 and 6,
+// the own-answer rule, R1). A new write by somebody else brings a dismissed thread back, unread.
 //
 // It is a file of its own rather than a third act in api/inbox_read.go: that file's subject is the
 // read mark and the lock order written on markInboxReadThreads, which this route takes without

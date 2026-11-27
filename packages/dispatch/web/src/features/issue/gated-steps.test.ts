@@ -1,9 +1,10 @@
 import { beforeAll, expect, test } from "bun:test";
+import type { ApprovalGateLine } from "@legion/contracts";
 
-import type { Artifact, GatedStep, IssueDetails, Project } from "../../api/types";
+import type { Artifact, IssueDetails } from "../../api/types";
 import { issue as fixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { gatedStepEntries } from "./gated-steps";
+import { approvalGateSteps } from "./gated-steps";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -20,105 +21,56 @@ const verificationDoc: Artifact = {
   role: "verification",
 };
 
-/** A root issue on a Dispatch older than document roles: it answers no Verification document id
- *  at all, the way an older server leaves the field off the wire. */
-const { verification_artifact_id: _unroled, ...unroledFixture } = fixture;
-const olderRoot = {
-  ...unroledFixture,
-  artifacts: [specArtifact, verificationDoc],
-} as IssueDetails;
-
-const root: IssueDetails = { ...olderRoot, verification_artifact_id: "artifact-3" };
-
-const ungated: Project = {
-  key: "CORE",
-  name: "Core",
-  created_at: "2026-09-09T00:00:00Z",
-  open_asks: 0,
-  gated_steps: [],
-  proven_sessions: false,
-};
-
-function gating(...gated_steps: GatedStep[]): Project {
-  return { ...ungated, gated_steps };
+/** The issue with both documents and the gate the server answered for it. */
+function gated(...approval_gate: ApprovalGateLine[]): IssueDetails {
+  return { ...fixture, approval_gate, artifacts: [specArtifact, verificationDoc] };
 }
 
-test("a project whose deployment published no gated steps draws none", () => {
-  expect(gatedStepEntries(ungated, root)).toEqual([]);
+const spec: ApprovalGateLine = {
+  approval: { latest_version: 1, state: "awaiting" },
+  artifact_id: "artifact-1",
+  step: "spec",
+};
+const criteria: ApprovalGateLine = {
+  approval: { latest_version: 1, state: "draft" },
+  artifact_id: "artifact-3",
+  step: "criteria",
+};
+
+test("an issue read with no gate draws no step", () => {
+  expect(approvalGateSteps({ ...fixture, artifacts: [specArtifact, verificationDoc] })).toEqual([]);
+  expect(approvalGateSteps(undefined)).toEqual([]);
 });
 
-test("a project that gates nothing draws none", () => {
-  expect(gatedStepEntries(gating(), root)).toEqual([]);
+test("a gate of one line with no step - every issue but a gated root - draws no step", () => {
+  expect(approvalGateSteps(gated({ approval: spec.approval, artifact_id: "artifact-1" }))).toEqual(
+    []
+  );
 });
 
-test("an issue that is not its tree's root draws none, whatever its project gates", () => {
-  const child: IssueDetails = { ...root, parent: "CORE-9" };
-
-  expect(gatedStepEntries(gating("criteria", "spec"), child)).toEqual([]);
+test("the steps are drawn in the gate's order, each with the document its line names", () => {
+  expect(approvalGateSteps(gated(spec, criteria))).toEqual([
+    { document: specArtifact, label: "Spec", step: "spec" },
+    { document: verificationDoc, label: "Verification", step: "criteria" },
+  ]);
+  expect(approvalGateSteps(gated(criteria, spec))).toEqual([
+    { document: verificationDoc, label: "Verification", step: "criteria" },
+    { document: specArtifact, label: "Spec", step: "spec" },
+  ]);
 });
 
-test("an issue whose parent is in another project is a root of its own project and draws its steps", () => {
-  // A parent of another project passes nothing on, so the issue stands in its own project's
-  // gate as a root does; only a parent of the issue's own project makes it a child.
-  const rootUnderAnotherProject: IssueDetails = { ...root, parent: "OTHR-6" };
-
+test("a step whose line names no document is drawn with no document", () => {
   expect(
-    gatedStepEntries(gating("criteria", "spec"), rootUnderAnotherProject).map((entry) => entry.step)
-  ).toEqual(["criteria", "spec"]);
-  expect(gatedStepEntries(gating("criteria", "spec"), { ...root, parent: "CORE-9" })).toEqual([]);
-});
-
-test("neither the unread project nor the unread issue draws a step", () => {
-  expect(gatedStepEntries(undefined, root)).toEqual([]);
-  expect(gatedStepEntries(gating("spec"), undefined)).toEqual([]);
-});
-
-test("the steps are drawn in the order the deployment published them, not the enumeration's", () => {
-  expect(gatedStepEntries(gating("spec", "criteria"), root)).toEqual([
-    { step: "spec", label: "Spec", document: specArtifact },
-    { step: "criteria", label: "Verification", document: verificationDoc },
-  ]);
-});
-
-test("each step names its own document, the Verification document among them", () => {
-  expect(gatedStepEntries(gating("criteria", "spec"), root)).toEqual([
-    { step: "criteria", label: "Verification", document: verificationDoc },
-    { step: "spec", label: "Spec", document: specArtifact },
-  ]);
-});
-
-test("a step the issue holds no document for is drawn with no document", () => {
-  const none: IssueDetails = { ...root, verification_artifact_id: "" };
-
-  expect(gatedStepEntries(gating("criteria"), none)).toEqual([
-    { step: "criteria", label: "Verification", document: undefined },
-  ]);
-});
-
-test("a step an older server answers no id for at all is drawn with no document", () => {
-  expect(gatedStepEntries(gating("criteria"), olderRoot)).toEqual([
-    { step: "criteria", label: "Verification", document: undefined },
+    approvalGateSteps(gated({ approval: null, artifact_id: null, step: "criteria" }, spec))
+  ).toEqual([
+    { document: undefined, label: "Verification", step: "criteria" },
+    { document: specArtifact, label: "Spec", step: "spec" },
   ]);
 });
 
 test("a step word this build has no name for is left out and the rest keep their order", () => {
-  // A Dispatch newer than this build may gate another step; the header draws what it knows.
-  const newer: Project = {
-    ...ungated,
-    gated_steps: ["spec", "thresholds", "criteria"] as unknown as GatedStep[],
-  };
-
-  expect(gatedStepEntries(newer, root)).toEqual([
-    { step: "spec", label: "Spec", document: specArtifact },
-    { step: "criteria", label: "Verification", document: verificationDoc },
-  ]);
-});
-
-// A Dispatch of the release before may still answer the retired `decisions` step in a project's
-// list; the header draws no step for it and asks for no document by that role.
-test("the retired decisions step is left out and the rest keep their order", () => {
-  expect(gatedStepEntries(gating("decisions", "criteria", "spec"), root)).toEqual([
-    { step: "criteria", label: "Verification", document: verificationDoc },
-    { step: "spec", label: "Spec", document: specArtifact },
+  expect(approvalGateSteps(gated(spec, { ...criteria, step: "thresholds" }, criteria))).toEqual([
+    { document: specArtifact, label: "Spec", step: "spec" },
+    { document: verificationDoc, label: "Verification", step: "criteria" },
   ]);
 });

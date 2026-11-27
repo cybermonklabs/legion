@@ -1,0 +1,236 @@
+import type { Row } from "@tanstack/react-table";
+import { type RefObject, useLayoutEffect, useRef } from "react";
+import { type KeymapScope, useKeymap } from "../features/shell/keymap";
+import { closestMatching } from "../features/shell/roving";
+import { CONTROL } from "./control-names";
+
+/** The attribute a page puts on the element that holds one table's control row, its box and its
+ *  pager (the issue table's section), so another table's page-wide keys read a focus anywhere in
+ *  it as in that table, not only in its box (`useRowKeymap`'s `moveFrom`). */
+export const TABLE_FRAME_ATTRIBUTE = "data-table-frame";
+
+/** The frame's mark, spread on the element that holds the table's control row, box and pager
+ *  (`TABLE_FRAME_ATTRIBUTE`). */
+export const TABLE_FRAME_MARK = { [TABLE_FRAME_ATTRIBUTE]: "" };
+
+/** One key a reader walks the table with, as the page that draws the table names it: the
+ *  palette and the shortcut help read these words, so they are the caller's and not the
+ *  table's. */
+export interface RowKeyBinding {
+  /** Unique within the scope: the project List's next row is `list-next`. */
+  readonly id: string;
+  /** In tinykeys syntax, e.g. `j`. */
+  readonly keys: string;
+  readonly label: string;
+}
+
+/** What the table's keys are called and where they apply. */
+export interface RowKeymap {
+  /** The scope the bindings are registered in, which the page pushes while it is open. */
+  readonly scope: KeymapScope;
+  readonly next: RowKeyBinding;
+  readonly previous: RowKeyBinding;
+  /** Where next and previous are answered: anywhere on the page while the table holds a row and
+   *  the focus is in no other table (`page`, the default), for keys nothing else on the page
+   *  answers, such as `j` and `k`; or only while the focus is in one of this table's own rows
+   *  (`row`), for keys the page answers itself everywhere else, such as the arrows, which scroll
+   *  it - the Delivery page's pull requests are walked that way (`features/delivery/PRList.tsx`)
+   *  - so that table answers from its own rows and the page keeps those keys everywhere else. */
+  readonly moveFrom?: "page" | "row";
+  /** Opens the row in hand; the one binding the palette lists. */
+  readonly open: RowKeyBinding;
+  /** Opens the row in hand from Enter, which only a focused row answers. */
+  readonly openOnEnter: RowKeyBinding;
+  /** Marks the row in hand. A table that selects nothing names none, and no key is registered
+   *  for it, so the shortcut help lists no key that does nothing. */
+  readonly select?: RowKeyBinding;
+}
+
+/** Focuses the row whose id is `key`, or the element `selector` names inside it. The selection
+ *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. A row
+ *  the table has not drawn is scrolled to and focused once it is drawn; `onLand` runs right after
+ *  the focus lands, in that same task, whether the row was already drawn or drawn in a later
+ *  render. The answer takes a pending focus back while it is still to come, and does nothing once
+ *  it has been made. */
+export type FocusRow = (
+  key: string,
+  selector?: string,
+  placement?: "nearest",
+  onLand?: (element: HTMLElement) => void
+) => () => void;
+
+/** What `FocusRow` answers when it leaves no focus to come: a drawn row is focused at once, and a
+ *  key the table does not hold focuses nothing. */
+const NOTHING_PENDING = (): void => undefined;
+
+/**
+ * The keys a reader walks the table's rows with, under the ids and words the caller gives, the
+ * same ids and palette rows the list they replace had: two keys move between rows, two open the
+ * row in hand, and, in a table that selects, one marks it. A row the virtualizer has not drawn
+ * yet is scrolled to first and focused when it lands.
+ *
+ * It hands back to a row (`FocusRow`) the same way. For a nearest-edge hand-off, keep the box's
+ * starting scroll position so the draw of a virtual row does not decide its final placement.
+ */
+export function useRowKeymap<TData>({
+  displayRows,
+  keymap,
+  landNearest,
+  linkAttribute,
+  onMark,
+  rowAttribute,
+  rowsById,
+  scrollRef,
+  scrollToIndex,
+}: {
+  displayRows: readonly { row: Row<TData> }[];
+  keymap: RowKeymap;
+  /** Shows a measured target whole, from the box's position before any virtual scroll. */
+  landNearest: (element: HTMLElement, from?: number) => void;
+  /** The attribute on the link inside a row that opening the row follows. */
+  linkAttribute: string;
+  /** Told the row `x` marks, as it marks it; never one it unmarks. */
+  onMark?: (key: string) => void;
+  /** The attribute each drawn row carries, whose value is the row's id. */
+  rowAttribute: string;
+  rowsById: Record<string, Row<TData>>;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  scrollToIndex: (index: number) => void;
+}): FocusRow {
+  /** The row and control that take the focus once drawn, with the origin of a nearest-edge hand-off. */
+  const pendingFocus = useRef<{
+    key: string;
+    selector?: string;
+    from?: number;
+    onLand?: (element: HTMLElement) => void;
+  } | null>(null);
+  // The row in hand: the row of this table that holds the focus, or one of its controls does. A
+  // row of another table on the page, under the same attribute, is none of this table's.
+  const focusedRow = () => {
+    const row = closestMatching(document.activeElement, `[${rowAttribute}]`);
+    return row !== null && scrollRef.current?.contains(row) === true ? row : null;
+  };
+  const rowElement = (key: string) =>
+    scrollRef.current?.querySelector<HTMLElement>(`[${rowAttribute}="${CSS.escape(key)}"]`);
+  // Focuses a drawn row or control directly, scrolls an undrawn row in first and focuses it once
+  // it lands, and ignores a key no row of this page holds.
+  const focusRow: FocusRow = (key, selector, placement, onLand) => {
+    const row = rowElement(key);
+    if (row) {
+      pendingFocus.current = null;
+      const element = selector === undefined ? row : row.querySelector<HTMLElement>(selector);
+      if (element !== null) {
+        if (placement === "nearest") landNearest(element);
+        else element.focus();
+        onLand?.(element);
+      }
+      return NOTHING_PENDING;
+    }
+    const index = displayRows.findIndex(({ row }) => row.id === key && !row.getIsGrouped());
+    if (index === -1) return NOTHING_PENDING;
+    const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
+    const pending = { from, key, onLand, selector };
+    pendingFocus.current = pending;
+    scrollToIndex(index);
+    return () => {
+      if (pendingFocus.current === pending) pendingFocus.current = null;
+    };
+  };
+  const moveFocus = (direction: 1 | -1) => {
+    const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());
+    const current = leaves.findIndex(
+      ({ row }) => row.id === focusedRow()?.getAttribute(rowAttribute)
+    );
+    const target =
+      leaves[
+        current < 0
+          ? direction === 1
+            ? 0
+            : leaves.length - 1
+          : Math.max(0, Math.min(leaves.length - 1, current + direction))
+      ];
+    if (target) focusRow(target.row.id);
+  };
+  useLayoutEffect(() => {
+    const pending = pendingFocus.current;
+    if (pending === null) return;
+    const row = rowElement(pending.key);
+    if (!row) return;
+    pendingFocus.current = null;
+    const element =
+      pending.selector === undefined ? row : row.querySelector<HTMLElement>(pending.selector);
+    if (element === null) return;
+    if (pending.from !== undefined) landNearest(element, pending.from);
+    else element.focus({ preventScroll: true });
+    pending.onLand?.(element);
+  });
+  const openFocusedRow = () =>
+    focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`)?.click();
+  // Where the moving keys apply (`RowKeymap.moveFrom`): one of this table's rows must hold the
+  // focus for keys the page answers itself everywhere else; for the others the table need only
+  // hold a row, and the focus be in no other table, whose own keys are its to answer. Another
+  // table is its box, or the frame its page draws around its control row, box and pager
+  // (`TABLE_FRAME_ATTRIBUTE`), so a key pressed on a table's Columns menu or its Next › is that
+  // table's own and reaches the rows of no other table on the page. This table's own frame holds
+  // its box.
+  const canMove =
+    keymap.moveFrom === "row"
+      ? () => focusedRow() !== null
+      : () => {
+          const around = closestMatching(
+            document.activeElement,
+            `[${TABLE_FRAME_ATTRIBUTE}], [data-control="${CONTROL.dataTable}"]`
+          );
+          return (
+            (around === null ||
+              (scrollRef.current !== null && around.contains(scrollRef.current))) &&
+            displayRows.some(({ row }) => !row.getIsGrouped())
+          );
+        };
+  const { select } = keymap;
+  useKeymap(keymap.scope, [
+    {
+      ...keymap.next,
+      palette: false,
+      run: () => moveFocus(1),
+      when: canMove,
+    },
+    {
+      ...keymap.previous,
+      palette: false,
+      run: () => moveFocus(-1),
+      when: canMove,
+    },
+    {
+      ...keymap.open,
+      run: openFocusedRow,
+      when: () => focusedRow() !== null,
+    },
+    {
+      ...keymap.openOnEnter,
+      palette: false,
+      run: openFocusedRow,
+      when: () =>
+        document.activeElement?.matches(`[${rowAttribute}]`) === true && focusedRow() !== null,
+    },
+    ...(select === undefined
+      ? []
+      : [
+          {
+            // Selecting walks the list with the row in hand, as the moving keys do, so it is no
+            // palette row.
+            ...select,
+            palette: false,
+            run: () => {
+              const key = focusedRow()?.getAttribute(rowAttribute);
+              const row = key === null || key === undefined ? undefined : rowsById[key];
+              if (row === undefined) return;
+              if (!row.getIsSelected()) onMark?.(row.id);
+              row.toggleSelected();
+            },
+            when: () => focusedRow() !== null,
+          },
+        ]),
+  ]);
+  return focusRow;
+}

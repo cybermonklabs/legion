@@ -758,7 +758,9 @@ function followElement(
 
 /** Where `receiver` draws what it was handed as `prop` (at `subpath` inside it, for an object
  *  handed over), and what decides whether it does: a class component's through `this.props`.
- *  Answers why the census cannot follow it, where it cannot. */
+ *  A function component that spreads its whole props into a component's element hands the slot
+ *  on to it (`handsOn`), and the census follows it there. Answers why the census cannot follow
+ *  it, where it cannot. */
 function followSlot(
   walk: Walk,
   receiverId: string,
@@ -787,6 +789,15 @@ function followSlot(
         ) {
           start = parent;
         }
+        if (
+          found.kind === "props-object" &&
+          ts.isJsxSpreadAttribute(parent) &&
+          handsOn(parent, prop)
+        ) {
+          drawn = true;
+          walk.receivers.add(receiverId);
+          followSpread(walk, parent, receiver, prop, subpath, depth);
+        }
       }
     } else if (
       receiver.cls !== undefined &&
@@ -806,4 +817,51 @@ function followSlot(
   };
   visit(receiver.fn.body);
   return drawn ? undefined : `draws its ${prop} nowhere the census can see`;
+}
+
+/** Whether `spread`, a component's whole props spread into an element (`<Inner {...props} />`),
+ *  hands `prop` on to that element: the element is a component's, no attribute or spread after
+ *  the spread may pass it again, and, for `children`, the element wraps nothing of its own. A
+ *  plain element is not followed, so a slot spread onto one alone is unread. */
+function handsOn(spread: ts.JsxSpreadAttribute, prop: string): boolean {
+  const element = spread.parent.parent;
+  if (isPlainTag(tagOf(element) as ts.JsxTagNameExpression)) return false;
+  const { properties } = spread.parent;
+  const after = properties.slice(properties.indexOf(spread) + 1);
+  if (after.some((other) => ts.isJsxSpreadAttribute(other) || other.name.getText() === prop)) {
+    return false;
+  }
+  return !(
+    prop === "children" &&
+    ts.isJsxOpeningElement(element) &&
+    element.parent.children.some(
+      (child) => !(ts.isJsxText(child) && child.containsOnlyTriviaWhiteSpaces)
+    )
+  );
+}
+
+/** Follows a slot `receiver` hands on in a spread of its whole props (`handsOn`), as the walk
+ *  follows one passed on by name: into the component the element draws, and up from the element
+ *  in `receiver`. */
+function followSpread(
+  walk: Walk,
+  spread: ts.JsxSpreadAttribute,
+  receiver: Comp,
+  prop: string,
+  subpath: readonly string[],
+  depth: number
+): void {
+  const element = spread.parent.parent;
+  const passed = `<${text(tagOf(element) as ts.Node)} ${text(spread)}>`;
+  walk.items.push({
+    at: where(spread),
+    deps: [],
+    expression: `passed as ${passed}`,
+    inside: true,
+    kind: "slot",
+    unit: receiver,
+  });
+  const why = followElement(walk, receiver, element, prop, subpath, depth + 1);
+  if (why !== undefined) unreadAt(walk, spread, `${passed} ${why}`);
+  walkFrom(walk, ts.isJsxOpeningElement(element) ? element.parent : element, receiver, true, depth);
 }

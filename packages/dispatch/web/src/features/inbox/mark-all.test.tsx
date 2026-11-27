@@ -2,7 +2,7 @@ import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { meInboxThreads } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -21,10 +21,12 @@ import {
 } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { DispatchEvent, MeInboxResponse, MyReplyRow } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { dangerText } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { InboxBar, type InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import {
   answerOneRead,
   ONE_READ_AS_OF,
@@ -33,7 +35,13 @@ import {
   oneReadReply,
 } from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
-import { MARK_ALL_REFUSED_TEXT, markAllReadBody, marksThread, useMarkAllRead } from "./mark-all";
+import {
+  MARK_ALL_REFUSED_TEXT,
+  MARK_ALL_STOPPED_TEXT,
+  markAllReadBody,
+  marksThread,
+  useMarkAllRead,
+} from "./mark-all";
 import { useUnreadThreadCount } from "./useInboxCount";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -46,14 +54,15 @@ afterEach(cleanup);
 
 const AS_OF = ONE_READ_AS_OF;
 
-function noop(): void {}
-
 /**
- * The bar over one list, with the one number the sidebar's Inbox count and the compact header's
- * Inbox link both read beside it (`useUnreadThreadCount` over the one read's `meInboxCountQuery`,
- * which is what `Sidebar.tsx` and `app.tsx` each add their Needs-you count to). The list is the
- * reader's Reply and Agent rows of the one read, which the Inbox draws them from. The bar is the
- * surface the button and its refusal live on; the press itself is the Inbox's own hook.
+ * The bar the Inbox draws **Mark all read** in (`Inbox.tsx`): an action of its **More**, kept
+ * there at every width, with what a refused or stopped press says under the bar, and the one
+ * number the sidebar's Inbox count and the compact header's Inbox link both read beside it
+ * (`useUnreadThreadCount` over the one read's `meInboxCountQuery`, which is what `Sidebar.tsx`
+ * and `app.tsx` each add their Needs-you count to). The list is the reader's Reply and Agent rows
+ * of the one read, which the Inbox draws them from. The bar is the surface the action, its
+ * refusal and the word of a press the reader stopped live on; the press itself is the Inbox's
+ * own hook, which is what this file is about.
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   const threads = meInboxThreads(useQuery(meInboxQuery()).data);
@@ -65,29 +74,22 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
       <output data-testid="unread">{threads.filter((t) => t.unread).length}</output>
-      <InboxBar
-        agentToken={undefined}
-        assignees={undefined}
-        filters={filters}
-        markAll={markAll}
-        onAssigneesChange={noop}
-        onClearAgent={noop}
-        onFiltersChange={noop}
-        onPopoverOpenChange={noop}
-        rows={rows}
-        selection={["alice"]}
-        view={{
-          group: "priority",
-          onGroupChange: noop,
-          onShowChange: noop,
-          onSortChange: noop,
-          onThreadOrderChange: noop,
-          show: "inbox",
-          sort: "newest",
-          threadOrder: "oldest",
-        }}
-        viewer="alice"
+      <ControlRow
+        actions={
+          markAll.offered
+            ? [{ icon: null, label: "Mark all read", more: true, onPress: markAll.markAll }]
+            : []
+        }
       />
+      {markAll.failure === "refused" ? (
+        <p className={dangerText} data-inbox-mark-all-refused="" role="alert">
+          {MARK_ALL_REFUSED_TEXT}
+        </p>
+      ) : markAll.failure === "stopped" ? (
+        <p className={dangerText} data-inbox-mark-all-stopped="" role="alert">
+          {MARK_ALL_STOPPED_TEXT}
+        </p>
+      ) : null}
     </>
   );
 }
@@ -135,6 +137,18 @@ function unread(): string {
   return screen.getByTestId("unread").textContent ?? "";
 }
 
+/** Whether the bar offers **Mark all read**: its **More**, where the Inbox keeps it at every
+ *  width, is drawn only while it holds an action, and this bar has no other. */
+function markAllOffered(): boolean {
+  return screen.queryByRole("button", { name: "More" }) !== null;
+}
+
+/** Presses **Mark all read** as a reader does: from the bar's **More**. */
+async function pressMarkAll(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "More" }));
+  await user.click(screen.getByRole("menuitem", { name: "Mark all read" }));
+}
+
 test("the body carries the list's read mark and the filters the list is under", () => {
   // Nothing narrowed: both kinds, and no list for the three fields, which the route reads as
   // every value.
@@ -169,10 +183,10 @@ test("a thread written in since the read mark, or already read, is not one this 
 
 test("the button shows only while the list holds an unread Reply or Agent row", () => {
   renderBar([replyRow("c1", { unread: false })], 0);
-  expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+  expect(markAllOffered()).toBe(false);
   cleanup();
   renderBar([replyRow("c1")], 1);
-  expect(screen.getByRole("button", { name: "Mark all read" })).toBeTruthy();
+  expect(markAllOffered()).toBe(true);
 });
 
 test("one press zeroes the count and draws the rows read, without taking one out of the list", async () => {
@@ -185,7 +199,7 @@ test("one press zeroes the count and draws the rows read, without taking one out
   });
 
   expect(inboxCount()).toBe("2");
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  await pressMarkAll(user);
 
   // At once, with the request still out: every badge reading the shared count is at zero and no
   // row is unread any more - and both rows are still in the list, where a thread stays until it
@@ -193,7 +207,7 @@ test("one press zeroes the count and draws the rows read, without taking one out
   await waitFor(() => expect(unread()).toBe("0"));
   expect(listed()).toBe("2");
   expect(inboxCount()).toBe("0");
-  expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+  expect(markAllOffered()).toBe(false);
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
   expect(marked.mock.calls[0]?.[0]).toEqual({
@@ -212,7 +226,7 @@ test("a refused press brings the rows and the counts back and says nothing was m
   marked.mockRejectedValue(new ApiError(404, { error: "not found" }));
   renderBar([replyRow("c1"), replyRow("c2")], 2);
 
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  await pressMarkAll(user);
 
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toBe(MARK_ALL_REFUSED_TEXT);
@@ -388,7 +402,7 @@ test("a read of the list asked before Mark all read does not put back the rows t
     });
     expect(getMeInbox).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await pressMarkAll(user);
     await waitFor(() => expect(unread()).toBe("0"));
     // The read answers as Dispatch held the rows when it was asked: both unread.
     await act(async () => {
@@ -434,7 +448,7 @@ test("a read of the unread count asked before Mark all read does not put back th
     });
     expect(getMeInbox).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await pressMarkAll(user);
     await waitFor(() => expect(inboxCount()).toBe("0"));
     // The read answers as Dispatch held the count when it was asked: two unread.
     await act(async () => {
@@ -478,7 +492,7 @@ test("a read of the list or the count asked while Mark all read is out waits for
   const getMeInbox = answerOneRead(() => ({ threads: served }));
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
-    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await pressMarkAll(user);
     await waitFor(() => expect(unread()).toBe("0"));
     expect(inboxCount()).toBe("0");
 
@@ -553,7 +567,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
   const getMeInbox = answerOneRead(() => ({ threads: served }));
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
-    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await pressMarkAll(user);
     await waitFor(() => expect(unread()).toBe("0"));
     expect(inboxCount()).toBe("0");
 
@@ -609,12 +623,12 @@ test("a refused press's word goes once the reader narrows the list another way",
   answerInboxReads().mockRejectedValue(new ApiError(404, { error: "not found" }));
   const bar = renderBar([replyRow("c1", { priority: 1 }), replyRow("c2")], 2);
 
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  await pressMarkAll(user);
   expect((await screen.findByRole("alert")).textContent).toBe(MARK_ALL_REFUSED_TEXT);
 
   bar.narrow({ priority: ["P1"] });
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Mark all read" })).toBeTruthy();
+  expect(markAllOffered()).toBe(true);
   bar.narrow({});
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
@@ -633,7 +647,7 @@ test("a stopped press reads the list again rather than saying nothing was marked
   });
   const { client } = renderBar([replyRow("c1"), replyRow("c2")], 2);
   try {
-    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await pressMarkAll(user);
     await stopTheLateWrite(client);
 
     expect(screen.getByRole("alert").textContent).toBe(

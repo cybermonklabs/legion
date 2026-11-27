@@ -15,7 +15,7 @@ import type {
   Priorities,
   Project,
 } from "../api/types";
-import { answerOneRead } from "../features/inbox/inbox-fixture";
+import { oneReadReply } from "../features/inbox/inbox-fixture";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { replyRow } from "../features/threads/replies-fixture";
 
@@ -89,21 +89,25 @@ function project(overrides: Partial<Project> = {}): Project {
 }
 
 /** `pending` is the broker's list of credential requests waiting on the viewer; without it this
- *  Dispatch has no broker (the list answers `null`). `priorities` is what the rail's summary
- *  call answers; by default this deployment has written none. `threads` are the reader's Reply
- *  rows. The reader's asks and threads reach the Inbox count through the one read, which answers
- *  every ask below - one of them waiting on an agent - so the count is the rail's own narrowing
- *  to the asks that wait on the reader. */
+ *  Dispatch has no broker (the list answers `null`), and `"unreadable"` is a list whose first
+ *  read failed. `priorities` is what the rail's summary call answers; by default this
+ *  deployment has written none. `threads` are the reader's Reply rows. The reader's asks and
+ *  threads reach the Inbox count through the one read, which answers every ask below - one of
+ *  them waiting on an agent - so the count is the rail's own narrowing to the asks that wait on
+ *  the reader. `unreadTotal` is the unread count's answer for a test that holds that read out
+ *  itself: the one read's other reads answer at once. */
 function renderSidebar(
   pathname = "/",
   {
     pending,
     priorities = summary(0, 0, false),
     threads = [],
+    unreadTotal,
   }: {
-    pending?: CredentialPendingRow[];
+    pending?: CredentialPendingRow[] | "unreadable";
     priorities?: Priorities;
     threads?: readonly MyReplyRow[];
+    unreadTotal?: Promise<number>;
   } = {}
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
@@ -227,10 +231,23 @@ function renderSidebar(
       urgency: "med",
     },
   ];
-  railSpies.push(answerOneRead({ asks, threads }));
-  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(
-    pending === undefined ? null : { pending }
+  // The rail's one Inbox number adds the threads the reader has not read to the work waiting on
+  // them, and draws no number at all until every read it adds up has answered, so the one read
+  // is answered here for every test.
+  railSpies.push(
+    spyOn(api, "getMeInboxPage").mockImplementation(async (read) => {
+      const answer = oneReadReply(read, { asks, threads });
+      return read.state === "unread" && unreadTotal !== undefined
+        ? { ...answer, total: await unreadTotal }
+        : answer;
+    })
   );
+  const getCredentialPending = spyOn(api, "getCredentialPending");
+  if (pending === "unreadable") {
+    getCredentialPending.mockRejectedValue(new Error("the broker is unreachable"));
+  } else {
+    getCredentialPending.mockResolvedValue(pending === undefined ? null : { pending });
+  }
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(undefined as never);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([issue()]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
@@ -417,6 +434,57 @@ for (const [unread, name] of [
     }
   });
 }
+
+// F2 item 3: the rail's number summed three reads and counted each as empty while it was out or
+// after it failed, so it showed a partial sum as the reader's. It is drawn only once every read
+// it adds up has answered.
+test("the rail draws no Inbox number while a read it adds up is out, and the sum once it lands", async () => {
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const counted = Promise.withResolvers<number>();
+  const sidebar = renderSidebar("/", { unreadTotal: counted.promise });
+
+  try {
+    // Two asks wait on alice, so the old sum would have read `Inbox 2` here.
+    const inbox = await screen.findByRole("link", { name: "Inbox" });
+    expect(inbox.textContent).toBe("Inbox");
+    counted.resolve(3);
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe("Inbox5")
+    );
+  } finally {
+    sidebar.view.unmount();
+    sidebar.getCredentialPending.mockRestore();
+    sidebar.getIssue.mockRestore();
+    sidebar.listIssues.mockRestore();
+    sidebar.listProjects.mockRestore();
+    whoAmI.mockRestore();
+  }
+});
+
+test("the rail draws no Inbox number after the credential list's first read failed", async () => {
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const sidebar = renderSidebar("/", { pending: "unreadable" });
+
+  try {
+    const inbox = await screen.findByRole("link", { name: "Inbox" });
+    expect(inbox.textContent).toBe("Inbox");
+  } finally {
+    sidebar.view.unmount();
+    sidebar.getCredentialPending.mockRestore();
+    sidebar.getIssue.mockRestore();
+    sidebar.listIssues.mockRestore();
+    sidebar.listProjects.mockRestore();
+    whoAmI.mockRestore();
+  }
+});
 
 test("sidebar keeps its hide control available while navigation loads", async () => {
   const user = userEvent.setup();

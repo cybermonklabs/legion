@@ -12,7 +12,13 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
+import {
+  connectedDot,
+  countDocumentSockets,
+  documentEditor,
+  pickVersion,
+  reconnectedSockets,
+} from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -197,7 +203,7 @@ test("a person's Close withdraws the issue's asks and writes one version showing
     // asked, with nothing to answer. Its card reads the decision's state from the server's read of
     // the ask, which the close resolved, and draws no record of the withdrawal: only the closed
     // issue's own document shows who withdrew it.
-    await page.getByRole("combobox", { name: "Version" }).selectOption(String(before));
+    await pickVersion(page, before);
     const saved = page
       .getByRole("region", { name: `Document version ${before}` })
       .locator('[data-dispatch-ask-block="decision"]');
@@ -208,7 +214,7 @@ test("a person's Close withdraws the issue's asks and writes one version showing
     await expect(saved.getByTestId("ask-resolution-badge")).toHaveCount(0);
     await expect(saved).not.toContainText("Withdrawn");
     await expect(saved.getByText("Resolved", { exact: true })).toBeVisible();
-    await page.getByRole("combobox", { name: "Version" }).selectOption("");
+    await pickVersion(page, null);
 
     // The close dropped the document's socket, and its reconnect is admitted read-only while the
     // issue is closed: the page a person who reopens after the draw holds, which the Reopen below

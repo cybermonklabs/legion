@@ -44,7 +44,7 @@ EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references 
     'packages/dispatch/web/src/features/doc/editor.ts',
     'packages/dispatch/web/src/features/doc/ApprovalChip.tsx',
     'packages/dispatch/web/src/features/agents/AgentMessageComposer.tsx',
-    'packages/dispatch/web/src/features/agents/AgentsPage.tsx',
+    'packages/dispatch/web/src/features/agents/BroadcastComposer.tsx',
     'packages/dispatch/web/src/features/agent-view/AgentThread.tsx',
     'packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx',
     'packages/dispatch/web/src/features/issue/DecisionsPanel.tsx',

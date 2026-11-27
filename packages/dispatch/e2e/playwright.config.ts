@@ -311,10 +311,13 @@ const parallelProjects = [
   // `@webkit` tag, so each row it runs carries that tag and a comment naming the clause below it
   // exercises. Every clause here names one engine behaviour and the rows that exercise it.
   // Where a caret lands beside a collaborator's own caret: `collab-cursor`'s three rows.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard, and `table-controls`'s row that Tab and Escape never leave
+  // a panel for the page behind it, which leaves a list's text box by Tab on a page and by
+  // Shift+Tab in a dialog and reads the focus on the list's trigger.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -342,11 +345,92 @@ const parallelProjects = [
   // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
+  // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
+  // does with no `focusout`: `table-controls`'s page-own focus row, its row whose focused row a
+  // live update takes away, its row that Edit priorities opens its list in view with the focus in
+  // its text box and Escape gives the focus back, whose Escape takes the focused text box away,
+  // its row that Change answer opens the answer form with its first choice whole in the window,
+  // whose button takes itself away, its row that an ask withdrawn
+  // while the reader types its answer in the Inbox's list takes none of their next keys as text,
+  // whose answer box the record takes away, its row that a Conversation turn resolved
+  // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the
+  // Open filter takes away, its row that a pinned card unpinned on another device while its
+  // Unpin holds the focus hands the focus into no other card, whose card the Pinned tab takes
+  // away, its row that a date the reader gives the search bar's Updated since is their press,
+  // whose box the date takes away, its row that a Snooze pick in the reading column's head
+  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away, its
+  // row that clear brush window pressed with the Window control scrolled out of sight scrolls
+  // the Delivery page nothing, whose button the cleared brush takes away and whose landing each
+  // engine scrolls into view its own way, its row that a bulk Dismiss deep in the Inbox's list
+  // hands the focus to the row now at the marked row's place in sight, whose bar and rows the
+  // Dismiss takes away, its row that a bulk action that takes the marked rows out of the project
+  // List's view hands the focus to the row now at their place, whose bar and rows the action
+  // takes away, its row that Unpin on a pinned agent keeps the keyboard focus on a control in
+  // sight, whose row the unpin moves to its new place, its row that a thread's Dismiss in the
+  // Inbox's list scrolls nothing, and its row that the same Dismiss at 1440 leaves a reading
+  // column that can scroll where it stood, whose row the Dismiss takes away, its five rows that a control
+  // held under the reader's press keeps the keyboard focus - the Inbox's Decline dialog, a
+  // references Retry on the Artifacts tab, the Inbox card's Referenced by Retry, Unfollow and
+  // Unsubscribe on an Inbox card's recipients, and a group card's Rename in the Session groups
+  // dialog - which a native `disabled` takes the focus from, and its row that offline, Take out
+  // of epic hands the focus to the marked row's checkbox in the render the bar goes, whose bar
+  // and rows the action takes away and whose frames each engine paces its own way.
+  // Measured in WebKit as well as Firefox:
+  // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
+  // focus, whose row the virtual list takes away out of sight: `table-controls`'s
+  // scrolling-table row.
+  // The order in which the engine fires a text box's blur and lets React commit the save the
+  // blur made, which takes the box away: `issue`'s row that Enter in the title's editor, and a
+  // click outside it, close it and leave the next key to the page: Enter blurs the box
+  // (`saveTitleOnEnter` in `IssueHeader.tsx`) and a click on the page's text blurs it too, so the
+  // box no longer holds the focus when the save takes it away.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
   // with spaces reads.
+  // The rows INFRA-3135's round-25 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the issue header's Status list keeps the option its arrows mark active inside its
+  // box, that a second Enter on the held Snooze selected asks leaves the focus where the pick
+  // alone puts it, that the Delivery page's Filter panel and the Inbox's Type list draw no count
+  // before the read they count answers, that a Move with only closed issues marked keeps no
+  // press live, that each chip Tab reaches in the Inbox's Filter panel stands wholly inside it,
+  // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when a typed word
+  // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
+  // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
+  // the read they count answers, that a double click on a marked row's held control and the List
+  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
+  // is out leaves the focus where the reader's click put it.
+  // The rows INFRA-3135's round-27 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters draw each count the
+  // list does not decide, that a Tab onto the moving card's link while a Board move's dry run is
+  // out leaves the focus on the moved card, and that the selection bar's return shows its landing
+  // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
+  // and at 390 to a checkbox cut by the window's bottom edge.
+  // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters keep each count the
+  // list does not decide while a later poll of the list is out, and that the selection bar's
+  // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
+  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
+  // and at 390 on the List after Take out of epic with the rows marked last far below the view.
+  // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refilling from the start the project List still says the list is
+  // refilling while a poll is out five minutes on; that a `j` while the selection bar's landing is
+  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; that
+  // after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
+  // nothing; that the project List's box keeps its frame after Take out of epic lands; and that with
+  // Take out of epic's writes held and both marks unticked the List keeps the focus on the list.
+  // The Inbox's reading view (INFRA-5200): `table-controls` covers Clear selection at 390 with
+  // one row marked and another row's reading view open. Focus lands on the view's own checkbox.
   // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
@@ -392,10 +476,13 @@ const parallelProjects = [
   // `code-line-replace`'s two rows.
   // The engine's focus rule for a click on a link inside the editor, where Firefox focuses the
   // editing host rather than the link: `picture-link-click`'s one row.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard, and `table-controls`'s row that Tab and Escape never leave
+  // a panel for the page behind it, which leaves a list's text box by Tab on a page and by
+  // Shift+Tab in a dialog and reads the focus on the list's trigger.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
@@ -419,9 +506,59 @@ const parallelProjects = [
   // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
+  // A focused control taken away, itself or with a parent, for which this engine fires no
+  // `focusout`, as measured above `webkit`: every `table-controls` row the `webkit` clause names
+  // for it, from its page-own focus row to its row that offline, Take out of epic hands the focus
+  // to the marked row's checkbox, and its scrolling-table row, whose focused row a scroll takes
+  // away. Each of those rows carries `@firefox` as well as `@webkit`, and its own comment names
+  // this clause.
+  // The order in which the engine fires a text box's blur and lets React commit the save the blur
+  // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
+  // outside it, close it and leave the next key to the page, as above `webkit`.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // The rows INFRA-3135's round-25 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the issue header's Status list keeps the option its arrows mark active inside its
+  // box, that a second Enter on the held Snooze selected asks leaves the focus where the pick
+  // alone puts it, that the Delivery page's Filter panel and the Inbox's Type list draw no count
+  // before the read they count answers, that a Move with only closed issues marked keeps no
+  // press live, that each chip Tab reaches in the Inbox's Filter panel stands wholly inside it,
+  // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when a typed word
+  // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
+  // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
+  // the read they count answers, and that a double click on a marked row's held control and the
+  // List bar's partly cut landing leave the focus where it belongs.
+  // The rows INFRA-3135's round-27 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters draw each count the
+  // list does not decide, that a Tab onto the moving card's link while a Board move's dry run is
+  // out leaves the focus on the moved card, and that the selection bar's return shows its landing
+  // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
+  // and at 390 to a checkbox cut by the window's bottom edge.
+  // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters keep each count the
+  // list does not decide while a later poll of the list is out, and that the selection bar's
+  // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
+  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
+  // and at 390 on the List after Take out of epic with the rows marked last far below the view.
+  // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refilling from the start the project List still says the list is
+  // refilling while a poll is out five minutes on; that a `j` while the selection bar's landing is
+  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; that
+  // after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
+  // nothing; that the project List's box keeps its frame after Take out of epic lands; and that with
+  // Take out of epic's writes held and both marks unticked the List keeps the focus on the list.
+  // The Inbox's reading view (INFRA-5200): `table-controls` covers Clear selection at 390 with
+  // one row marked and another row's reading view open. Focus lands on the view's own checkbox.
   // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
   // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
   // priorities table by its grip and reads the order back.
@@ -484,7 +621,7 @@ const parallelProjects = [
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
  * Each of these projects named every project before it in `dependencies` until
  * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
- * command naming one of their three files, because a filter narrows a project it selects and
+ * command naming one of their files, because a filter narrows a project it selects and
  * never a project selected to run before it. With no dependency and no place in the default
  * selection, such a command now selects nothing at all, so the configuration refuses it at the
  * top of this file and prints the command that runs the file.
@@ -494,9 +631,9 @@ const parallelProjects = [
  * the run to that: its guard fails a measuring row in a run of more than one worker rather than
  * letting it report a reading of what the other workers were running, so such a reading survives
  * only where it was taken alone, whatever project it was taken in. The rows of
- * `agent-workspace-timing.e2e.ts` read a clock of their own and reach that guard nowhere, so
- * what holds them to one worker is the command: the refusal at the top of this file prints
- * `--workers=1`, and `bun run e2e:clock` names it too.
+ * `agent-workspace-timing.e2e.ts` and `inbox-dismissed-timing.e2e.ts` read a clock of their own
+ * and reach that guard nowhere, so what holds them to one worker is the command: the refusal at
+ * the top of this file prints `--workers=1`, and `bun run e2e:clock` names it too.
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
@@ -516,7 +653,10 @@ const parallelProjects = [
  * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as does
  * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
  * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
- * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
+ * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`), and
+ * as does `inbox-dismissed-timing.e2e.ts`, whose one row times the Dismissed view over thousands
+ * dismissed and ran in `chromium` until a shard of four workers swung its medians (INFRA-4948's
+ * R7; the window's focus row stays in `chromium`, in `inbox-dismissed-window.e2e.ts`).
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
@@ -593,7 +733,22 @@ const aloneProjects = [
  * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
  * that is not settled, and either one is the thing this layer exists to find, so it is reported
  * as a failure rather than as a flake.
+ *
+ * `--disable-partial-raster` (`VISUAL_CAPTURE`), on both projects: Chromium then draws every
+ * tile it redraws whole, rather than only the part of it a later paint invalidated. A tile drawn
+ * once and then partly redrawn differs at the edges of what was redrawn from the same tile drawn
+ * whole, so with partial raster on, one page at one layout came out in more than one rendering,
+ * depending on the order its paints came in. The Inbox, shot 20 times in the visual image with
+ * its own fonts, came out in two renderings in light, 7 and 13 times, and with the DevTools
+ * LayerTree domain on in the one the committed baseline refused, 20 times of 20. Every
+ * difference was at x 832 or right of it, which is the main column's left edge plus one 512 px
+ * tile, and main's build of that page varied the same way on the other side of that edge. With
+ * the flag the same 20 shots gave one rendering in light and one in dark, and the same two with
+ * LayerTree on (dispatch://INFRA-3135). The flag changes what is captured, not what is
+ * compared: the spec's comparison and its tolerance are as before.
  */
+const VISUAL_CAPTURE = { args: ["--disable-partial-raster"] };
+
 const visualProjects = [
   {
     name: "visual",
@@ -607,7 +762,11 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    use: {
+      ...devices["Desktop Chrome"],
+      launchOptions: VISUAL_CAPTURE,
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -616,7 +775,11 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      launchOptions: VISUAL_CAPTURE,
+    },
     workers: 1,
     retries: 0,
   },

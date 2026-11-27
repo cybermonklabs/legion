@@ -157,35 +157,43 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 		return fmt.Errorf("load open approval asks: %w", err)
 	}
 	for rows.Next() {
-		var id, artifactID, waitingOn string
-		var author, documents []byte
-		if err := rows.Scan(&id, &author, &artifactID, &documents, &waitingOn); err != nil {
+		artifactID, request, err := scanOpenApprovalRequest(rows)
+		if err != nil {
 			return err
-		}
-		var actor model.Actor
-		if err := json.Unmarshal(author, &actor); err != nil {
-			return fmt.Errorf("decode approval ask author: %w", err)
-		}
-		var named []model.AskApprovalDocument
-		if err := json.Unmarshal(documents, &named); err != nil {
-			return fmt.Errorf("decode approval ask documents: %w", err)
-		}
-		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn}
-		// One document is the document being read, which the chip already names; two or more are
-		// what it must spell out.
-		if len(named) > 1 {
-			request.documents = named
 		}
 		requests[artifactID] = request
 	}
 	return rows.Err()
 }
 
+// scanOpenApprovalRequest reads one row openApprovalAsksStatement returns: the document it names
+// and that document's open request.
+func scanOpenApprovalRequest(row pgx.Row) (string, openApprovalRequest, error) {
+	var id, artifactID, waitingOn string
+	var author, documents []byte
+	if err := row.Scan(&id, &author, &artifactID, &documents, &waitingOn); err != nil {
+		return "", openApprovalRequest{}, err
+	}
+	var actor model.Actor
+	if err := json.Unmarshal(author, &actor); err != nil {
+		return "", openApprovalRequest{}, fmt.Errorf("decode approval ask author: %w", err)
+	}
+	var named []model.AskApprovalDocument
+	if err := json.Unmarshal(documents, &named); err != nil {
+		return "", openApprovalRequest{}, fmt.Errorf("decode approval ask documents: %w", err)
+	}
+	request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn}
+	// One document is the document being read, which the chip already names; two or more are
+	// what it must spell out.
+	if len(named) > 1 {
+		request.documents = named
+	}
+	return artifactID, request, nil
+}
+
 // applyApprovals fills each document's Approval from its latest review and its open request, the
-// rule queueApprovals's apply runs once both statements have been read. A retired document's
-// approval is superseded by its retirement (docs.RetireDocument), which writes no version, so it
-// reads stale at its latest version as an approval a later version left behind reads: a gate or
-// a reader that asks whether the document stands approved hears that it does not.
+// rule queueApprovals's apply runs once both statements have been read: it finds each document's
+// latest version among its Versions, and approvalOf decides the state.
 func applyApprovals(
 	byID map[string]*model.Artifact,
 	latestReviews map[string]model.ArtifactReview,
@@ -198,40 +206,62 @@ func applyApprovals(
 				latest = version.Number
 			}
 		}
-		approval := &model.ArtifactApproval{State: "draft", LatestVersion: latest}
-		if review, ok := latestReviews[artifact.ID]; ok {
-			version := review.Version
-			at := review.CreatedAt.UTC().Format(time.RFC3339Nano)
-			actor := review.Actor
-			approval.Version = &version
-			approval.By = &actor
-			approval.At = &at
-			approval.Seq = review.EventSeq
-			approval.Reason = review.Reason
-			approval.AskID = review.AskID
-			approval.Kind = review.Kind
-			approval.ContentSHA256 = review.ContentSHA256
-			approval.ContentSHA256Source = review.ContentSHA256Source
-			switch {
-			case review.State == "changes_requested":
-				approval.State = "changes_requested"
-			case review.Version == latest && !artifact.Retired:
-				approval.State = "approved"
-			default:
-				approval.State = "stale"
-			}
+		var review *model.ArtifactReview
+		if found, ok := latestReviews[artifact.ID]; ok {
+			review = &found
 		}
-		if request, ok := requests[artifact.ID]; ok && approval.State != "approved" {
-			author := request.author
-			id := request.id
-			approval.State = "awaiting"
-			approval.RequestedBy = &author
-			approval.AskID = &id
-			approval.WaitingOn = request.waitingOn
-			approval.Documents = request.documents
+		var request *openApprovalRequest
+		if found, ok := requests[artifact.ID]; ok {
+			request = &found
 		}
-		artifact.Approval = approval
+		approval := approvalOf(latest, artifact.Retired, review, request)
+		artifact.Approval = &approval
 	}
+}
+
+// approvalOf is a document's approval: the one rule every read of an approval state runs, called by
+// the document reads through applyApprovals and by the one read for each gate document of its page
+// (readApprovalGates). approvalGate calls it for neither read: it takes the approvals already
+// computed, the one read's from readApprovalGates and the issue read's from applyApprovals
+// (issueApprovalGate). latest is the document's latest version, 0 when it has none; review is its
+// latest review and request its open approval request, each nil when it has none. A retired
+// document's approval is superseded by its retirement (docs.RetireDocument), which writes no
+// version, so it reads stale at its latest version as an approval a later version left behind
+// reads: a gate or a reader that asks whether the document stands approved hears that it does not.
+func approvalOf(latest int, retired bool, review *model.ArtifactReview, request *openApprovalRequest) model.ArtifactApproval {
+	approval := model.ArtifactApproval{State: "draft", LatestVersion: latest}
+	if review != nil {
+		version := review.Version
+		at := review.CreatedAt.UTC().Format(time.RFC3339Nano)
+		actor := review.Actor
+		approval.Version = &version
+		approval.By = &actor
+		approval.At = &at
+		approval.Seq = review.EventSeq
+		approval.Reason = review.Reason
+		approval.AskID = review.AskID
+		approval.Kind = review.Kind
+		approval.ContentSHA256 = review.ContentSHA256
+		approval.ContentSHA256Source = review.ContentSHA256Source
+		switch {
+		case review.State == "changes_requested":
+			approval.State = "changes_requested"
+		case review.Version == latest && !retired:
+			approval.State = "approved"
+		default:
+			approval.State = "stale"
+		}
+	}
+	if request != nil && approval.State != "approved" {
+		author := request.author
+		id := request.id
+		approval.State = "awaiting"
+		approval.RequestedBy = &author
+		approval.AskID = &id
+		approval.WaitingOn = request.waitingOn
+		approval.Documents = request.documents
+	}
+	return approval
 }
 
 // queueApprovals queues in b the latest review and the open approval request of every document in
@@ -467,6 +497,9 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		if state == "changes_requested" {
 			selected = docs.ApprovalOptionRequestChanges
 		}
+		// The review answers the request as its writer's own answer, so a person's review takes the
+		// request's thread out of their Inbox, as an answer from the ask's own route does
+		// (closeAskTx, the own-answer rule, R1).
 		answered, answeredEvents, err := s.closeAskTx(documentCtx, tx, ledger, open.ID, actor, answerTransition(actor, []string{selected}, reason, answerOptions{}))
 		if err != nil {
 			s.writeHandlerError(w, err)

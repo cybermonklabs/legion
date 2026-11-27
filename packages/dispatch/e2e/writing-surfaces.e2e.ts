@@ -5,7 +5,7 @@ import {
 } from "@legion/contracts";
 
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { agentRow } from "./agents";
+import { agentRow, issueOption } from "./agents";
 import {
   answerAsk,
   createPriority,
@@ -23,7 +23,7 @@ import {
   openSpec,
   selectEditorText,
 } from "./editor";
-import { askCard, inboxPane, selectRow } from "./inbox-pane";
+import { askCard, inboxList, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
 import { expect, type Locator, type Page, test } from "./test";
@@ -198,7 +198,9 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // lists everyone who has signed in.
       await expectRow(page, field, "agents-row-composer", "agent-message");
       await row.getByRole("button", { name: "Choose issue" }).click();
-      await row.getByRole("combobox", { name: "Issue" }).selectOption(world.host);
+      // The issue pick is the shared list (`components/MultiSelect.tsx`): its options read as the
+      // issue's key and title, and a click on one picks it (`issueOption`).
+      await issueOption(row, world.host).click();
       await expectRow(page, field, "agents-row-composer", "comment", () =>
         composerSend(page, "Comment", row).click()
       );
@@ -502,14 +504,21 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expectRow(page, field, "inbox-thread-reply", "comment", () =>
         composerSend(page, "Reply", inboxPane(page)).click()
       );
-      // The box clears its draft once the reply lands, and the thread stays in the Inbox until it
-      // is dismissed. The message's row is selected only then, so no send of this box is still
-      // out when the row it belongs to is left.
-      await expect(field).toHaveValue("");
+      // The reply takes its thread out of the reader's Inbox (the own-answer rule, R1): its row
+      // leaves once the reply lands, so no send of this box is still out when the message's row
+      // is selected.
+      const commentRow = inboxList(page).locator(`[data-inbox-row="${replyRowId(world.comment)}"]`);
+      await expect(commentRow).toHaveCount(0);
       await selectRow(page, replyRowId(world.message));
       const onMessage = inboxPane(page).getByRole("textbox", { name: "Reply" });
       await expect(onMessage).toBeVisible();
       await expectRow(page, onMessage, "inbox-thread-reply", "message-reply");
+      // The box cleared its draft as the reply landed, which the reply's own thread, read in the
+      // Dismissed view, shows: its reply box there is empty. It is read last, so the message's box
+      // above is walked while the reply just sent is as new as it was before R1.
+      await page.goto("/?show=dismissed");
+      await selectRow(page, replyRowId(world.comment));
+      await expect(inboxPane(page).getByRole("textbox", { name: "Reply" })).toHaveValue("");
     },
   },
   "margin-comment-edit": {

@@ -557,12 +557,16 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// event: an answer is a reply by the person it names, at its own moment, and the ask's marker
 	// moves to that moment in the answer's own update (asks.Change.TuplesStored), so the trigger
 	// user_threads_ask passes it by and the event names the row its answerer is about to hold; a
-	// decline takes part, at the resolution's moment.
+	// decline takes part, at the resolution's moment. An answer is its writer's own write, so it
+	// takes the ask's thread out of their Inbox where its writer is a person acting as themselves
+	// (inboxwrite.Write.Own, the own-answer rule, R1): an answer here, and an approval review,
+	// which answers the open approval request through this transition (reviews.go). A decline
+	// dismisses nothing.
 	var recording *inboxwrite.Recording
 	var inbox inboxwrite.Write
 	switch {
 	case transition.Inbox == inboxwrite.Replies && ask.Answer != nil:
-		inbox = inboxwrite.Answered(before, *ask.Answer, actor)
+		inbox = inboxwrite.Answered(before, *ask.Answer, actor).Own()
 	case transition.Inbox == inboxwrite.TakesPart && ask.Resolution != nil:
 		inbox = inboxwrite.Declined(ask.ID, actor, ask.Resolution.At)
 	}

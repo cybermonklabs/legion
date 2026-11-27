@@ -199,18 +199,21 @@ func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Mark
 }
 
 // MarkArm is the arm of a caller's statement that appends, for each row of rows - a common-table
-// expression of that statement answering (login, at): a person's canonical login and the moment
-// of their mark - FromPerson's mark of kind from that person into toKind/toID, asserted at the
-// row's moment, made by who under event: for a write whose mark is the answer of a statement's
-// own write, a row whose upsert moved a read mark (inboxwrite's keep of a writer's own row), so
-// the mark is stated where the row moved and nowhere else without the answer being read in Go.
-// Its parameters are bound from $first on, after the caller's own, and it ends with no comma. The
-// person of every row holds a node already - the caller writes it earlier in the same write
-// phase (ToPerson) - so the arm writes no node. event may be LatestEvent.
-func MarkArm(first int, rows, kind, toKind, toID string, who model.Actor, event int64) (string, []any, error) {
+// expression of that statement answering (login, at, to_id): a person's canonical login, the moment
+// of their mark and the id of the toKind node it is about - FromPerson's mark of kind from that
+// person into that node, asserted at the row's moment, made by who under event: for a write whose
+// mark is the answer of a statement's own write, a row whose upsert moved a read mark (inboxwrite's
+// keep of a writer's own row) or a row its insert wrote (inboxwrite's replies a person's own reply
+// under an Agent thread reads by id), so the mark is stated where the row was written and nowhere
+// else without the answer being read in Go. Its parameters are bound from $first on, after the
+// caller's own, and it ends with no comma. The person of every row holds a node already - the
+// caller writes it earlier in the same write phase (ToPerson, QueueFromPerson) - so the arm writes
+// no node. A row whose login or far end lies past the store's address bound states nothing, as
+// FromPerson has it. event may be LatestEvent.
+func MarkArm(first int, rows, kind, toKind string, who model.Actor, event int64) (string, []any, error) {
 	if !isMark(kind) || toKind == KindValue {
-		return "", nil, fmt.Errorf("MarkArm appends %s from a person to a node, not %s -> %s/%s",
-			strings.Join(markKinds[:], ", "), kind, toKind, toID)
+		return "", nil, fmt.Errorf("MarkArm appends %s from a person to a node, not %s -> %s",
+			strings.Join(markKinds[:], ", "), kind, toKind)
 	}
 	writer, err := json.Marshal(who.Recorded())
 	if err != nil {
@@ -219,11 +222,11 @@ func MarkArm(first int, rows, kind, toKind, toID string, who model.Actor, event 
 	param := func(offset int) string { return "$" + strconv.Itoa(first+offset) }
 	return `graph_marks_stated as (
 	insert into graph_tuples (` + tupleWriteColumns + `)
-	select '` + KindPerson + `', marked.login, ` + param(0) + `::text, ` + param(1) + `::text, ` + param(2) + `::text, marked.at, ` + param(3) + `::jsonb, ` + causeOf(param(4)+`::bigint`) + `, null, true
+	select '` + KindPerson + `', marked.login, ` + param(0) + `::text, ` + param(1) + `::text, marked.to_id, marked.at, ` + param(2) + `::jsonb, ` + causeOf(param(3)+`::bigint`) + `, null, true
 	from ` + rows + ` marked
-	where ` + AddressFitsSQL(`marked.login`) + `
-	order by marked.login` + relationRepeatKey + `
-)`, []any{kind, toKind, toID, writer, event}, nil
+	where ` + AddressFitsSQL(`marked.login`) + ` and ` + AddressFitsSQL(`marked.to_id`) + `
+	order by marked.login, marked.to_id` + relationRepeatKey + `
+)`, []any{kind, toKind, writer, event}, nil
 }
 
 // isMark is whether kind is one of the five read-state kinds FromPerson appends.

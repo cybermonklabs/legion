@@ -1,6 +1,6 @@
 /**
- * The snooze writes (`useAskSnooze`, `useAskSnoozeMany`) against the Inbox's read of the open
- * asks they move the rows in: a read asked while a snooze is out waits for Dispatch's answer.
+ * The snooze writes (`useAskSnoozeWrites`, `useAskSnoozeMany`) against the Inbox's read of the
+ * open asks they move the rows in: a read asked while a snooze is out waits for Dispatch's answer.
  */
 
 import { expect, test } from "bun:test";
@@ -17,22 +17,26 @@ import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, OpenAskRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import { answerOpenAsks, issueAsk } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
 const UNTIL = "2026-11-20T09:00:00Z";
 
 /**
- * `use` beside the Inbox's read of the open asks, under Dispatch's own client signed in as alice,
- * with `GET /api/v1/asks/open` answering what `served.rows` holds when it is asked: what
- * Dispatch holds, which the test moves as Dispatch takes each write.
+ * `use` beside the Inbox's read of the open asks and under the Inbox's snooze writes, under
+ * Dispatch's own client signed in as alice, with `GET /api/v1/asks/open` answering what
+ * `served.rows` holds when it is asked: what Dispatch holds, which the test moves as Dispatch
+ * takes each write.
  */
 function renderBesideInbox<T>(served: { rows: OpenAskRow[] }, use: () => T) {
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const listOpenAsks = answerOpenAsks(() => served.rows);
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    <QueryClientProvider client={client}>
+      <SnoozeWrites>{children}</SnoozeWrites>
+    </QueryClientProvider>
   );
   const hook = renderHook(() => ({ inbox: useQuery(openAsksQuery()).data, write: use() }), {
     wrapper,

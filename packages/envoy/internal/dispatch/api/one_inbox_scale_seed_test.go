@@ -42,7 +42,10 @@ import (
 // oneInboxDefaultAsks open asks wait on and another whose default one open ask waits on
 // (putProjectDefaultAssignee over many asks and over one), an ask the heavy person snoozes, and a
 // session's conversation with a person: one direct root it answered and one per reading it has
-// not, which are also where a broadcast and a Clear land.
+// not, which are also where a broadcast and a Clear land. It holds a project that gates both
+// steps, with a root issue and a child whose documents stand in several states, and an item of
+// each in the heavy person's Inbox, so the one read carries an approval gate on the rows it is
+// timed over (seedOneInboxGate).
 //
 // It fills both tables the one read's plan is held on to scale: comments with the threads above,
 // and messages with each person's conversations, a session of their own answering each one-off
@@ -174,6 +177,9 @@ type oneInboxCorpus struct {
 	directRoots  []string
 	// moves are the counted moves of who an ask waits on, over the two sorts of ask.
 	moves []oneInboxMove
+	// gateIssues are the issues of the gated project, each with an item in the heavy person's
+	// Inbox, whose entries carry the issue's approval gate.
+	gateIssues []string
 }
 
 // oneInboxMovedAsk is one ask a counted move moves: the person it waits on before the move, and
@@ -250,6 +256,7 @@ func seedOneInboxCorpus(t *testing.T, database *store.Store, server oneInboxCall
 			sendOneInboxDirect(t, server, fmt.Sprintf("Direct question %d, awaiting the session's reply.", reading)))
 	}
 	corpus.moves = seedOneInboxMoves(t, server)
+	corpus.gateIssues = seedOneInboxGate(t, server)
 
 	assertOneInboxCorpus(t, database, corpus)
 	var comments, messages int64
@@ -686,6 +693,75 @@ func openOneInboxAsk(t *testing.T, server oneInboxCaller, issue, question string
 	t.Helper()
 	return oneInboxID(t, "open an ask on "+issue, server.call(t, "", http.MethodPost, "/api/v1/issues/"+issue+"/asks",
 		map[string]any{"question": question, "actor": oneInboxSessionActor()}), http.StatusCreated)
+}
+
+// oneInboxGateProject is the corpus's project that gates both steps.
+const oneInboxGateProject = "GATED"
+
+// seedOneInboxGate writes a project that gates both steps, criteria and spec, and two issues of
+// it, each held by the heavy person, and answers their keys: a root whose Verification document
+// is approved and whose spec is under an open approval request, which is an item of the heavy
+// person's Inbox; and a child of it whose spec is approved, with an open question that waits on
+// the heavy person. So every row of those issues the heavy person's read draws carries a gate
+// read from documents, versions, reviews and an open request.
+func seedOneInboxGate(t *testing.T, server oneInboxCaller) []string {
+	t.Helper()
+	createOneInboxProject(t, server, oneInboxGateProject, oneInboxHeavy)
+	oneInboxExpect(t, "gate both steps of "+oneInboxGateProject, server.call(t, "", http.MethodPut,
+		"/api/v1/projects/"+oneInboxGateProject+"/gated-steps", map[string]any{
+			"steps": []string{"criteria", "spec"}, "actor": oneInboxSessionActor(),
+		}), http.StatusOK)
+	issue := func(title, parent string) (string, string) {
+		t.Helper()
+		input := map[string]any{
+			"project": oneInboxGateProject, "title": title, "assignee": oneInboxHeavy, "force": true,
+			"spec": "# Spec\n\n" + title + ".\n",
+		}
+		if parent != "" {
+			input["parent"] = parent
+		}
+		answer := oneInboxExpect(t, "create issue "+title, server.call(t, oneInboxHeavy, http.MethodPost, "/api/v1/issues", input),
+			http.StatusCreated)
+		var created struct {
+			Key     string `json:"key"`
+			Primary string `json:"primary_artifact_id"`
+		}
+		if err := json.Unmarshal(answer.body, &created); err != nil || created.Key == "" || created.Primary == "" {
+			t.Fatalf("read the issue %q back: %v: %s", title, err, answer.body)
+		}
+		return created.Key, created.Primary
+	}
+	approve := func(what, artifact string) {
+		t.Helper()
+		answer := server.call(t, oneInboxHeavy, http.MethodPost, "/api/v1/artifacts/"+artifact+"/reviews",
+			map[string]any{"state": "approved"})
+		if answer.status != http.StatusCreated && answer.status != http.StatusOK {
+			t.Fatalf("approve %s: status %d: %s", what, answer.status, answer.body)
+		}
+	}
+	root, rootSpec := issue("The gated root", "")
+	answer := oneInboxExpect(t, "the gated root's Verification document", server.call(t, oneInboxHeavy, http.MethodPost,
+		"/api/v1/issues/"+root+"/artifacts", map[string]any{
+			"name": "verification.md", "content": "# Verification\n\nOne check.\n",
+		}), http.StatusCreated)
+	var verification struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(answer.body, &verification); err != nil || verification.Artifact.ID == "" {
+		t.Fatalf("read the gated root's Verification document back: %v: %s", err, answer.body)
+	}
+	approve("the gated root's Verification document", verification.Artifact.ID)
+	requested := server.call(t, "", http.MethodPost, "/api/v1/artifacts/"+rootSpec+"/approval-requests",
+		map[string]any{"actor": oneInboxSessionActor(), "summary": "The gated root's spec is ready to read."})
+	if requested.status != http.StatusCreated && requested.status != http.StatusOK {
+		t.Fatalf("request approval of the gated root's spec: status %d: %s", requested.status, requested.body)
+	}
+	child, childSpec := issue("A child of the gated root", root)
+	approve("the child's spec", childSpec)
+	openOneInboxAsk(t, server, child, "Does the approved child need anything else?")
+	return []string{root, child}
 }
 
 // sendOneInboxDirect sends body to the session as the conversing person, a direct message of no

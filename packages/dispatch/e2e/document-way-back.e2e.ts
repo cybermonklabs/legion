@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, getArtifact, listIssueArtifacts } from "./api";
 import { documentEditor } from "./editor";
+import { barAction } from "./filters";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { signIn } from "./users";
@@ -13,7 +14,7 @@ test.beforeEach(async ({ context }) => {
 
 /** The whole press a person makes on the Documents tab: `New document`, the title, `Create`. */
 async function createDocument(page: Page, title: string): Promise<void> {
-  await page.getByRole("button", { name: "New document" }).click();
+  await (await barAction(page, "New document")).click();
   const form = page.getByRole("form", { name: "New document" });
   await form.getByRole("textbox", { name: "Title" }).fill(title);
   await form.getByRole("button", { name: "Create" }).click();

@@ -83,6 +83,7 @@ import {
   REFUSAL,
   REFUSED_NOTE,
 } from "../../__tests__/draft-matrix-fixture";
+import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
@@ -615,11 +616,12 @@ for (const held of HELD) {
     const page = await openAgents();
     try {
       await holdAtSession(page, held);
-      await page.user.click(within(row()).getByRole("button", { name: "Choose issue" }));
-      await page.user.selectOptions(
-        await within(row()).findByRole("combobox", { name: "Issue" }),
-        coreIssue.key
-      );
+      const trigger = within(row()).getByRole("button", { name: pickNamed("Choose issue") });
+      await page.user.click(trigger);
+      // The list is portalled out of the row, so its option is found in the panel the trigger
+      // names.
+      const option = `${coreIssue.key} · ${coreIssue.title}`;
+      await page.user.click(await within(panelOf(trigger)).findByRole("option", { name: option }));
       // The issue's seed names Planner as the link a pick writes (`seededDraft`).
       await waitFor(() =>
         expect(field().value).toBe(`[@Planner](dispatch://agent/planner-session) ${BODY}`)

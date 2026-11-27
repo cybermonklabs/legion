@@ -828,6 +828,107 @@ func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
 	}
 }
 
+// A page of the one read's Dismissed view (GET /api/v1/me/inbox?state=dismissed) holds the page it
+// asks for though threads that state leaves out lie among its rows. A thread only the person wrote
+// in, which their own reply dismissed, carries a dismissal mark and a null replied_at, so it is no
+// row of the state (myRepliesDismissed). The state's own index, user_threads_dismissed_replied,
+// does not hold it, but user_threads_dismissed, which the release before reads, does. The state's
+// whole test runs above the cut (meInboxDismissedCut), so the cut takes a page's rows from the
+// listed threads alone, whichever index the plan reads; run after it, the cut would spend the page
+// on rows the state then drops, and the page would come back short. Four such threads lie among
+// seven listed ones, two newer than the first page's last row and two older, so pages of three
+// answer three, three and one, each listed thread once and no left-out one.
+func TestADismissedPageStaysFullWhenItsLeftOutThreadsLieAmongItsRows(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A Dismissed page with rows left out", "A spec")
+	comments := "/api/v1/issues/" + issue.Key + "/comments"
+	const page = 3
+	// Newest dismissal first: R is a thread a session replied in that alice then dismissed, L one
+	// she alone wrote in, which her own reply dismissed. They are written oldest first.
+	const newestFirst = "RLRLRRLRRLR"
+	listed, leftOut := []string{}, map[string]bool{}
+	for index := len(newestFirst) - 1; index >= 0; index-- {
+		body := fmt.Sprintf("Thread %d?", index)
+		if newestFirst[index] == 'R' {
+			thread := seedUnreadThread(t, handler, comments, body)
+			if dismissed := dismissRows(t, handler, database, "alice", inboxDismissReplyPrefix+thread); dismissed != 1 {
+				t.Fatalf("dismiss %s: changed %d, want 1", thread, dismissed)
+			}
+			listed = append([]string{thread}, listed...)
+			continue
+		}
+		root := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+		createThreadComment(t, handler, issue.Key, map[string]any{"body": "Answering myself.", "reply_to": root.ID}, "alice")
+		leftOut[root.ID] = true
+	}
+
+	// The seed as alice's rows hold it, newest dismissal first: every thread carries a mark, and the
+	// left-out ones and no other a null replied_at, in the order written above.
+	marked, err := database.Pool.Query(context.Background(), `
+		select thread_id::text, replied_at is null from user_threads
+		where login = 'alice' and dismissed_at is not null
+		order by dismissed_at desc, thread_id desc`)
+	if err != nil {
+		t.Fatalf("read alice's dismissed rows: %v", err)
+	}
+	defer marked.Close()
+	held := ""
+	for marked.Next() {
+		var thread string
+		var noReply bool
+		if err := marked.Scan(&thread, &noReply); err != nil {
+			t.Fatalf("scan a dismissed row: %v", err)
+		}
+		if noReply != leftOut[thread] {
+			t.Fatalf("thread %s carries a null replied_at %t, want %t", thread, noReply, leftOut[thread])
+		}
+		if noReply {
+			held += "L"
+		} else {
+			held += "R"
+		}
+	}
+	if err := marked.Err(); err != nil {
+		t.Fatalf("read alice's dismissed rows: %v", err)
+	}
+	if held != newestFirst {
+		t.Fatalf("alice's dismissed rows run %s newest first, want %s", held, newestFirst)
+	}
+
+	read := []string{}
+	query := url.Values{"state": {myRepliesStateDismissed}, "limit": {fmt.Sprint(page)}}
+	for number := 1; ; number++ {
+		if number > len(newestFirst) {
+			t.Fatalf("the Dismissed view read %v and still names a cursor", read)
+		}
+		answer := readMeInboxAs(t, handler, "alice", query)
+		for _, entry := range answer.Entries {
+			if entry.Thread == nil {
+				t.Fatalf("page %d holds %s %s, which is no thread row", number, entry.Node.Kind, entry.Node.ID)
+			}
+			if leftOut[entry.Node.ID] {
+				t.Fatalf("page %d holds %s, a thread nobody else wrote in after alice took part: %v", number, entry.Node.ID, meInboxNodes(answer))
+			}
+			read = append(read, entry.Node.ID)
+		}
+		more := len(read) < len(listed)
+		if more && (len(answer.Entries) != page || answer.NextCursor == "") {
+			t.Fatalf("page %d holds %d entries and names cursor %q, want %d and a cursor: %d of the %d listed threads follow it",
+				number, len(answer.Entries), answer.NextCursor, page, len(listed)-len(read), len(listed))
+		}
+		if !more {
+			if answer.NextCursor != "" {
+				t.Fatalf("page %d names cursor %q after the last of the %d listed threads", number, answer.NextCursor, len(listed))
+			}
+			break
+		}
+		query.Set("cursor", answer.NextCursor)
+	}
+	if !slices.Equal(read, listed) {
+		t.Fatalf("the Dismissed view read %v, want %v: every listed thread once, newest dismissal first", read, listed)
+	}
+}
+
 // Two dismisses by one person and a Mark all read beside them, over the same threads, at once: two
 // tabs, two devices, or a bulk dismiss racing the button. All three move the same user_threads rows
 // and all three append under the same project, so the rows and the project are all that can order

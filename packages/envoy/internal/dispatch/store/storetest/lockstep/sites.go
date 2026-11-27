@@ -294,8 +294,14 @@ var storeWriteCallSites = map[string]string{
 	// then the delivered_to of each other participant through QueueToPerson and the move of their
 	// rows, its writer's own row (queueKeepRow), and last, for a comment or a message, the
 	// participation of each person its text newly mentions (R4's mention arm), through
-	// QueueToPerson. It takes the owner lock its caller took first and no other node row than the
-	// person nodes QueueToPerson upserts `do nothing`. api's
+	// QueueToPerson. Where the write is its writer's own answer or reply (the own-answer rule, R1),
+	// queueKeepRow first appends the writer's dismissed mark through QueueFromPerson and its upsert
+	// sets the row's dismissal; under an Agent thread, Queue appends that mark, upserts the
+	// writer's user_agent_thread_dismissed row, and then inserts the thread's unread replies into
+	// user_agent_reply_read, stating each reply_read in the same statement (MarkArm), all after the
+	// root its caller took `for update` before its own insert (D6). It takes the owner lock its
+	// caller took first and no other node row than the person nodes QueueToPerson and
+	// QueueFromPerson upsert `do nothing`. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment and reply paths to its
 	// user_threads steps.
 	"inboxwrite/record.go#Queue":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",

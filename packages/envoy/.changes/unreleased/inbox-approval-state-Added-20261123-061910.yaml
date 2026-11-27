@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  Each Inbox row and its reading pane show whether the item's issue is approved: the row the
+  first step not yet approved, the pane one line for each step, in the issue page's words. The
+  server computes one approval gate for an issue and carries it on each Inbox entry and on the
+  issue read.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: inbox-approval-state

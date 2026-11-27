@@ -1033,6 +1033,10 @@ type issueDetail struct {
 	// as the route's own answer does: the record Dispatch holds is part of the issue, and a
 	// missing list would say the read never asked rather than that no gate names a document here.
 	DesignGates []issueDesignGate `json:"design_gates"`
+	// ApprovalGate is the issue's approval gate (approvalGate): a root issue of a project that
+	// gates steps has one line for each step, every other issue one line for its primary
+	// document. GET /api/v1/me/inbox carries the same gate on each entry of this issue.
+	ApprovalGate []approvalGateLine `json:"approval_gate,omitempty"`
 	// ReferencedByCount is what the header's `Referenced by (N)` control names. The page
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
@@ -1048,16 +1052,19 @@ type issueDetail struct {
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
-// issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
-// refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
-// for (wantsDisplayTrees): the display trees of the documents' approval reasons, the open asks'
-// texts and the attachment's reason for touching no component, which only the dashboard reads.
+// issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueGatedStepsStatement with
+// scanIssueGatedSteps, issueCommentCountStatement and refs.BacklinkCounts - so the two paths
+// answer the same bytes; the approval gate is issueApprovalGate over what both read. trees is what
+// the request asked for (wantsDisplayTrees): the display trees of the documents' approval reasons,
+// the open asks' texts and the attachment's reason for touching no component, which only the
+// dashboard reads.
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
 	var artifacts []model.Artifact
 	var asks []model.Ask
 	var replies map[string]model.AskLastReply
+	var gatedSteps []string
 	issueCounts := map[string]int{}
 	missing := false
 
@@ -1099,6 +1106,11 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		read.DesignGates = scanned
 		return err
 	})
+	first.Queue(issueGatedStepsStatement, key).Query(func(rows pgx.Rows) error {
+		scanned, err := scanIssueGatedSteps(rows)
+		gatedSteps = scanned
+		return err
+	})
 	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&read.CommentCount)
 	})
@@ -1117,6 +1129,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	if err := s.readIssueDetails(ctx, who, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
+	read.ApprovalGate = issueApprovalGate(read.Issue, gatedSteps, artifacts)
 	// The approvals are read by the second batch, so their reasons are registered after it,
 	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
 	// texts and the attachment's reason are one query of the stored trees, and what it did not

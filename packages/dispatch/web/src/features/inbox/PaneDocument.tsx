@@ -4,7 +4,7 @@
  * Every flow of the column - a question's (`ReadingPane.tsx`) and a thread's (`ThreadPane.tsx`)
  * - draws under `PaneFrame` with only its own reads and its own effects, and the two that show
  * a document beside the list are one `DocumentPane` over `useDocumentAtBlock`: a question
- * written as a decision block and a comment thread anchored in a project document are the same
+ * written as a decision block and a comment thread anchored to text of a document are the same
  * placement problem, and the same pane.
  */
 
@@ -83,6 +83,36 @@ function sectionBarOf(
 
 function sameBar(left: SectionBar | undefined, right: SectionBar | undefined): boolean {
   return left?.height === right?.height && left?.top === right?.top;
+}
+
+/**
+ * Brings a comment's own mark into the column's visible box, and moves the column as little as
+ * it can: a mark above the box comes to its top, a mark below it comes to its foot, and a mark
+ * taller than the box comes to its top. A mark already in view moves nothing. The editor draws a
+ * mark as one span for each run of its text, so a range across a link or an emphasis is several
+ * spans, and the box measured is the box of all of them. Only the column's `scrollTop` is
+ * written, so the focus stays where it was.
+ */
+function bringMarkIntoView(content: HTMLElement, markId: string, column: HTMLElement): void {
+  const spans = content.querySelectorAll(`[data-id="${CSS.escape(markId)}"]`);
+  if (spans.length === 0) {
+    return;
+  }
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const span of spans) {
+    const rect = span.getBoundingClientRect();
+    top = Math.min(top, rect.top);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  const box = column.getBoundingClientRect();
+  // In whole pixels, rounded toward the mark, since the column scrolls by whole pixels: a
+  // fraction rounded away would leave that fraction of the mark outside the box.
+  if (top < box.top) {
+    column.scrollTop -= Math.ceil(box.top - top);
+  } else if (bottom > box.bottom) {
+    column.scrollTop += Math.min(Math.ceil(bottom - box.bottom), Math.floor(top - box.top));
+  }
 }
 
 /** Whether the column has settled on this document: it follows the selection only once the
@@ -197,18 +227,22 @@ interface DocumentAtBlock {
  * The column follows the selection only once it has settled (`useSettledOnDocument`), reads the
  * document under the document page's own keys, and reports whether the editor has drawn the
  * block it was opened at: a question written as a decision block, and a comment thread anchored
- * in a project document, are the same placement problem, and this is the one answer to it.
+ * to text of a document, are the same placement problem, and this is the one answer to it. A
+ * comment's own mark is brought into view after the section is placed, never in its place.
  */
 function useDocumentAtBlock({
   artifactId,
   blockId,
   issueKey,
   item,
+  markId,
 }: {
   artifactId: string;
   blockId: string;
   issueKey: string | null;
   item: string;
+  /** The comment's own mark, for a thread anchored to text; null for a decision block. */
+  markId: string | null;
 }): DocumentAtBlock {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -296,16 +330,22 @@ function useDocumentAtBlock({
       // or not the scroll has got there yet: it is what the head's "Open page" opens at. The
       // bar below it is drawn for as long as the document is, placement or none.
       setSectionBlockId(headingId);
-      if (hold?.writes() === true) {
+      if (hold?.writes() === true && (headingId === undefined || heading !== null)) {
         // A block before any heading has no section, so the column opens at the document's
         // start. That write stays for a document the column already shows: the scroller is one
         // element that outlives the row, so a second question of it would otherwise open at the
         // offset the question before it left. A section whose own heading is not drawn is
         // written not at all, as it is not today: the start of the document is not where it is.
-        if (headingId === undefined) {
+        if (heading === null) {
           column.scrollTop = 0;
-        } else if (heading !== null) {
+        } else {
           scrollElementToTop(heading, column);
+        }
+        // Then the comment's own mark, which a long section can leave below the column's foot,
+        // is brought into view, so the reader sees the range the comment is about. It is placed
+        // after the section on every pass, never instead of it.
+        if (markId !== null) {
+          bringMarkIntoView(drawn, markId, column);
         }
       }
       const bar = sectionBarOf(drawn, heading, block);
@@ -328,7 +368,7 @@ function useDocumentAtBlock({
       drawing.disconnect();
       resizing.disconnect();
     };
-  }, [blockId, item, showsDocument]);
+  }, [blockId, item, markId, showsDocument]);
 
   // The placement is let go with the item it was armed for, and not with the document the
   // column happens to be showing. React runs every cleanup of a commit before every effect of
@@ -469,7 +509,13 @@ export function DocumentPane({
    *  (`ThreadPane.tsx`); a question's body carries none. */
   paneBody?: "ask" | "document";
 }): ReactNode {
-  const document = useDocumentAtBlock({ artifactId, blockId, issueKey, item });
+  const document = useDocumentAtBlock({
+    artifactId,
+    blockId,
+    issueKey,
+    item,
+    markId: anchoredThread?.markId ?? null,
+  });
   const { artifact, blockFound, failed, user } = document;
 
   const body = (): ReactNode => {

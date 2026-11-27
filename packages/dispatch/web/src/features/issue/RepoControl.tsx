@@ -2,10 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { projectsQuery } from "../../api/queries";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
+  badgeLow,
+  badgePrimary,
   dangerText,
   focusBorder,
   focusVisibleRing,
@@ -22,9 +25,19 @@ import {
 import type { EVENT_FRESH } from "../refs/reference-target";
 import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
+import {
+  badgeReachHandlers,
+  badgeSelectPageTrigger,
+  badgeSelectPageWrapper,
+  badgeSelectTruncatedBadge,
+} from "./badge-select";
 import { useDetailsRefusal } from "./HeaderDetails";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
+
+/** The option of the shared list that clears the issue's own repository, so it resolves to its
+ *  nearest ancestor's in its own project, else to the project's default, again. */
+const INHERIT = "";
 
 /** Where the control is drawn, which decides how its parts lay out. */
 type RepoLayoutMode = "page-details" | "page-inline" | "today";
@@ -51,7 +64,9 @@ interface RepoLayout {
  *   or the server's with its Retry - moves whole onto the next line under the box rather than
  *   squeezing it (dispatch://INFRA-5200). The box takes the row's width up to 28 rem, with an
  *   ellipsis for a name longer still, and keeps `pr-8` beside the clear control laid over its
- *   right end.
+ *   right end. On this branch the box is drawn inside `NoTooltips` alone (`RepoControl`), so of
+ *   this mode only `line` is read, by the shared list (`RepositoryList`) that today's header
+ *   draws in that row; its other fields are `main`'s, for a box outside `NoTooltips`.
  * - `page-details`: the value of a row of the new issue page's Details (`NoTooltips`, `inRow`).
  *   The line is as wide as the row's value, which is a flex row, in which a line of no width of
  *   its own is only as wide as what it holds, so the place's `w-full` and the box's would fill no
@@ -105,9 +120,9 @@ const REPO_LAYOUTS: Readonly<Record<RepoLayoutMode, RepoLayout>> = {
  *  holds the box. */
 const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
 
-/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes.
- *  The server says the same thing as `NOT_OWNER_NAME` in its own words for anything that reaches
- *  it. */
+/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
+ *  at the box or in the list. The server says the same thing as `NOT_OWNER_NAME` in its own words
+ *  for anything that reaches it. */
 const ownerRepo = wholeValue(ownerRepoPattern);
 
 /** What clearing the issue's own repository does: the clear control's `title`, and inside
@@ -131,9 +146,9 @@ const ON_PAGE = {
   own: pageInkText,
 } as const;
 
-/** The name the repository box answers to, in its words on every page: the property it sets
+/** The name the repository control answers to, in its words on every page: the property it sets
  *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). The
- *  new issue page's add menu reaches this box by this name rather than drawing a second one,
+ *  new issue page's add menu reaches this control by this name rather than drawing a second one,
  *  so a word changed here changes both sides at once. */
 export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
@@ -169,6 +184,232 @@ export type RepoControlFailure = {
 };
 
 /**
+ * The issue's repository. It has two shapes, one per surface: the shared list
+ * (`RepositoryList`) on every page today, and `main`'s box (`RepositoryBox`) inside `NoTooltips`,
+ * the new issue page's design, which that page's own tree decides. `inRow`,
+ * `projectsFreshness` and `sayFailure` act inside `NoTooltips` alone, so only the box reads them.
+ * `RepositoryBox` is `main`'s text: its arms for outside `NoTooltips` cannot run here, and it
+ * stays apart from `RepositoryList` until the new page's repository is decided there.
+ */
+export function RepoControl({
+  disabled = false,
+  inRow = false,
+  issueKey,
+  project,
+  projectsFreshness,
+  repo,
+  resolvedRepo,
+  sayFailure,
+}: {
+  disabled?: boolean;
+  /** Whether the control is the value of a row of the new issue page's Details. It acts inside
+   *  `NoTooltips` alone. */
+  inRow?: boolean;
+  issueKey: string;
+  project: string;
+  /** The options of the read of the project list, in place of the app's defaults
+   *  (`RepositoryBox`). It acts inside `NoTooltips` alone. */
+  projectsFreshness?: typeof EVENT_FRESH;
+  repo: string | null;
+  resolvedRepo: string | null;
+  /** Says a failed write in the host's own line, in place of `QueryError` (`RepositoryBox`). It
+   *  acts inside `NoTooltips` alone. */
+  sayFailure?: (failure: RepoControlFailure) => ReactNode;
+}): ReactNode {
+  const shared = { disabled, issueKey, project, repo, resolvedRepo };
+  return useTooltips() ? (
+    <RepositoryList {...shared} />
+  ) : (
+    <RepositoryBox
+      {...shared}
+      inRow={inRow}
+      projectsFreshness={projectsFreshness}
+      sayFailure={sayFailure}
+    />
+  );
+}
+
+/**
+ * The issue's repository as the value of the Repository row of today's issue header's Details
+ * (`HeaderDetails`), which names it, so it draws no `Repository:` of its own: a badge naming the
+ * repository the issue resolves to (its own, else its nearest ancestor's in its own project, else
+ * the project's default, muted when not its own; "No repository" when none resolves), which is the
+ * trigger of the shared list's single pick (`MultiSelect`), laid over the badge as
+ * `AssigneeControl`'s is, and ends in the shared chevron, since the control it replaced was a
+ * visible text box. Labelled `Repository of <KEY>`. The badge is hidden from assistive technology;
+ * the trigger's name goes on from its label to the words that read what it shows: the repository,
+ * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
+ *
+ * The line is the box's in that row (`REPO_LAYOUTS.today`): as wide as the row, and it wraps, so
+ * a refusal moves whole onto the next line under the badge rather than squeezing it. The badge
+ * narrows to the row and ends a name longer than the row in an ellipsis; its title gives back
+ * the whole name with what it means (`, inherited or the project's default` where it is not the
+ * issue's own), since the trigger's own title says only what it means. A write Dispatch refused
+ * is said to Details as well (`useDetailsRefusal`), which says it under the header while it is
+ * closed.
+ *
+ * The list holds Inherit first, which clears the issue's own repository, then the project's
+ * default repository (Settings → Projects), then the issue's own repository where it is another;
+ * its text box narrows them as the reader types. The default is a suggestion rather than the set
+ * of values: any `owner/name` may be given, which is what the server takes. So a typed text that
+ * matches no option gets a row of its own, `Use "<typed>"`. A pick writes at once through
+ * `useIssueRepo`, and a pick of the value the issue holds writes nothing. A typed text GitHub could
+ * hold no repository at (`ownerRepo` above) writes nothing: the list stays open with the text in
+ * its box and says so under the options until the text changes. A typed text that passes is
+ * written as typed, less the spaces at its ends, and the server's own refusal shows beside the
+ * trigger with the write rolled back (`useIssueFieldWrite`). Leaving the list picks nothing; a
+ * typed repository is given by its row or Enter.
+ *
+ * The item renders whenever the issue can carry a repository, which is always: a project with no
+ * default repository has nothing to suggest, and its issues still take any repository. The
+ * default comes from the project list (`projectsQuery`), the read the sidebar and the search
+ * palette share, as the box reads it, so the control reads no route of its own. The list reads it
+ * once the reader reaches for the control (pointer over it, a touch on it, or focus), and at once
+ * while the issue resolves to no repository at all, which is the issue most likely to be given
+ * one; where the sidebar or the search palette has read it, its answer is there already. Until it
+ * answers, the list says the repositories are loading where a typed word matches no option. A
+ * read that fails costs the suggestion and nothing else: the failure shows beside the trigger
+ * with a Retry, and in the list, which still takes a typed repository.
+ */
+function RepositoryList({
+  disabled,
+  issueKey,
+  project,
+  repo: hostRepo,
+  resolvedRepo: hostResolvedRepo,
+}: {
+  disabled: boolean;
+  issueKey: string;
+  project: string;
+  repo: string | null;
+  resolvedRepo: string | null;
+}): ReactNode {
+  const [wanted, setWanted] = useState(false);
+  const write = useIssueRepo(issueKey, hostRepo);
+  // A name that is no `owner/name` is refused in the open list alone, which Details cannot be
+  // closed over, so the write Dispatch refused is the one refusal Details is told.
+  useDetailsRefusal(
+    write.failed && write.stopped === undefined
+      ? (write.error ?? `Could not update the repository of ${issueKey}.`)
+      : null
+  );
+  // The issue's own repository and the one it resolves to, as every part of the control draws
+  // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
+  // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
+  // an inherited one is the host's until Dispatch answers.
+  const repo = write.shown;
+  const resolvedRepo =
+    repo === hostRepo
+      ? hostResolvedRepo
+      : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
+        hostResolvedRepo);
+  const projects = useQuery({
+    ...projectsQuery(),
+    enabled: wanted || resolvedRepo === null,
+    select: (listed) => listed.find((candidate) => candidate.key === project)?.default_repo,
+  });
+  const defaultRepo = projects.data;
+  const [open, setOpen] = useState(false);
+  /** Whether the typed repository was refused here, for not being `owner/name`. */
+  const [refused, setRefused] = useState(false);
+  const failure = projects.isError ? "Could not load projects." : null;
+  // The issue's own repository stays in the list whether or not it is the project's default, so
+  // the list never lacks the value it marks picked.
+  const options = [
+    ...(defaultRepo === undefined ? [] : [defaultRepo]),
+    ...(repo === null || repo === defaultRepo ? [] : [repo]),
+  ];
+  const value = repo ?? INHERIT;
+  const tone = repo === null ? badgeLow : badgePrimary;
+  const spoken =
+    resolvedRepo === null
+      ? "No repository"
+      : repo === null
+        ? `${resolvedRepo}, inherited or the project's default`
+        : resolvedRepo;
+  // The badge's tooltip says what the badge means, which the picked row's text does not: an
+  // issue with no repository of its own has Inherit picked. "No repository" says all there is,
+  // so it shows none.
+  const title =
+    repo !== null ? repo : resolvedRepo !== null ? "Inherited or the project's default" : "";
+  // What is read is what the server reads: it drops a `.git` suffix before it judges the name
+  // (canonicalRepo), so a clone URL's name is no longer to the list than to the server. The list
+  // offers no row for a text that names an option, so the typed text is never the value the
+  // issue holds.
+  const give = (typed: string): boolean => {
+    if (!ownerRepo.test(typed.replace(/\.git$/i, ""))) {
+      setRefused(true);
+      return false;
+    }
+    write.submit(typed);
+    return true;
+  };
+  return (
+    <div
+      className={`flex ${REPO_LAYOUTS.today.line} items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+    >
+      <span
+        className={`${badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+        {...badgeReachHandlers(() => setWanted(true))}
+      >
+        <MultiSelect
+          createLabel={(typed) => `Use "${typed}"`}
+          disabled={disabled}
+          emptyMessage={
+            projects.isPending ? "Loading repositories…" : "No repository matches that."
+          }
+          error={refused ? NOT_OWNER_NAME : failure}
+          label={repoControlName(issueKey)}
+          mode="single"
+          onCreate={give}
+          onOpenChange={(next) => {
+            setOpen(next);
+            setRefused(false);
+          }}
+          onPick={(picked) => {
+            if (picked !== value) write.submit(picked === INHERIT ? null : picked);
+          }}
+          onQueryChange={() => setRefused(false)}
+          open={open}
+          optionLabel={(candidate) => (candidate === INHERIT ? "Inherit" : candidate)}
+          options={[INHERIT, ...options]}
+          searchLabel="Search repositories"
+          triggerClassName={badgeSelectPageTrigger}
+          triggerTitle={title}
+          value={value}
+        >
+          {/* A single pick's trigger is named for its list and then for what it shows, and the
+              badge is hidden from that name: a screen reader hears the words beside it, the
+              target as well as Inherit. */}
+          <span
+            aria-hidden="true"
+            className={`${badgeSelectTruncatedBadge} font-mono ${tone.bg} ${tone.text}`}
+            title={resolvedRepo === null ? undefined : spoken}
+          >
+            {resolvedRepo ?? "No repository"}
+          </span>
+          <span className="sr-only">{spoken}</span>
+        </MultiSelect>
+      </span>
+      {failure === null ? null : (
+        <QueryError
+          message={failure}
+          onRetry={() => void projects.refetch()}
+          retrying={projects.isFetching}
+        />
+      )}
+      {write.failed ? (
+        <QueryError
+          message={write.error ?? `Could not update the repository of ${issueKey}.`}
+          onRetry={write.retry}
+          retrying={write.pending}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * The issue's repository: one combobox, labelled `Repository of <KEY>`, holding the issue's own
  * repository, with a `<datalist>` that suggests the project's default repository. The suggestion
  * is not the set of values: any `owner/name` may be typed, which is what the server takes, and
@@ -193,8 +434,8 @@ export type RepoControlFailure = {
  *
  * The item renders whenever the issue can carry a repository, which is always: a project with no
  * default repository has nothing to suggest, and its issues still take any repository. The
- * default comes from the project list (`projectsQuery`), the read the sidebar and the issue
- * header share, so the control reads no route of its own. A failed project list costs the
+ * default comes from the project list (`projectsQuery`), the read the sidebar and the search
+ * palette share, so the control reads no route of its own. A failed project list costs the
  * suggestion and nothing else: the box takes a typed repository as ever.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the same box says that
@@ -249,7 +490,7 @@ export type RepoControlFailure = {
  * its place) with its clear control, one group; the words that say the repository is inherited;
  * then the line that says a refusal (`owner/name`, or Dispatch's).
  */
-export function RepoControl({
+function RepositoryBox({
   disabled = false,
   inRow = false,
   issueKey,

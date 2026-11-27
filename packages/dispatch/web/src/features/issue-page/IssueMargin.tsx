@@ -3,12 +3,7 @@ import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } 
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import {
-  projectsQuery,
-  type ReferenceTargetsAnswer,
-  referenceTargetsQuery,
-  whoAmIQuery,
-} from "../../api/queries";
+import { type ReferenceTargetsAnswer, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
   pageAvatar,
@@ -21,7 +16,7 @@ import {
 } from "../../theme/classes";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
-import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
+import { approvalGateSteps, STEP_LABELS } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
@@ -461,18 +456,9 @@ export function IssueMarginPanel({
   // The status as the header draws it: the one being saved while any caller's write of it is
   // in flight, so the page never says two statuses at once.
   const status = writes.pendingStatus ?? issue.status;
-  // The project's gated steps, for a top-level issue. The events that change a project refresh
-  // its read (`api/event-refresh.ts`), so a window focus past the app's staleness reads it again
-  // only while its last read failed.
-  const projects = useQuery({
-    ...projectsQuery(),
-    ...EVENT_FRESH,
-    enabled: issue.parent === null,
-  });
-  const gated = gatedStepEntries(
-    projects.data?.find((candidate) => candidate.key === issue.project),
-    issue
-  );
+  // The gated steps of a top-level issue, from the issue read's own approval gate
+  // (`approvalGateSteps`), which the issue's events refresh.
+  const gated = approvalGateSteps(issue);
   const approvalEntries = gated.some((entry) => entry.document?.id === issue.primary_artifact_id)
     ? gated
     : [{ document: documentArtifact, label: STEP_LABELS.spec, step: "spec" as const }, ...gated];

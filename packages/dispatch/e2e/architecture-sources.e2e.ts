@@ -8,10 +8,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A project imports its component model from two repositories, each its own source, and the
-// model is both sources' components together. This file uses only helpers, markup and
-// fake-GitHub routes that exist before multi-source support, so the same file run against a
-// build with one source per project fails at the two-row Settings assertion (the second save
-// replaces the first), not at an import, seed or selector.
+// model is both sources' components together.
 
 /** legion/arch: Platform, holding Web. */
 const legionFiles = {
@@ -39,9 +36,14 @@ function componentRow(page: Page, title: string): Locator {
 }
 
 /** Saves `repo` on `main` as a CORE source through the Settings form. The response predicate
- *  matches the one-source route and the per-repository one alike. */
+ *  matches the one-source route and the per-repository one alike. The Source project list's
+ *  trigger is found by a name that begins with its label, which may go on to the project shown. */
 async function addSource(page: Page, repo: string): Promise<void> {
-  await page.getByLabel("Source project").selectOption("CORE");
+  await page.getByRole("button", { name: /^Source project\b/ }).click();
+  await page
+    .getByRole("listbox", { exact: true, name: "Source project options" })
+    .getByRole("option", { exact: true, name: "CORE · Core" })
+    .click();
   await page.getByLabel("Source repository").fill(repo);
   await page.locator("#architecture-source-branch").fill("main");
   const saved = page.waitForResponse(

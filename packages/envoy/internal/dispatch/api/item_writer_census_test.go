@@ -199,8 +199,8 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/graphcensus/backfill_inbox_threads.go": {
 		"writeMarks": backfillNoItemTable + "user_agent_read, user_agent_state, user_agent_reply_read, " +
 			"user_agent_thread_dismissed and user_ask_snooze, a person's read state " +
-			"(readStateTable.table), whose live writers - the read and dismiss routes - take no owner " +
-			"lock for them either",
+			"(readStateTable.table), whose live writers - the read and dismiss routes, and a person's own " +
+			"reply under an Agent thread (inboxwrite.Record's step 6) - take no owner lock for them either",
 		"writeAsksOwed": "the owner lock of each ask of the batch, taken first in the transaction " +
 			"the pass opens, before the asks rows (lockOwnersOf, events.LockOwnerRows)",
 	},

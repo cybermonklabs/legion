@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
-import { useLocation } from "react-router-dom";
 
 import {
   borderDefault,
@@ -14,17 +13,10 @@ import {
   railHoverBg,
   railText,
 } from "../../theme/classes";
-import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
+import { DETAILS_ATTRIBUTE, type MarginDrawer } from "../issue-page/margin-slot";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
-import { routeHasMargin } from "../refs/routes";
 import { DIALOG_SCOPE, useKeymap } from "../shell/keymap";
-import {
-  COMPACT_VIEWPORT_QUERY,
-  dialogOpen,
-  PHONE_VIEWPORT_QUERY,
-  useDialog,
-  useMediaQuery,
-} from "../shell/useDialog";
+import { dialogOpen, PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { MarginSheet, type MarginSheetModel } from "./MarginSheet";
 import { useMargin } from "./margin-context";
 import {
@@ -34,6 +26,7 @@ import {
   MIN_MARGIN_WIDTH,
   maxMarginWidth,
 } from "./margin-width";
+import { MARGIN_COLUMN_CLASS, useMarginLayout } from "./useMarginLayout";
 import { useMarginSheet } from "./useMarginSheet";
 
 export interface MarginProps {
@@ -44,30 +37,27 @@ export interface MarginProps {
 }
 
 export function Margin({
-  collapsed = false,
+  collapsed,
   onCollapsedChange,
   onWidthChange,
   width,
 }: MarginProps): ReactNode {
   const model = useMarginSheet();
-  const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
-  const { pathname, search } = useLocation();
-  // The new issue page's Details drawer, where the shell draws that page's frame; undefined on
-  // every other page, where the margin is the column it has always been.
-  const drawer = useMarginDrawer();
+  const {
+    columnShown,
+    drawer,
+    hasMargin,
+    isCompactViewport,
+    railShown,
+    width: marginWidth,
+  } = useMarginLayout({ collapsed, width });
   const resizePointer = useRef<
     { pointerId: number; startWidth: number; startX: number } | undefined
   >(undefined);
-  const marginWidth = clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH);
   const maxWidth = maxMarginWidth();
   const setClampedMarginWidth = (nextWidth: number) => {
     onWidthChange?.(clampMarginWidth(nextWidth));
   };
-  const hasMargin = routeHasMargin(pathname, search);
-  // Collapsed to its rail, the margin stays mounted under it, hidden: an open composer's unsent
-  // draft is still there when the margin comes back. A drawer has no rail: closed, it is gone
-  // from the screen, and Details opens it.
-  const railShown = drawer === undefined && !isCompactViewport && collapsed && hasMargin;
   // Each compose the margin shows - a new one, one a newer selection-bar action had to wait on,
   // or one held for the document the reader came back to - is the reader's to see, so the rail
   // opens for it; collapsing the rail with a compose open keeps it collapsed.
@@ -142,9 +132,9 @@ export function Margin({
         </aside>
       ) : null}
       <div
-        className={isCompactViewport ? "contents" : "relative order-3 shrink-0"}
+        className={isCompactViewport ? "contents" : MARGIN_COLUMN_CLASS}
         data-testid={isCompactViewport ? undefined : "desktop-margin-shell"}
-        hidden={railShown || (!isCompactViewport && !hasMargin)}
+        hidden={!isCompactViewport && !columnShown}
         style={isCompactViewport ? undefined : { width: `${marginWidth}px` }}
       >
         <hr

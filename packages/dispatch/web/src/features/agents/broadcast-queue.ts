@@ -1,11 +1,17 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import type { QueryClient } from "@tanstack/react-query";
 
-import { api } from "../../api/client";
+import { api, type WriteBounds } from "../../api/client";
 import { agentConversationQuery } from "../../api/queries";
 import type { BroadcastCreated } from "../../api/types";
 import { type Shape, shape } from "../writes/tab-storage";
-import { defineWriteKind, ofKind, type Write, type Writes } from "../writes/write-store";
+import {
+  defineWriteKind,
+  ofKind,
+  type Write,
+  type WriteKind,
+  type Writes,
+} from "../writes/write-store";
 import type { BroadcastRequest } from "./broadcast-plan";
 
 /** What one press of Send handed the queue: the request, the key it goes under, and the selection
@@ -52,12 +58,15 @@ export type BroadcastSendRow = {
   | { readonly error: Error; readonly status: "failed" }
 );
 
+/** A broadcast's request as the write store keeps it across a reload. */
+export const keptBroadcastInput = shape.record({
+  body: shape.string,
+  delivery: shape.oneOf(...DELIVERY_CAPABILITIES),
+  session_ids: shape.array(shape.string),
+}) satisfies Shape<BroadcastRequest>;
+
 const keptBroadcast = shape.record({
-  input: shape.record({
-    body: shape.string,
-    delivery: shape.oneOf(...DELIVERY_CAPABILITIES),
-    session_ids: shape.array(shape.string),
-  }),
+  input: keptBroadcastInput,
   picked: shape.boolean,
   pressed: shape.number,
   selected: shape.array(shape.string),
@@ -71,6 +80,33 @@ function refreshRecipients(client: QueryClient, sessions: readonly string[]): vo
   void client.invalidateQueries({ queryKey: ["broadcast"] });
 }
 
+/** A kind of broadcast write, its request kept in `input`: a landing reads again what it made,
+ *  and a reload makes it again from its request. The strip's kind is one (`broadcastSend`). The
+ *  Inbox's compose dialog defines one of its own under another name, so `broadcastRows` selects
+ *  none of the dialog's writes. */
+export function defineBroadcastKind<D extends { readonly input: BroadcastRequest }>({
+  keepsMade,
+  kept,
+  name,
+}: Pick<WriteKind<D>, "keepsMade" | "kept" | "name">): WriteKind<D> {
+  return defineWriteKind<D>({
+    keepsMade,
+    kept,
+    landed: (client, write, answer) =>
+      refreshRecipients(
+        client,
+        answer === null
+          ? write.detail.input.session_ids
+          : ((answer as BroadcastCreated).recipients ?? []).map((recipient) => recipient.session_id)
+      ),
+    name,
+    resume:
+      ({ input }, wire) =>
+      (bounds) =>
+        wire === null ? api.createBroadcast(input, bounds) : api.send(wire, bounds),
+  });
+}
+
 /**
  * A broadcast, one write of the store per press, kept across a reload with its request and the
  * selection it was pressed with. Every broadcast is ordered on one line (`broadcast`), so the
@@ -82,22 +118,25 @@ function refreshRecipients(client: QueryClient, sessions: readonly string[]): vo
  * Retry, Restore draft or - for one a reload interrupted too long ago - Discard takes it, since
  * its row is the only copy of a message Send cleared from the composer.
  */
-const broadcastSend = defineWriteKind<Broadcast>({
+const broadcastSend = defineBroadcastKind<Broadcast>({
   keepsMade: true,
   kept: keptBroadcast,
-  landed: (client, write, answer) =>
-    refreshRecipients(
-      client,
-      answer === null
-        ? write.detail.input.session_ids
-        : ((answer as BroadcastCreated).recipients ?? []).map((recipient) => recipient.session_id)
-    ),
   name: "broadcast",
-  resume:
-    ({ input }, wire) =>
-    (bounds) =>
-      wire === null ? api.createBroadcast(input, bounds) : api.send(wire, bounds),
 });
+
+/** The write one press of Send makes: `send`'s request under its key, on the one line every
+ *  broadcast is ordered on. The strip runs it under its own kind and record (`enqueueBroadcast`),
+ *  and so does the Inbox's compose dialog. */
+export function broadcastWrite(send: Pick<BroadcastSend, "input" | "key">) {
+  return {
+    key: send.key,
+    label: `Broadcast to ${send.input.session_ids.length}`,
+    method: "POST",
+    presentation: "composer",
+    target: "broadcast",
+    write: (bounds: WriteBounds) => api.createBroadcast(send.input, bounds),
+  } as const;
+}
 
 /** Every broadcast `rows` holds, as the strip shows it, newest press first. */
 export function broadcastRows(rows: readonly Write[]): BroadcastSendRow[] {
@@ -139,14 +178,9 @@ export function enqueueBroadcast(writes: Writes, send: BroadcastSend): void {
   const pressed = Math.max(0, ...broadcastRows(writes.rows()).map((row) => row.send.pressed)) + 1;
   writes
     .run({
+      ...broadcastWrite(send),
       detail: { input: send.input, picked: send.picked, pressed, selected: send.selected },
-      key: send.key,
       kind: broadcastSend,
-      label: `Broadcast to ${send.input.session_ids.length}`,
-      presentation: "composer",
-      target: "broadcast",
-      method: "POST",
-      write: (bounds) => api.createBroadcast(send.input, bounds),
     })
     .catch(() => {});
 }

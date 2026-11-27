@@ -1,6 +1,6 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -14,7 +14,13 @@ import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { MultiSelect } from "../../components/MultiSelect";
+import type { PanelTriggerProps } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
+import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop50,
   badgeLow,
@@ -34,7 +40,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { statusText } from "../project/board-model";
+import { issueStatuses, statusText } from "../project/board-model";
 import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
@@ -55,10 +61,14 @@ import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
-import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
 import { SEND_TO_AGENT_GROUP_ID, useSendToAgentOffer } from "./SendToAgentOffer";
-import { type SearchBarFilters, searchRequest } from "./search-filters";
+import {
+  type SearchBarFilters,
+  type SearchFilterName,
+  searchFilterChips,
+  searchRequest,
+} from "./search-filters";
 import {
   groupResults,
   kindLabel,
@@ -332,6 +342,152 @@ function CommandGroup({
   );
 }
 
+/** What a chip removed puts back, under the name `searchFilterChips` gives it. */
+const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
+  author: { author: undefined },
+  project: { project: undefined },
+  status: { status: undefined },
+  updatedSince: { updatedSince: undefined },
+};
+
+/** The two lists the panel opens inside itself, which `useNestedPanels` keeps one open at a time,
+ *  as the Delivery page's facets are. */
+type FilterListName = "project" | "status";
+
+/**
+ * The four narrowings the bar offers, as the props of the control bar's one trigger (`ControlRow`,
+ * **Filter**) and the content of the panel it opens: a project, an issue status, an author and
+ * the day since which the item was last written. Each is a control in the panel while it is unset
+ * and a chip in the bar once the person has chosen, which the panel lists at its top too, and
+ * pressing that chip drops that narrowing alone and brings its control back.
+ *
+ * The project and the status are each picked from the shared list's single-pick mode
+ * (`MultiSelect`), a text box over the options that narrows them. Its `option` rows join neither
+ * the rows this dialog's arrows walk nor the hits a reader is told there are: the list is
+ * portalled to the body (`AnchoredPanel`), outside the dialog. A pick takes its control out of
+ * the panel, and the panel hands the focus to the control now at its place (`PanelTrigger`).
+ *
+ * The author is typed rather than picked: an item's author is a person's login or a session id,
+ * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
+ * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
+ * reader who opens it again finds their half-typed login where they left it.
+ *
+ * The Project list is drawn from the bar's one read of the projects, which can still be out or
+ * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
+ * rather than call an unread list empty.
+ */
+function useSearchNarrowing({
+  filters,
+  onFilters,
+  projects,
+}: {
+  filters: SearchBarFilters;
+  onFilters: (filters: SearchBarFilters) => void;
+  projects: UseQueryResult<Project[]>;
+}): Omit<PanelTriggerProps, "control"> {
+  const projectList = projects.data ?? emptyProjects;
+  const [open, setOpen] = useState(false);
+  const filterList = useNestedPanels<FilterListName>(open);
+  const [author, setAuthor] = useState("");
+  const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
+  const takeAuthor = () => {
+    const typed = author.trim();
+    if (typed !== "") {
+      setAuthor("");
+      set({ author: typed });
+    }
+  };
+
+  return {
+    label: "Filter",
+    onOpenChange: (next) => {
+      // Shutting the panel is leaving the author box as much as moving off it is: a press
+      // outside takes the box away with the panel, before it could lose focus on its own.
+      if (!next) takeAuthor();
+      setOpen(next);
+    },
+    open,
+    stacked: true,
+    children: () => (
+      <>
+        {filters.project === undefined ? (
+          <MultiSelect
+            {...filterList("project")}
+            emptyMessage={
+              projects.isPending
+                ? "Loading projects…"
+                : projects.isError || projectList.length > 0
+                  ? "No project matches that."
+                  : "No projects yet"
+            }
+            error={projects.isError ? "Could not load projects." : null}
+            label="Project"
+            mode="single"
+            onPick={(project) => set({ project })}
+            options={projectList.map((project) => project.key)}
+            searchLabel="Search projects"
+          />
+        ) : null}
+        {filters.status === undefined ? (
+          <MultiSelect
+            {...filterList("status")}
+            emptyMessage="No status matches that."
+            label="Status"
+            mode="single"
+            onPick={(status) => set({ status })}
+            optionLabel={statusText}
+            options={issueStatuses}
+            searchLabel="Search statuses"
+          />
+        ) : null}
+        {filters.author === undefined ? (
+          <SearchBox
+            className="w-full"
+            label="Author"
+            onBlur={takeAuthor}
+            onChange={setAuthor}
+            onKeyDown={(event) => {
+              // An Enter that ends or moves an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
+                event.preventDefault();
+                takeAuthor();
+              }
+            }}
+            placeholder="Author"
+            value={author}
+          />
+        ) : null}
+        {/* The date box carries its words on screen: a browser draws an empty one as its own
+              date format and nothing else, so without them a reader cannot tell what the box
+              narrows. */}
+        {filters.updatedSince === undefined ? (
+          <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+            Updated since
+            <input
+              className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+              onChange={(event) => {
+                // A date the reader types is taken once its year is whole: an engine reports a
+                // valid date from the year's first digit (Chromium reads `2` as the year 0002),
+                // and taking that would narrow to a year the reader is still typing and draw
+                // the box away from under their next keys. The box holds no `value` of its
+                // own: React puts a controlled empty value back after every change it hands
+                // here, so Chromium's date would be emptied at each digit before its year is
+                // whole.
+                const { value } = event.target;
+                if (Number(value.slice(0, 4)) >= 1000) {
+                  set({ updatedSince: value });
+                }
+              }}
+              type="date"
+            />
+          </label>
+        ) : null}
+      </>
+    ),
+  };
+}
+
 export function SearchPalette({
   onClose,
   open,
@@ -427,6 +583,9 @@ function PaletteDialog({
   // this one. The page's project rides with them, under the parameter that narrows nothing,
   // and it is the chip's project at every level because every level sits in one project.
   const narrowed = searchRequest(filters, scope.targets.project);
+  // What is on, in the words the person chose it in: one chip of the row for each narrowing,
+  // and the control of that narrowing stays out of the panel while its chip is up.
+  const narrowings = searchFilterChips(filters);
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
   // the hits, the operators the query was read as, the degraded line and the message under the
   // list - reads this one answer, so the list, what it says about itself and the highlight all
@@ -439,6 +598,7 @@ function PaletteDialog({
   // The project chip's own list, which every open of the bar offers, and the rows a query that
   // names a project leads to.
   const projects = useQuery(projectsQuery());
+  const narrowing = useSearchNarrowing({ filters, onFilters: setFilters, projects });
   const results = search.data?.results ?? emptyResults;
   // What search made of the words, read from its own answer rather than parsed a second time
   // here, and whether meaning search ran at all. A Dispatch that predates either field answers
@@ -659,6 +819,12 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A key that is part of an input method's composition, or the one that ends it
+    // (`inputMethodKey`), is the composition's, and its default stays the browser's: it moves no
+    // highlight, moves no chip (Tab, Backspace) and picks no row.
+    if (inputMethodKey(event.nativeEvent)) {
+      return;
+    }
     if (scope.handleKey(event)) {
       // The browser's own move is what this cancels: the box is the dialog's first focusable,
       // so the dialog's Tab trap, which acts at either end, leaves this key alone.
@@ -675,6 +841,8 @@ function PaletteDialog({
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
     } else if (event.key === "Enter" && activeRow !== undefined) {
+      // Enter picks the highlighted row. An Enter that ends or moves an input method's
+      // composition does not reach here: the guard above leaves it to the composition.
       event.preventDefault();
       selectRow(activeRow);
     }
@@ -696,47 +864,51 @@ function PaletteDialog({
           role="dialog"
         >
           {scope.header}
+          {/* The search bar's control bar, in the dialog's own strip rather than a row added to
+              it: the box the words are typed in, the panel the four narrowings are added from,
+              and a chip for each narrowing that is on. The strip keeps the dialog's padding and
+              its rule, so the bar itself is one line as tall as its controls. */}
           <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
-            <input
-              aria-activedescendant={activeRow?.id}
-              aria-controls="search-results"
-              aria-expanded={rows.length > 0}
-              aria-label="Search"
-              className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                // A new query is a new list, so the highlight is undecided again and the first
-                // hits to answer it take the head.
-                setActive({ hits: "", id: null });
+            <ControlRow
+              chips={narrowings.map(({ label, name }) => ({
+                key: name,
+                label,
+                remove: () => setFilters({ ...filters, ...FILTER_REMOVALS[name] }),
+              }))}
+              search={{
+                combobox: {
+                  activeId: activeRow?.id,
+                  controls: "search-results",
+                  expanded: rows.length > 0,
+                },
+                label: "Search",
+                // The bar names the limit rather than cutting the words a reader typed, so its
+                // box takes a query over it (the message below the list says so).
+                maxLength: null,
+                onChange: (value) => {
+                  setQuery(value);
+                  // A new query is a new list, so the highlight is undecided again and the first
+                  // hits to answer it take the head.
+                  setActive({ hits: "", id: null });
+                },
+                onKeyDown: handleKeyDown,
+                placeholder: "Search Dispatch",
+                ref: inputRef,
+                value: query,
               }}
-              onKeyDown={handleKeyDown}
-              placeholder="Search Dispatch"
-              ref={inputRef}
-              role="combobox"
-              type="search"
-              value={query}
+              // The bar's Filter counts what is on, as every bar's trigger does: on a tint while
+              // any is, and below 640 px of the bar's width as the badge that stands for the
+              // chips (R8).
+              trigger={{ ...narrowing, count: narrowings.length }}
             />
           </div>
-          {/* What narrows the search and what the words themselves can do, between the box and
-              the hits: the chips the reader has added with the controls for the rest, the three
-              operator forms, and, where meaning search did not run, the one line saying so. */}
+          {/* What the words themselves can do, between the controls and the hits: the three
+              operator forms. The line saying that meaning search did not run is NOT here: it
+              arrives with an answer, so a narrowing that degraded the search would push every
+              hit down the dialog, and a search's answer moves no hit. It is drawn with
+              the other notes about the answer, under the hits. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
-            <SearchFilterBar
-              filters={filters}
-              onFilters={setFilters}
-              projects={projects.data ?? emptyProjects}
-            />
             <SearchOperators inUse={operators} />
-            {degraded ? (
-              <p
-                className={`px-3 pb-2 text-xs ${textMutedOnSurface}`}
-                data-testid="search-degraded"
-                role="status"
-              >
-                Searching words only: meaning search is not running, so a hit that uses other words
-                may be missing.
-              </p>
-            ) : null}
           </div>
           {rows.length === 0 ? null : (
             <div
@@ -882,6 +1054,19 @@ function PaletteDialog({
                 retrying={projects.isFetching}
               />
             </div>
+          ) : null}
+          {/* What the answer itself says, under the hits rather than over them: a search that
+              ran on words alone arrives with the answer, and a notice between the controls and
+              the first hit would move every hit each time an answer changed. */}
+          {degraded ? (
+            <p
+              className={`shrink-0 px-3 pb-2 text-xs ${textMutedOnSurface}`}
+              data-testid="search-degraded"
+              role="status"
+            >
+              Searching words only: meaning search is not running, so a hit that uses other words
+              may be missing.
+            </p>
           ) : null}
           {/* The palette is a keyboard surface and never said so: the keys that drive it sit
               at its foot, quieter than any hit above them - and only where there is a pointer

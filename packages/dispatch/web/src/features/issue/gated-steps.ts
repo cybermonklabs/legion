@@ -1,8 +1,6 @@
 import { DESIGN_GATE_STEPS } from "@legion/contracts";
 
-import { primarySpec, roleDocument } from "../../api/issue-cache";
-import type { ArtifactWithTrees, IssueDetails, Project } from "../../api/types";
-import { issueProject } from "../../lib/issue-key";
+import type { ArtifactWithTrees, IssueDetails } from "../../api/types";
 
 /** A design-gate step this build draws: the steps a deployment gates. */
 type DesignGateStep = (typeof DESIGN_GATE_STEPS)[number];
@@ -25,54 +23,38 @@ export interface StepEntry {
   document: ArtifactWithTrees | undefined;
 }
 
-/** The document the issue holds for `step`, by the id the issue names for it, never by the
- *  document's role or name among `issue.artifacts`. */
-function stepDocument(issue: IssueDetails, step: DesignGateStep): ArtifactWithTrees | undefined {
-  switch (step) {
-    case "spec":
-      return primarySpec(issue);
-    case "criteria":
-      return roleDocument(issue, "verification");
-  }
-}
-
-/** Whether the issue is a root of its own project, the issue that stands in the design gate: it
- *  has no parent, or its parent is an issue of another project (`issueProject`, the one
- *  key-to-project rule), which passes nothing on, so the issue is its own project's root. */
-export function isProjectRoot(issue: { parent: string | null; project: string }): boolean {
-  return issue.parent === null || issueProject(issue.parent) !== issue.project;
-}
-
 /**
- * The design-gate steps the issue's header draws, one for each step the project's deployment
- * gates, in the order the deployment published them. It is empty - which leaves the header its
- * one chip for the issue's primary document - until the project and the issue are both read, for
- * a project whose deployment gates nothing, and for an issue that is not a root of its project
- * (`isProjectRoot`), since only a root issue stands in the gate.
+ * The design-gate steps the issue's header draws: one for each line of the issue read's approval
+ * gate (`approval_gate`) that names a step, in the gate's order, which is the order the
+ * deployment published the steps in. The server decides the lines: a root of its project - an
+ * issue with no parent, or whose parent is an issue of another project - in a project that gates
+ * steps has one line for each step, and every other issue one line with no step, for its primary
+ * document. Each step's document is the issue details' own row the line names by its id.
+ *
+ * It is empty - which leaves the header its one chip for the issue's primary document - for an
+ * issue whose gate names no step, and for an issue read with no gate at all, which a Dispatch
+ * older than the field answers.
  *
  * A step word this build does not draw is left out rather than drawn without a name: a Dispatch
- * newer than this build may gate another step, and a Dispatch of the release before may still
- * answer `decisions`, a step that is gone.
+ * newer than this build may gate another step.
  */
-export function gatedStepEntries(
-  project: Project | undefined,
-  issue: IssueDetails | undefined
-): StepEntry[] {
-  const steps = project?.gated_steps;
-  if (steps === undefined || steps === null || steps.length === 0) {
-    return [];
-  }
-  if (issue === undefined || !isProjectRoot(issue)) {
-    return [];
-  }
-  return steps
-    .filter(isDesignGateStep)
-    .map((step) => ({ step, label: STEP_LABELS[step], document: stepDocument(issue, step) }));
+export function approvalGateSteps(issue: IssueDetails | undefined): StepEntry[] {
+  return (issue?.approval_gate ?? []).flatMap((line) => {
+    const step = line.step;
+    if (step === undefined || !isDesignGateStep(step)) {
+      return [];
+    }
+    const document =
+      line.artifact_id === null
+        ? undefined
+        : issue?.artifacts?.find((artifact) => artifact.id === line.artifact_id);
+    return [{ document, label: STEP_LABELS[step], step }];
+  });
 }
 
-/** Whether this build draws a step word. `Project.gated_steps` is a list of plain strings in the
- *  generated document, because a Dispatch newer than this build may gate another step, so this is
- *  where one it does not draw is left out rather than drawn without a name. */
-function isDesignGateStep(step: string): step is DesignGateStep {
+/** Whether this build draws a step word. A gate line's `step` is a plain string in the generated
+ *  document, because a Dispatch newer than this build may gate another step, so this is where one
+ *  it does not draw is told apart. */
+export function isDesignGateStep(step: string): step is DesignGateStep {
   return (DESIGN_GATE_STEPS as readonly string[]).includes(step);
 }

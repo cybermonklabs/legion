@@ -10,7 +10,8 @@ import {
   meInboxThreads,
   patchIssue,
 } from "./api";
-import { typeFilterCount } from "./inbox-filter";
+import { chooseShow, controlRow } from "./filters";
+import { typeFilterCounts } from "./inbox-filter";
 import {
   backToList,
   inboxList,
@@ -31,23 +32,24 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { openView } from "./inbox-view";
+import { distinctKeys, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
 import { READING_PANE_WIDTH } from "./reading-pane";
 import { refusePosts, WRITE_REFUSED } from "./sends";
-import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
  * The Inbox's **Dismiss** (INFRA-450, A12): a thread stays in the Inbox, read or not, until the
- * reader dismisses it, as an email stays in its inbox until it is archived. Reading a thread only
- * changes how its row is drawn (`e2e/inbox-read-state.e2e.ts`), and so does **Mark all read**
- * (`e2e/inbox-mark-all.e2e.ts`); **Dismiss** is what takes a row out, by its own control, by the
+ * reader dismisses it, as an email stays in its inbox until it is archived, or until the reader's
+ * own answer or reply takes it out the same way (the own-answer rule, R1,
+ * `e2e/inbox-answer-dismisses.e2e.ts`). Reading a thread only changes how its row is drawn
+ * (`e2e/inbox-read-state.e2e.ts`), and so does **Mark all read** (`e2e/inbox-mark-all.e2e.ts`);
+ * **Dismiss** is what takes a row out with no write of the reader's, by its own control, by the
  * key `e`, and over a selection from the bulk bar. The **Dismissed** view lists what was taken
  * out and **Move to Inbox** puts it back; a reply somebody else writes brings a dismissed thread
- * back unread, and the reader's own reply leaves it where it is.
+ * back unread.
  *
  * A press that names its rows carries what the page drew in each of them (`seen_replies`) - a
  * Reply row's own version, an Agent row's newest session reply and the ids it drew as unread -
@@ -116,16 +118,11 @@ async function bandHeadings(page: Page): Promise<string[]> {
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
 
-/** Every `POST` to the dismiss route this page has made, in order, so a press that must be one
- *  request can be held to it. */
-function watchDismisses(page: Page): Request[] {
-  const posted: Request[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH) {
-      posted.push(request);
-    }
-  });
-  return posted;
+/** Every `POST` to the dismiss route this page makes from here on, in order, as body and key. A
+ *  press is one write, under one key, however many requests it takes: the store sends it again
+ *  under the same key when an answer is dropped, so a row counts the keys (`distinctKeys`). */
+function watchDismisses(page: Page) {
+  return watchWrites(page, "POST", DISMISS_PATH);
 }
 
 /** The next `POST` to the dismiss route, as a promise to await before pressing. */
@@ -171,15 +168,6 @@ async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
           : { version: row.version },
       ])
   );
-}
-
-/** Picks one choice of the **View** menu's **Show** section and shuts the menu again. */
-async function chooseShow(page: Page, label: string): Promise<void> {
-  const menu = await openView(page);
-  const trigger = page.locator("[data-inbox-view]");
-  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
-  await expect(menu).toHaveCount(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,14 +231,12 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
   try {
     const page = await inboxPage(alice);
     const posted = watchDismisses(page);
-    const bar = page.locator("[data-inbox-bar]");
     const rows = page.locator("[data-inbox-row]");
     const replyRow = page.locator(`[data-inbox-row="${replyRowId(seeded.reply)}"]`);
     await expect(rows).toHaveCount(3);
     await expectSidebarInboxCount(page, 3);
     expect(await bandHeadings(page)).toEqual(["P2 (2)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Threads")).toBe(1);
-    expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
+    expect(await typeFilterCounts(page, ["Threads", "Agent message"])).toEqual([1, 1]);
 
     // The selected row draws its Dismiss twice - on the short row and in the column's head -
     // and both name the thread.
@@ -277,24 +263,25 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
 
     // And out of the Filter control's count and the band's.
     expect(await bandHeadings(page)).toEqual(["P2 (1)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Threads")).toBe(0);
-    expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
+    expect(await typeFilterCounts(page, ["Threads", "Agent message"])).toEqual([0, 1]);
 
     // The server holds the same: one thread dismissed, one left in the Inbox.
     await expect.poll(async () => dismissedThreads()).toBe(1);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
 });
 
 // Below 1280 px the page lists short rows and reads the row a reader opens in place of the list
-// (INFRA-5200): the mark stays the short row's own checkbox, and the thread's reply box and its
-// Dismiss are the reading view's.
-// SLOW(>=2s): three rows seeded, then a mark, a thread opened, a reply and a dismiss read back
-// from the server.
-test("on a phone a thread is marked from its short row, and replied to and dismissed from the reading view its row opens @phone @phone-only", async ({
+// (INFRA-5200): the mark stays the short row's own checkbox, and a thread's reply box and its
+// Dismiss are the reading view's. The reader's own reply takes its thread out of the Inbox by
+// itself (the own-answer rule, R1), so the view reads the next row as it does after any write of
+// the reader's, and says nothing left; the Dismiss is pressed on the other thread.
+// SLOW(>=2s): three rows seeded, then a mark, a thread opened and replied to, the other thread
+// opened and dismissed, each read back from the server.
+test("on a phone a row is marked from its short row, a thread's reply takes it out and another's Dismiss in the reading view its row opens @phone @phone-only", async ({
   browser,
 }) => {
   const seeded = await seedInbox();
@@ -304,18 +291,21 @@ test("on a phone a thread is marked from its short row, and replied to and dismi
     await holdReadMarks(page);
     await page.goto("/");
     const rows = page.locator("[data-inbox-row]");
+    const askRow = page.locator(`[data-inbox-row="${seeded.ask}"]`);
     const replyRow = page.locator(`[data-inbox-row="${replyRowId(seeded.reply)}"]`);
     const agentRow = page.locator(`[data-inbox-row="${agentRowId(seeded.agent)}"]`);
     await expect(rows).toHaveCount(3);
 
     // The mark is the row's own: it opens nothing.
-    await agentRow.getByRole("checkbox").click();
-    await expect(page.getByRole("group", { name: "Selected rows" })).toContainText("1 selected");
+    await askRow.getByRole("checkbox").click();
+    await expect(page.getByRole("toolbar", { name: "Selected rows" })).toContainText("1 selected");
     await expect(readingView(page)).toHaveCount(0);
 
+    // The reply thread's own box, at the end of the thread the view draws whole. The reply takes
+    // the thread out of the Inbox in the write itself: no Dismiss is sent for it, and the view
+    // reads another row, with nothing said of a row that left on its own.
     await selectRow(page, replyRowId(seeded.reply));
     await assertPageFits(page);
-    // The thread's own box, at the end of the thread the view draws whole.
     const composer = readingView(page).getByRole("form", { name: "Comment composer" });
     await composer.getByRole("textbox", { name: "Reply" }).fill("Two hours from tonight, then.");
     await composer.getByRole("button", { name: "Send" }).click();
@@ -325,17 +315,29 @@ test("on a phone a thread is marked from its short row, and replied to and dismi
       "Two hours from tonight, then."
     );
     expect(written.reply_to).toBe(seeded.reply);
+    await expect.poll(async () => dismissedThreads()).toBe(1);
+    await expect(replyRow).toHaveCount(0);
+    await expect(readingView(page)).toBeVisible();
+    await expect(readingView(page)).not.toHaveAttribute(
+      "data-inbox-reading-row",
+      replyRowId(seeded.reply)
+    );
+    await expect(page.locator("[data-inbox-row-left]")).toBeEmpty();
+
+    // The Agent thread's Dismiss, in the view its row opens, sends the one press.
+    await selectRow(page, agentRowId(seeded.agent));
     const sent = nextDismiss(page);
     await readingView(page)
-      .locator(`[data-inbox-dismiss="${replyRowId(seeded.reply)}"]`)
+      .locator(`[data-inbox-dismiss="${agentRowId(seeded.agent)}"]`)
       .click();
-    expect((await sent).postDataJSON()).toMatchObject({ threads: [replyRowId(seeded.reply)] });
-    await expect.poll(async () => dismissedThreads()).toBe(1);
+    expect((await sent).postDataJSON()).toMatchObject({ threads: [agentRowId(seeded.agent)] });
+    await expect.poll(async () => dismissedThreads()).toBe(2);
 
     await backToList(page);
     await expect(replyRow).toHaveCount(0);
-    await expect(rows).toHaveCount(2);
-    await expect(agentRow.getByRole("checkbox")).toBeChecked();
+    await expect(agentRow).toHaveCount(0);
+    await expect(rows).toHaveCount(1);
+    await expect(askRow.getByRole("checkbox")).toBeChecked();
     await assertPageFits(page);
   } finally {
     await alice.close();
@@ -440,7 +442,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
       await page.keyboard.press("x");
     }
 
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("3 selected");
     const dismiss = bar.getByRole("button", { name: "Dismiss selected threads" });
     await expect(dismiss).toBeVisible();
@@ -463,7 +465,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
     await expect(rows.first()).toHaveAttribute("data-inbox-row", drawn[3] ?? "");
     await expect.poll(async () => dismissedThreads()).toBe(3);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
@@ -498,7 +500,7 @@ test("Select all dismisses every row of the group in one request that names each
     const checkbox = rows.first().getByRole("checkbox");
     await expect(checkbox).toHaveAttribute("aria-label", /^Select Mirror root \d+$/);
     await checkbox.check();
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await bar.getByRole("button", { name: "Select all" }).click();
     await expect(bar).toContainText("Every row selected");
@@ -527,16 +529,29 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(THREADS);
     expect(await inboxThreads()).toBe(0);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
-    // The Dismissed view reads them a page at a time, and **Show more** reads the next page.
+    // The Dismissed view reads them a page at a time. The view's window draws only the rows near
+    // sight, so the rows it has loaded are read from the count each drawn row states
+    // (`aria-setsize`), not counted. The window always draws the row in hand (R7), and the address
+    // still names the row the reading column showed before the press (`?item=`). One press
+    // dismisses every row at one instant, and the view orders that tie by thread id
+    // (`meInboxOrder`, `api/me_inbox.go`), so that row stands at a place no seed fixes: near the
+    // end of the first page, the window opens there and reads the next page at once, as R7 has it
+    // read whenever the window nears the end. So the view is chosen from the Inbox loaded afresh,
+    // whose address names no row, and the row in hand is the view's first.
+    await page.goto("/");
     await chooseShow(page, "Dismissed");
     await expect(page).toHaveURL(/show=dismissed/);
-    await expect(rows).toHaveCount(INBOX_DISMISSED_PAGE);
+    await expect(rows.first()).toHaveAttribute("aria-setsize", String(INBOX_DISMISSED_PAGE));
     const more = page.locator('[data-inbox-show-more="dismissed"]');
     await expect(more).toHaveText(`Show ${INBOX_DISMISSED_PAGE} more`);
-    await more.click();
-    await expect(rows).toHaveCount(THREADS);
+    // Focusing Show more brings it into view, which reaches the end of the loaded rows, and that
+    // scroll reads the last page as any scroll there does, so the control is held and then gone
+    // with no press on it. The window's own timed test (`inbox-dismissed-timing.e2e.ts`) presses
+    // Show more by key and reads the page it reads.
+    await more.focus();
+    await expect(rows.first()).toHaveAttribute("aria-setsize", String(THREADS));
     await expect(more).toHaveCount(0);
   } finally {
     await alice.close();
@@ -578,7 +593,7 @@ test("Select all under a search dismisses every matching row of a band wider tha
 
     const checkbox = rows.first().getByRole("checkbox");
     await checkbox.check();
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await bar.getByRole("button", { name: "Select all" }).click();
     await expect(bar).toContainText("Every row selected");
@@ -605,7 +620,7 @@ test("Select all under a search dismisses every matching row of a band wider tha
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(MATCHING);
     expect(await inboxThreads()).toBe(OTHERS);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // What the word hid is untouched, and the Inbox draws it again once the box is empty.
     await page.getByRole("searchbox", { name: "Search asks" }).fill("");
@@ -646,7 +661,11 @@ test("Show: Dismissed lists the dismissed threads, survives a reload, and Move t
     await expect(page.locator(`[data-inbox-row="${replyId}"]`)).toBeVisible();
     await expect(page.locator(`[data-inbox-row="${agentId}"]`)).toBeVisible();
     expect(await bandHeadings(page)).toEqual([]);
-    await expect(page.locator("[data-inbox-mark-all]")).toHaveCount(0);
+    // No **Mark all read**: the bar's **More**, which holds it alone in the bar's wide line, is
+    // not drawn.
+    await expect(controlRow(page).getByRole("button", { exact: true, name: "More" })).toHaveCount(
+      0
+    );
 
     // The view is in the address, so a reload opens it again.
     await page.reload();
@@ -742,8 +761,8 @@ test("a reply the reader sends from the Dismissed view leaves the thread there",
     await pane.getByRole("button", { name: "Send" }).click();
     await expect(pane.getByText("Then we widen the window.", { exact: true })).toBeVisible();
 
-    // Their own write is no reason to put it back: the thread stays dismissed, and the Inbox
-    // goes on holding the two rows it held.
+    // Their own reply dismisses the thread too (the own-answer rule, R1), so it stays in the
+    // Dismissed view, and the Inbox goes on holding the two rows it held.
     await expect(rows).toHaveCount(1);
     await expect(page.locator(`[data-inbox-row="${replyId}"]`)).toBeVisible();
     await expect.poll(async () => dismissedThreads()).toBe(1);

@@ -905,8 +905,10 @@ var indexPasses = map[string]string{
 	// columns to decide what to write, so it mends nothing and is no repair. The read mark its
 	// writer's own row stands at once its upsert ran is that write's own result, which the same
 	// statement states as the writer's read_through (graphstore.MarkArm), as a route states the
-	// mark its statement stored.
-	"inboxwrite/record.go#Queue":        "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, the read mark its own upsert left its writer's row at, and the mentions tuples its caller's index states",
+	// mark its statement stored; so are the replies a person's own reply under an Agent thread marks
+	// read by id, which the statement that inserts their rows states as reply_read marks, as the
+	// dismiss route states the replies its insert read (the own-answer rule, R1).
+	"inboxwrite/record.go#Queue":        "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, the read mark its own upsert left its writer's row at, the replies its own insert marked read by id under an Agent thread its writer's reply dismissed, and the mentions tuples its caller's index states",
 	"inboxwrite/thread.go#queueKeepRow": "the writer's own row of the thread, as its own upsert leaves it, and the read mark that row stands at",
 	// The clear of the Agent dismissals a session's reply ends, as migration 20261105093507's
 	// trigger ends them: it takes the root the reply climbed to `for key share`, then reads the
@@ -925,11 +927,12 @@ var indexPasses = map[string]string{
 	"inboxwrite/waiting.go#QueueMoveWaiting": "the asks its caller's write may have moved, who each waits on, the tuples of whom its arm stands to, and the event and the ask's row that tell a person's own move of the ask",
 	// The statements those writers queue to reach a person: the tuples to a person its caller
 	// works out in SQL, with the person nodes they name (ToPersonArms), and a person's own marks -
-	// the read_through an upsert of their row states in the same statement (MarkArm), and the
-	// retraction of the marks of theirs that stand (QueueMarksEnded). Each reads the rows its own
-	// statement works out and, for an end, the marks the store holds, to state what moved.
+	// the read_through an upsert of their row states, or the reply_read of each row an insert
+	// wrote, in the same statement (MarkArm), and the retraction of the marks of theirs that stand
+	// (QueueMarksEnded). Each reads the rows its own statement works out and, for an end, the marks
+	// the store holds, to state what moved.
 	"graphstore/to_person.go#ToPersonArms":      "the rows its caller's statement works out, each a tuple to a person, and the person nodes they name",
-	"graphstore/from_person.go#MarkArm":         "the rows its caller's upsert moved and the read mark each now stands at",
+	"graphstore/from_person.go#MarkArm":         "the rows its caller's statement wrote and the mark each now stands at",
 	"graphstore/from_person.go#QueueMarksEnded": "the people and the thread its caller names, and the marks of theirs into it the store holds asserted",
 	// The routes that write a person's read state: each states, through graphstore.FromPerson and
 	// under the event it appends, the marks its own statement stored, read back from that

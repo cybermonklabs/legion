@@ -13,9 +13,12 @@
  */
 import { expect } from "@playwright/test";
 
+import { CONTROL } from "../web/src/components/control-names";
+
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, deleteComment } from "./api";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { control } from "./filters";
 import {
   agentRowId,
   asSession,
@@ -85,10 +88,11 @@ repliesList(
     await expect(page).toHaveURL(
       (url) => url.pathname === "/" && url.searchParams.get("type") === "reply"
     );
-    await expect(page.locator('[data-inbox-filter-token="type:reply"]')).toHaveAttribute(
-      "aria-label",
-      "Remove filter Type: Threads"
-    );
+    await expect(
+      control(page, CONTROL.chip).and(
+        page.getByRole("button", { name: "Remove Type: Threads filter" })
+      )
+    ).toHaveCount(1);
     const rows = page.locator("[data-inbox-row]");
     await expect(rows).toHaveCount(2);
     await expect(page.locator(`[data-inbox-row="${replyRowId(scene.comment)}"]`)).toBeVisible();
@@ -179,8 +183,8 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
   await expect(page).toHaveURL(/type=approval%2Creply/);
   await page.reload();
   await expect(rows).toHaveCount(6);
-  await expect(page.locator('[data-inbox-filter-token="type:approval"]')).toHaveCount(1);
-  await expect(page.locator('[data-inbox-filter-token="type:reply"]')).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Remove Type: Approval filter" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Remove Type: Threads filter" })).toHaveCount(1);
 });
 
 // ---------------------------------------------------------------------------

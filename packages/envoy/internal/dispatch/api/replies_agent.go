@@ -310,11 +310,12 @@ var (
 	// The Inbox's own two states leave a dismissed root out before they read anything of its
 	// thread: the root's own column says it is dismissed (myAgentLiveRoot), so the test is the
 	// predicate of the index the roots are read off rather than a walk of every thread the person
-	// ever dismissed. The unread state leaves them out too, and may: a dismissal marks every reply
-	// in the thread read by id, and a reply written since cleared the mark in its own transaction,
-	// so a root that still carries one holds nothing unread. Each adds, in a branch of its own, the
-	// owed roots whose column outlived the person's mark (myAgentOwedRoot); a root is in at most
-	// one of the two branches, since one reads its column null and the other set.
+	// ever dismissed. The unread state leaves them out too, and may: a dismissal - a Dismiss press,
+	// or the person's own reply under the thread (inboxwrite.Record's step 6, the own-answer rule,
+	// R1) - marks every reply in the thread read by id, and a reply written since cleared the mark
+	// in its own transaction, so a root that still carries one holds nothing unread. Each adds, in a
+	// branch of its own, the owed roots whose column outlived the person's mark (myAgentOwedRoot); a
+	// root is in at most one of the two branches, since one reads its column null and the other set.
 	myAgentUnreadRoots = myAgentMarks + `
 	roots as (` + myAgentLiveAndOwedRoots(myAgentUnreadRootsOf) + `
 	)`

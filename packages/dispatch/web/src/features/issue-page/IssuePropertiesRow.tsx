@@ -2,12 +2,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import {
-  artifactBlocksQuery,
-  issueCoverageQuery,
-  projectsQuery,
-  whoAmIQuery,
-} from "../../api/queries";
+import { artifactBlocksQuery, issueCoverageQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -29,7 +24,7 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
+import { approvalGateSteps } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
@@ -140,17 +135,14 @@ export function IssuePropertiesRow({
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
-  // The one shared read of the projects, under the key the shell's sidebar and the search
-  // palette already hold, kept fresh by the feed's events as the count's reads are
-  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root of the
-  // issue's project has gated steps at all (`isProjectRoot`: no parent, or a parent of another
-  // project), so a child does not ask for the list, and while the read is pending or failed the
-  // issue draws its one chip rather than claiming a gate it has not read.
-  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: isProjectRoot(issue) });
-  const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
-  const entries = gatedStepEntries(projectRow, issue);
-  // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
-  // entries rather than the gate's words: a gate that names no step for the primary document
+  // The steps come from the issue read's own approval gate (`approval_gate`), which the server
+  // computes and the issue's events refresh: a root of the issue's project (no parent, or a
+  // parent of another project) in a gated project has one line for each step, and every other
+  // issue a line with no step, which draws none (`approvalGateSteps`). An issue read with no gate
+  // draws its one chip.
+  const entries = approvalGateSteps(issue);
+  // Which document each step reviews is the gate's line to say, so the chip asks the drawn
+  // entries rather than the step words: a gate that names no step for the primary document
   // leaves that document's own state and its two controls to the chip.
   const stepHoldsPrimaryDocument = entries.some(
     (entry) => entry.document?.id === issue.primary_artifact_id

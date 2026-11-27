@@ -246,7 +246,8 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
  * Details with the reasons and, inside `NoTooltips`, each document's link at the version its
  * approval speaks for (`versions`). Each option's default is this header's shape.
  *
- * The caller decides which steps there are (`gatedStepEntries`); this draws them.
+ * The caller decides which steps there are, from the issue read's approval gate
+ * (`approvalGateSteps`); this draws them.
  */
 export function ApprovalSteps({
   actions = true,

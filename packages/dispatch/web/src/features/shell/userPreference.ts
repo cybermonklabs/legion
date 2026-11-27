@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 
@@ -66,11 +66,93 @@ function preferenceValue<T>(
   return identity === "pending" ? (options?.pending ?? fallback) : (options?.failed ?? fallback);
 }
 
+/** The last thing that moved the readers of one key. A write in this tab gives each reader the
+ *  value written. Text another tab stored is run through each reader's own `read`. Each change is
+ *  a new object, so a reader knows a change it has not taken by its identity. */
+type PreferenceChange =
+  | { readonly kind: "written"; readonly value: unknown }
+  | { readonly kind: "stored"; readonly text: string | null };
+
+/** The readers of one key that are mounted now, and the last change of that key. */
+interface PreferenceStore {
+  change: PreferenceChange | undefined;
+  readonly listeners: Set<() => void>;
+  /** Whether the browser stores the key, so that another tab's write can reach it. A reader with
+   *  no signed-in login reads a key that nothing stores. */
+  readonly stored: boolean;
+}
+
+/** One store for each key that a mounted reader reads or that a write was made to. */
+const stores = new Map<string, PreferenceStore>();
+
+/** How many readers are mounted now, of every key. The window's `storage` listener is on while
+ *  there is one. */
+let mountedReaders = 0;
+
+function storeOf(key: string, stored: boolean): PreferenceStore {
+  let store = stores.get(key);
+  if (store === undefined) {
+    store = { change: undefined, listeners: new Set(), stored };
+    stores.set(key, store);
+  }
+  return store;
+}
+
+function publish(store: PreferenceStore, change: PreferenceChange): void {
+  store.change = change;
+  for (const listener of store.listeners) listener();
+}
+
+/** Another tab stored text under a key, or cleared every key (`key` is null then). Every reader
+ *  of that key runs its own `read` over the text. */
+function onStorage(event: StorageEvent): void {
+  for (const [key, store] of stores) {
+    if (!store.stored) continue;
+    if (event.key === null) publish(store, { kind: "stored", text: null });
+    else if (event.key === key) publish(store, { kind: "stored", text: event.newValue });
+  }
+}
+
+function subscribe(key: string, stored: boolean, listener: () => void): () => void {
+  const store = storeOf(key, stored);
+  store.listeners.add(listener);
+  mountedReaders += 1;
+  if (mountedReaders === 1) window.addEventListener("storage", onStorage);
+  return () => {
+    store.listeners.delete(listener);
+    if (store.listeners.size === 0 && stores.get(key) === store) stores.delete(key);
+    mountedReaders -= 1;
+    if (mountedReaders === 0) window.removeEventListener("storage", onStorage);
+  };
+}
+
+/** What one reader holds: its value, the key it holds it for, and the last change of that key
+ *  it has taken. */
+interface Held<T> {
+  readonly change: PreferenceChange | undefined;
+  readonly key: string;
+  readonly value: T;
+}
+
 /**
  * Reads a browser preference for a resolved signed-in identity. Pending and failed identity use
  * the caller's explicit fallback when one differs from `read(null)`; neither state persists.
- * `read` runs when the hook mounts and when the signed-in identity or `preference` changes, and
- * at no other time: a `read` that consults other state sees that state as it was then.
+ *
+ * Every reader of one key reads one store for this tab. A write gives every mounted reader of
+ * the key the value written, at once, with no reader mounted again. No `read` runs then, so a
+ * reader whose `read` is not the inverse of `write` holds the value written. A write reaches no
+ * reader of another key. When another tab stores the key, the window's `storage` event runs each
+ * reader's own `read` over the text that tab stored.
+ *
+ * A reader runs its own `read` when it mounts, when the signed-in identity or `preference`
+ * changes, and when another tab stores its key, and at no other time. So its own write never
+ * reads again: the Board's filter strip, whose `read` shuts it while no filter is on, stays open
+ * when the reader opens it. A `read` that consults other state sees that state as it was then.
+ *
+ * A write whose value is the one already stored is not made, so a caller whose `read` folds
+ * several stored values into one never writes a value over itself. With no signed-in login a
+ * write stores nothing and reaches the readers of this tab alone. A write the browser refuses
+ * throws from `setItem` and changes nothing.
  */
 export function useUserPreference<T>(
   preference: UserPreference,
@@ -86,20 +168,46 @@ export function useUserPreference<T>(
   readRef.current = read;
   const optionsRef = useRef(options);
   optionsRef.current = options;
-  const [value, setValue] = useState(() =>
-    preferenceValue(identity, login, preference, readRef.current, optionsRef.current)
+  // The key every reader of this preference shares: the one the browser stores it under, or,
+  // with no login, one for the identity's state that nothing stores.
+  const stored = login !== undefined;
+  const key = stored ? userPreferenceStorageKey(login, preference) : `${identity}:${preference}`;
+  const held = useRef<Held<T>>(undefined);
+  const subscribeKey = useCallback(
+    (listener: () => void) => subscribe(key, stored, listener),
+    [key, stored]
   );
-  useEffect(() => {
-    setValue(preferenceValue(identity, login, preference, readRef.current, optionsRef.current));
-  }, [identity, login, preference]);
+  const value = useSyncExternalStore(subscribeKey, () => {
+    const change = stores.get(key)?.change;
+    let current = held.current;
+    if (current === undefined || current.key !== key) {
+      const first = preferenceValue(
+        identity,
+        login,
+        preference,
+        readRef.current,
+        optionsRef.current
+      );
+      current = { change, key, value: first };
+    } else if (change !== undefined && change !== current.change) {
+      current = {
+        change,
+        key,
+        value: change.kind === "written" ? (change.value as T) : readRef.current(change.text),
+      };
+    }
+    held.current = current;
+    return current.value;
+  });
   const setAndPersist = useCallback(
     (next: T) => {
-      setValue(next);
       if (login !== undefined) {
-        window.localStorage.setItem(userPreferenceStorageKey(login, preference), write(next));
+        const text = write(next);
+        if (window.localStorage.getItem(key) !== text) window.localStorage.setItem(key, text);
       }
+      publish(storeOf(key, stored), { kind: "written", value: next });
     },
-    [login, preference, write]
+    [key, login, stored, write]
   );
   return [value, setAndPersist];
 }

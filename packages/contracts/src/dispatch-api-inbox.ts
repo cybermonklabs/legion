@@ -1,4 +1,5 @@
 import type {
+  ApprovalGateLine,
   AskThread,
   CredentialPendingRow,
   IssueAskRow,
@@ -62,23 +63,51 @@ export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgent
  *  `GET /api/v1/me/replies`, with the conversation it draws beside it. */
 export type MeInboxAgentRow = MeInboxAgent & MyReplyAgentRow;
 
+/** What a row of the one read carries beside itself: the approval gate of the issue it belongs
+ *  to, as its entry of `GET /api/v1/me/inbox` carries it (`MeInboxEntry.approval_gate`). It is
+ *  absent on a row of no issue, on a row a server older than the field answered, and on every row
+ *  of another read. */
+export interface InboxRowGate {
+  readonly approval_gate?: readonly ApprovalGateLine[];
+}
+
 /** The row the page draws for one entry of `GET /api/v1/me/inbox`, by which of its three it
- *  carries: the Inbox's ask row, a Reply row or an Agent row. An entry carries at most one, and
- *  one the page draws no row for - a mention of the person, their own write nobody answered -
- *  carries none. */
+ *  carries: the Inbox's ask row, a Reply row or an Agent row, each with its entry's gate. An entry
+ *  carries at most one, and one the page draws no row for - a mention of the person, their own
+ *  write nobody answered - carries none. */
 export type InboxEntryRow =
-  | { readonly kind: "ask"; readonly ask: OpenAskRow }
-  | { readonly kind: "thread"; readonly thread: MyReplyThreadRow }
-  | { readonly kind: "agent"; readonly agent: MeInboxAgentRow }
+  | { readonly kind: "ask"; readonly ask: OpenAskRow & InboxRowGate }
+  | { readonly kind: "thread"; readonly thread: MyReplyThreadRow & InboxRowGate }
+  | { readonly kind: "agent"; readonly agent: MeInboxAgentRow & InboxRowGate }
   | { readonly kind: "none" };
 
-/** `entry`'s row, as the shape its own field names. The route answers the three as optional
+/** The row each entry that carries a gate was given, so an entry the cache keeps gives the same
+ *  row object every time it is read, as an entry with no gate gives its own row. */
+const gatedRows = new WeakMap<MeInboxEntry, InboxEntryRow>();
+
+/** `entry`'s row, as the shape its own field names, carrying the entry's `approval_gate` where
+ *  the entry has one; an absent field stays absent. The route answers the three as optional
  *  fields of one entry schema, so this is the one place a surface tells them apart. */
 export function inboxEntryRow(entry: MeInboxEntry): InboxEntryRow {
-  if (entry.ask !== undefined) return { kind: "ask", ask: entry.ask };
+  const gate = entry.approval_gate;
+  if (gate === undefined) return entryRow(entry, (row) => row);
+  const given = gatedRows.get(entry);
+  if (given !== undefined) return given;
+  const row = entryRow(entry, (carried) => ({ ...carried, approval_gate: gate }));
+  gatedRows.set(entry, row);
+  return row;
+}
+
+/** `entry`'s row, each kind passed through `gated`. */
+function entryRow(
+  entry: MeInboxEntry,
+  gated: <Row extends object>(row: Row) => Row & InboxRowGate
+): InboxEntryRow {
+  if (entry.ask !== undefined) return { kind: "ask", ask: gated(entry.ask) };
   if (entry.thread !== undefined)
-    return { kind: "thread", thread: entry.thread as MyReplyThreadRow };
-  if (entry.agent !== undefined) return { kind: "agent", agent: entry.agent as MeInboxAgentRow };
+    return { kind: "thread", thread: gated(entry.thread as MyReplyThreadRow) };
+  if (entry.agent !== undefined)
+    return { kind: "agent", agent: gated(entry.agent as MeInboxAgentRow) };
   return { kind: "none" };
 }
 
@@ -120,7 +149,8 @@ export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolea
  *  default and the Inbox count's own read, which answers the rows somebody else has written in
  *  since they read them; `inbox`, every row in their Inbox, read or not, less what they have
  *  dismissed; and `dismissed`, what they dismissed out of it, newest dismissal first. A thread
- *  stays in the Inbox, read or not, until it is dismissed (`InboxDismissRequest`). */
+ *  stays in the Inbox, read or not, until it is dismissed (`InboxDismissRequest`) or the caller
+ *  answers or replies in it themselves, which dismisses it the same way. */
 export const INBOX_LIST_STATES = ["unread", "inbox", "dismissed"] as const;
 export type InboxListState = (typeof INBOX_LIST_STATES)[number];
 

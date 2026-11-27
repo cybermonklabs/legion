@@ -93,6 +93,37 @@ export function invalidateMeInbox(queryClient: QueryClient): Promise<void> {
   return queryClient.invalidateQueries({ queryKey: meInboxKey });
 }
 
+/** Resolves once no read of the one read is out, answered or refused, and sends none of its own:
+ *  what a held Send waits for once its write has landed, whose landing reads the Inbox again
+ *  itself (an answer's or a reply's `onSuccess`, a send's `refreshAfter`). The reads out are taken
+ *  in the next task, not now: a keyed write tells its landing from `onSuccess`, which a surface
+ *  can draw at once, and the read the landing starts can begin in the promise reactions around
+ *  it, all of them before the next task. It looks again after each read comes back: where a read
+ *  was already out at the landing, Dispatch's client queues the landing's read as a follow-up that
+ *  starts only once that read settles (`DispatchQueryClient`), so the first read back can still
+ *  hold the row. `refetchQueries` would not do: Dispatch's client never joins a read already out,
+ *  and fetches once more when it settles, so the Send would wait through a second read it sent
+ *  itself. The holds' write deadline bounds the wait. */
+export async function meInboxReadsBack(queryClient: QueryClient): Promise<void> {
+  for (;;) {
+    const nextTask = Promise.withResolvers<void>();
+    setTimeout(nextTask.resolve, 0);
+    await nextTask.promise;
+    const out = queryClient
+      .getQueryCache()
+      .findAll({ fetchStatus: "fetching", queryKey: meInboxKey });
+    if (out.length === 0) return;
+    await Promise.all(
+      out.map((query) =>
+        query.promise?.then(
+          () => undefined,
+          () => undefined
+        )
+      )
+    );
+  }
+}
+
 /** Edits every cached read of the one read: each answer's entries by `edit`, and the unread count
  *  by `count` where one is given. */
 function patchMeInbox(

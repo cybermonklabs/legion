@@ -66,14 +66,17 @@ opened while it stands in place of the list. In the Inbox drawer they act on the
 | `1` – `9` | Pick option 1–9 of the selected ask; below 1280 px, on a focused row, open it and pick there |
 | `o` | Open the row's issue, document or thread on its own page; below 1280 px a focused thread row's `o` goes to the thread's page too, where a tap on its title opens the row in place |
 | `y` | Copy the selected row's reference; below 1280 px, on a focused ask row, open it and copy from its head |
-| `x` | Tick or untick the selected ask, for a snooze of several at once |
+| `x` | Tick or untick the selected row, for a snooze or a dismiss of several at once |
+| `Shift+X` | Tick or untick every row from the last row you ticked or unticked without the shift key to the selected row, as a shift-click on its checkbox does |
+| `Shift+J` / `Shift+K` | Next / previous row, with that range carried to it; with no row to run from, they only move |
 | `h` | Snooze the selected ask, or every ticked ask; below 1280 px, on a focused row, open it at its **Snooze** |
 | `f` | Move the focus to the **Search asks** box above the list |
+| `n` | Write a message to one or more agents (the **New message** dialog); in a text field it types the letter |
 | `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; below 1280 px, from an open row - its **Snooze** and **Priority** included - back to the list (from inside its question, first out of the question; in a text field, Escape is the field's); from the bulk snooze menu, back to the list; with no row focused, drop every tick |
 
-`Enter`, `1` – `9`, `x` and `h` are an open question's: a thread row has no options, no answer
-box and no snooze, so they do nothing on one. An agent-message row has no `dispatch://`
-reference, so `y` does nothing on one either.
+`Enter`, `1` – `9` and `h` are an open question's: a thread row has no options, no answer box and
+no snooze, so they do nothing on one. An agent-message row has no `dispatch://` reference, so `y`
+does nothing on one either.
 
 ## Project
 

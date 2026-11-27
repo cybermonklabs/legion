@@ -19,6 +19,9 @@ const REASONS = {
   7: "7. The windowed list draws a group's heading for an item of kind `group` and a row for one of kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.",
   8: "8. The layout changes one thing in a row: from `md` its directory shows the path's last segment and below it the whole path (`mdViewport`). The row, its details and its composer are drawn the same at every width, so a phone makes the rows above as they are. The app shell's forms are the sign-in file's.",
   9: "9. A refused or stopped reply is never kept away from the field, so Cancel reply takes nothing of it to the row's own address for Use it here: the field holds it there as it does on Message B in the row above, with Send saying its message is no longer listed (`elsewhere`), and Discard draft beside its note.",
+  10: "10. The Inbox's compose dialog draws this composer for one recipient alone (`one`), keyed by that session, under a send name of its own (`composeSendKey`), with no reply. The dialog keeps the message itself (`hostDraft`): a recipient picked, a second one added and taken off again, and the dialog opened or closed each mount or unmount the composer, and each mount starts from the message the dialog holds, so nothing the composer held goes with it. That holds where a send out or refused under the send name has a draft of its own too: the field takes the dialog's message, and the send stays under the send name with its refusal or its held Send, which the composer drawn for that session next shows beside it. While a send is out the dialog holds its recipients, so no change of them unmounts the composer whose Send is out.",
+  11: "11. The Agents row and the Inbox's thread box pass no `hostDraft`, so their composers keep their drafts under their send names as before; only the Inbox's compose dialog passes it (10).",
+  12: "12. The compose dialog stands over the Inbox, outside its list and its loading line and error (`Inbox`), and is drawn only while it is open (`composing`): opening it and closing it are (10)'s mount and unmount.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -92,7 +95,8 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[5] },
     { reason: REASONS[6] }
   ),
-  ...answers("AgentsPage | AgentRow | key | <div key={agent.session_id}>", { reason: REASONS[5] }),
+  ...answers("AgentsPage | AgentRow | key | <li key={agent.session_id}>", { reason: REASONS[5] }),
+  ...answers("AgentsPage | AgentRow | conditional | <li hidden>", { reason: REASONS[5] }),
   ...answers(
     "AgentsPage | AgentRow | conditional | drawn by grouped[group] .filter((agent) => kept.has(agent.session_id) && !(shown[group] && matches(agent, group))) .map(…)",
     { reason: REASONS[5] },
@@ -114,7 +118,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers('AgentsPage | AgentRow | conditional | !(item.kind === "group") ? …', {
     reason: REASONS[7],
   }),
-  ...answers("WindowedList | AgentRow | key | <div key={item.key}>", { reason: REASONS[7] }),
+  ...answers("WindowedList | AgentRow | key | <li key={item.key}>", { reason: REASONS[7] }),
   ...answers("WindowedList | AgentRow | early return | if (item === undefined) return …", {
     reason: REASONS[5],
   }),
@@ -140,4 +144,33 @@ export const coverage: readonly CoverageEntry[] = [
     "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
+  ...answers(
+    "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | address prop | hostDraft={keptDraft}",
+    { reason: REASONS[11] }
+  ),
+  ...answers("ComposeDialog | AgentMessageComposer | key | <AgentMessageComposer key={one}>", {
+    reason: REASONS[10],
+  }),
+  ...answers(
+    "ComposeDialog | AgentMessageComposer | conditional | if (one !== undefined && oneAgent !== undefined)",
+    { reason: REASONS[10] }
+  ),
+  ...answers(
+    "ComposeDialog | AgentMessageComposer | conditional | else of if (recipients.length === 0)",
+    { reason: REASONS[10] }
+  ),
+  ...answers("ComposeDialog | AgentMessageComposer | address prop | agent={oneAgent}", {
+    reason: REASONS[10],
+  }),
+  ...answers(
+    "ComposeDialog | AgentMessageComposer | address prop | hostDraft={{ onChange: setBody, starting: body }}",
+    { reason: REASONS[10] }
+  ),
+  ...answers("ComposeDialog | AgentMessageComposer | address prop | replyTo={null}", {
+    reason: REASONS[10],
+  }),
+  ...answers("ComposeDialog | AgentMessageComposer | address prop | sendKey={oneSendKey}", {
+    reason: REASONS[10],
+  }),
+  ...answers("Inbox | ComposeDialog | conditional | (composing) ? …", { reason: REASONS[12] }),
 ];

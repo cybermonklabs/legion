@@ -23,6 +23,7 @@ export function AskOwnerLink({
   className = "",
   inboxOwner = false,
   owner,
+  sizedByKey = false,
 }: {
   askId?: string;
   /** Flex sizing from the host's line, e.g. `grow`. */
@@ -30,6 +31,12 @@ export function AskOwnerLink({
   /** Marks the link an Inbox row's `o` binding follows; a group header's link is never one. */
   inboxOwner?: boolean;
   owner: OpenAskOwner;
+  /** For a line that wraps: the link asks the line for no more than its key's width. An issue's
+   *  link asks for its key's width alone, and its title, drawn at no width of its own, grows into
+   *  whatever room the line leaves; a document's link has no key, so it asks for no width at all
+   *  and its name grows into that room the same way. So the link moves to a line of its own only
+   *  when an issue's key does not fit beside what stands before it. */
+  sizedByKey?: boolean;
 }): ReactNode {
   const marker = inboxOwner ? "" : undefined;
   const issue = owner.issue;
@@ -45,7 +52,7 @@ export function AskOwnerLink({
         {...referenceTriggerProps({ key, kind: "issue" })}
       >
         <span className="shrink-0 font-semibold">{key}</span>
-        <TruncatedText>{title}</TruncatedText>
+        <TruncatedText className={sizedByKey ? "w-0 grow" : ""}>{title}</TruncatedText>
       </Link>
     );
   }
@@ -55,7 +62,7 @@ export function AskOwnerLink({
   const { name, project, slug } = document;
   return (
     <Link
-      className={`min-w-0 truncate text-sm font-semibold ${linkText} ${linkHoverText} ${className}`}
+      className={`min-w-0 truncate text-sm font-semibold ${linkText} ${linkHoverText} ${className}${sizedByKey ? " w-0" : ""}`}
       data-inbox-owner={marker}
       to={buildProjectPath({
         item: askId === undefined ? undefined : { id: askId, kind: "ask" },
@@ -77,9 +84,12 @@ export function AskOwnerLink({
 export function InboxOwnerLink({
   ask,
   rowOwner,
+  sizedByKey = false,
 }: {
   ask: OpenAskRow;
   rowOwner: boolean;
+  /** `AskOwnerLink`'s: the link asks its line for no more than its key's width. */
+  sizedByKey?: boolean;
 }): ReactNode {
   const key = askIssueKey(ask);
   const owner: OpenAskOwner | null =
@@ -91,7 +101,15 @@ export function InboxOwnerLink({
   if (owner === null) {
     return <p className={`truncate text-sm ${textMutedOnCanvas}`}>Document ask</p>;
   }
-  return <AskOwnerLink askId={ask.id} className="grow" inboxOwner={rowOwner} owner={owner} />;
+  return (
+    <AskOwnerLink
+      askId={ask.id}
+      className="grow"
+      inboxOwner={rowOwner}
+      owner={owner}
+      sizedByKey={sizedByKey}
+    />
+  );
 }
 
 /** A thread row's owner, wherever one is drawn: the short row beside the reading pane, the
@@ -102,10 +120,14 @@ export function InboxOwnerLink({
  *  way. */
 export function ThreadOwnerLine({
   className,
+  sizedByKey = false,
   thread,
 }: {
   /** The classes the host's line gives the session's name. */
   className: string;
+  /** `AskOwnerLink`'s, for a host whose line wraps: the owner's link asks the line for no more
+   *  than its key's width. It does not change how a session's name is drawn. */
+  sizedByKey?: boolean;
   thread: MyReplyRow;
 }): ReactNode {
   const row = inboxThreadRow(thread);
@@ -118,5 +140,7 @@ export function ThreadOwnerLine({
     );
   }
   const owner = threadOwner(thread);
-  return owner === null ? null : <AskOwnerLink className="grow" owner={owner} />;
+  return owner === null ? null : (
+    <AskOwnerLink className="grow" owner={owner} sizedByKey={sizedByKey} />
+  );
 }

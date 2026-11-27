@@ -394,7 +394,7 @@ func explainDismissedScaleOneRead(t *testing.T, shape *dismissedScaleShape, hold
 			if !hold {
 				continue
 			}
-			for _, index := range []string{"user_threads_dismissed", "user_agent_thread_dismissed_login_dismissed_at"} {
+			for _, index := range []string{"user_threads_dismissed_replied", "user_agent_thread_dismissed_login_dismissed_at"} {
 				if !planReadsIndex(t, plan, index) {
 					t.Errorf("%s does not read %s:\n%s", name, index, text)
 				}

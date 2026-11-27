@@ -2124,6 +2124,17 @@ const FEATURES = "packages/dispatch/web/src/features";
  */
 const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string }[] = [
   {
+    file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
+    holds:
+      "the host's own word for one choice of a display menu's section, which names a field of the table and never a value in it",
+    written: "label",
+  },
+  {
+    file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
+    holds: "the host's own word for one choice of a display menu's section (`DisplayMenuOption`)",
+    written: "option.label",
+  },
+  {
     file: `${FEATURES}/agents/AgentsPage.tsx`,
     holds: "a count of the group's agents, from the page's own selection of sessions",
     written: "groupCountLabel(agents, selected)",
@@ -2134,8 +2145,8 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "selectionSummary(selection)",
   },
   {
-    file: `${FEATURES}/agents/AgentsPage.tsx`,
-    holds: "the page's own word for why a selected session gets no broadcast",
+    file: `${FEATURES}/agents/BroadcastComposer.tsx`,
+    holds: "the composer's own word for why a selected session gets no broadcast",
     written: "note.reason",
   },
   {
@@ -2172,6 +2183,11 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     file: `${FEATURES}/inbox/AskHandOn.tsx`,
     holds: "the waiting-on badge's text colour, a class of the theme's badge tone",
     written: "tone.text",
+  },
+  {
+    file: `${FEATURES}/inbox/ComposeDialog.tsx`,
+    holds: "the server's or the send's own words for why a broadcast leaves a recipient out",
+    written: "outcome.reason",
   },
   {
     file: `${FEATURES}/inbox/useInboxSelection.ts`,
@@ -2246,6 +2262,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     file: `${FEATURES}/priorities/PriorityDescription.tsx`,
     holds: "the documents' editor's own error for a description it could not draw",
     written: "failed",
+  },
+  {
+    file: `${FEATURES}/project/issues-table-actions.ts`,
+    holds:
+      "the notice `IssuesTable.tsx` draws for what a table action did: the List's own line, which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
+    written: "notice.text",
   },
   {
     file: `${FEATURES}/project/IssuesTable.tsx`,

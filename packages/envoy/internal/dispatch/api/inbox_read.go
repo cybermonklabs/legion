@@ -51,9 +51,13 @@ import (
 // the state's own partial index rather than misjudging the stored flag; the narrowing these routes
 // add is applied over that set, where the issue join costs one lookup per matched row.
 //
-// The match reads the index and nothing else - the thread id it answers and the mark it narrows by
-// are both columns the state's partial index holds - and each matched row's owner is then read by
-// that id, fenced from the planner as the list route's page read is (myRepliesPageRows,
+// The match reads the thread id it answers and the mark it narrows by, both columns the state's
+// partial index holds. Over the Dismissed state (the restore's inboxRestoreReplyThreads,
+// api/inbox_dismiss.go) it also tests replied_at (myRepliesDismissed), and the state's index,
+// user_threads_dismissed_replied (20261123085248), holds only rows whose replied_at is not null,
+// so the planner takes that test from the index's predicate. So over every state that is all it
+// reads, and it reads the index and nothing else. Each matched row's owner is then read by that
+// id, fenced from the planner as the list route's page read is (myRepliesPageRows,
 // api/replies.go): a one-step match reads the owner columns too, and the cheapest way to read a
 // few columns of a thousand rows out of a table one login owns is a scan of the whole table, which
 // at INFRA-450's a14 seed is 101,540 rows read to mark 1,300.
@@ -461,8 +465,10 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // row: the root is the first row of a thread any of them takes. A reply of this release takes the
 // thread's root `for no key update` before its insert (inboxwrite.Recording.QueueRootLock, which
 // api's replyMessage and createStoredMessage run before they take the message's attempt or write
-// the row), and its writer, inboxwrite.Record, clears the root's Agent dismissals under it before
-// it takes any user_threads row of the thread (Record's step 2, below). An older build's reply
+// the row, or, for a reply on no issue - every reply under an Agent thread - its plan, in the
+// statement that walks to the root, inboxwrite.RootWalkLockStatement), and its writer,
+// inboxwrite.Record, clears the root's Agent dismissals under it before it takes any user_threads
+// row of the thread (Record's step 2, below). An older build's reply
 // does the same through its triggers: Postgres fires a table's row triggers in name order, so on
 // messages user_agent_thread_dismissed_clear (migration 20261105093507, whose body 20261125053125
 // replaced) runs before user_threads_message (0095, attached by 0097) on an issue message, and on
@@ -482,6 +488,28 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // own delete or write of the marks (user_agent_thread_dismissed_settle): a restore its roots
 // (inboxRestoreSettleAgentRoots, api/inbox_dismiss.go) and a session's reply its own
 // (inboxwrite's queueAgentDismissalsClear, and the clear trigger for an older build's reply).
+//
+// A person's own reply under an Agent thread takes step 2 as well, and, where a session answered
+// the thread's root, step 4, as a dismissal of that one thread (the own-answer rule, R1, D6). Its
+// plan takes the thread's root `for update` in the statement that walks to it
+// (inboxwrite.PlanRecord, inboxwrite.AgentDismissalRootWalkLockStatement), the first lock of the
+// root its transaction holds and before the reply's own insert, so its writer
+// (createStoredMessage, api/messages.go) never raises a lock of the root: that insert's foreign key
+// holds its parent `for key share`, so a `for update` taken after it would be the upgrade
+// migration 20261105093507's header records as a deadlock, and one taken after a `for no key
+// update` of the root would wait for an older build's reply holding the root `for key share`
+// while that reply's clear waits for the root to take it `for no key update` before its delete
+// (migration 20261125053125). Once that lock is granted, the writer reads whether a session
+// answered the root, in a statement of its own (ownAgentRootAnswered): a root still unanswered is
+// no Agent row, and a reply under it takes step 2 alone and writes no mark
+// (inboxwrite.Recording.Unanswered). Only then, in the record's step 6 (inboxwrite.Record), does a
+// reply under an answered root write the person's own user_agent_thread_dismissed row, and then,
+// as this transaction's dismissal does, the thread's unread replies read by id, new
+// user_agent_reply_read rows in ascending reply_id order. So a dismiss of the same root and the
+// reply meet at the root, whichever reaches it first, and neither holds a row the other waits for
+// (TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther); nor do the reply and an
+// older build's reply holding the root `for key share`
+// (TestAPersonsOwnAgentReplyWaitsAtTheRootWhileAnOlderReplyHoldsItForKeyShare).
 //
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock
@@ -529,10 +557,12 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // still owes the store; then every user_threads row of the thread, `for no key update`, in
 // ascending login order, in one pass (queueThreadLock), which holds the row of every person the
 // write is about to deliver to; only then the delivered_to tuple of each of those people, through
-// graphstore.QueueToPerson; then the move of their rows; and last the writer's own row. The
-// backfill marks a row under that same lock, so no delivery falls on both sides of a row's mark
-// (D4). Two writes into one thread queue at their owner lock before either reaches this pass, so
-// the pass orders nothing between writers; it is what holds a mark to the deliveries around it.
+// graphstore.QueueToPerson; then the move of their rows; and last the writer's own row, which a
+// person's own answer or reply also marks dismissed (the own-answer rule, R1), a row this pass
+// already holds where it was there before. The backfill marks a row under that same lock, so no
+// delivery falls on both sides of a row's mark (D4). Two writes into one thread queue at their
+// owner lock before either reaches this pass, so the pass orders nothing between writers; it is
+// what holds a mark to the deliveries around it.
 // The delivered_to an ask's create appends to the person the ask waits on, with its
 // participation, and the ones a move of that person appends (inboxwrite.QueueMoveWaiting) take
 // no user_threads row first: neither moves a row, and the mark counts only the deliveries a reply

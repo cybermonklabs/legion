@@ -4,11 +4,13 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { ArchitectureSource } from "../../api/types";
+import type { ArchitectureSource, Project } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
@@ -30,6 +32,15 @@ const architectureSource: ArchitectureSource = {
   last_sync_at: null,
   project: "CORE",
   repo: "legion/arch",
+};
+
+const core: Project = {
+  created_at: "2026-09-01T00:00:00Z",
+  gated_steps: [],
+  key: "CORE",
+  name: "Core",
+  open_asks: 0,
+  proven_sessions: false,
 };
 
 /** The architecture source routes' server state as the Settings page reaches it: one row per
@@ -101,7 +112,7 @@ test("a human adds an architecture source and the verified row appears", async (
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
     expect(await section.findByText("No architecture sources yet.")).toBeDefined();
 
-    await user.selectOptions(section.getByLabelText("Source project"), "CORE");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("legion/arch");
     await user.click(section.getByRole("button", { name: "Add source" }));
@@ -153,7 +164,7 @@ test("a failed architecture source access check shows the server's reason inline
     );
 
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
-    await user.selectOptions(await section.findByLabelText("Source project"), "CORE");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("legion/arch");
     await user.click(section.getByRole("button", { name: "Add source" }));
@@ -240,7 +251,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     await waitFor(() =>
       expect(
         section.getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
-      ).not.toHaveAttribute("disabled")
+      ).not.toHaveAttribute("aria-disabled")
     );
 
     await user.click(
@@ -254,7 +265,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     expect(section.getByRole("cell", { name: "acme/infra" })).toBeDefined();
 
     // Saving a repository the project already has changes that source's branch: still one row.
-    await user.selectOptions(section.getByLabelText("Source project"), "CORE");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("acme/infra");
     await user.clear(section.getByLabelText("Branch"));
@@ -281,6 +292,172 @@ test("each architecture source of a project is its own row, refreshed and delete
   }
 });
 
+// A source's Refresh and Delete, and the form's Add source, repository and branch, are each held
+// while their write is out, by `aria-disabled`, never `disabled` (`pressHeld`): the control the
+// reader pressed or submitted from keeps the focus, and a second press sends nothing.
+test.each([
+  { label: "Refresh architecture source legion/arch for CORE", role: "button" },
+  { label: "Delete architecture source legion/arch for CORE", role: "button" },
+  { label: "Add source", role: "button" },
+  { label: "Source repository", role: "textbox" },
+  { label: "Branch", role: "textbox" },
+] as const)("$label, held while its write is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  role,
+}) => {
+  const user = userEvent.setup();
+  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  // The writes' answer, held until the case refuses it inside `act`.
+  const answer = Promise.withResolvers<never>();
+  const writes = [
+    spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
+    spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
+    spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ArchitectureSourcesSection />
+      </QueryClientProvider>
+    );
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    await section.findByRole("cell", { name: "legion/arch" });
+    await pickFromLabelled(user, "Source project", "CORE · Core");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("acme/infra");
+    await pressHeld(user, section.getByRole(role, { name: label }), {
+      name: label,
+      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+    });
+  } finally {
+    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    cleanup();
+    queryClient.clear();
+    listArchitectureSources.mockRestore();
+    listProjects.mockRestore();
+    for (const write of writes) write.mockRestore();
+  }
+});
+
+/** The section over CORE and OPS, with no source yet and every save answered as the server would
+ *  answer it. */
+function renderSourceForm() {
+  const server = sourceServer([]);
+  const stubs = {
+    listArchitectureSources: spyOn(api, "listArchitectureSources").mockImplementation(server.list),
+    listProjects: spyOn(api, "listProjects").mockResolvedValue([
+      core,
+      { ...core, key: "OPS", name: "Operations" },
+    ]),
+    putArchitectureSource: spyOn(api, "putArchitectureSource").mockImplementation(server.put),
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  return {
+    putArchitectureSource: stubs.putArchitectureSource,
+    done: () => {
+      cleanup();
+      queryClient.clear();
+      for (const stub of Object.values(stubs)) stub.mockRestore();
+    },
+  };
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The Source project list's options are every project, which grow with the deployment:
+// opened from its trigger it holds a text box of its own, a word typed there leaves only the
+// projects it matches, Escape closes it with nothing picked, and a pick puts the focus back on
+// the trigger and is the project the source is saved for.
+test("the Source project list holds a text box that narrows the projects, and a pick saves the source there", async () => {
+  const user = userEvent.setup();
+  const view = renderSourceForm();
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const trigger = await section.findByLabelText("Source project");
+    const before = new Set(textBoxes());
+    await user.click(trigger);
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Source project list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getAllByRole("option")).toHaveLength(2);
+    await user.type(own[0] as HTMLElement, "oper");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^CORE\b/ }),
+        `"oper" leaves CORE in the Source project list`
+      ).toHaveLength(0)
+    );
+    expect(within(list).getByRole("option", { name: "OPS · Operations" })).toBeDefined();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Source project options" })).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("Choose a project");
+
+    await user.click(trigger);
+    await user.type(within(panelOf(trigger)).getByRole("combobox"), "oper");
+    await user.keyboard("{Enter}");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("OPS · Operations");
+
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(section.getByRole("button", { name: "Add source" }));
+    await waitFor(() =>
+      expect(view.putArchitectureSource).toHaveBeenCalledWith(
+        "OPS",
+        "legion/arch",
+        { branch: "main" },
+        keyedAttempt
+      )
+    );
+  } finally {
+    view.done();
+  }
+});
+
+// The Source project list is a button, which no `required` holds as the select it replaced held
+// the form: with no project picked the form files nothing and says to choose one, as the browser
+// said for the select, until a project is picked.
+test("with no project picked, Add source files nothing and says to choose a project", async () => {
+  const user = userEvent.setup();
+  const view = renderSourceForm();
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const trigger = await section.findByLabelText("Source project");
+    expect(trigger).toHaveTextContent("Choose a project");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(section.getByRole("button", { name: "Add source" }));
+    await act(async () => {});
+    expect(view.putArchitectureSource, "a source was saved for no project").not.toHaveBeenCalled();
+    expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
+
+    await pickFromLabelled(user, "Source project", "CORE · Core");
+    expect(section.queryByRole("alert")).toBeNull();
+    await user.click(section.getByRole("button", { name: "Add source" }));
+    await waitFor(() =>
+      expect(view.putArchitectureSource).toHaveBeenCalledWith(
+        "CORE",
+        "legion/arch",
+        { branch: "main" },
+        keyedAttempt
+      )
+    );
+    expect(view.putArchitectureSource).toHaveBeenCalledTimes(1);
+  } finally {
+    view.done();
+  }
+});
+
 /** The section over the sources `list` answers, its save and its removal answered by `put` and
  *  `remove`. Answers the section once it has drawn. */
 async function sourcesOf(
@@ -290,16 +467,7 @@ async function sourcesOf(
 ) {
   const mocks = [
     spyOn(api, "listArchitectureSources").mockImplementation(list),
-    spyOn(api, "listProjects").mockResolvedValue([
-      {
-        created_at: "2026-09-01T00:00:00Z",
-        gated_steps: [],
-        key: "CORE",
-        name: "Core",
-        open_asks: 0,
-        proven_sessions: false,
-      },
-    ]),
+    spyOn(api, "listProjects").mockResolvedValue([core]),
     spyOn(api, "putArchitectureSource").mockImplementation(put),
     spyOn(api, "deleteArchitectureSource").mockImplementation(remove),
   ];
@@ -333,9 +501,7 @@ test("a source save the reader stopped says Retry sends it again, not that it fa
   const server = sourceServer([]);
   const page = await sourcesOf(server.list, dropped, server.remove);
   try {
-    await userEvent
-      .setup()
-      .selectOptions(await page.section.findByLabelText("Source project"), "CORE");
+    await pickFromLabelled(userEvent.setup(), "Source project", "CORE · Core");
     jest.useFakeTimers();
     const user = userOnFakeClock();
     await user.click(page.section.getByLabelText("Source repository"));

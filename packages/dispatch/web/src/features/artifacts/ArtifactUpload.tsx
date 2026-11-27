@@ -21,6 +21,8 @@ import {
   type WriteMethod,
 } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -222,16 +224,22 @@ export function ReplacingUploadNote(): ReactNode {
   );
 }
 
-/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's. */
-export function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
+/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's.
+ *  Answers when the owner's document list has been read again, or has failed to be: a removal
+ *  waits on it, so its button stays held until that read takes the row away. */
+export function refreshOwnerArtifacts(
+  queryClient: QueryClient,
+  owner: ArtifactOwner
+): Promise<void> {
   if ("issue" in owner) {
-    void queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
+    const list = queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
     void queryClient.invalidateQueries({ queryKey: ["issue", owner.issue] });
-  } else if ("project" in owner) {
-    void queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
-  } else {
-    void queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
+    return list;
   }
+  if ("project" in owner) {
+    return queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
+  }
+  return queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
 }
 
 /** `text` added to the end of a draft, a space apart from what is already there. */
@@ -340,7 +348,7 @@ export function useDraftUpload<Draft = void>(
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
     onSuccess: (landed, { draft, file, owner }) => {
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       if (landed !== null) insert(uploadedFileText(owner, file, landed.result), draft);
     },
     onSettled: () => {
@@ -547,7 +555,7 @@ export function useArtifactUpload(
       // with no answer to give, the row says so (`upload.unanswered`).
       setPendingFile(null);
       setSummary("");
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       if (result !== null) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", result.artifact.id] });
       }
@@ -653,73 +661,97 @@ export function useArtifactUpload(
   };
 }
 
-/** The upload control of a strip: its button, and, while a file is staged, that file's name, its
- *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
- *  host already shows the refusal on - the one line a closed issue's strip shows for every control
- *  in it; without it the row shows its own. */
-export function ArtifactUploadRow({
-  refusalShownBy,
-  upload,
-}: {
-  readonly refusalShownBy?: string;
-  readonly upload: ArtifactUpload;
-}): ReactNode {
+/** The upload control of a strip: its button, with its refusal on a line of its own where it
+ *  carries one, and, while a file is staged, that file's name, its summary and the two presses
+ *  that store or discard it (`ArtifactUploadStaging`). */
+export function ArtifactUploadRow({ upload }: { readonly upload: ArtifactUpload }): ReactNode {
   const ownRefusalId = useId();
+  if (upload.pendingFile !== null) return <ArtifactUploadStaging upload={upload} />;
   return (
-    // The host owns the strip this sits in, so the row carries no divider of its own: idle it
-    // is one button beside the filter, staging a file it takes the line.
-    <div
-      className={`flex min-w-0 flex-wrap items-center gap-2 ${upload.pendingFile === null ? "shrink-0" : "w-full"}`}
-    >
-      {upload.pendingFile === null ? (
-        <>
-          <RefusableButton
-            className="min-h-11 shrink-0"
-            look="secondary-compact"
-            onPress={upload.openPicker}
-            refusal={upload.refusal}
-            refusalShownBy={upload.refusal === null ? undefined : (refusalShownBy ?? ownRefusalId)}
-          >
-            Upload
-          </RefusableButton>
-          {upload.refusal === null || refusalShownBy !== undefined ? null : (
-            <span className={`text-xs ${textMutedOnSurface}`} id={ownRefusalId}>
-              {upload.refusal}
-            </span>
-          )}
-        </>
-      ) : (
-        <>
-          <span className={`min-w-0 truncate text-sm ${textMutedOnSurface}`}>
-            {upload.pendingFile.name}
-          </span>
-          <input
-            aria-label="Summary (optional)"
-            className={`min-h-11 min-w-40 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-            disabled={upload.summaryHeld}
-            onChange={(event) => upload.setSummary(event.target.value)}
-            placeholder="Summary (optional)"
-            value={upload.summary}
-          />
-          <button
-            className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={upload.isPending}
-            onClick={upload.confirm}
-            type="button"
-          >
-            Upload
-          </button>
-          <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={upload.isPending}
-            onClick={upload.cancel}
-            type="button"
-          >
-            Cancel
-          </button>
-        </>
+    // The host owns the box this sits in - a document's repair upload - so the row carries no
+    // divider of its own: idle it is one button, staging a file it takes the line.
+    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
+      <RefusableButton
+        className="min-h-11 shrink-0"
+        look="secondary-compact"
+        onPress={upload.openPicker}
+        refusal={upload.refusal}
+        refusalShownBy={upload.refusal === null ? undefined : ownRefusalId}
+      >
+        Upload
+      </RefusableButton>
+      {upload.refusal === null ? null : (
+        <span className={`text-xs ${textMutedOnSurface}`} id={ownRefusalId}>
+          {upload.refusal}
+        </span>
       )}
       <ArtifactUploadStatus upload={upload} />
+    </div>
+  );
+}
+
+/** A staged file - its name, its summary and the two presses that store or discard it - and what
+ *  became of the last upload (`ArtifactUploadStatus`), on a line of their own: under the
+ *  Artifacts tab's control bar, whose **Upload** action picks the file, or in place of
+ *  `ArtifactUploadRow`'s button. Nothing is drawn while no file is staged and no upload has
+ *  anything to say. The two presses are held while the upload is out (`heldPress`).
+ *
+ *  The line goes with the focus it holds when its Upload lands or its Cancel discards the file,
+ *  and it hands that focus to what `handBack` names (`useFocusPlace`): the Artifacts tab's
+ *  **Upload**, drawn again in the bar by the same commit, or **More** where the bar holds its
+ *  actions there, so a keyboard reader is back on the control that stages the next file rather
+ *  than on the page's body. A press inside the line arms that hand-off at its root
+ *  (`armOnPress`), so only the reader's own press moves the focus. In `ArtifactUploadRow` the
+ *  line goes with the component, and the row's own button takes its place. */
+export function ArtifactUploadStaging({
+  handBack,
+  upload,
+}: {
+  /** The control that takes the focus the line goes with, or null where none is drawn. */
+  readonly handBack?: () => HTMLElement | null;
+  readonly upload: ArtifactUpload;
+}): ReactNode {
+  const line = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    () => line.current,
+    () => handBack?.() ?? null
+  );
+  const status = <ArtifactUploadStatus upload={upload} />;
+  if (upload.pendingFile === null) return status;
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the line took the focus, for the hand-off when a commit takes the line away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the line (`armOnPress`), so the line needs no role of its own.
+    <div
+      className="flex w-full min-w-0 flex-wrap items-center gap-2"
+      {...ARM_ON_PRESS}
+      onFocus={noteFocus}
+      ref={line}
+    >
+      <span className={`min-w-0 truncate text-sm ${textMutedOnSurface}`}>
+        {upload.pendingFile.name}
+      </span>
+      <input
+        aria-label="Summary (optional)"
+        className={`min-h-11 min-w-40 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+        disabled={upload.summaryHeld}
+        onChange={(event) => upload.setSummary(event.target.value)}
+        placeholder="Summary (optional)"
+        value={upload.summary}
+      />
+      <button
+        className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+        {...heldPress(upload.isPending, upload.confirm)}
+        type="button"
+      >
+        Upload
+      </button>
+      <button
+        className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
+        {...heldPress(upload.isPending, upload.cancel)}
+        type="button"
+      >
+        Cancel
+      </button>
+      {status}
     </div>
   );
 }

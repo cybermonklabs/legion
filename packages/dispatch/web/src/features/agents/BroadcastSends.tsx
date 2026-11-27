@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { broadcastQuery } from "../../api/queries";
 import type { BroadcastCreated, DeliveryAttemptState } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -301,11 +301,7 @@ export function BroadcastSends({
  * way; nothing here is a write still unconfirmed.
  */
 function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
-  const read = useQuery({
-    initialData: created,
-    queryFn: () => api.getBroadcast(created.id),
-    queryKey: ["broadcast", created.id],
-  }).data;
+  const read = useQuery({ ...broadcastQuery(created.id), initialData: created }).data;
   const states = (read.recipients ?? []).map((recipient) => {
     const state = (recipient.message.deliveries ?? []).at(-1)?.state;
     return state === undefined ? undefined : deliveryOutcomeState(state);

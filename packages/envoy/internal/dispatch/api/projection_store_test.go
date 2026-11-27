@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1737,9 +1738,12 @@ type projectionWriter struct {
 
 // projectionWriters are the writers a transaction of this tree runs: the comment write, which
 // writes a comment's node and then its row; the block index, which writes a version's block nodes
-// and then the document_blocks rows that project them; and the message write, which writes a
+// and then the document_blocks rows that project them; the message write, which writes a
 // message's node and the pointers it states and then the messages row that names it
-// (planMessageNode, api's createStoredMessage).
+// (planMessageNode, api's createStoredMessage); and a person's own reply, whose record in its thread
+// appends their dismissed tuple and then writes the projection of it, their user_threads row or,
+// under an Agent thread, their user_agent_thread_dismissed row (inboxwrite.Record's steps 5 and 6,
+// the own-answer rule, R1).
 func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 	t.Helper()
 	commentID := mustUUID(t, run)
@@ -1800,7 +1804,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'block' and n.id = $1
 			`, blockAddress, run.specID)
 		},
-	}, messageProjectionWriter(t, run)}
+	}, messageProjectionWriter(t, run), ownReplyDismissalWriter(t, run), ownAgentReplyDismissalWriter(t, run)}
 }
 
 // messageProjectionWriter is the message write as this test drives it: the node planMessageNode
@@ -1838,6 +1842,117 @@ func messageProjectionWriter(t *testing.T, run *projectionRun) projectionWriter 
 			`, messageID)
 		},
 	}
+}
+
+// ownReplyDismissalWriter is a person's own reply as this test drives its dismissal: bob's reply
+// to the run's plain comment - its node, its row and its facts, as the comment write writes them -
+// then its record in its thread, marked his own write (inboxwrite.Write.Own), which appends his
+// dismissed tuple to the thread's root and then sets the dismissal on his user_threads row. The
+// failure the test injects at that row's write falls between the store's half of the dismissal and
+// the projection's, so neither surviving it is the proof that the dismissal rides the reply's own
+// transaction.
+func ownReplyDismissalWriter(t *testing.T, run *projectionRun) projectionWriter {
+	t.Helper()
+	replyID := mustUUID(t, run)
+	root := run.comments[0]
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	return projectionWriter{
+		name:  "a person's own reply, which dismisses its thread",
+		table: "user_threads",
+		write: func(ctx context.Context, tx pgx.Tx) error {
+			at := time.Now().UTC()
+			stored, err := commentStored(ctx, tx, replyID, bob, at, nil, nil, run.project, nil)
+			if err != nil {
+				return err
+			}
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, stored.written)
+				return nil
+			}); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				insert into comments (id, issue_key, author, body, reply_to, node_kind, node_address)
+				values ($1::uuid, $2, '{"kind":"user","id":"bob"}', 'A watched reply.', $3::uuid, $4, $1)
+			`, replyID, run.issue, root, graphstore.KindComment); err != nil {
+				return err
+			}
+			if err := graphstore.Caused(ctx, tx, stored.written, graphstore.NoEvent); err != nil {
+				return err
+			}
+			reply := inboxwrite.Comment(replyID, bob, at, &run.issue, nil, run.project).RepliesTo(graphstore.KindComment, root).Own()
+			return inboxwrite.Record(ctx, tx, reply, graphstore.NoEvent)
+		},
+		left: func(ctx context.Context) ([]string, error) {
+			return readStrings(ctx, run.database.Pool, `
+				select 'user_threads ' || row_to_json(u)::text from user_threads u where u.login = 'bob' and u.thread_id::text = $1
+				union all
+				select 'graph_tuples ' || row_to_json(d)::text from graph_tuples d
+				where d.kind = $3 and d.from_kind = $4 and d.from_id = 'bob' and d.to_id = $1
+				union all
+				select 'comments ' || row_to_json(c)::text from comments c where c.id::text = $2
+			`, root, replyID, graphstore.TupleDismissed, graphstore.KindPerson)
+		},
+	}
+}
+
+// ownAgentReplyDismissalWriter is the same under an Agent thread: alice's direct message to s1 and
+// her own reply under it, each stored as createStoredMessage stores a message - its node, its row
+// and its facts - then the reply's record, marked her own, which appends her dismissed tuple to the
+// root message and then writes her user_agent_thread_dismissed row at it.
+func ownAgentReplyDismissalWriter(t *testing.T, run *projectionRun) projectionWriter {
+	t.Helper()
+	rootID, replyID := mustUUID(t, run), mustUUID(t, run)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	target := "session:s1"
+	return projectionWriter{
+		name:  "a person's own reply under an Agent thread, which dismisses it",
+		table: "user_agent_thread_dismissed",
+		write: func(ctx context.Context, tx pgx.Tx) error {
+			at := time.Now().UTC()
+			if err := storeWatchedDirectMessage(ctx, tx, graphstore.MessageRow{ID: rootID, Target: target}, alice, at); err != nil {
+				return err
+			}
+			if err := storeWatchedDirectMessage(ctx, tx, graphstore.MessageRow{ID: replyID, InReplyTo: rootID, Target: target}, alice, at); err != nil {
+				return err
+			}
+			reply := inboxwrite.Message(replyID, alice, at, nil, "").RepliesTo(graphstore.KindMessage, rootID).Own()
+			return inboxwrite.Record(ctx, tx, reply, graphstore.NoEvent)
+		},
+		left: func(ctx context.Context) ([]string, error) {
+			return readStrings(ctx, run.database.Pool, `
+				select 'user_agent_thread_dismissed ' || row_to_json(r)::text from user_agent_thread_dismissed r where r.message_id::text = $1
+				union all
+				select 'graph_tuples ' || row_to_json(d)::text from graph_tuples d
+				where d.kind = $3 and d.from_kind = $4 and d.to_id = $1
+				union all
+				select 'messages ' || row_to_json(m)::text from messages m where m.id::text in ($1, $2)
+			`, rootID, replyID, graphstore.TupleDismissed, graphstore.KindPerson)
+		},
+	}
+}
+
+// storeWatchedDirectMessage stores one message on no issue as createStoredMessage's batch does: the
+// node planMessageNode plans, the row that names it, and the facts the node write holds.
+func storeWatchedDirectMessage(ctx context.Context, tx pgx.Tx, row graphstore.MessageRow, author model.Actor, at time.Time) error {
+	stored, err := planMessageNode(ctx, tx, row, author, at, nil)
+	if err != nil {
+		return err
+	}
+	nodeKind, nodeAddress := stored.rowNode()
+	var inReplyTo *string
+	if row.InReplyTo != "" {
+		inReplyTo = &row.InReplyTo
+	}
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, stored.written)
+		b.Queue("", `
+			insert into messages (id, issue_key, author, body, target, in_reply_to, created_at, node_kind, node_address)
+			values ($1::uuid, null, '{"kind":"user","id":"alice"}', 'A watched direct message.', $2, $3::uuid, $4, $5, $6)
+		`, row.ID, row.Target, inReplyTo, at, nodeKind, nodeAddress)
+		graphstore.QueueCaused(b, stored.written, graphstore.NoEvent)
+		return nil
+	})
 }
 
 func mustUUID(t *testing.T, run *projectionRun) string {

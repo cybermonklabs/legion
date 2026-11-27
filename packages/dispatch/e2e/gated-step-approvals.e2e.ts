@@ -218,6 +218,45 @@ test("a child issue of a gated project keeps the header's one chip: only a root 
   }
 });
 
+// SLOW(>=2s): the project's gate changed twice while the issue page is open, each change waited on
+// until the page redraws its steps with no reload.
+// The issue page draws its steps from the issue read's own gate (`approval_gate`), which the
+// project's publish of its gated steps (`project.updated`) reads again with no reload.
+test("the issue page follows a change of its project's gate", async ({ browser }) => {
+  await createProject({ key: "GATEMOVE", name: "A moving gate" });
+  await setGatedSteps("GATEMOVE", ["spec"]);
+  const issue = await createIssue({
+    project: "GATEMOVE",
+    spec: "The plan.",
+    title: "A root under a moving gate",
+  });
+  const steps = (page: Page) =>
+    approvalSteps(page)
+      .locator("[data-approval-step]")
+      .evaluateAll((entries) => entries.map((entry) => entry.getAttribute("data-approval-step")));
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(1);
+    expect(await steps(page)).toEqual(["spec"]);
+
+    // The deployment gates the Verification document too: the page grows its step.
+    await setGatedSteps("GATEMOVE", ["criteria", "spec"]);
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
+    expect(await steps(page)).toEqual(["criteria", "spec"]);
+    await expect(stepEntry(page, "criteria")).toContainText("Verification");
+    await expect(stepEntry(page, "criteria")).toContainText("Not requested");
+
+    // It gates nothing: the steps go.
+    await setGatedSteps("GATEMOVE", []);
+    await expect(page.getByTestId("issue-approval-steps")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
 test("one request over two documents reads the same on both steps, and one Request changes answers it once for both", async ({
   browser,
 }) => {

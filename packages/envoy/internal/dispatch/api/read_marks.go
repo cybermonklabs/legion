@@ -29,8 +29,11 @@ import (
 //     deletes (removeArtifact, api/artifact_removal.go).
 //
 // The one writer of a thread states the rest: a person's own write moves their read mark
-// (inboxwrite.Record's step 5, queueKeepRow), and a write by somebody else retracts their
-// dismissal, of a Reply thread or of an Agent thread, as it clears the row.
+// (inboxwrite.Record's step 5, queueKeepRow), and their own answer or reply also states their
+// dismissal of the thread - dismissed to its root, on their user_threads row or, under an Agent
+// thread, on their user_agent_thread_dismissed row at its root (the own-answer rule, R1); a write
+// by somebody else retracts their dismissal, of a Reply thread or of an Agent thread, as it clears
+// the row.
 //
 // Each route's statement answers exactly what it stored - the rows it moved, at the moment each
 // now holds - and each tuple states that and nothing more: a mark only moves forward, a row a

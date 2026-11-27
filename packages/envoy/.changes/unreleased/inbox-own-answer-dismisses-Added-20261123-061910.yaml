@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  A person's own answer to an ask, or own reply in a thread, takes that thread out of their
+  Inbox in the same write, as a dismissal they made; the next write by somebody else brings it
+  back. The Inbox holds Send until the row goes, and gives it back with the error on a refusal.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: inbox-own-answer-dismisses

@@ -17,13 +17,14 @@ const REASONS = {
   5: "5. The box has no anchor, so it draws no Close (asserted absent below).",
   6: "6. An Agent row's box always answers a message of its thread (`agentReplyTo`), and its `AgentMessageComposer` draws the issue picker only while it answers none, so it draws no issue picker (asserted absent below).",
   7: "7. `CommentThreadBody` draws a loading line or an error in place of the thread while its read is out or failed, and `AgentThreadBody` an error where its row carries no conversation of its own; either unmounts the box as the move to another row does, and the box drawn once the thread is there again is the one that row draws.",
-  8: "8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is read when the thread is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a box that is on screen; the shell draws no thread before it knows who is signed in, and another person is the sign-in file's row.",
+  8: "8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is the reader's thread order, which a pick in the Inbox's display menu changes for every reader on the page at once, and another tab's pick for this tab's readers (`useUserPreference`). A pick moves the box to the other end of the thread on screen, at the same thread and under the same send name (`threadSendKey`), so the box there holds what the box held, as the box drawn on the move to another row and back does; the shell draws no thread before it knows who is signed in, and another person is the sign-in file's row.",
   9: "9. An Agent row's box is drawn only while its session is in the live list; a session that leaves it and comes back unmounts and draws the box again at the same thread, as the move to another row and back does.",
   10: "10. A thread in a document is drawn inside the document's page where its block is found and beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`, `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the same thread, as the move to another row and back does, and a version or an admission that hides the document's page keeps the box mounted at its thread.",
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
   12: "12. The Inbox page draws a thread's box in one place for the row the reader is on: in the reading column beside the list from the column's width (`columns`), and below it in the reading view that stands in the list's place (`readingView`), both the same `ReadingPane`; the drawer draws it in each thread row's card (`renderRow`'s `if (mode !== \"cards\")`), in a drawer that closing takes away (`InboxDrawer`); and the page is drawn on its own route (`app.tsx`'s `/` and `/credentials/*`). A resize across that width, opening a row or going back to the list, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name. The list stays mounted, hidden, under the reading view (`<div hidden={readingView}>`), and a card of the drawer is never under it.",
-  13: "13. Below the reading column's width the Inbox page lists short rows, which draw no box, and the one row the reader opens is read in place of the list in the column's own `ReadingPane` (`readingView`), so its box is the column's and what ends it is (12)'s. The drawer (`pane={false}`) draws every thread row as a card that draws its thread's own box at every width (`ThreadRowCard`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed; what ends a card's box is (12)'s: closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` (its `mode`), `usePaneSelection` and `useReadingViewLanding` pick, focus and scroll the row, open and close the reading view through the address and its history entry (`inboxOverList`, `inboxDefaultPick`), draw the list beside the column, and end the line that says the open row left (`rowLeft`), and move no box; the app shell's forms are the sign-in file's.",
-  14: "14. A root its author deleted takes no reply (`409 POST_DELETED`), so no box is drawn under it, as the margin's card draws no reply composer there, and the box leaves the page as a read without the root takes it (11): a reply the reader kept for the thread - typed in the box, or a send refused or stopped - is drawn itself in its place, saying the comment was deleted, with Discard my draft and no Send (`KeptReplyToDeleted`); `ThreadBody.test.tsx`'s \"a comment thread whose root is deleted draws no box, and keeps the reply typed there\" holds it.",
+  13: "13. Below the reading column's width the Inbox page lists short rows, which draw no box, and the one row the reader opens is read in place of the list in the column's own `ReadingPane` (`readingView`), so its box is the column's and what ends it is (12)'s. The drawer (`pane={false}`) draws every thread row as a card that draws its thread's own box at every width (`ThreadRowCard`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed; what ends a card's box is (12)'s: closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `InboxBody` (its `mode`), `usePaneSelection` and `useReadingViewLanding` pick, focus and scroll the row, open and close the reading view through the address and its history entry (`inboxOverList`, `inboxDefaultPick`), draw the list beside the column, and end the line that says the open row left (`rowLeft`), and move no box. Among them is the selection bar's hand-off in `usePaneSelection`. As a press that takes rows lands, it reads again where the press sends the reader - a row, or the list's empty message - when the row the press began with has gone (`targetNow`); it moves the reader only while they are still where they pressed, read by the selection beside the column and in the reading view and by the focus in the short-row list (`stillThere`); beside the column and in the reading view it selects that row, and where it sends the reader to the empty message and the selected row is among the rows the press took, which the list no longer draws, it selects no row beside the column and closes the reading view (`landHandOff`); and it leaves the scroll to the row it selected, or to the row the settling effect hands the selection to while the press is still in the air (`handedTo`), to the press's own landing, so the selected row's keeping on screen skips that row (`selectedByHandOff`). Its selection of a row or of no row changes the column's box only as the move to another row does (12). The app shell's forms are the sign-in file's.",
+  14: "14. The Dismissed view (`showDismissed`) draws its rows as a window (`DismissedWindow`): the rows near sight, out of every row it has loaded. Each card is keyed by its row's id, so the window moves no box from one row to another. A card scrolled out of the window unmounts its box, and a card scrolled back draws the box again at the same thread's send name, as the move to another row and back does. The window draws nothing for an index past the loaded rows (`row === undefined`), and its count rules that out. A switch between the Inbox and the Dismissed view is the row leaving the list, as in (13). Which scroller the window reads (`box`: the list column, the drawer's box or the page) follows (12)'s width and drawer, and where the list starts in it (`margin`) moves no box.",
+  15: "15. A root its author deleted takes no reply (`409 POST_DELETED`), so no box is drawn under it, as the margin's card draws no reply composer there, and the box leaves the page as a read without the root takes it (11): a reply the reader kept for the thread - typed in the box, or a send refused or stopped - is drawn itself in its place, saying the comment was deleted, with Discard my draft and no Send (`KeptReplyToDeleted`); `ThreadBody.test.tsx`'s \"a comment thread whose root is deleted draws no box, and keeps the reply typed there\" holds it.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -61,7 +62,7 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers(
     "CommentThreadBody | CommentThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(postDeletion(root) !== null) ? …",
-    { reason: REASONS[14] }
+    { reason: REASONS[15] }
   ),
   ...answers(
     "ThreadTurns | CommentThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | (composerFirst) ? …",
@@ -163,7 +164,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "ThreadPane | ThreadBody | conditional | if (inDocument && anchor !== undefined && !anchor.orphaned && blockId !== null && blockId !== undefined)",
+    "ThreadPane | ThreadBody | conditional | if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined)",
     { reason: REASONS[10] }
   ),
   ...answers(
@@ -212,7 +213,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "ThreadPane | ThreadBodyPane | early return | if (inDocument && anchor !== undefined && !anchor.orphaned && blockId !== null && blockId !== undefined) return …",
+    "ThreadPane | ThreadBodyPane | early return | if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined) return …",
     { reason: REASONS[10] }
   ),
   ...answers(
@@ -231,80 +232,108 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers(
-    "ThreadPane | ThreadDocumentBody | conditional | if (inDocument && anchor !== undefined && !anchor.orphaned && blockId !== null && blockId !== undefined)",
+    "ThreadPane | ThreadDocumentBody | conditional | if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined)",
     { reason: REASONS[10] }
   ),
   ...answers("ThreadPane | ThreadDocumentBody | address prop | thread={row}", {
     reason: REASONS[10],
   }),
-  ...answers("Inbox | ReadingPane | conditional | !(subject === undefined) ? …", {
+  ...answers("InboxBody | ReadingPane | conditional | !(subject === undefined) ? …", {
     reason: REASONS[12],
   }),
-  ...answers('Inbox | ReadingPane | conditional | (mode === "columns") ? …', {
+  ...answers('InboxBody | ReadingPane | conditional | (mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers('Inbox | ReadingPane | conditional | !(mode === "columns") ? …', {
+  ...answers('InboxBody | ReadingPane | conditional | !(mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers("Inbox | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[12] }),
+  ...answers("InboxBody | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[12] }),
   ...answers(
-    "Inbox | ReadingPane | early return | if (whoAmI.isPending || inboxAsks.pending) return …",
+    "InboxBody | ReadingPane | early return | if (whoAmI.isPending || inboxAsks.pending) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "Inbox | ReadingPane | early return | if (inboxAsks.failed || viewer === undefined || place === undefined) return …",
-    { reason: REASONS[12] }
-  ),
-  ...answers("Inbox | ReadingPane | conditional | if (shown.length === 0 && held === undefined)", {
-    reason: REASONS[12],
-  }),
-  ...answers(
-    "Inbox | ReadingPane | early return | if (shown.length === 0 && held === undefined) return …",
+    "InboxBody | ReadingPane | early return | if (inboxAsks.failed || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "Inbox | ReadingPane | address prop | row={subject}",
+    "InboxBody | ReadingPane | conditional | if (shown.length === 0 && held.length === 0)",
+    {
+      reason: REASONS[12],
+    }
+  ),
+  ...answers(
+    "InboxBody | ReadingPane | early return | if (shown.length === 0 && held.length === 0) return …",
+    { reason: REASONS[12] }
+  ),
+  ...answers(
+    "InboxBody | ReadingPane | address prop | row={subject}",
     cells(`${HOST} · the column moves to another row, then back`)
   ),
-  ...answers("Inbox | ThreadCardRow | key | <ThreadCardRow key={id}>", { reason: REASONS[13] }),
-  ...answers("Inbox | ThreadCardRow | address prop | <ThreadCardRow {...shared}>", {
+  ...answers("InboxBody | ThreadCardRow | key | <ThreadCardRow key={id}>", { reason: REASONS[13] }),
+  ...answers("InboxBody | ThreadCardRow | address prop | <ThreadCardRow {...shared}>", {
     reason: REASONS[13],
   }),
-  ...answers('Inbox | ThreadCardRow | conditional | !(row.kind === "ask") ? …', {
+  ...answers('InboxBody | ThreadCardRow | conditional | !(row.kind === "ask") ? …', {
     reason: REASONS[13],
   }),
-  ...answers('Inbox | ThreadCardRow | early return | if (mode !== "cards") return …', {
+  ...answers('InboxBody | ThreadCardRow | early return | if (mode !== "cards") return …', {
     reason: REASONS[12],
   }),
-  ...answers("Inbox | ThreadCardRow | conditional | drawn by drawn.flatMap(…)", {
+  ...answers("InboxBody | ThreadCardRow | conditional | drawn by drawn.flatMap(…)", {
     reason: REASONS[13],
   }),
-  ...answers('Inbox | ThreadCardRow | conditional | (mode === "columns") ? …', {
+  ...answers('InboxBody | ThreadCardRow | conditional | (mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers("Inbox | ThreadCardRow | conditional | <div hidden={readingView}>", {
+  ...answers("InboxBody | ThreadCardRow | conditional | <div hidden={readingView}>", {
     reason: REASONS[12],
   }),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (whoAmI.isPending || inboxAsks.pending) return …",
+    "InboxBody | ThreadCardRow | early return | if (whoAmI.isPending || inboxAsks.pending) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (inboxAsks.failed || viewer === undefined || place === undefined) return …",
+    "InboxBody | ThreadCardRow | early return | if (inboxAsks.failed || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "Inbox | ThreadCardRow | conditional | if (shown.length === 0 && held === undefined)",
-    { reason: REASONS[12] }
+    "InboxBody | ThreadCardRow | conditional | if (shown.length === 0 && held.length === 0)",
+    {
+      reason: REASONS[12],
+    }
   ),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (shown.length === 0 && held === undefined) return …",
+    "InboxBody | ThreadCardRow | early return | if (shown.length === 0 && held.length === 0) return …",
     { reason: REASONS[12] }
   ),
-  ...answers('Inbox | ThreadCardRow | conditional | !(mode === "columns") ? …', {
+  ...answers('InboxBody | ThreadCardRow | conditional | !(mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers("Inbox | ThreadCardRow | address prop | thread={row.thread}", { reason: REASONS[13] }),
+  ...answers("InboxBody | ThreadCardRow | address prop | thread={row.thread}", {
+    reason: REASONS[13],
+  }),
+  ...answers("InboxBody | ThreadCardRow | conditional | (showDismissed) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("InboxBody | ThreadCardRow | conditional | !(showDismissed) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedWindow | ThreadCardRow | conditional | (props.box === undefined) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedWindow | ThreadCardRow | conditional | !(props.box === undefined) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | ThreadCardRow | conditional | drawn by items.map(…)", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | ThreadCardRow | early return | if (row === undefined) return …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | ThreadCardRow | key | <WindowSlotContext key={rowId(row)}>", {
+    reason: REASONS[14],
+  }),
   ...answers(
     'ThreadPane | AskThreadPane | early return | if (row.kind === "agent") return …',
     cells(`${HOST} · the column moves to another row, then back`)
@@ -356,6 +385,8 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("InboxDrawer | Inbox | early return | if (!open) return …", { reason: REASONS[12] }),
   ...answers("InboxDrawer | Inbox | address prop | filter={filter}", { reason: REASONS[12] }),
   ...answers("InboxDrawer | Inbox | address prop | pane={false}", { reason: REASONS[12] }),
+  ...answers("Inbox | InboxBody | address prop | filter={filter}", { reason: REASONS[12] }),
+  ...answers("Inbox | InboxBody | address prop | pane={pane}", { reason: REASONS[12] }),
   ...answers('AppShell | InboxPage | route | <Route path="/">', { reason: REASONS[12] }),
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
     reason: REASONS[12],
@@ -363,73 +394,107 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("AppShell | InboxDrawer | address prop | open={inboxDrawerOpen}", {
     reason: REASONS[12],
   }),
-  ...answers('Inbox | ReadingPane | form | (mode === "columns") ? …', { reason: REASONS[13] }),
-  ...answers("Inbox | ReadingPane | form | (readingView) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | ReadingPane | form | <div className>", { reason: REASONS[13] }),
-  ...answers('Inbox | ThreadCardRow | form | (mode === "columns") ? …', { reason: REASONS[13] }),
-  ...answers('Inbox | ThreadCardRow | form | if (mode !== "cards") return …', {
+  ...answers('InboxBody | ReadingPane | form | (mode === "columns") ? …', {
     reason: REASONS[13],
   }),
-  ...answers("Inbox | ThreadCardRow | form | <div hidden={readingView}>", { reason: REASONS[13] }),
-  ...answers("Inbox | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
+  ...answers("InboxBody | ReadingPane | form | (readingView) ? …", { reason: REASONS[13] }),
+  ...answers("InboxBody | ReadingPane | form | <div className>", { reason: REASONS[13] }),
+  ...answers('InboxBody | ThreadCardRow | form | (mode === "columns") ? …', {
+    reason: REASONS[13],
+  }),
+  ...answers('InboxBody | ThreadCardRow | form | if (mode !== "cards") return …', {
+    reason: REASONS[13],
+  }),
+  ...answers("InboxBody | ThreadCardRow | form | <div hidden={readingView}>", {
+    reason: REASONS[13],
+  }),
+  ...answers("InboxBody | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
+  ...answers("InboxBody | ThreadCardRow | form | <section className>", { reason: REASONS[13] }),
   ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | (columns) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (keysOnShownRow && paneSelection.selectedNow.current === id)", {
+  ...answers("InboxBody | - | form | (columns) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "InboxBody | - | form | if (keysOnShownRow && paneSelection.selectedNow.current === id)",
+    { reason: REASONS[13] }
+  ),
+  ...answers("InboxBody | - | form | if (shownQuestion.current === paneSelection.id) return …", {
     reason: REASONS[13],
   }),
-  ...answers("Inbox | - | form | if (shownQuestion.current === paneSelection.id) return …", {
+  ...answers("InboxBody | - | form | (keysOnShownRow) ? …", { reason: REASONS[13] }),
+  ...answers('InboxBody | - | form | if (mode === "columns" && focusInPane())', {
     reason: REASONS[13],
   }),
-  ...answers("Inbox | - | form | (keysOnShownRow) ? …", { reason: REASONS[13] }),
-  ...answers('Inbox | - | form | if (mode === "columns" && focusInPane())', {
+  ...answers("InboxBody | - | form | if (id !== undefined && byId.has(id))", {
+    reason: REASONS[13],
+  }),
+  ...answers("InboxBody | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "InboxBody | - | form | if (stop === null && lost && keysOnShownRow && presented.current.length > 0) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "InboxBody | - | form | if (stop !== null && lost && paneSelection.id !== noted.question)",
+    { reason: REASONS[13] }
+  ),
+  ...answers("InboxBody | - | form | (paneSelection.id === undefined) ? …", {
     reason: REASONS[13],
   }),
   ...answers("useReadingViewLanding | - | form | if (!columns)", { reason: REASONS[13] }),
-  ...answers('Inbox | - | form | (mode === "list") ? …', { reason: REASONS[13] }),
-  ...answers('Inbox | - | form | if (mode === "list") return …', { reason: REASONS[13] }),
-  ...answers('Inbox | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
+  ...answers('InboxBody | - | form | (mode === "list") ? …', { reason: REASONS[13] }),
+  ...answers('InboxBody | - | form | if (mode === "list") return …', { reason: REASONS[13] }),
+  ...answers('InboxBody | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
+  ...answers("InboxBody | - | form | if (box === null && keysOnShownRow) return …", {
+    reason: REASONS[13],
+  }),
   ...answers(
-    'Inbox | - | form | if (mode === "list" && inHand(COPY_REF_SELECTOR) === null) return …',
+    'InboxBody | - | form | if (mode === "list" && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) return …',
     { reason: REASONS[13] }
   ),
-  ...answers("Inbox | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | (paneSelection.id === undefined) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (box === null && keysOnShownRow) return …", {
+  ...answers(
+    'InboxBody | - | form | if (mode === "list" && inHand(COPY_REF_SELECTOR) === null) return …',
+    { reason: REASONS[13] }
+  ),
+  ...answers('InboxBody | - | form | if (mode === "columns" && focusInPane()) return …', {
     reason: REASONS[13],
   }),
-  ...answers('Inbox | - | form | if (mode === "columns" && focusInPane()) return …', {
-    reason: REASONS[13],
-  }),
-  ...answers("Inbox | - | form | if (!rowLeft) return …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (columns) return …", { reason: REASONS[13] }),
+  ...answers("InboxBody | - | form | if (!rowLeft) return …", { reason: REASONS[13] }),
+  ...answers("InboxBody | - | form | if (columns) return …", { reason: REASONS[13] }),
   ...answers("usePaneSelection | - | form | (columns || entry.inboxDefaultPick !== true) ? …", {
     reason: REASONS[13],
   }),
-  ...answers("usePaneSelection | - | form | if (!columns || selectedId === undefined) return …", {
-    reason: REASONS[13],
-  }),
+  ...answers(
+    "usePaneSelection | - | form | if (columns || (pane && handOff.selected !== undefined)) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | if (columns)", { reason: REASONS[13] }),
   ...answers("usePaneSelection | - | form | if (!pane || openId === undefined) return …", {
     reason: REASONS[13],
   }),
-  ...answers("usePaneSelection | - | form | (columns) ? …", { reason: REASONS[13] }),
-  ...answers(
-    'Inbox | - | form | if (mode === "list" && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) return …',
-    { reason: REASONS[13] }
-  ),
-  ...answers("usePaneSelection | - | form | (id === undefined && !columns) ? …", {
-    reason: REASONS[13],
-  }),
-  ...answers("usePaneSelection | - | form | if (columns)", { reason: REASONS[13] }),
-  ...answers(
-    "usePaneSelection | - | form | if (!pane || columns || left === undefined || selectedId !== undefined) return …",
-    { reason: REASONS[13] }
-  ),
   ...answers(
     "usePaneSelection | - | form | if (subject === undefined || rowId(subject.row) !== openId) return …",
     { reason: REASONS[13] }
   ),
   ...answers("usePaneSelection | - | form | (kept) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "usePaneSelection | - | form | if (!columns || selectedId === undefined || selectedId === handed) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | (columns) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "usePaneSelection | - | form | if (!pane || columns || left === undefined || selectedId !== undefined) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | (id === undefined && !columns) ? …", {
+    reason: REASONS[13],
+  }),
+  ...answers("DismissedWindow | ThreadCardRow | form | (props.box === undefined) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | - | form | (scroller === null) ? …", { reason: REASONS[14] }),
+  ...answers(
+    "DismissedRows | - | form | if (Math.abs(start - virtualizer.options.scrollMargin) >= 1)",
+    { reason: REASONS[14] }
+  ),
   ...answers(
     "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",
     cells(`${HOST} · the page reloaded, then back · an Agent row's box`)

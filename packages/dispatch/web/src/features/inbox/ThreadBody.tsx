@@ -21,7 +21,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { askThreadQuery, issueQuery, meInboxKey } from "../../api/queries";
+import { askThreadQuery, issueQuery } from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -70,6 +70,7 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { meInboxReadsBack } from "./one-read-cache";
 import { agentConversation } from "./one-read-rows";
 
 /** One message of a thread, whatever route it was read from. A flattened view model, so the two
@@ -196,8 +197,12 @@ function ThreadTurns({
   });
   // The thread opens where the reader left off: under Oldest first its first unread message is
   // at the top of the column, since everything above it has been read. Newest first already puts
-  // the newest message first, so it opens where it stands.
-  const openAt = openAtFirstUnread && order === "oldest" ? threadId : undefined;
+  // the newest message first, so it opens where it stands. The order the thread opened in
+  // decides this. An order picked while the thread is open reorders it where it stands and
+  // scrolls nothing.
+  const openedIn = useRef({ order, threadId });
+  if (openedIn.current.threadId !== threadId) openedIn.current = { order, threadId };
+  const openAt = openAtFirstUnread && openedIn.current.order === "oldest" ? threadId : undefined;
   useEffect(() => {
     if (openAt === undefined) return;
     firstUnread.current?.scrollIntoView({ block: "start" });
@@ -260,7 +265,8 @@ export function threadSendKey(threadId: string): readonly unknown[] {
  * The read mark a Reply row's thread carries: the dwell rule the thread's own pages already use
  * (`useMarkThreadRead`, `features/shell/useDwell.ts`) over the row's own newest write. The
  * returned ref goes on the newest message. Reading a thread takes it out of no list - it stays in
- * the Inbox until it is dismissed - so the mark is all this does.
+ * the Inbox until it is dismissed, by **Dismiss** or by the reader's own reply - so the mark is
+ * all this does.
  */
 function useThreadRead(thread: MyReplyThreadRow, owner: RepliesOwner | undefined): DwellRef {
   return useMarkThreadRead({
@@ -367,10 +373,15 @@ function CommentThreadBody({
           // not send waits under the same name (`standing`), for the box drawn when the column
           // comes back to this thread. The key names the composer too: the thread's root is
           // drawn beside it under the thread's id, and siblings are told apart by their keys.
+          // Its Send is held until the Inbox is read again (`heldSend`): the reader's own reply
+          // takes the thread out of their Inbox (the own-answer rule, R1), and the box with it.
+          // The send's landing reads the Inbox again (`held-sends.ts`' `refreshAfter`), so the box
+          // asks for no read of its own, and the hold waits on that one read (`meInboxReadsBack`).
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
+            heldSend
             inline
             kind="comment"
             key={`composer:${thread.thread_id}`}
@@ -378,7 +389,7 @@ function CommentThreadBody({
             onClose={noReturn}
             onSent={() => {
               void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: meInboxKey });
+              return meInboxReadsBack(queryClient);
             }}
             owner={owner}
             replyParent={root}
@@ -469,18 +480,20 @@ function MessageThreadBody({
             parentKind="message"
           />
         ) : (
-          // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
+          // Keyed by the thread, and its Send held, as a comment thread's composer is
+          // (`CommentThreadBody`).
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
+            heldSend
             inline
             key={`composer:${thread.thread_id}`}
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
               void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: meInboxKey });
+              return meInboxReadsBack(queryClient);
             }}
             owner={{ issueKey, kind: "issue" }}
             replyParent={root}
@@ -537,9 +550,10 @@ function AskThreadBody({
   return (
     <div className="mt-2" data-inbox-thread={thread.thread_id} ref={markNewest}>
       {/* Keyed by the ask: the column draws this body for one ask's thread after another, and
-          the card holds the writes it made - an answer, a question back, a reply, a decline, a
-          hand-on, an upload, an unfollow, an unsubscribe - each with its refusal and its Retry,
-          so the next ask is drawn with a card of its own, never under this one's refusal. */}
+          the card holds the writes it made - an upload, an unfollow, an unsubscribe - each with
+          its refusal and its Retry, so the next ask is drawn with a card of its own, never under
+          this one's refusal. Its answer, question back, reply, decline and hand-on are the
+          Inbox's, by ask, so the card drawn for an ask shows that ask's own. */}
       <AskCard
         ask={read.data.ask}
         initialThread={read.data}
@@ -624,9 +638,11 @@ function AgentThreadBody({
               {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
                   its send named by it (`threadSendKey`): the draft, its uploads and its reply out
                   or refused are this thread's, and the session's other sends it shows are the
-                  ones answering this thread. */}
+                  ones answering this thread. Its Send is held until the Inbox is read again, as
+                  a comment thread's is. */}
               <AgentMessageComposer
                 agent={agent}
+                heldSend
                 hold={hold}
                 key={`composer:${thread.thread_id}`}
                 onCancelReply={noReturn}

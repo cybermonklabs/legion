@@ -180,6 +180,15 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the design gates: %v", err)
 	}
+	stepRows, err := pool.Query(ctx, issueGatedStepsStatement, issue.Key)
+	if err != nil {
+		t.Fatalf("query the project's gated steps: %v", err)
+	}
+	steps, err := scanIssueGatedSteps(stepRows)
+	stepRows.Close()
+	if err != nil {
+		t.Fatalf("load the project's gated steps: %v", err)
+	}
 	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
@@ -198,6 +207,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,
 		DesignGates:       gates,
+		ApprovalGate:      issueApprovalGate(issue, steps, artifacts),
 		ReferencedByCount: counts[issue.Key],
 	})
 	return recorder.Body.Bytes()

@@ -1065,7 +1065,7 @@ every recording no row writes any more.
 ## Projects
 
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
+four the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
 stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
@@ -1081,7 +1081,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
+run holds 2,230 rows in 214 files, and the other 52 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -1118,21 +1118,23 @@ tab holds the person's writes for another tab's sign-out on a renewed lease rath
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
-(a card draws without holding the main thread for a second)
-and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
+(a card draws without holding the main thread for a second),
+`e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
 back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
 stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
-thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
+thread under 150 ms, the first load inside both of those bounds of up to twenty taken) and
+`e2e/inbox-dismissed-timing.e2e.ts` (the median time to the Dismissed view's first row over 5,000
+dismissed threads is at most 1.25 times the median over 250, eleven loads of each), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 52 rows, and each
 caps its own workers at one.
-What holds a reading to a quiet machine is the run being one worker wide, and the three files
+What holds a reading to a quiet machine is the run being one worker wide, and the four files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
 `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more than one worker,
 since four workers on one machine make a second of wall clock unmeasurable, and the rows of
-`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
-the command that runs them.
+`e2e/agent-workspace-timing.e2e.ts` and `e2e/inbox-dismissed-timing.e2e.ts`, which read a clock
+of their own, take that one worker from the command that runs them.
 `bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
 beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that

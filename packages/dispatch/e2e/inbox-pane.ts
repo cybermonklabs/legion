@@ -23,9 +23,10 @@ import { settledState } from "./settled";
  * under `chromium` (1280 px, the column on) and `iphone` (390 px, the reading view).
  */
 
-/** The list column, which is the whole Inbox where no row is open below the column's width. */
-export function inboxList(page: Page): Locator {
-  return page.getByTestId("inbox-list");
+/** The list column, which is the whole Inbox where no row is open below the column's width,
+ *  inside `within`: the page, or a drawer. */
+export function inboxList(within: Page | Locator): Locator {
+  return within.getByTestId("inbox-list");
 }
 
 /** The open row's surface: the reading column, or below its width the reading view's body.
@@ -37,6 +38,11 @@ export function inboxPane(page: Page): Locator {
 /** Below the column's width, the open row's reading view: its Inbox control over `inboxPane`. */
 export function readingView(page: Page): Locator {
   return page.getByTestId("inbox-reading-view");
+}
+
+/** The reading view while it reads the row `id`. */
+export function readingViewOf(page: Page, id: string): Locator {
+  return readingView(page).and(page.locator(`[data-inbox-reading-row="${id}"]`));
 }
 
 /** The pane's one scroller, inside it: every flow draws what it shows in this box, and it is the
@@ -70,7 +76,7 @@ export async function selectRow(page: Page, askId: string): Promise<void> {
     await expect(row).toHaveAttribute("data-inbox-selected", "true");
     return;
   }
-  const open = readingView(page).and(page.locator(`[data-inbox-reading-row="${askId}"]`));
+  const open = readingViewOf(page, askId);
   const state = await settledState(`the Inbox before ${askId} is opened`, [
     ["open", open],
     ["another open", readingView(page)],

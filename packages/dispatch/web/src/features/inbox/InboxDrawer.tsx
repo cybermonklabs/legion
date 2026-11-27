@@ -1,16 +1,10 @@
 import { type ReactNode, useRef, useState } from "react";
 
-import {
-  backdrop50,
-  borderDefault,
-  card,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
-import type { InboxRoute } from "../refs/routes";
+import { backdrop50, borderDefault, card } from "../../theme/classes";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
+import type { InboxRoute } from "./inbox-route";
 
 /**
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions
@@ -30,7 +24,9 @@ import { Inbox } from "./Inbox";
  * (`scroller`): without it the anchor compensates a removed row with `window.scrollBy`, which
  * moves nothing here, and the row the reader's hand is on jumps by a card's height. What the
  * reader's browser keeps - the thread order, and which bands they folded - is theirs rather than
- * the address's, so the drawer and the page agree.
+ * the address's, so the drawer and the page agree. The drawer draws no title line of its own: the
+ * Inbox's header line holds its title, its search box and the close button (`header`), whose ref
+ * is the dialog's first focus.
  */
 export function InboxDrawer({ onClose, open }: { onClose: () => void; open: boolean }): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -54,19 +50,9 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
         ref={dialog.containerRef}
         role="dialog"
       >
-        <div className={`mb-4 flex items-center justify-between border-b pb-3 ${borderDefault}`}>
-          <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Inbox</h2>
-          <button
-            className={`min-h-11 rounded-lg px-3 text-sm font-medium ${textMutedOnSurface}`}
-            onClick={onClose}
-            ref={closeButtonRef}
-            type="button"
-          >
-            Close
-          </button>
-        </div>
         <Inbox
           filter={filter}
+          header={{ closeRef: closeButtonRef, kind: "drawer", onClose }}
           keymapScope={DIALOG_SCOPE}
           onFilterChange={setFilter}
           pane={false}

@@ -1260,8 +1260,9 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
 });
 
 /** Sweeps the band from the top of the page down to `end` in the page: at every 4 px step it
- *  scrolls, lets two frames pass so the pill's own scroll listener and the render React queues
- *  for it have both landed, and records where a tap at the centre of a control does not reach
+ *  scrolls, lets a frame pass so the pill's own scroll listener has run, and, where the pill's
+ *  showing does not yet match the step, up to `RENDER_FRAMES` more for the render React queued
+ *  for it to land, and records where a tap at the centre of a control does not reach
  *  it as it should: a tab must take its own tap, and no control may lose its tap to `Jump to
  *  latest`. Every control above the turns is tapped - the issue's header, its tabs and the All
  *  / Open / Closed filter - and inside the turns the two that decide a suggestion, Accept and
@@ -1271,7 +1272,7 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
  *  foot, where the list scrolls behind it as it does behind any floating control, so an older
  *  turn's quiet actions - Copy reference, Reply, Pin - pass under it and are not tapped. The
  *  newest card never does: the pill is drawn exactly where the reader is away from the place
- *  the page settled AND that card's head is off the screen (`belongs`, the rule
+ *  the page settled AND no part of that card is on the screen (`belongs`, the rule
  *  `use-follow-latest.ts` carries), so a step that draws no pill where it belongs, and a step
  *  that draws one over the card it points at, are both recorded.
  *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor, are not
@@ -1281,6 +1282,13 @@ async function tapsLostAcrossBand(
   band: { end: number; settled: number }
 ): Promise<string[]> {
   return page.evaluate(async ({ end, settled }) => {
+    /** How many frames a step that changes whether the pill shows waits for React's render of
+     *  it. That render is a task of its own after the scroll's frame, and lands by the next frame
+     *  on an idle page; under load it can land later: in WebKit on CI's runners the step past the
+     *  place the page settled at (420) drew no pill a frame after the listener ran (425, run
+     *  45399887379 at daf66efe, passed on retry). A pill still not drawn, or still drawn
+     *  over the card, after these is recorded. */
+    const RENDER_FRAMES = 10;
     const turns = document.querySelector('[aria-label="Conversation turns"]');
     if (turns === null) throw new Error("expected the Conversation's turns");
     const frame = () =>
@@ -1317,10 +1325,16 @@ async function tapsLostAcrossBand(
     for (let top = 1; top <= end; top += 4) {
       window.scrollTo(0, top);
       // One frame carries the scroll into layout and runs the pill's listener; a step that
-      // changes whether the pill shows takes one more for the render React queued for it.
+      // changes whether the pill shows waits for the render React queued for it.
       await frame();
       const shows = belongs(top);
-      if (shows !== (pillBox()?.height ?? 0) > 0) await frame();
+      for (
+        let waited = 0;
+        waited < RENDER_FRAMES && shows !== undefined && shows !== (pillBox()?.height ?? 0) > 0;
+        waited += 1
+      ) {
+        await frame();
+      }
       const pill = document.querySelector('[data-testid="jump-to-latest"]');
       if (shows === true && (pill?.getBoundingClientRect().height ?? 0) === 0) {
         lost.push(`scrolled to ${top}: no Jump to latest`);
@@ -1408,12 +1422,12 @@ async function expectPill(page: Page, pill: Locator, settled: number): Promise<v
 // `Jump to latest` shows. The pill is fixed at the foot there, above the docked composer, so
 // every control above the turns keeps its own tap through that band, and so does the newest
 // card's Accept and Reject, the pair the pill took for itself while it sat at the head of the
-// list. The pill is gone while that card's head is on the screen, which is where today's issue
-// header - tall at a phone's width, since its tabs wrap rather than scroll sideways - holds the
-// card at the top of the page: a reader who sees the card the pill carries them to has nothing
-// to jump to (dispatch://INFRA-5200). An older card scrolled through the foot still passes
-// under the pill and loses its quiet taps - Copy reference, Reply, Pin - for as long as it is
-// there, which is accepted.
+// list. The pill is gone while any part of that card is on the screen, which is where today's
+// issue header - tall at a phone's width, since its tabs wrap rather than scroll sideways - holds
+// the card at the top of the page: a reader who sees the card the pill carries them to has
+// nothing to jump to (dispatch://INFRA-5200). An older card scrolled through the foot still
+// passes under the pill and loses its quiet taps - Copy reference, Reply, Pin - for as long as
+// it is there, which is accepted.
 // SLOW(>=2s): the band is swept 4 px at a time, a frame per step, and every control above the
 // turns, with the suggestion's decisions under it, is hit-tested at each one.
 test("on a phone, Jump to latest covers none of the issue's tabs, the controls above the turns, or the newest card's Accept and Reject above the foot band @phone", async ({
@@ -1467,8 +1481,8 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     });
     // Both ends of the band keep Playwright's own check; the sweep between them runs in the
     // page, one round trip rather than three per step. The pill is drawn exactly where the
-    // reader is away from where the page settled and the newest card's head is off the screen,
-    // so each end is read against that rule, not against the scroll alone.
+    // reader is away from where the page settled and no part of the newest card is on the
+    // screen, so each end is read against that rule, not against the scroll alone.
     await page.evaluate(() => window.scrollTo(0, 1));
     await expectPill(page, jump, settled);
     const lost = await tapsLostAcrossBand(page, { end, settled });

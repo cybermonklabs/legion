@@ -1,4 +1,4 @@
-import { inboxThreadRow } from "@legion/contracts";
+import { type InboxRowGate, inboxThreadRow } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { meInboxKey } from "../../api/queries";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -20,7 +21,7 @@ import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
 import { rowPriority, rowType } from "./list-row";
-import { RowKindIcon, RowPriorityTag } from "./RowMarks";
+import { RowApprovalMark, RowKindIcon, RowPriorityTag } from "./RowMarks";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadTitle } from "./ThreadTitle";
 
@@ -28,15 +29,17 @@ import { ThreadTitle } from "./ThreadTitle";
  * A Reply or an Agent row as a card: the layout below the reading pane's width, and the one the
  * drawer shows at every width.
  *
- * It draws the head - the kind icon, the title and the time of the last write, then the priority
- * tag and the whole issue key and title - then the thread itself, exactly as the reading pane
- * draws it and collapsed the same way (`ThreadBody`), and the three controls a thread row offers:
- * **Open**, **Mark read**, and the **Dismiss** that takes the row out of the Inbox - **Move to
- * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
- * thread anchored in a document shows the text it is anchored to rather than the document: a card
- * is no place to open one.
+ * It draws the head - the kind icon, the title and the time of the last write, then the approval
+ * state of the thread's issue (`RowApprovalMark`), first on its line so the marks of cards one
+ * above another start at one x, the priority tag and the whole issue key and title - then the
+ * thread itself, exactly as the reading pane draws it and collapsed the same way
+ * (`ThreadBody`), and the three controls a thread row offers: **Open**, **Mark read**, and the
+ * **Dismiss** that takes the row out of the Inbox - **Move to Inbox** in the Dismissed view -
+ * which the list it is drawn in provides (`DismissControl`). A thread anchored in a document shows
+ * the text it is anchored to rather than the document: a card is no place to open one. Mark read
+ * is held while its write is out (`heldPress`).
  */
-export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
+export function ThreadRowCard({ thread }: { thread: MyReplyRow & InboxRowGate }): ReactNode {
   const queryClient = useQueryClient();
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
@@ -75,6 +78,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </span>
       </div>
       <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-2">
+        <RowApprovalMark gate={thread.approval_gate} />
         <RowPriorityTag priority={rowPriority(row)} />
         <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
       </div>
@@ -91,8 +95,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </Link>
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
-          disabled={markRead.isPending}
-          onClick={() => markRead.mutate(thread)}
+          {...heldPress(markRead.isPending, () => markRead.mutate(thread))}
           type="button"
         >
           {markRead.isPending ? "Marking read…" : "Mark read"}

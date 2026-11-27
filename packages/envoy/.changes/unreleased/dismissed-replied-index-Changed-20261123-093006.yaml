@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A new partial index, user_threads_dismissed_replied, holds only the dismissed threads the
+  Dismissed view lists (a reply from somebody else, `replied_at`, beside the dismissal), so a
+  Dismissed page reads no row the view leaves out. It is built concurrently;
+  user_threads_dismissed stays for the release before.
+time: 2026-11-23T09:30:06Z
+custom:
+  Issue: dismissed-replied-index

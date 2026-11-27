@@ -1,13 +1,15 @@
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one pick repeated inside a single act batch
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
+import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -161,7 +163,7 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
     return existing;
   }
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("heading", { level: 1 }));
+  await user.click(await screen.findByRole("button", { name: "Edit title" }));
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 
@@ -396,7 +398,9 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     let title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -409,7 +413,7 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
 
     // Blur exits click-to-edit mode; re-enter it to start a second, still-unsaved edit
     // before the first save's response arrives.
-    await user.click(await screen.findByRole("heading", { level: 1, name: "A" }));
+    await user.click(await screen.findByRole("button", { description: "A", name: "Edit title" }));
     title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -484,15 +488,20 @@ test("IssuePage ignores same-task duplicate route saves", async () => {
 });
 
 test("IssuePage ignores a same-task duplicate status save", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    // The same selection delivered twice in one task is what the guard under test ignores, and
-    // user-event's `selectOptions` cannot deliver a selection the control already holds.
-    fireEvent.change(status, { target: { value: "backlog" } });
-    fireEvent.change(status, { target: { value: "backlog" } });
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await user.click(status);
+    const backlog = within(panelOf(status)).getByRole("option", { name: "Backlog" });
+    // The same pick delivered twice in one task is what the guard under test ignores, and a
+    // user-event press of the row closes the list before a second one can reach it.
+    act(() => {
+      fireEvent.click(backlog);
+      fireEvent.click(backlog);
+    });
 
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt);
@@ -508,9 +517,11 @@ test("IssuePage submits the selected priority through the issue mutation", async
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    expect([...priority.options].map((option) => option.value)).toEqual(["", "0", "1", "2", "3"]);
-    await user.selectOptions(priority, "0");
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await user.click(priority);
+    const list = within(panelOf(priority)).getByRole("listbox");
+    expect(rows(list)).toEqual(["✓Unset", "P0", "P1", "P2", "P3"]);
+    await user.click(within(list).getByRole("option", { name: "P0" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -529,13 +540,13 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    await user.selectOptions(priority, "0");
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await pickIn(user, () => priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
 
-    expect(priority.value).toBe("0");
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 P0");
 
     await act(async () => {
       save.resolve({ ...issue, priority: 0 });
@@ -555,19 +566,20 @@ test("IssuePage restores the previous priority after a failed save", async () =>
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    await user.selectOptions(priority, "0");
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
+    await pickIn(user, () => priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    expect(priority.value).toBe("0");
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 P0");
 
     act(() => {
       save.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
-    expect(priority.value).toBe("");
-    expect(priority.disabled).toBe(false);
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 Priority");
+    expect(priority).not.toHaveAttribute("aria-disabled");
+    expect((priority as HTMLButtonElement).disabled).toBe(false);
   } finally {
     unmount();
     restore();
@@ -810,14 +822,14 @@ test("IssuePage drains a title draft after a different issue write settles", asy
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    await user.selectOptions(status, "backlog");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    // The status select takes focus when it is used, which would blur (and submit) an open title
-    // editor as a click does in a browser; open the editor after that write is away.
+    // The Status takes focus when it is used, which would blur (and submit) an open title editor
+    // as a click does in a browser; open the editor after that write is away.
     const title = await openTitleEditor();
     await user.clear(title);
     await user.click(title);
@@ -846,9 +858,9 @@ test("IssuePage does not submit a route that was typed but never saved", async (
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     const route = await openRouteEditor();
-    await user.selectOptions(status, "backlog");
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -874,7 +886,9 @@ test("IssuePage retries an unchanged failed title draft", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -981,8 +995,8 @@ test("IssuePage retries a failed drained title before sending the queued route",
   const { unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    await user.selectOptions(status, "backlog");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1723,7 +1737,7 @@ test("IssuePage sends a refused title no second time as a status pick lands afte
     });
     await screen.findByText("Could not update this issue.");
 
-    await user.selectOptions(await screen.findByLabelText("Status"), "backlog");
+    await pickIn(user, () => screen.getByRole("button", { name: pickNamed("Status") }), "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1810,8 +1824,8 @@ test("IssuePage sends a route that waited behind a failed status write ahead of 
   const { queryClient, unmount } = renderIssuePage();
 
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    await user.selectOptions(status, "backlog");
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1870,17 +1884,19 @@ test("IssuePage mounts the header without reading who has signed in until the as
   ]);
   const { unmount } = renderIssuePage();
   try {
-    const control = await screen.findByRole("combobox", { name: "Assignee of CORE-1" });
+    const control = await screen.findByRole("button", { name: pickNamed("Assignee of CORE-1") });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
     // Focus has no user-event form; the control is reached for, never pressed.
     fireEvent.focus(control);
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(
-        [...(control as HTMLSelectElement).options].map((option) => option.textContent)
-      ).toContain("bob")
-    );
+    // The list draws its options only while it stands open.
+    await userEvent.setup().click(control);
+    expect(
+      await within(
+        await screen.findByRole("listbox", { name: "Assignee of CORE-1 options" })
+      ).findByRole("option", { name: "bob" })
+    ).toBeTruthy();
   } finally {
     unmount();
     restore();
@@ -2071,7 +2087,9 @@ test("IssuePage says what Retry does after a title save the reader stopped", asy
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -2164,13 +2182,13 @@ test("a board move then a header status change land in press order after an outa
     </QueryClientProvider>
   );
   try {
-    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     let moved: Promise<void> | undefined;
     act(() => {
       moved = moveCard?.("CORE-1", "in_progress", 0);
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    await user.selectOptions(status, "backlog");
+    await pickIn(user, () => status, "Backlog");
     up = true;
     act(() => {
       window.dispatchEvent(new Event("online"));

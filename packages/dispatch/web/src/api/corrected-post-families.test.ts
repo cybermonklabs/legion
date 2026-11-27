@@ -12,6 +12,7 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import * as ts from "typescript";
 
 import {
   correction,
@@ -22,6 +23,7 @@ import {
 } from "../__tests__/correction-feed";
 import { graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { stripComments } from "../__tests__/strip-comments";
 import { oneReadAnswer } from "../features/inbox/inbox-fixture";
 import { useMarginItems } from "../features/margin/useMarginItems";
 import { agentRow, replyRow, withConversation } from "../features/threads/replies-fixture";
@@ -70,16 +72,22 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-/** One source file, by its path from `web/src`, with its text. */
+/** One source file, by its path from `web/src`, with its text, its comments taken out and its
+ *  lines where they were (`stripComments`): TypeScript decides what is a comment, so a `//` or a
+ *  `/*` inside a string, a template or a regular expression is code. */
 interface Source {
   readonly path: string;
   readonly text: string;
 }
 
-const SOURCES: readonly Source[] = sourceFiles(SOURCE_ROOT).map((path) => ({
-  path: relative(SOURCE_ROOT, path),
-  text: readFileSync(path, "utf8"),
-}));
+/** The source file at `path`, from `web/src`, as this test reads its `text`. */
+function sourceOf(path: string, text: string): Source {
+  return { path, text: stripComments(text, path) };
+}
+
+const SOURCES: readonly Source[] = sourceFiles(SOURCE_ROOT).map((path) =>
+  sourceOf(relative(SOURCE_ROOT, path), readFileSync(path, "utf8"))
+);
 
 /** C-Q1's own expression, `queryKey: *\[ *"[a-zA-Z_-]+"( *, *"[a-zA-Z_-]+")?`, held at the
  *  `queryKey:` it is tried at. */
@@ -111,7 +119,7 @@ function quotedEnd(text: string, from: number): number {
 }
 
 /** The expression that starts at `from`: up to the first `,` or `;` at its own depth, or the
- *  bracket that closes the one it stands in, with its comments left out. */
+ *  bracket that closes the one it stands in. */
 function expressionAt(text: string, from: number): string {
   let depth = 0;
   let at = from;
@@ -122,16 +130,6 @@ function expressionAt(text: string, from: number): string {
       const end = quotedEnd(text, at);
       expression += text.slice(at, end);
       at = end;
-      continue;
-    }
-    if (char === "/" && text[at + 1] === "/") {
-      const end = text.indexOf("\n", at);
-      at = end < 0 ? text.length : end;
-      continue;
-    }
-    if (char === "/" && text[at + 1] === "*") {
-      const end = text.indexOf("*/", at);
-      at = end < 0 ? text.length : end + 2;
       continue;
     }
     if ("([{".includes(char)) depth += 1;
@@ -260,9 +258,9 @@ function bindingsOf(name: string, path: string, at: number): readonly Binding[] 
 }
 
 /** What a computed key resolves to: the families it can name, or a key another site keys a query
- *  under (`someQuery(…).queryKey`), which the test counts there, or a type, where the colon
- *  annotates a parameter or a field and keys nothing. */
-type Resolved = readonly string[] | "named elsewhere" | "a type";
+ *  under (`someQuery(…).queryKey`), which the test counts there. A colon that annotates a
+ *  parameter or a field never reaches here: `keyProperties` reads object-literal properties alone. */
+type Resolved = readonly string[] | "named elsewhere";
 
 /** The families `expression`, a key as written at `at` in `path`, names; undefined where no rule
  *  here reads it. */
@@ -301,6 +299,8 @@ function keyFamilies(
       : keyFamilies(expressionAt(bare, spread[0].length), path, at, seen);
   }
   if (/\.queryKey$/u.test(bare)) return "named elsewhere";
+  // A key of `undefined` names no query, so it names no family.
+  if (bare === "undefined") return [];
   const name = /^[a-zA-Z_$][\w$]*$/u.exec(bare)?.[0];
   const called = /^([a-zA-Z_$][\w$]*)\s*\(/u.exec(bare);
   const bound =
@@ -309,7 +309,6 @@ function keyFamilies(
       ? called[1]
       : undefined);
   if (bound === undefined) return undefined;
-  if (name !== undefined && /^[A-Z]/u.test(name)) return "a type";
   const bindings = bindingsOf(bound, path, at);
   if (bindings.length === 0) return undefined;
   const families: string[] = [];
@@ -336,36 +335,91 @@ interface KeySite {
   readonly families: readonly string[];
 }
 
-/** Each `queryKey:` of the source: C-Q1's literal families, and each computed key's (C-Q1's
- *  second command, `queryKey: *[^\[ ]`, and the keys neither of its commands reads: a literal
- *  spread from another key, `queryKey: [...myRepliesKey, "count"]`, or one whose array opens on
- *  the next line). A computed key in a comment is no key. */
-function keySites(): { readonly sites: KeySite[]; readonly unread: string[] } {
+/** One property of an object literal that names `queryKey`, as TypeScript parses the source, so a
+ *  `queryKey` inside a string, a template or a type is none: where its name starts, how it is
+ *  spelled, and its value as written. `"C-Q1"` is the spelling C-Q1 reads (`queryKey:`, the colon
+ *  at once after the name); `"other"` quotes the name, computes it from a string
+ *  (`["queryKey"]:`) or spaces it from its colon; a `"shorthand"` `{ queryKey }` reads the name it
+ *  hands on, so its value is that name. */
+interface KeyProperty {
+  readonly at: number;
+  readonly spelled: "C-Q1" | "other" | "shorthand";
+  readonly value: string;
+}
+
+function keyProperties({ path, text }: Source): KeyProperty[] {
+  // Most files key no query, and a file whose text never names `queryKey` holds no property.
+  if (!text.includes("queryKey")) return [];
+  const file = ts.createSourceFile(path, text, {
+    jsDocParsingMode: ts.JSDocParsingMode.ParseNone,
+    languageVersion: ts.ScriptTarget.Latest,
+  });
+  const properties: KeyProperty[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isShorthandPropertyAssignment(node) && node.name.text === "queryKey") {
+      properties.push({ at: node.name.getStart(file), spelled: "shorthand", value: "queryKey" });
+    } else if (ts.isPropertyAssignment(node) && propertyName(node.name) === "queryKey") {
+      const at = node.name.getStart(file);
+      properties.push({
+        at,
+        spelled: text.startsWith("queryKey:", at) ? "C-Q1" : "other",
+        value: expressionAt(text, node.initializer.getStart(file)),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return properties;
+}
+
+/** The name a property of an object literal is written under, where the source writes it out: an
+ *  identifier, a string, or a string computed name (`["queryKey"]`); undefined for any other. */
+function propertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) {
+    return name.expression.text;
+  }
+  return undefined;
+}
+
+/** Each `queryKey` property of `sources` that keys a query (`keyProperties`): C-Q1's literal
+ *  families, and each computed key's (C-Q1's second command, `queryKey: *[^\[ ]`, and the keys
+ *  neither of its commands reads: a literal spread from another key,
+ *  `queryKey: [...myRepliesKey, "count"]`, one whose array opens on the next line, a shorthand
+ *  `{ queryKey }`, and a name quoted, computed from a string or spaced from its colon). A key in a
+ *  comment is no key: a source's comments are taken out (`sourceOf`). */
+function keySites(sources: readonly Source[]): {
+  readonly sites: KeySite[];
+  readonly unread: string[];
+} {
   const sites: KeySite[] = [];
   const unread: string[] = [];
-  for (const { path, text } of SOURCES) {
-    for (const found of text.matchAll(/queryKey:/gu)) {
-      const at = found.index ?? 0;
+  for (const source of sources) {
+    const { path, text } = source;
+    for (const { at, spelled, value } of keyProperties(source)) {
       const line = text.slice(0, at).split("\n").length;
       const where = `${path}:${line}`;
       LITERAL_KEY.lastIndex = at;
-      const literal = LITERAL_KEY.exec(text);
+      const literal = spelled === "C-Q1" ? LITERAL_KEY.exec(text) : null;
       if (literal !== null) {
         sites.push({ families: [familyName(literal[1] ?? "", literal[2])], where });
         continue;
       }
-      const lineStart = text.lastIndexOf("\n", at) + 1;
-      if (/\/\/|^\s*\*/u.test(text.slice(lineStart, at))) continue;
-      const expression = expressionAt(text, at + found[0].length);
-      const resolved = keyFamilies(expression, path, at);
-      if (resolved === undefined) unread.push(`${where}: queryKey: ${expression}`);
+      // A shorthand hands on the key its name holds. A name the file binds with no `const`, `let`
+      // or `function` - a parameter, a loop variable, a field taken out of an object - holds a key
+      // made elsewhere: the test reads it where that key is written as a `queryKey` property, and
+      // nowhere where a caller passes it in as a plain argument, as it reads no such argument.
+      const own = (BINDINGS.get(value) ?? []).some((binding) => binding.path === path);
+      if (spelled === "shorthand" && !own) continue;
+      const resolved = keyFamilies(value, path, at);
+      if (resolved === undefined) unread.push(`${where}: queryKey: ${value}`);
       else if (Array.isArray(resolved)) sites.push({ families: resolved, where });
     }
   }
   return { sites, unread };
 }
 
-const { sites: KEY_SITES, unread: UNREAD_KEYS } = keySites();
+const { sites: KEY_SITES, unread: UNREAD_KEYS } = keySites(SOURCES);
 
 /** Every family the source keys a query under, with the first place it does. */
 const SOURCE_FAMILIES: ReadonlyMap<string, string> = new Map(
@@ -383,6 +437,52 @@ test("every computed query key resolves to the families it names", () => {
   // The positive control: the reader finds C-Q1's families and the computed ones C-Q1 misses.
   expect(SOURCE_FAMILIES.has("issue-messages")).toBe(true);
   expect(SOURCE_FAMILIES.has("me inbox")).toBe(true);
+});
+
+// A source is read as TypeScript reads it: a `//` inside a string is code, and a comment is no
+// code. A computed key on a line after a URL was taken for a key in a comment and never read.
+test("a computed key after a string holding // on its line is a key site, and a key in a comment is none", () => {
+  const text = [
+    'useQuery({ url: "https://dispatch.example/", queryKey: open ? ["probe", "open"] : ["probe", "shut"] });',
+    "// A comment that names queryKey: someKey keys nothing.",
+  ].join("\n");
+  expect(keySites([sourceOf("probe.ts", text)])).toEqual({
+    sites: [{ families: ["probe open", "probe shut"], where: "probe.ts:1" }],
+    unread: [],
+  });
+});
+
+// A key is read however its property is spelled: a quoted name, one computed from a string, or one
+// spaced from its colon, keyed a query the guard never read. A shorthand of a name the file does
+// not bind hands on a key made elsewhere, so it is no site and nothing unread.
+test("a queryKey property quoted, computed from a string or spaced from its colon is a key site, and a shorthand of an unbound name is none", () => {
+  const text = [
+    'useQuery({ "queryKey": ["quoted", id] });',
+    'useQuery({ queryKey : ["spaced"] });',
+    "const cancel = (queryKey: QueryKey) => client.cancelQueries({ queryKey });",
+    'useQuery({ ["queryKey"]: ["computed"] });',
+  ].join("\n");
+  expect(keySites([sourceOf("probe.ts", text)])).toEqual({
+    sites: [
+      { families: ["quoted"], where: "probe.ts:1" },
+      { families: ["spaced"], where: "probe.ts:2" },
+      { families: ["computed"], where: "probe.ts:4" },
+    ],
+    unread: [],
+  });
+});
+
+// A `queryKey:` that names no property of an object literal keys nothing: one inside a string was
+// read as a key, resolved to nothing and reported unread.
+test("a string holding queryKey: is no key site and nothing unread, and a key beside it still is one", () => {
+  const text = [
+    'const url = "https://dispatch.example/queryKey:sample";',
+    'useQuery({ url, queryKey: ["x", id] });',
+  ].join("\n");
+  expect(keySites([sourceOf("probe.ts", text)])).toEqual({
+    sites: [{ families: ["x"], where: "probe.ts:2" }],
+    unread: [],
+  });
 });
 
 test("every query family the source keys is written by a correction or listed as holding no post", () => {

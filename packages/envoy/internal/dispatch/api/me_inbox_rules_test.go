@@ -155,8 +155,17 @@ func TestTheOneReadDropsANodeItsCallerMayNotSee(t *testing.T) {
 		for _, query := range []url.Values{nil, {"state": {myRepliesStateUnread}}} {
 			got := readMeInboxAs(t, withHidden.handler, "alice", query)
 			want := readMeInboxAs(t, without.handler, "alice", query)
-			// The statement's own clock is the one field of the answer no seed decides.
+			// The statement's own clock is a field of the answer no seed decides, and so is the id
+			// of each gate document (approvalGateLine.ArtifactID): each store draws its documents'
+			// ids itself. The gate's steps and approvals still have to agree.
 			got.AsOf, want.AsOf = time.Time{}, time.Time{}
+			for _, answer := range []*meInboxResponse{&got, &want} {
+				for e := range answer.Entries {
+					for l := range answer.Entries[e].ApprovalGate {
+						answer.Entries[e].ApprovalGate[l].ArtifactID = nil
+					}
+				}
+			}
 			gotJSON, _ := json.Marshal(got)
 			wantJSON, _ := json.Marshal(want)
 			if string(gotJSON) != string(wantJSON) {

@@ -1698,14 +1698,16 @@ export class DispatchClient {
   /** `GET /api/v1/me/inbox?state=<state>`: the caller's own Inbox from the one read, newest
    *  activity first, every entry of it for `inbox` and `unread`, since no `limit` is asked for
    *  (under `dismissed`, which `dispatch inbox` does not ask for, the route answers one page of
-   *  200). `inbox` holds the open asks that wait on the caller - an ask waits on the person it was
-   *  handed to, else on its issue's assignee, else on its project's default assignee, so the
-   *  caller's are the asks handed to them, the asks nobody handed on of the issues assigned to
-   *  them, and the asks nobody handed on, on an issue nobody holds or on a project document, of a
-   *  project whose default assignee they are - beside their Reply and Agent rows, read or not;
-   *  `unread` holds the threads they wrote in that somebody else has written in since, and the
-   *  one-off messages they sent an agent session that it answered. The route reads the caller's
-   *  own `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED.
+   *  200, newest dismissal first, with a `next_cursor` while more follow, since the server bounds
+   *  that state's read). `inbox` holds the open asks that wait on the caller - an ask waits on the
+   *  person it was handed to, else on its issue's assignee, else on its project's default
+   *  assignee, so the caller's are the asks handed to them, the asks nobody handed on of the
+   *  issues assigned to them, and the asks nobody handed on, on an issue nobody holds or on a
+   *  project document, of a project whose default assignee they are - beside their Reply and Agent
+   *  rows, read or not; `unread` holds the threads they wrote in that somebody else has written in
+   *  since, and the one-off messages they sent an agent session that it answered. The route reads
+   *  the caller's own `person` scope and refuses a credential without it with 403
+   *  OAUTH_SCOPE_REQUIRED.
    *
    *  It sends the GET through one `#send` (once, and once more only after Dispatch answers that
    *  the token presented is not live) and throws an answer of no route as it came (`isNoRoute`),

@@ -1174,9 +1174,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 		events = append(events, event)
 	}
+	// The comment is its writer's own write: a reply by a person acting as themselves takes its
+	// thread out of their Inbox (inboxwrite.Write.Own, the own-answer rule, R1), from the issue
+	// route and a document's margin alike, both of which reach this handler.
+	record := inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, stored.project).Own()
 	event, err := s.queueCommentCreated(
 		r.Context(), tx, ledger, owner, &comment, artifactName, threadTarget, waitingOn, referenceChanges, indexed,
-		start.commentResolution, stored, commentAttempts{keys: attemptKeys, opened: attemptsOpened},
+		start.commentResolution, stored, commentAttempts{keys: attemptKeys, opened: attemptsOpened}, record,
 	)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1347,8 +1351,11 @@ func (s *server) queueIssueComment(
 	if err != nil {
 		return nil, "", err
 	}
+	// An issue write's comment is written by Dispatch's system actor, no person answering in its
+	// thread, so its record is not its writer's own (inboxwrite.Write.Own) and dismisses nothing.
+	record := inboxwrite.Comment(comment.ID, author, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, stored.project)
 	created, err := s.queueCommentCreated(
-		ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, indexed, commentResolution{}, stored, commentAttempts{},
+		ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, indexed, commentResolution{}, stored, commentAttempts{}, record,
 	)
 	return created, body, err
 }
@@ -1511,11 +1518,14 @@ type commentAttempts struct {
 // in the Inbox (inboxwrite.PlanRecord): the comment as its write leaves it, in thread, with
 // waitingOn (commentThreadTarget.waitingOnAfter), the references it moved, and what the listener's
 // answers (resolved) decide about the comment's other routes (routeSuppression,
-// mentions_decide_routes). The author of the comment is the event's actor.
+// mentions_decide_routes). The author of the comment is the event's actor. record is the
+// comment's write into its thread as its caller built it (inboxwrite.Comment), marked its
+// writer's own where it is (inboxwrite.Write.Own, the own-answer rule, R1): the comment route's
+// (createCommentFor) is, and the comment an issue write leaves (queueIssueComment) is not.
 func (s *server) queueCommentCreated(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, owner owner, comment *model.Comment, artifactName string,
 	thread commentThreadTarget, waitingOn string, references model.ReferenceChanges, indexed graphstore.Uncaused,
-	resolved commentResolution, stored commentRowWrite, attempts commentAttempts,
+	resolved commentResolution, stored commentRowWrite, attempts commentAttempts, record inboxwrite.Write,
 ) (*model.Event, error) {
 	// Beside the identities its body names, which its index states, what the store holds of each
 	// target the comment names as a delivery route and of its urgency, under the same event.
@@ -1530,7 +1540,7 @@ func (s *server) queueCommentCreated(
 	// written, and reaches each person its text newly mentions; a comment whose pointers are no
 	// tuples is recorded as the trigger body would have recorded it, its thread's rows moved and
 	// left to the backfill and no tuple stated (commentStoreWrite.inbox).
-	inbox := stored.inbox(inboxwrite.Comment(comment.ID, comment.Author, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, stored.project), thread, indexed)
+	inbox := stored.inbox(record, thread, indexed)
 	if stored.members != nil {
 		var err error
 		if inbox, err = inbox.Members(stored.members); err != nil {

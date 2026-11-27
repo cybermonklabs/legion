@@ -34,6 +34,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
 import { replyRow } from "../threads/replies-fixture";
+import { SnoozeWrites } from "./ask-snooze-fixture";
 import {
   answerOneRead,
   answerOpenAsks,
@@ -44,7 +45,7 @@ import {
 } from "./inbox-fixture";
 import { useMarkAllRead } from "./mark-all";
 import { useInboxAsks } from "./one-read";
-import { useOutstandingAnswerWrite } from "./outstanding-answers";
+import { AskDeclineWritesContext, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { useAskHandOn } from "./useAskHandOn";
 import { useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 import { useUnreadThreadCount } from "./useInboxCount";
@@ -98,6 +99,17 @@ function wrapper(client: QueryClient) {
     <MemoryRouter initialEntries={["/"]}>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     </MemoryRouter>
+  );
+}
+
+/** `wrapper`, with the snooze writes the Inbox holds by ask around every Snooze it draws
+ *  (`SnoozeWrites`): a row's snooze reads them, and no Snooze is drawn outside an Inbox. */
+function snoozeWrapper(client: QueryClient) {
+  const Around = wrapper(client);
+  return ({ children }: { children: ReactNode }) => (
+    <Around>
+      <SnoozeWrites>{children}</SnoozeWrites>
+    </Around>
   );
 }
 
@@ -242,7 +254,7 @@ test("a snooze lands on the one read's ask, and a refusal brings it back", async
   const client = seeded([ask], oneRead([ask]));
   const answer = deferred<never>();
   answerRoute("PUT", "/api/v1/me/asks/*/snooze").mockReturnValue(answer.promise);
-  const hook = renderHook(() => useAskSnooze("ask-a"), { wrapper: wrapper(client) });
+  const hook = renderHook(() => useAskSnooze("ask-a"), { wrapper: snoozeWrapper(client) });
 
   act(() => hook.result.current.submit("2026-10-20T09:00:00Z"));
   await waitFor(() =>
@@ -290,7 +302,7 @@ test("an answer or a decline takes the ask out of the one read, and a refusal pu
   const answer = deferred<unknown>();
   const hook = renderHook(
     () =>
-      useOutstandingAnswerWrite({
+      useOutstandingAnswerWrite(AskDeclineWritesContext, ask.id, {
         label: () => "Ask declined",
         method: "POST",
         write: () => answer.promise,
@@ -504,7 +516,7 @@ test("a read of the one read asked while a snooze is out waits for its answer, s
   const answer = deferred<unknown>();
   answerRoute("PUT", "/api/v1/me/asks/*/snooze").mockReturnValue(answer.promise);
   const client = seeded([ask], oneRead([ask]), 0, new DispatchQueryClient(CLIENT_OPTIONS));
-  render(<OneReadAsks ask={ask} until={until} />, { wrapper: wrapper(client) });
+  render(<OneReadAsks ask={ask} until={until} />, { wrapper: snoozeWrapper(client) });
   await waitFor(() => expect(drawnSnooze("ask-a")).toBe("none"));
 
   act(() => screen.getByRole("button", { name: "Snooze" }).click());

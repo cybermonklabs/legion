@@ -9,6 +9,7 @@ import {
   listIssueArtifacts,
 } from "./api";
 import { documentEditor } from "./editor";
+import { barAction } from "./filters";
 import { watchWrites } from "./keyed-writes";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
@@ -24,9 +25,11 @@ function newDocumentForm(page: Page): Locator {
   return page.getByRole("form", { name: "New document" });
 }
 
-/** The whole press a person makes: `New document`, the title, `Create`. */
+/** The whole press a person makes: `New document`, the title, `Create`. On an issue's Artifacts
+ *  tab `New document` is an action of its control bar, an item of More below 640 px of the
+ *  bar's width (R8); on a project's document list it is a button of its own. */
 async function createDocument(page: Page, title: string): Promise<void> {
-  await page.getByRole("button", { name: "New document" }).click();
+  await (await barAction(page, "New document")).click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill(title);
   await form.getByRole("button", { name: "Create" }).click();
@@ -55,10 +58,12 @@ test("a title typed on an issue's Documents tab makes an empty document and open
 
   await page.goto(`/issues/${issue.key}/artifacts`);
   // The create control is a second way to add a document, beside the upload rather than in
-  // place of it: the upload's button is still on the strip and its file input took no file, so
-  // "no file was chosen" below would be said of a control this page holds.
-  await expect(page.getByRole("button", { name: "New document" })).toBeVisible();
-  await expect(page.getByRole("button", { exact: true, name: "Upload" })).toBeVisible();
+  // place of it: the upload's action is still in the tab's control bar - an item of its More
+  // below 640 px of the bar's width, as here (R8) - and its file input took no file, so "no file
+  // was chosen" below would be said of a control this page holds.
+  await expect(await barAction(page, "New document")).toBeVisible();
+  await expect(page.getByRole("menuitem", { exact: true, name: "Upload" })).toBeVisible();
+  await page.keyboard.press("Escape");
   expect(
     await page
       .getByLabel("Upload artifact")
@@ -107,7 +112,7 @@ test("two presses of Create in one go make one document", async ({ page }) => {
   const posts = watchWrites(page, "POST", path);
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  await page.getByRole("button", { name: "New document" }).click();
+  await (await barAction(page, "New document")).click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill("Launch notes");
   // Two synthetic clicks in the same task of the page, so the second press is made before the

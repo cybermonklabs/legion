@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  In the Inbox, a shift-click on a row's checkbox, or Shift+X, marks or unmarks every drawn row from
+  the anchor; Shift+J and Shift+K carry the range. Dismiss over a range is one request.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: inbox-range-select

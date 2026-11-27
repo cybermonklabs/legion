@@ -3,13 +3,15 @@
  * the list they linked. The page and the drawer read the same values, so the two agree, and a
  * reload keeps them. Everything the address can carry - the filters, the sort, the grouping and
  * the switch between the Inbox and what the reader has dismissed out of it - stays in the
- * address on the page and in `useState` in the drawer.
+ * address on the page and in `useState` in the drawer. A band an address opens is no choice of
+ * the reader's either: it stays open for that view alone, beside the folds they keep
+ * (`useFoldedGroups`).
  *
  * The thread order is a browser-kept choice too, but it is no Inbox setting: every thread in
  * Dispatch reads in it, so it lives with the thread modules (`features/threads/thread-order.ts`).
  */
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 
 import type { InboxGroupBy } from "../refs/routes";
 import { useUserPreference } from "../shell/userPreference";
@@ -38,25 +40,59 @@ function readFolded(stored: string | null): FoldedByGrouping {
   }
 }
 
+/** The folds of one grouping as the Inbox draws them, and the two ways they change
+ *  (`useFoldedGroups`). */
+export interface FoldedGroups {
+  /** The bands folded shut: the ones the reader keeps folded, less those an address opened for
+   *  this view. */
+  readonly folded: ReadonlySet<string>;
+  /** Opens band `key`, where it is folded, for this view alone: an `?item=` naming a row in it.
+   *  A link is no press of the reader's, so it writes nothing to the folds they keep. */
+  readonly openFoldedBand: (key: string) => void;
+  /** The reader's own press on band `key`'s toggle: it folds or opens the band as it is drawn,
+   *  and writes what it leaves to the folds they keep, so a band an address opened for this
+   *  view folds shut, as they keep it. */
+  readonly toggleFold: (key: string) => void;
+}
+
 /**
- * Which bands of `by` are folded shut, and the toggle that folds one. **Later** starts folded -
+ * Which bands of `by` are folded shut, and the two ways that changes. **Later** starts folded -
  * its rows are the ones the reader already dealt with by deferring - and from the moment they
- * fold or open anything under this grouping, the set they left is the whole answer.
+ * fold or open anything under this grouping, the set they left is the whole answer. Only the
+ * reader's own press writes it (`toggleFold`): a band an address opens (`openFoldedBand`) is
+ * open for this view alone, and the folds the reader keeps in their browser stay as they left
+ * them.
  */
-export function useFoldedGroups(by: InboxGroupBy): [ReadonlySet<string>, (key: string) => void] {
+export function useFoldedGroups(by: InboxGroupBy): FoldedGroups {
   const [stored, setStored] = useUserPreference<FoldedByGrouping>(
     "inbox.folded-groups",
     readFolded,
     (value) => JSON.stringify(value)
   );
-  const folded = new Set(stored[by] ?? DEFAULT_FOLDED_GROUPS);
-  const toggle = useCallback(
+  // The bands an address opened for this view: a band is folded where the reader keeps it
+  // folded and no address opened it here.
+  const [openedHere, setOpenedHere] = useState<ReadonlySet<string>>(() => new Set());
+  const kept = new Set(stored[by] ?? DEFAULT_FOLDED_GROUPS);
+  const folded =
+    openedHere.size === 0 ? kept : new Set([...kept].filter((key) => !openedHere.has(key)));
+  const toggleFold = useCallback(
     (key: string) => {
+      const shut = !folded.has(key);
+      if (shut && openedHere.has(key)) {
+        setOpenedHere(new Set([...openedHere].filter((opened) => opened !== key)));
+      }
       const next = new Set(stored[by] ?? DEFAULT_FOLDED_GROUPS);
-      if (!next.delete(key)) next.add(key);
+      if (shut) next.add(key);
+      else next.delete(key);
       setStored({ ...stored, [by]: [...next] });
     },
-    [by, setStored, stored]
+    [by, folded, openedHere, setStored, stored]
   );
-  return [folded, toggle];
+  const openFoldedBand = useCallback(
+    (key: string) => {
+      if (folded.has(key)) setOpenedHere((current) => new Set(current).add(key));
+    },
+    [folded]
+  );
+  return { folded, openFoldedBand, toggleFold };
 }

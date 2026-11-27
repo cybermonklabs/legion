@@ -6,18 +6,22 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a key that is part of an IME composition, which user-event has no form for.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { correction, correctionFeed } from "../../__tests__/correction-feed";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
-import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
+import { CONTROL } from "../../components/control-names";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -680,6 +684,164 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
     );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A key that is part of an input method's composition is the composition's, and its default
+// stays the browser's: the arrows move no highlight, Enter opens no row, and Backspace on the
+// empty box widens no chip. The bar is opened over an issue page, where the plain Backspace on
+// the empty box does widen the chip to the project; the page has no writing cursor in a block,
+// so Tab narrows nothing there with or without a composition.
+test("arrow keys, Enter and Backspace inside an IME composition move no highlight, route or chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  // The bar opened over an issue reads that issue once there are words in the box, to offer
+  // them to an agent holding it (`SendToAgentOffer.tsx`). No agent holds LEGION-2, so the bar
+  // offers no such row and the hits are the whole list.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issueFixture,
+    artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
+    key: "LEGION-2",
+    number: 2,
+    project: "LEGION",
+    status: "done",
+    title: "Navigation instruments",
+  });
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // Backspace widens the chip on an empty box alone, so it is pressed before the words are
+    // typed. `fireEvent` answers false for a key whose default was cancelled, which the bar does
+    // to each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Backspace" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      expect(fireEvent.keyDown(box, { isComposing: true, key }), `${key} composing`).toBe(true);
+      expect(box, `${key} composing`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-2/spec");
+
+    // The plain Backspace on the emptied box is the bar's: it widens the chip the composing one
+    // left alone.
+    await user.clear(box);
+    await user.keyboard("{Backspace}");
+    expect(chip()).toContain("Acting on the project LEGION");
+  } finally {
+    search.mockRestore();
+    getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A Tab that is part of an input method's composition is the composition's too: it narrows no
+// chip, and its default stays the browser's. The bar is opened with the writing cursor in a block
+// of a document behind it, which is where a plain Tab narrows the chip to that block. It is opened
+// over an issue page, so the chip names the issue before any key is pressed.
+test("Tab inside an IME composition moves no chip, where a plain Tab would", async () => {
+  const user = userOnFakeClock();
+  // The bar reads the writing cursor on the render that opens it (`scopeAtCursor`), so the cursor
+  // is put in a block of a writing surface before the bar is drawn.
+  const editable = document.createElement("div");
+  editable.setAttribute("contenteditable", "true");
+  const block = document.createElement("p");
+  block.setAttribute(BLOCK_ID_ATTRIBUTE, "b-1");
+  block.textContent = "The sextant sights the horizon.";
+  editable.append(block);
+  document.body.append(editable);
+  editable.focus();
+  const caret = document.createRange();
+  caret.setStart(block.firstChild ?? block, 0);
+  caret.collapse(true);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(caret);
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // A composition goes on in the box the reader types into, so the box holds the focus first:
+    // the bar takes the focus on itself as it opens and hands it to the box a frame later, and
+    // until then a Tab is the dialog's own, to its first control (`useDialog`).
+    await user.click(box);
+    // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+    // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Tab" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    // The plain Tab is the bar's: it narrows the chip to the block the composing one left alone.
+    await user.keyboard("{Tab}");
+    expect(chip()).toContain("Acting on the block “The sextant sights the horizon.”");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+    editable.remove();
+    window.getSelection()?.removeAllRanges();
+  }
+});
+
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that key is the
+// composition's as well. In the bar's box an arrow moves no highlight and Enter opens no row, and
+// in the filter panel's Author box Enter takes no author. The plain Enter after it takes the
+// author.
+test("keys that end an IME composition in Safari, at keyCode 229, move no highlight, open no row and take no author", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const box = await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+      // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+      // composition.
+      const kept = fireEvent.keyDown(box, { isComposing: false, key, keyCode: 229 });
+      expect(kept, `${key} at keyCode 229`).toBe(true);
+      expect(box, `${key} at keyCode 229`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("alice");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(author, { isComposing: false, key: "Enter", keyCode: 229 });
+    // The chip stands in the bar's line and at the top of the Filter panel (R8), so each read
+    // counts both.
+    expect(
+      screen.queryAllByRole("button", { name: "Remove Author alice filter" }),
+      "an Enter at keyCode 229 took the author"
+    ).toEqual([]);
+
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findAllByRole("button", { name: "Remove Author alice filter" })
+    ).toHaveLength(2);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1411,6 +1573,47 @@ test("says meaning search is not running, and still shows the hits", async () =>
   }
 });
 
+/** Opens the one panel of the bar's control bar, which all four narrowings are added from. A
+ *  narrowing already on is a chip in the bar instead, so its control is not in the panel. */
+async function openFilters(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Filter" }));
+}
+
+/** The bar's control bar itself: a chip is drawn there and, while the Filter panel is open, again
+ *  at the panel's top, which is portalled outside the bar. */
+function bar(): HTMLElement {
+  return controlBar("the search bar");
+}
+
+// The dialog's own strip of controls is the control row itself, so the bar's box, the panel the
+// narrowings are added from and the chips of what is on are one row and not two.
+test("the bar's controls are one control row, and nothing above the hits draws a second box", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    const rows = dialog.querySelectorAll(`[data-control="${CONTROL.controlRow}"]`);
+    const boxes = dialog.querySelectorAll(`[data-control="${CONTROL.searchBox}"]`);
+
+    expect(rows).toHaveLength(1);
+    expect(boxes).toHaveLength(1);
+    // The query box is in that row: nothing between the dialog's top and its first hit is a
+    // search box, a panel trigger or a chip of the bar's own.
+    expect(boxes[0]).toBe(input);
+    expect(rows[0]?.contains(input)).toBe(true);
+    expect(rows[0]?.querySelector(`[data-control="${CONTROL.panelTrigger}"]`)).toBe(
+      screen.getByRole("button", { name: "Filter" })
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
@@ -1420,8 +1623,9 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await searchFor(user, "astrolabe");
     expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
+    await openFilters(user);
     await user.click(screen.getByRole("button", { name: "Status" }));
-    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(search).toHaveBeenLastCalledWith(
         "astrolabe",
@@ -1430,13 +1634,293 @@ test("a chip narrows the search, reads back in the person's words, and comes off
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Status In progress" });
+    const chip = within(bar()).getByRole("button", { name: "Remove Status In progress filter" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
+    // Filter counts what is on, as every control bar's trigger does (R8).
+    expect(within(bar()).getByRole("button", { name: "Filter · 1" })).toBeTruthy();
+    // The chip is the shared one, in the shared row: what the bar narrows by is said where
+    // every other page says it.
+    expect(chip.getAttribute("data-control")).toBe(CONTROL.chip);
+    expect(chip.closest(`[data-control="${CONTROL.controlRow}"]`)).not.toBeNull();
 
     await user.click(chip);
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
+    // Removing the chip brings that narrowing's own control back into the panel.
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a date typed in Updated since narrows the search only once its year is whole", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const box = screen.getByLabelText("Updated since");
+    // An engine reports a valid date from the year's first typed digit, as Chromium does with
+    // `0002-11-22`. user-event cannot type into a date box's parts, so the value the engine
+    // reports is set as it would report it.
+    fireEvent.change(box, { target: { value: "0002-11-22" } });
+    expect(screen.getByLabelText("Updated since")).toBe(box);
+    expect(screen.queryByRole("button", { name: /^Remove Updated since/ })).toBeNull();
+    // The same box once the year's last digit is typed.
+    fireEvent.change(box, { target: { value: "2026-11-22" } });
+    await waitFor(() =>
+      expect(within(bar()).getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
+    );
+    expect(screen.queryByLabelText("Updated since")).toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a project picked in the panel narrows the search and reads back as its chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+      proven_sessions: false,
+    },
+  ]);
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    await user.click(await screen.findByRole("option", { name: "INFRA" }));
+
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { keywords_only: true, project: "INFRA" },
+        aborts
+      )
+    );
+    expect(
+      within(bar()).getByRole("button", { name: "Remove Project INFRA filter" })
+    ).not.toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** The text boxes in the page now: a list's own box is one that appears when the list opens. */
+function textBoxes(): Element[] {
+  return [
+    ...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])'),
+  ];
+}
+
+/** Every element whose own name or text is `name`, as a button or an option: what a reader
+ *  picks from a list, however the list draws it. */
+function picks(name: RegExp): HTMLElement[] {
+  return [
+    ...screen.queryAllByRole("button", { name }),
+    ...screen.queryAllByRole("option", { name }),
+  ];
+}
+
+// Every list of options a reader picks from holds a text box that narrows the options, and the
+// bar's Project and Status lists are such lists. Each one, opened from the panel,
+// holds a text box of its own, and a word typed into it leaves only the options that match.
+test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(
+    ["INFRA", "CORE"].map((key) => ({
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key === "INFRA" ? "Infra" : "Core",
+      open_asks: 0,
+      proven_sessions: false,
+    }))
+  );
+  const view = renderPalette();
+
+  try {
+    const lists = [
+      { menu: "Project", word: "COR", kept: /^CORE\b/, gone: /^INFRA\b/ },
+      { menu: "Status", word: "progress", kept: /^In progress\b/, gone: /^Todo\b/ },
+    ];
+    for (const { menu, word, kept, gone } of lists) {
+      await openFilters(user);
+      const before = new Set(textBoxes());
+      await user.click(await screen.findByRole("button", { name: menu }));
+      await waitFor(() => expect(picks(gone).length).toBeGreaterThan(0));
+      const own = textBoxes().filter((box) => !before.has(box));
+      expect(own, `the ${menu} list holds no text box of its own`).toHaveLength(1);
+      await user.type(own[0] as HTMLElement, word);
+      await waitFor(() =>
+        expect(picks(gone), `"${word}" leaves ${gone} in the ${menu} list`).toHaveLength(0)
+      );
+      expect(picks(kept).length, `"${word}" takes ${kept} out of the ${menu} list`).toBeGreaterThan(
+        0
+      );
+      await user.keyboard("{Escape}");
+      await user.keyboard("{Escape}");
+    }
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The Project list says whether the bar's read of the projects is still out or failed, rather
+// than "No projects yet", as the Agents composer's Issue list does.
+test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
+  const user = userOnFakeClock();
+  const read = Promise.withResolvers<Project[]>();
+  const listProjects = spyOn(api, "listProjects").mockReturnValue(read.promise);
+  const view = renderPalette();
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const list = await screen.findByRole("listbox", { name: "Project options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(list).toHaveTextContent("Loading projects…");
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+
+    await act(async () => {
+      read.reject(new Error("projects unreachable"));
+      await read.promise.catch(() => undefined);
+    });
+    expect(await within(panel).findByText("Could not load projects.")).toBeTruthy();
+    expect(within(panel).queryByText("Loading projects…")).toBeNull();
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Shift+Tab out of the Project list closes that list and gives the focus back to its Project
+// trigger in the Filter panel. From there Escape closes the panel, with the focus on the bar's
+// Filter trigger, and the next Escape closes the bar, so the bar can be closed from the keyboard.
+test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+      proven_sessions: false,
+    },
+  ]);
+  let closed = 0;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const box = await screen.findByRole("combobox", { name: "Search projects" });
+    act(() => box.focus());
+    await user.tab({ shift: true });
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+    expect(closed).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(closed).toBe(1);
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An item's author is a person's login or a session id, and no list holds both, so the author
+// is typed. Enter takes it, and a login still half-typed searches nothing.
+test("an author typed in the panel is taken on Enter, narrows the search, and comes off again", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("ali");
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
+
+    await user.paste("ce");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+
+    const chip = within(bar()).getByRole("button", { name: "Remove Author alice filter" });
+    expect(chip.textContent).toContain("Author alice");
+
+    await user.click(chip);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts)
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Shutting the panel is leaving the box: the press that takes the box away is the reader
+// walking off it, and what they typed is taken then rather than dropped.
+test("an author left in the box is taken when the panel shuts", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(screen.getByRole("searchbox", { name: "Author" }));
+    await user.paste("alice");
+
+    await user.click(input);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+    expect(
+      within(bar()).getByRole("button", { name: "Remove Author alice filter" })
+    ).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1452,8 +1936,8 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   // The bar opened over an issue reads that issue, to offer the words as a message to an agent
   // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
-  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
-  // the whole of what this row reads.
+  // own, and no agent holds it, so the bar offers no such row and the chips of its control row
+  // are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
@@ -1474,6 +1958,7 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
       aborts
     );
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
     search.mockRestore();

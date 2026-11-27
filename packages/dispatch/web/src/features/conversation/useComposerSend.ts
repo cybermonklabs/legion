@@ -35,7 +35,8 @@ export interface ComposerSend {
  * The send behind a composer, held by its target rather than by the composer: `mutationKey` names
  * both, and a composer with none gets a name of its own mount. `landed` and `refused` are the
  * composer's own part of an outcome - its draft, its host's callbacks - and run only while it is
- * mounted; the store refreshes what a landed send wrote either way.
+ * mounted; the store refreshes what a landed send wrote either way. `landed` is handed Dispatch's
+ * answer with the request, `null` for a landing it had no answer to give for.
  */
 export function useComposerSend(
   mutationKey: MutationKey | undefined,
@@ -43,7 +44,7 @@ export function useComposerSend(
     landed,
     refused,
   }: {
-    readonly landed: (sent: SentRequest) => void;
+    readonly landed: (sent: SentRequest, answer: unknown) => void;
     /** A refusal hands back exactly the draft the request turned down, not a later edit. */
     readonly refused: (held: HeldSend) => void;
   }
@@ -57,10 +58,11 @@ export function useComposerSend(
   const id = useMemo(() => hashKey(key), [key]);
   useEffect(
     () =>
-      store.onOutcome(({ kind, send }) => {
-        if (hashKey(send.mutationKey) !== id) return;
-        if (kind === "landed") outcomes.current.landed(send.request);
-        if (kind === "refused") outcomes.current.refused(send);
+      store.onOutcome((outcome) => {
+        if (hashKey(outcome.send.mutationKey) !== id) return;
+        if (outcome.kind === "landed")
+          outcomes.current.landed(outcome.send.request, outcome.answer);
+        if (outcome.kind === "refused") outcomes.current.refused(outcome.send);
       }),
     [id, store]
   );

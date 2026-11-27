@@ -119,12 +119,11 @@ export function stoppable(held: HeldSend | undefined): boolean {
   return held?.status === "late" && !held.stopping;
 }
 
-/** What became of a held send: it landed, the server refused it, or the reader dropped its
- *  refusal. */
-export interface HeldSendOutcome {
-  readonly kind: "discarded" | "landed" | "refused";
-  readonly send: HeldSend;
-}
+/** What became of a held send: it landed, with Dispatch's answer (`null` for a landing it had no
+ *  answer to give for), the server refused it, or the reader dropped its refusal. */
+export type HeldSendOutcome =
+  | { readonly kind: "landed"; readonly send: HeldSend; readonly answer: unknown }
+  | { readonly kind: "discarded" | "refused"; readonly send: HeldSend };
 
 /** What a send that landed wrote, refreshed whether or not its composer is still on screen: the
  *  caches it is named by its own request, and the one read, which the Inbox draws the reader's
@@ -579,7 +578,12 @@ export class HeldSends {
     return this.#writes.onOutcome((outcome) => {
       const write = ofKind(outcome.write, composerSend);
       const send = write === undefined ? undefined : heldSend(write);
-      if (send !== undefined) listener({ kind: outcome.kind, send });
+      if (send === undefined) return;
+      listener(
+        outcome.kind === "landed"
+          ? { answer: outcome.answer, kind: "landed", send }
+          : { kind: outcome.kind, send }
+      );
     });
   }
 

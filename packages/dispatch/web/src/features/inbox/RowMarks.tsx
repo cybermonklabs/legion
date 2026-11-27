@@ -1,14 +1,20 @@
 /**
- * The three marks every Inbox row wears, drawn the same way in the short row beside the reading
- * pane and in the card below its width: what kind of row it is, how its issue is prioritised,
- * and how urgent the question is. Each one is `shrink-0` and never wraps, so none of them can
- * grow over the title or over the issue key beside it - the row's own text is what shortens.
+ * The marks every Inbox row wears, drawn the same way in the short row beside the reading pane
+ * and in the card below its width: what kind of row it is, how its issue is prioritised, how
+ * urgent the question is, and whether its issue is approved. Each one is `shrink-0` and never
+ * wraps, so none of them can grow over the title or over the issue key beside it - the row's own
+ * text is what shortens.
  */
 
+import type { ApprovalGateLine } from "@legion/contracts";
 import type { ReactNode } from "react";
 
-import type { AskUrgency, IssuePriority } from "../../api/types";
+import type { ArtifactApproval, AskUrgency, IssuePriority } from "../../api/types";
+import { approvalPillClassName } from "../../components/Pill";
 import { badgeBlocking, badgeHigh, badgeLow, badgeMed, priorityBadge } from "../../theme/classes";
+import { approvalLabel } from "../doc/ApprovalChip";
+import { isDesignGateStep, STEP_LABELS } from "../issue/gated-steps";
+import { CONTROL_LABELS } from "../issue-page/page-words";
 import { URGENCY_LABELS } from "./ask-urgency";
 import { TYPE_LABELS } from "./grouping";
 import type { InboxRowType } from "./list-row";
@@ -72,6 +78,74 @@ export function RowUrgencyMark({ urgency }: { urgency: AskUrgency | null }): Rea
       data-inbox-urgency={urgency}
     >
       {URGENCY_LABELS[urgency]}
+    </span>
+  );
+}
+
+/** The issue page's word for a gate line's step (`STEP_LABELS`): undefined for a line with no
+ *  step, and for a step word this build does not know, whose line draws its state alone. */
+export function gateStepWord(step: string | undefined): string | undefined {
+  return step !== undefined && isDesignGateStep(step) ? STEP_LABELS[step] : undefined;
+}
+
+/** The state of a gate line's document in the issue page's words, as its step line draws it
+ *  (`ApprovalSteps`): the chip's own words (`approvalLabel`), and `Not requested` for a document
+ *  nobody has asked to review - one the issue does not hold, or a draft. The word `Draft` is
+ *  drawn nowhere. */
+export function gateLineWords(approval: ArtifactApproval | null): string {
+  return approval === null || approval.state === "draft"
+    ? CONTROL_LABELS.not_requested
+    : approvalLabel(approval);
+}
+
+/** A gate line's state as its mark's `data-` attribute names it: its document's state, and
+ *  `not_requested` for a draft, as its words say (`gateLineWords`). */
+export function gateLineState(state: ArtifactApproval["state"]): string {
+  return state === "draft" ? "not_requested" : state;
+}
+
+/** The line a row's mark speaks for: a gate's only line, and of more than one the first, in the
+ *  gate's order, whose document is not approved at its latest version, else the last. A line
+ *  whose step word this build does not know is still a line of the gate, so it is counted. */
+function markedGateLine(gate: readonly ApprovalGateLine[]): ApprovalGateLine | undefined {
+  if (gate.length < 2) return gate[0];
+  return gate.find((line) => line.approval?.state !== "approved") ?? gate[gate.length - 1];
+}
+
+/** What a row's mark says for `line`, the gate's line it speaks for (`markedGateLine`): the state
+ *  of its line's document in the issue page's words, a request as `Awaiting approval` alone - the
+ *  pane's line names the documents it covers - and, where the gate has more than one line, the
+ *  line's step word before it, as `Verification · Awaiting approval`. */
+function approvalMarkText(gate: readonly ApprovalGateLine[], line: ApprovalGateLine): string {
+  const approval = line.approval;
+  const words =
+    approval?.state === "awaiting"
+      ? approvalLabel({ ...approval, documents: [] })
+      : gateLineWords(approval);
+  const step = gate.length > 1 ? gateStepWord(line.step) : undefined;
+  return step === undefined ? words : `${step} · ${words}`;
+}
+
+/** The approval state of the row's issue, in the issue page's words and in its own text, so its
+ *  colour states nothing alone (`approvalMarkText`). A row of no issue, and a row whose read
+ *  carried no gate - a server older than the field - wears nothing. Each of the four renderers
+ *  draws it first in its line - on an ask's card, first after the checkbox and the kind's icon -
+ *  at one fixed place in the row, so the marks of rows one above another start at one x
+ *  whatever the row's other text and the mark's own words. */
+export function RowApprovalMark({
+  gate,
+}: {
+  gate: readonly ApprovalGateLine[] | undefined;
+}): ReactNode {
+  const line = gate === undefined ? undefined : markedGateLine(gate);
+  if (gate === undefined || line === undefined) return null;
+  const state = line.approval?.state ?? "draft";
+  return (
+    <span
+      className={`${approvalPillClassName(state, "compact")} shrink-0 whitespace-nowrap`}
+      data-inbox-approval={gateLineState(state)}
+    >
+      {approvalMarkText(gate, line)}
     </span>
   );
 }

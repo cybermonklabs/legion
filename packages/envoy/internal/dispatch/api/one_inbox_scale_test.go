@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -253,44 +254,58 @@ type oneInboxPath struct {
 // oneInboxWritePaths are the write paths R11 names, each found in the route table by its handler,
 // in the order they are measured: a comment and a mention of a session and of a person
 // (createComment), an issue message (createMessage), a broadcast (createBroadcast), a session's
-// direct reply (replyMessage), an ask's answer (answerAsk), a dismissal (dismissInbox), Mark all
-// read (markInboxRead), a thread read (putThreadRead), an agent's Clear and read
-// (putUserAgentState), a snooze (putAskSnooze), and the three writes that move the person an ask
-// waits on: patchIssue and putAskAskedOf, each over one ask, and putProjectDefaultAssignee, over
-// the many asks that fall through to one project's default and over the one ask that falls through
-// to another's. The inbox writes are the heavy person's, over their own history. The mention of a
-// person names the heavy person, whose node holds the corpus's largest set of deliveries, and
-// delivers to them as it mentions them.
+// direct reply (replyMessage), an ask's answer (answerAsk), a person's reply under an Agent row
+// (createAgentMessage), a dismissal (dismissInbox), Mark all read (markInboxRead), a thread read
+// (putThreadRead), an agent's Clear and read (putUserAgentState), a snooze (putAskSnooze), and the
+// three writes that move the person an ask waits on: patchIssue and putAskAskedOf, each over one
+// ask, and putProjectDefaultAssignee, over the many asks that fall through to one project's
+// default and over the one ask that falls through to another's. The inbox writes are the heavy
+// person's, over their own history. The mention of a person names the heavy person, whose node
+// holds the corpus's largest set of deliveries, and delivers to them as it mentions them.
+//
+// Each path whose write is its writer's own answer or reply - the three comments, the issue
+// message, the answer and the reply under an Agent row - dismisses the thread for its writer on
+// this build (the own-answer rule, R1), so each reads back, after each timed write, the dismissed
+// tuple that write appended (requireOneInboxDismissed). Each such writer is a person the header
+// names, with no agent acting for them.
 func oneInboxWritePaths() []oneInboxPath {
 	issue := func(side *oneInboxSide) string { return "/api/v1/issues/" + side.corpus.issue }
 	return []oneInboxPath{
 		{name: "comment", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
 			// Into the thread at the bound, by one of its participants, so the participant set the
 			// write moves stays the bound's.
-			return oneInboxExpect(t, side.name+": a comment at the bound", side.server.call(t, oneInboxCommenter, http.MethodPost,
+			answer := oneInboxExpect(t, side.name+": a comment at the bound", side.server.call(t, oneInboxCommenter, http.MethodPost,
 				issue(side)+"/comments", map[string]any{
 					"body": fmt.Sprintf("Reading %d of a comment at the bound.", reading), "reply_to": side.corpus.widestRoot,
-				}), http.StatusCreated).took
+				}), http.StatusCreated)
+			requireOneInboxDismissed(t, side, "comment", oneInboxCommenter, graphstore.KindComment, side.corpus.widestRoot, answer)
+			return answer.took
 		}},
 		{name: "comment-mention", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
-			return oneInboxExpect(t, side.name+": a comment mentioning the session", side.server.call(t, oneInboxSolo, http.MethodPost,
+			answer := oneInboxExpect(t, side.name+": a comment mentioning the session", side.server.call(t, oneInboxSolo, http.MethodPost,
 				issue(side)+"/comments", map[string]any{
 					"body": fmt.Sprintf("Reading %d of a mention.", reading), "reply_to": side.corpus.soloRoot,
 					"mentions": []map[string]string{{"target": "session:" + oneInboxSession}},
-				}), http.StatusCreated).took
+				}), http.StatusCreated)
+			requireOneInboxDismissed(t, side, "comment-mention", oneInboxSolo, graphstore.KindComment, side.corpus.soloRoot, answer)
+			return answer.took
 		}},
 		{name: "comment-mention-person", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
-			return oneInboxExpect(t, side.name+": a comment mentioning the heavy person", side.server.call(t, oneInboxSolo, http.MethodPost,
+			answer := oneInboxExpect(t, side.name+": a comment mentioning the heavy person", side.server.call(t, oneInboxSolo, http.MethodPost,
 				issue(side)+"/comments", map[string]any{
 					"body":     fmt.Sprintf("Reading %d of a mention of dispatch://person/%s.", reading, oneInboxHeavy),
 					"reply_to": side.corpus.soloRoot,
-				}), http.StatusCreated).took
+				}), http.StatusCreated)
+			requireOneInboxDismissed(t, side, "comment-mention-person", oneInboxSolo, graphstore.KindComment, side.corpus.soloRoot, answer)
+			return answer.took
 		}},
 		{name: "issue-message", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
-			return oneInboxExpect(t, side.name+": an issue message", side.server.call(t, oneInboxMessagers[0], http.MethodPost,
+			answer := oneInboxExpect(t, side.name+": an issue message", side.server.call(t, oneInboxMessagers[0], http.MethodPost,
 				issue(side)+"/messages", map[string]any{
 					"body": fmt.Sprintf("Reading %d of an issue message.", reading), "in_reply_to": side.corpus.messageRoot,
-				}), http.StatusCreated).took
+				}), http.StatusCreated)
+			requireOneInboxDismissed(t, side, "issue-message", oneInboxMessagers[0], graphstore.KindMessage, side.corpus.messageRoot, answer)
+			return answer.took
 		}},
 		{name: "broadcast", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
 			return oneInboxExpect(t, side.name+": a broadcast", side.server.call(t, oneInboxConverser, http.MethodPost, "/api/v1/broadcasts",
@@ -306,10 +321,24 @@ func oneInboxWritePaths() []oneInboxPath {
 				}), http.StatusCreated).took
 		}},
 		{name: "ask-answer", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
-			return oneInboxExpect(t, side.name+": an ask's answer", side.server.call(t, oneInboxAnswerer, http.MethodPost,
-				"/api/v1/asks/"+side.corpus.answerAsks[reading]+"/answer", map[string]any{
+			ask := side.corpus.answerAsks[reading]
+			answer := oneInboxExpect(t, side.name+": an ask's answer", side.server.call(t, oneInboxAnswerer, http.MethodPost,
+				"/api/v1/asks/"+ask+"/answer", map[string]any{
 					"text": fmt.Sprintf("Reading %d of an answer.", reading), "expected_edited_at": nil,
-				}), http.StatusOK).took
+				}), http.StatusOK)
+			requireOneInboxDismissed(t, side, "ask-answer", oneInboxAnswerer, graphstore.KindAsk, ask, answer)
+			return answer.took
+		}},
+		{name: "agent-reply", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			// The person's reply under the conversation the session has answered, a direct root the
+			// corpus holds, as the Inbox's Agent row and the Agents page send it.
+			answer := oneInboxExpect(t, side.name+": a reply under an Agent row", side.server.call(t, oneInboxConverser, http.MethodPost,
+				"/api/v1/agents/"+oneInboxSession+"/messages", map[string]any{
+					"body": fmt.Sprintf("Reading %d of a reply under an Agent row.", reading), "delivery": "btw",
+					"in_reply_to": side.corpus.answeredRoot,
+				}), http.StatusCreated)
+			requireOneInboxDismissed(t, side, "agent-reply", oneInboxConverser, graphstore.KindMessage, side.corpus.answeredRoot, answer)
+			return answer.took
 		}},
 		{name: "dismissal", run: func(t *testing.T, side *oneInboxSide, _ int) time.Duration {
 			// A thread the heavy person has read, so the dismissal moves no read mark, put back in
@@ -462,6 +491,47 @@ func requireOneInboxCount(t *testing.T, what string, answer apiAnswer, field str
 	}
 	if got, _ := counted[field].(float64); int(got) != want {
 		t.Fatalf("%s answered %s=%v, want %d: %s", what, field, counted[field], want, answer.body)
+	}
+}
+
+// oneInboxThisBuild is the name of this build's side as bootOneInboxHere names it; the base build's
+// side is "the base build".
+const oneInboxThisBuild = "this build"
+
+// requireOneInboxDismissed fails the test, naming path, unless the write answer stands for appended
+// its writer's dismissed tuple to the thread's root rootKind/rootID at the write's own moment - the
+// comment's or the message's created_at, the answer's at: on this build a person's own answer or
+// reply takes its thread out of their Inbox (the own-answer rule, R1). So a build with that write
+// taken out fails here, at the path that lost it. The base build appends no such tuple, and its
+// readings read nothing.
+func requireOneInboxDismissed(t *testing.T, side *oneInboxSide, path, writer, rootKind, rootID string, answer apiAnswer) {
+	t.Helper()
+	if side.name != oneInboxThisBuild {
+		return
+	}
+	var written struct {
+		CreatedAt time.Time `json:"created_at"`
+		Answer    *struct {
+			At time.Time `json:"at"`
+		} `json:"answer"`
+	}
+	if err := json.Unmarshal(answer.body, &written); err != nil {
+		t.Fatalf("%s: decode the write's answer: %v: %s", path, err, answer.body)
+	}
+	at := written.CreatedAt
+	if rootKind == graphstore.KindAsk && written.Answer != nil {
+		at = written.Answer.At
+	}
+	var dismissed int
+	if err := side.database.Pool.QueryRow(context.Background(), `
+		select count(*) from graph_tuples
+		where kind = $1 and from_kind = $2 and from_id = $3 and to_kind = $4 and to_id = $5 and asserted and at = $6
+	`, graphstore.TupleDismissed, graphstore.KindPerson, model.CanonicalLogin(writer), rootKind, rootID, at).Scan(&dismissed); err != nil {
+		t.Fatalf("%s: read %s's dismissed tuple to %s/%s: %v", path, writer, rootKind, rootID, err)
+	}
+	if dismissed != 1 {
+		t.Fatalf("%s: %s's own write at %s appended %d dismissed tuple(s) to %s/%s, want one: the write no longer takes the thread out of its writer's Inbox",
+			path, writer, at.Format(time.RFC3339Nano), dismissed, rootKind, rootID)
 	}
 }
 

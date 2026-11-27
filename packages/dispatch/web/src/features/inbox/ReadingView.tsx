@@ -7,13 +7,11 @@ import { closestMatching } from "../shell/roving";
 import { ROW_SELECTOR } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
+import { ROW_SNOOZE_SELECTOR } from "./SnoozeControl";
 import { useControlName } from "./useControlName";
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 export const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
-
-/** The Snooze the reading view's head draws for the question it shows (`ReadingPaneHead`). */
-export const SNOOZE_SELECTOR = "[data-inbox-snooze]";
 
 /** Where the reading view below 1280 px takes the reader once it has drawn the row they opened:
  *  its scroller, where the next Enter reaches the answer box; its head's Snooze (`h`); its head's
@@ -42,7 +40,7 @@ function landingIn(view: HTMLElement, askId: string, target: ReadingViewTarget):
     case "scroller":
       return scroller();
     case "snooze": {
-      const element = view.querySelector<HTMLElement>(SNOOZE_SELECTOR);
+      const element = view.querySelector<HTMLElement>(ROW_SNOOZE_SELECTOR);
       return element === null ? null : { focus: element };
     }
     case "copy-ref": {
@@ -133,7 +131,7 @@ function AskReadingViewMark({
 }: {
   ask: OpenAskRow;
   marked: boolean;
-  onMark: (id: string) => void;
+  onMark: (id: string, range: boolean) => void;
 }): ReactNode {
   const { name, reads } = useControlName(ask, undefined);
   return (
@@ -150,8 +148,9 @@ function AskReadingViewMark({
  *
  * - **Back**: the Inbox control, which returns to the list at the row the reader left, as the
  *   browser's Back and Escape do.
- * - **Mark**: the row's own checkbox, which `x` ticks here as on the row. Back and Mark share the
- *   first line; too narrow for both, Mark moves whole to a line of its own.
+ * - **Mark**: the row's own checkbox, which `x` ticks here as on the row, and a shift-click on it
+ *   takes the range to this row as on the row (`MarkCheckbox`). Back and Mark share the first
+ *   line; too narrow for both, Mark moves whole to a line of its own.
  * - **Body**: the row's reading pane (`children`), the same one the column beside the list draws
  *   from 1280 px, in the height left under the first line, scrolling in itself.
  */
@@ -166,7 +165,7 @@ export function ReadingView({
   children: ReactNode;
   marked: boolean;
   onBack: () => void;
-  onMark: (id: string) => void;
+  onMark: (id: string, range: boolean) => void;
   row: InboxListRow;
   /** The view's box, where the Inbox's keys act while it shows (`holdPane`). */
   viewRef: RefCallback<HTMLDivElement>;

@@ -23,19 +23,19 @@ function agent(sessionID: string): Agent {
 const matching = [agent("planner"), agent("reviewer")];
 const listed = [...matching, agent("tester")];
 
-function summary(selected: string[], rows: readonly Agent[] = listed): string {
-  return selectionSummary(matchingSelection(rows, matching, new Set(selected)));
+function summary(selected: string[], rows: readonly Agent[] = listed, current = true): string {
+  return selectionSummary(matchingSelection(rows, matching, new Set(selected), current));
 }
 
 test("the header state reads none, some or all of the matching agents, never the rest of the selection", () => {
   const state = (selected: string[]) =>
-    matchingSelection(listed, matching, new Set(selected)).state;
+    matchingSelection(listed, matching, new Set(selected), true).state;
   expect(state([])).toBe("none");
   // A selection the filter hides, or one gone from the list, cannot make the header mixed.
   expect(state(["tester", "gone"])).toBe("none");
   expect(state(["planner", "tester"])).toBe("some");
   expect(state(["planner", "reviewer"])).toBe("all");
-  expect(matchingSelection(listed, [], new Set(["planner"])).state).toBe("none");
+  expect(matchingSelection(listed, [], new Set(["planner"]), true).state).toBe("none");
 });
 
 test("the header count scopes the selected count to the matching rows and names every other selected session by why it is not matching", () => {
@@ -60,6 +60,27 @@ test("the header count scopes the selected count to the matching rows and names 
   expect(summary(["planner", "tester", "gone"])).toBe(
     "1 of 2 matching selected · 1 more selected outside the filter · 1 more selected, no longer listed"
   );
+});
+
+// Only a current list says who is absent (`useAgents`): one whose latest read failed keeps its
+// last rows, so a selected session missing from them is of unknown state, as the composer's chip
+// says, and never no longer listed.
+test("a selected session missing from a current list is no longer listed, and one missing from a list that is not current is of unknown state", () => {
+  // The same selection over the same rows; only whether the list is current differs.
+  expect(summary(["planner", "gone"])).toBe(
+    "1 of 2 matching selected · 1 more selected, no longer listed"
+  );
+  const unknown = summary(["planner", "gone"], listed, false);
+  expect(unknown).toBe("1 of 2 matching selected · 1 more selected, state unknown");
+  expect(unknown).not.toContain("no longer listed");
+  // `more` follows the rule the other parts use, and a row the filter hides still reads apart.
+  expect(summary(["gone"], listed, false)).toBe("2 matching · 1 selected, state unknown");
+  expect(summary(["planner", "tester", "gone"], listed, false)).toBe(
+    "1 of 2 matching selected · 1 more selected outside the filter · 1 more selected, state unknown"
+  );
+  const selection = matchingSelection(listed, matching, new Set(["planner", "gone"]), false);
+  expect(selection.selectedGone).toBe(0);
+  expect(selection.selectedUnknown).toBe(1);
 });
 
 test("a group's count says how many rows it holds and, once any is selected, how many", () => {

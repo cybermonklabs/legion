@@ -101,7 +101,8 @@ inboxTest(
       path: testInfo.outputPath(`shortcut-help-${testInfo.project.name}.png`),
     });
 
-    await filter.fill("agents");
+    // "agents" alone also names `n`'s "Write a message to one or more agents".
+    await filter.fill("go to agents");
     await expect(dialog.getByRole("listitem")).toHaveCount(1);
     await expect(dialog.getByRole("listitem")).toContainText("Go to Agents");
 

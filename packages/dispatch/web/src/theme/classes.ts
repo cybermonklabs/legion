@@ -159,10 +159,11 @@ export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:r
 export const hasFocusVisibleRing =
   "has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400";
 export const cardHoverBorder = "hover:border-sky-400 dark:hover:border-sky-300";
-/** The `cardHoverBorder` accent, scoped to `enabled:` so it doesn't apply while a button is
- * `disabled` (paired with `disabled:opacity-50`-style buttons). */
+/** The `cardHoverBorder` accent while the button can be pressed: `not-refused:` (`styles.css`)
+ *  skips a `disabled` button and one held with `aria-disabled` alike (paired with
+ *  `refused:opacity-50`-style buttons). */
 export const enabledCardHoverBorder =
-  "enabled:hover:border-sky-400 dark:enabled:hover:border-sky-300";
+  "not-refused:hover:border-sky-400 dark:not-refused:hover:border-sky-300";
 export const controlHoverBorder = "hover:border-sky-500 dark:hover:border-sky-400";
 
 registerText("focus ring on canvas", FOCUS_ACCENT, CANVAS, 3);
@@ -542,8 +543,8 @@ registerText("decision pill: med", BADGE_MED_TEXT, ASK_BLOCK_PILL_MED_BG);
 registerText("danger text on danger callout", DANGER_TEXT, CALLOUT_DANGER_BG);
 registerText("danger text on warning callout", DANGER_TEXT, CALLOUT_WARNING_BG);
 registerText("danger text on surface-recessed", DANGER_TEXT, SURFACE_RECESSED);
-/** The issue-status select is a neutral control: its solid dot carries the state signal while
- * its label remains readable without requiring users to distinguish hues. */
+/** The issue header's Status pick is a neutral control: its solid dot carries the state signal
+ * while its label remains readable without requiring users to distinguish hues. */
 export const STATUS_PILL_BG = pair(P.SLATE_100, P.SLATE_800);
 export const STATUS_PILL_TEXT = pair(P.SLATE_800, P.SLATE_200);
 export const statusPill = {
@@ -696,13 +697,6 @@ export function inputClasses(recessed: boolean): string {
 /** The compact secondary button the Architecture lists, the component picker and the broadcast
  *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
 export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
-
-/** The one height of every control a table's toolbar draws - its search box, its selects, its
- *  buttons and its flag chips - from 1280 px up: the search box's own, a `text-sm` line inside
- *  its padding and border (34 px). Below 1280 px `styles.css` gives each control a 44 px floor,
- *  so a phone keeps its targets; `xl:min-h-0` lifts a host's own 44 px minimum, as a chip's,
- *  where that floor no longer stands. */
-export const toolbarControlHeight = "xl:h-8.5 xl:min-h-0";
 
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this

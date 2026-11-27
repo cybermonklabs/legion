@@ -627,14 +627,14 @@ export function markThreadRead(threadId: string, readThrough: string, options: A
   );
 }
 
-/** `POST /api/v1/me/inbox/read`: the Inbox's **Mark all read** - mark every unread thread the
- *  list route answers under the same narrowing whose newest write is at or before
- *  `body.read_through`. Answers how many threads it marked. */
-export function markInboxRead(
-  body: Body<"/api/v1/me/inbox/read", "post">,
+/** `POST /api/v1/me/inbox/dismiss`: the Inbox's **Dismiss**, and with `restore` its **Move to
+ *  Inbox** - by the row ids a page drew, or under the list's own narrowing with a mark, the
+ *  request **Select all** sends. Answers how many threads it changed. */
+export function dismissInbox(
+  body: Body<"/api/v1/me/inbox/dismiss", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/me/inbox/read", { body }, options);
+  return post("/api/v1/me/inbox/dismiss", { body }, options);
 }
 
 /** `PUT /api/v1/me/asks/{id}/snooze`: the caller's own snooze on an Inbox row, until

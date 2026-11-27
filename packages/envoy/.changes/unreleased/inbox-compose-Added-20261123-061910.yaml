@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The Inbox's New message control and its `n` key open one dialog that writes to one agent, or to
+  several as one broadcast, through the Agents page's own composers, and shows where each message
+  went.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: inbox-compose

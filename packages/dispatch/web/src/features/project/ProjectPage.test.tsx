@@ -13,6 +13,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -221,6 +222,28 @@ test("the bare project path opens on Architecture when the project has sources, 
     // One read of the project's source list decides it; the Architecture pane reads the tree.
     expect(page.listProjectArchitectureSources).toHaveBeenCalledTimes(1);
     expect(page.listProjectArchitectureSources).toHaveBeenCalledWith("CORE");
+  } finally {
+    page.restore();
+  }
+});
+
+test("the bare project path with a query opens on Architecture without it when the project has sources", async () => {
+  const page = renderPage(
+    "/projects/CORE?label=frontend&q=core",
+    undefined,
+    "alice",
+    [],
+    [coreSource]
+  );
+  try {
+    // The filter parameters are the Issues tab's; the Architecture tab carries no query.
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/architecture")
+    );
+    expect(screen.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
   } finally {
     page.restore();
   }
@@ -464,7 +487,7 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("List table and Board strip share the URL's status, labels and search", async () => {
+test("List table and Board control row share the URL's status, labels and search", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
@@ -474,9 +497,12 @@ test("List table and Board strip share the URL's status, labels and search", asy
     expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
-    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
+    // Read in the Board's bar: its Filters panel, open while a narrowing is on, lists the same
+    // chips again at its top.
+    const bar = within(controlBar("the Board", page.view.container));
+    expect(bar.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
+    expect(bar.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "List" }));
     expect(await screen.findByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
     expect(screen.getByTestId("location").textContent).toContain("status=todo");
@@ -487,7 +513,7 @@ test("List table and Board strip share the URL's status, labels and search", asy
   }
 });
 
-test("typing v in the strip's search input never toggles the view", async () => {
+test("typing v in the control row's search input never toggles the view", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend");

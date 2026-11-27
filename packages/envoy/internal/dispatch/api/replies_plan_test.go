@@ -14,8 +14,8 @@ import (
 // user_threads, which holds a row for every thread anyone ever wrote in, and never a sort of what
 // it reads, since the index already answers in the state's own order: user_threads_unread
 // (migration 0095) for state=unread, user_threads_inbox (20261105093502) for state=inbox and
-// user_threads_dismissed (20261105093503) for state=dismissed, which is also the cursor the
-// Dismissed view resumes from.
+// user_threads_dismissed_replied (20261123085248) for state=dismissed, which is also the cursor
+// the Dismissed view resumes from.
 //
 // The Agent half of each state is here too. Its rows come from the messages themselves, read one
 // root at a time (api/replies_agent.go). The Inbox's own two states read the person's live roots
@@ -77,10 +77,10 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 		{"the inbox count", myRepliesInboxCountQuery, replyArgs(), "user_threads_inbox", "user_threads", ""},
 		{"every row under state=inbox", myRepliesInboxPageQuery, replyArgs(everyRow), "user_threads_inbox", "user_threads", ""},
 		// The Dismissed view has no count: its total is the page it answers (listMyReplies).
-		{"the first page under state=dismissed", myRepliesDismissedPageQuery, replyArgs(&dismissedPage), "user_threads_dismissed", "user_threads", ""},
+		{"the first page under state=dismissed", myRepliesDismissedPageQuery, replyArgs(&dismissedPage), "user_threads_dismissed_replied", "user_threads", ""},
 		{
 			"a page under state=dismissed from its cursor", myRepliesDismissedFromQuery,
-			replyArgs(&dismissedPage, cursorAt, cursorThread), "user_threads_dismissed", "user_threads", "",
+			replyArgs(&dismissedPage, cursorAt, cursorThread), "user_threads_dismissed_replied", "user_threads", "",
 		},
 		// The Inbox's own states read the person's live roots off the index that holds no dismissed
 		// root, so they read no mark (myAgentLiveRoot). The Dismissed view reads the person's marks

@@ -1,5 +1,6 @@
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
+import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
@@ -14,7 +15,6 @@ import { usableControl } from "./usable-control";
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
-const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
@@ -146,15 +146,15 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => headerControl(PRIORITY_SELECT)?.focus(),
-      when: () => headerControl(PRIORITY_SELECT) !== null,
+      run: () => headerControl(PRIORITY_TRIGGER_SELECTOR)?.focus(),
+      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => headerControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
       // The heading's click opens the editor, and a focus does not, so the key clicks it: a
@@ -198,10 +198,13 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => focusedApprovalAction("request-changes") !== null,
     },
     {
-      // `s` and `p` put focus in a native select, where every single-key binding is suspended
-      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
-      // rather than start a view's chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
+      // `s` puts the focus in a native select and `p` on the priority list's trigger. There every
+      // single-key binding is suspended, and the next keystroke is the control's own: the
+      // select's type-ahead, or the list's search, which a character typed on its closed trigger
+      // opens. So `t` picks Todo or Testing, or opens the priority list, rather than start a
+      // view's chord. Escape is the way back out, as it is on the Inbox rows, the board's cards
+      // and the architecture rows. The priority's trigger keeps the focus while it is held
+      // (`aria-disabled`), so Escape leaves it then too.
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -209,7 +212,10 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
-        return active === headerControl(STATUS_SELECT) || active === headerControl(PRIORITY_SELECT);
+        return (
+          active === headerControl(STATUS_SELECT) ||
+          active === document.querySelector(HEADER)?.querySelector(PRIORITY_TRIGGER_SELECTOR)
+        );
       },
     },
   ]);

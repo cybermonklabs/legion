@@ -17,10 +17,9 @@ export function StopTrying({
   readonly stopping: boolean;
 }): ReactNode {
   if (stopping) {
-    // Refused rather than `busy`, which would render it `disabled`: Chromium moves the focus of a
-    // control that turns disabled to the page's body, which would lose a reader who pressed it by
-    // keyboard for as long as the last attempt is out. A refusal keeps it in the tab order, reads
-    // the same and takes no press (`RefusableButton`).
+    // Refused, so the button says why it takes no press: a screen reader reads the reason beside
+    // it. A refused button stays in the tab order and keeps the focus of a reader who pressed it
+    // by keyboard (`RefusableButton`).
     return (
       <RefusableButton look="secondary-compact" refusal={STOPPING_REASON}>
         Stopping…

@@ -37,7 +37,7 @@ import {
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Route, test } from "./test";
-import { assertPageFits, assertWhole } from "./unclipped";
+import { assertNoSidewaysScroll, assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 /**
@@ -122,20 +122,6 @@ async function boxOf(
   const box = await locator.boundingBox();
   if (box === null) throw new Error(`${what} draws no box`);
   return box;
-}
-
-/** Fails the row where `locator`'s own box scrolls sideways: its content wider than its box. A
- *  box whose overflow scrolls is checked itself, which `assertWhole` does not do for an empty
- *  box or for a box under its first leaf. */
-async function assertNoSidewaysScroll(locator: Locator, what: string): Promise<void> {
-  const { client, scroll } = await locator.evaluate((element) => ({
-    client: element.clientWidth,
-    scroll: element.scrollWidth,
-  }));
-  expect(
-    scroll,
-    `${what} scrolls sideways: ${scroll} px of content in ${client} px`
-  ).toBeLessThanOrEqual(client);
 }
 
 // c-frame (1): the frame's half of the checkpoint's "one panel of properties holds no

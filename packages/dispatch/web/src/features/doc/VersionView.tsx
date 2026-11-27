@@ -13,6 +13,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
+import { CHANGED_TEXT_SENTENCE } from "./changed-text";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import { createDoc, type EditorHandle } from "./editor";
@@ -249,9 +250,7 @@ export function VersionView({
           </span>
         )}
       </h2>
-      {highlightMissing ? (
-        <p role="status">Text changed. The selected range no longer exists in this document.</p>
-      ) : null}
+      {highlightMissing ? <p role="status">{CHANGED_TEXT_SENTENCE}</p> : null}
       {renderError === undefined ? null : (
         <p role="alert">This version could not be rendered: {renderError}</p>
       )}

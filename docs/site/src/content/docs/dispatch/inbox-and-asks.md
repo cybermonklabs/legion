@@ -83,7 +83,8 @@ end.
 
 A band draws 50 rows. Where it holds more, **Show more** under it draws the next 50.
 
-**View**, at the right end of the bar, changes all of that:
+**View**, near the end of the bar (an item of **More** where the bar is narrower than 640 px),
+changes all of that:
 
 - **Sort by**: **Newest first**, the default, or Priority, Urgency, Type, Project, or Assignee.
   Whichever you pick, rows that match on it are newest first within it.
@@ -91,7 +92,7 @@ A band draws 50 rows. Where it holds more, **Show more** under it draws the next
   no headings. A band is drawn only when it holds a row, and a snoozed ask is in **Later**
   whatever you group by.
 - **Show**: **Inbox**, the default, or **Dismissed**, the threads you have taken out of the
-  Inbox. A thread stays in the Inbox, read or not, until you dismiss it.
+  Inbox. A thread stays in the Inbox, read or not, until you dismiss it or answer or reply in it.
 - **Thread order**: whether a thread's replies read **Oldest first**, the default, or **Newest
   first**. This choice is yours everywhere: it sets the order of every thread in Dispatch, not
   only the ones in the Inbox.
@@ -113,22 +114,35 @@ The split follows whose turn it is, not who wrote last. In the drawer, where a r
 card, the row shows a chip such as `Planner replied` when an agent wrote last and the turn is
 still yours. Each card also says `Waiting on you` or `Waiting on <agent>` on its status line.
 
-### Filter
+### The switch and Filter
 
-**Filter**, at the left of the bar, narrows the list by the same five fields: Priority, Urgency,
-Type, Project and Assignee. Each opens a list you can search, and every value in it carries how
-many rows it holds, counted inside what the other four fields have already narrowed — so a value
-that reads 3 has three rows behind it, and picking it never empties the list.
+**All** and **Blocked on you**, the switch at the start of the bar, choose which part of the
+Inbox you see. **Blocked on you** counts the open asks that wait on you and that you have not
+snoozed, and every credential request waiting on you, whatever the filter is set to, and shows
+no number while nothing waits on you. Hold the pointer on it to read the count with the oldest
+one's age, for example `Blocked on you: 2 items, oldest 6h`. Choose it to narrow the list to the
+asks waiting on you: it takes the filters and the search text off, keeps the sort, the grouping
+and the view, and the credential requests stay above the list. **All** shows every item again.
+The choice is in the address, as `?section=needs-you`; it draws no chip, and **Filter** does not
+count it. The switch is not shown in the **Dismissed** view or while the list is narrowed to one
+agent's asks, and choosing either of those takes **Blocked on you** off.
+
+**Filter**, after the switch, narrows the list by the same five fields: Priority, Urgency, Type,
+Project and Assignee. Each opens a list you can search, and every value in it carries how many
+rows it holds, counted inside what the other four fields have already narrowed — so a value that
+reads 3 has three rows behind it, and picking it never empties the list.
 
 Type is the field that tells the kinds apart: Question, Decision, Approval, Threads and Agent
 message.
 
-Each value you pick becomes a chip under the bar. Remove one with its ×, or all of them with
-**Clear filters**. The filters are in the address as well, so a narrowed list is a link.
-
-The banner at the top, for example `Blocked on you: 2 items, oldest 6h`, counts the open asks
-that wait on you and that you have not snoozed, and every credential
-request waiting on you, whatever the filter below it is set to.
+Each value you pick becomes a chip in the bar's line, after **Filter**, which then reads
+**Filter · N**; the chips that have no room there stand behind one **+N more** chip. The panel
+**Filter** opens lists every chip at its top, each with its ×. Remove one with its ×, or all of
+them with **Clear filters**, the × beside **Filter**: it takes off the five fields and an agent
+narrowing, and leaves the search text, the sort, the grouping, the view and the switch as they
+are. Where the bar is narrower than 640 px, the chips leave the line, **Filter** shows their
+number on its icon, and you take one off in its panel. The filters are in the address as well,
+so a narrowed list is a link.
 
 A credential request is an agent asking you to let it use a secret, or a machine asking to start
 agent sessions as you. Pending ones are listed under **Credential requests**, above the list.
@@ -137,10 +151,10 @@ in to the broker ([approve a request](/legion/broker/guides/approve-a-request/))
 decides no secret request. A **Machine login** links to Dispatch's machine-login page, where you
 type the code the machine shows and approve or deny it
 ([log a machine in](/legion/broker/guides/log-a-machine-in/)). They count toward the sidebar's
-**Inbox** number and the banner like an ask that waits on you. A request whose deadline passed
-before anybody decided it stays in the list, marked **Expired** with its deadline, with no link,
-until you click **Dismiss**; nobody can decide it, so it counts toward neither number. The Inbox
-says `Nothing needs you` only when your own list holds no ask and no credential request still
+**Inbox** number and **Blocked on you** like an ask that waits on you. A request whose deadline
+passed before anybody decided it stays in the list, marked **Expired** with its deadline, with no
+link, until you click **Dismiss**; nobody can decide it, so it counts toward neither number. The
+Inbox says `Nothing needs you` only when your own list holds no ask and no credential request still
 waiting on a decision; with the filter on someone else it says `Nothing matches this filter`, and
 with the filter cleared, `Nothing needs anyone`. An open Inbox picks up a new request, or one that
 is no longer pending, within moments on its own - no reload needed.
@@ -196,7 +210,7 @@ The box narrows the list the Inbox already holds: nothing is asked of the server
 sections, their counts and the keys that walk the list all follow what you typed. An ask the text
 hides drops out of the count of ticked asks and out of the snooze that acts on them, and keeps its
 tick for when it comes back. The credential requests above the list and the **Blocked on you**
-summary are not narrowed. When no ask holds every word, the list reads **Nothing matches this
+count are not narrowed. When no ask holds every word, the list reads **Nothing matches this
 text**.
 
 The text is part of the address too, as `?q=`, so a link carries what you searched for as well as
@@ -205,17 +219,18 @@ whose asks you were looking at.
 While the filter names anybody but you alone, the **Waiting on you** band reads **Waiting on a
 person** instead, since those asks wait on whoever holds them.
 
-The banner, a project's **Blocked on you** pill and the Agents page's **Needs you** pill mean
-one thing wherever they appear: the open asks whose turn is a person's, that wait on you and
-that you have not snoozed. The banner adds the credential requests waiting on you, and so
-does the sidebar's **Inbox** number, which adds your unread threads on top of both; a project's
-pill counts no credential request, because a request belongs to no project. None of them follows
-the filter, so a widened filter lists more asks than the number beside the Inbox.
+The Inbox's **Blocked on you**, a project's **Blocked on you** pill and the Agents page's
+**Needs you** pill mean one thing wherever they appear: the open asks whose turn is a person's,
+that wait on you and that you have not snoozed. The Inbox's switch adds the credential requests
+waiting on you, and so does the sidebar's **Inbox** number, which adds your unread threads on top
+of both; a project's pill counts no credential request, because a request belongs to no project.
+None of them follows the filter, so a widened filter lists more asks than the number beside the
+Inbox.
 
-The Agents page links each agent's asks too. Its **Needs you** pill opens the Inbox filtered to
-that agent's asks waiting on you, under an `Asks from <agent> waiting on you · clear` chip. Choose
-the chip to remove the filter, or the **↗** beside it to open the agent's
-[live view](/legion/dispatch/agents/#the-live-view).
+The Agents page links each agent's asks too. Its **Needs you** and **Waiting on agent** pills open
+the Inbox narrowed to that agent's asks, under an `Asks from <agent>` chip that **Filter** counts
+and lists at the top of its panel. Choose the chip's **×** to remove the narrowing, or the **↗**
+beside it to open the agent's [live view](/legion/dispatch/agents/#the-live-view).
 
 ### Later and snooze
 
@@ -233,14 +248,28 @@ column:
 A snoozed ask moves into the folded **Later** band, which is there whatever you group the list
 by. Open the band to see when each ask comes back and to end a snooze early. A snooze outranks
 whose turn it is: an agent replying to a snoozed ask does not bring it back, and it does not
-count toward the sidebar's **Inbox** number or the banner. A thread cannot be snoozed: it is
-read or it is not.
+count toward the sidebar's **Inbox** number or **Blocked on you**. A thread cannot be snoozed: it
+is read or it is not.
 
 To snooze several asks at once, tick each row's checkbox, or press `x` on the row the right
-column is showing (on the focused row where there is no second column). A bar appears above the
-list reading `3 selected`, with the same four choices and **Clear**. If the server refuses some
-of them, the bar says how many and why, and those rows stay ticked. Press `Escape` with no row
-focused to drop every tick.
+column is showing (on the focused row where there is no second column). A bar appears over the
+list, at the foot of the window (at its top on a phone), so no row moves: it reads `3 selected`,
+with the same four choices and **Clear selection**. If the server refuses some of them, the bar
+says how many and why, and those rows stay ticked. Press `Escape` with no row focused to drop
+every tick.
+
+To tick many rows at once, tick one row's checkbox and then shift-click another's: every row the
+list draws between the two takes the clicked row's new state, ticked or unticked, asks and
+threads alike. The range runs from the last row you ticked or unticked without the shift key,
+in the order the list draws its rows now, so a folded band, rows behind **Show more** and rows a
+filter or the search hides are not in it; in the **Dismissed** view it runs over every row the
+view has loaded. A second shift-click from the same row gives its own range, and the rows of the
+first it leaves out go back to how they stood. After **Select all** or **Clear selection** the
+next shift-click ticks or unticks its own row alone, which the range then runs from. From the
+keyboard, `Shift+X` takes the same range to the row the right column is showing (to the focused
+row where there is no second column, and in the Inbox drawer), and `Shift+J` and `Shift+K` move
+to the next or previous row and take it there; with no row to run from, they only move. A
+shift-click selects no text on the page.
 
 ## Replies and agent messages
 
@@ -258,16 +287,20 @@ A reply you write here goes exactly where one written on the thread's own page g
 
 Reading a thread marks it read. The row stays where it is, drawn as read: a thread stays in your
 Inbox, read or not, until you dismiss it, the way an email stays in its inbox until it is
-archived. Where you would rather not read them one at a time, **Mark all read**, in the bar
-between **Filter** and **View**, marks every thread the list is showing. It asks nothing first:
-every row is redrawn as read and every count drops at once, and if the server refuses the press
-the marks come back and the bar says `Nothing was marked read.` A filtered list marks only what
+archived, or until you answer or reply in it yourself, which takes it out as **Dismiss** does,
+with no second press. Where you would rather not read them one at a time, **Mark all read**, in the
+bar's **More** (⋯), marks every thread the list is showing. It asks nothing first: every row is
+redrawn as read and every count drops at once, and if the server refuses the press the marks come
+back and the line under the bar says `Nothing was marked read.` A filtered list marks only what
 it is showing, and a thread somebody wrote in after the list was read stays unread.
 
-**Dismiss** is what takes a thread out of the Inbox. It is on the row itself — while your pointer
+**Dismiss** is what takes a thread out of the Inbox without a write of yours. Your own answer to a
+question, and your own reply in a thread, take it out too: the row leaves the Inbox and stands in
+**Dismissed**, whether you wrote it in the Inbox, on the issue page, in a document's margin or on
+the Agents page. An answer or a reply an agent writes in your name takes nothing out. **Dismiss** is on the row itself — while your pointer
 is on the row, and always on the row you are reading — in the right column's head, and on the
 card where there is no second column. The key `e` dismisses the row you are on, and with rows
-selected the bar above them dismisses all of them at once. A question has no **Dismiss**: you
+selected the selection bar dismisses all of them at once. A question has no **Dismiss**: you
 answer or snooze an ask instead.
 
 What you dismissed is behind **View → Show → Dismissed**, newest dismissal first, where the same
@@ -275,11 +308,53 @@ control reads **Move to Inbox** and one press puts the thread back. Somebody els
 thread you dismissed brings it back to the Inbox, unread, on its own; a reply you send from the
 **Dismissed** view leaves the thread where it is.
 
+When **Dismiss**, **Snooze**, or **Move to Inbox** on the selection bar removes rows, keyboard focus moves to the row after the last one you acted on.
+If no row follows, focus moves to the nearest row before it that you did not act on.
+If no row remains, focus moves to the empty message.
+**Clear selection** returns focus to the last checkbox you marked if its row is still listed.
+
 The **Type** filter has a value for each kind, so **Threads** narrows the list to those threads
 alone, which is also what the address `/replies` opens.
 
 In the drawer each thread row is a card, with **Open**, which goes to the thread's own page,
 **Mark read** and **Dismiss**.
+
+## Writing to agents
+
+You can write to one or more agent sessions from the Inbox, as you can from the Agents page.
+Press `n`, or **New message**, the filled button at the end of the bar (its ✎ alone where the bar
+is narrower than 640 px). The Inbox drawer has both too. The dialog sends through the same
+requests as the Agents page.
+
+Pick the recipients in **Recipients**. The list holds the live sessions, and its box narrows
+them as you type. Under the list, each recipient shows its state before you send:
+
+- **Running**: the session is live.
+- **Unresponsive**: the session has missed its heartbeats. It has not ended, and messages sent to
+  it are stored until it answers, as the Agents page says of such a session.
+- **Not listed**: the live list does not hold the session. It may be stopped, and then the Envoy
+  listener knows it and the message is stored for it. Or the listener may not know it at all,
+  and then a message to two or more leaves it out. Only the server can tell the two apart, so
+  the dialog says which happened once you send. A message to one session leaves nobody out, so
+  it only says the message is stored for it.
+
+To one recipient, the dialog shows the Agents page's own composer: its **Issue** picker above
+the message box. With no issue picked, the message goes to the session directly. With an issue
+picked, it is a comment on that issue that mentions the session. To two or more, the dialog shows
+the Agents page's broadcast composer: its **Delivery mode** and its message, with no **Issue**
+picker. That is one broadcast, and each session gets its own copy, so each one replies in its own
+thread, and each such thread is an **Agent message** row of its own. One send reaches at most 100
+sessions; the dialog refuses more before it sends anything. What you write stays when you add or
+remove a recipient. If you close the dialog with **Cancel**, `Escape` or a click outside it while
+it holds a message, it asks **Discard draft?** first, and **Keep** leaves the message as it was.
+While a message is on its way, the recipients cannot change.
+
+**Send** stays where you pressed it while the message is on its way, and takes no second press.
+If the server refuses the message, **Send** comes back with the error. Once the server answers,
+the dialog shows where the message went, for each recipient: sent, stored for later, failed with
+its error, or left out with its reason. It updates as each delivery settles. **Done** closes the
+dialog and puts the focus back where you were: the **New message** control, or the row you were
+on.
 
 ## Answering an ask
 
@@ -416,17 +491,21 @@ whatever page you're on, and so does a header button, which differs by screen wi
   its own count; a separate **Peek** button beside it, with no count of its own, opens the drawer
   instead.
 
-The drawer holds no second column at any width: every row is a card, as it is on the narrow
-Inbox page. The actions are the same: answer, ask back, snooze, read a thread or open a row
-without losing your place. The page underneath keeps its state, a half-typed message included,
-so a reply you were drafting is still there when you close the drawer.
+The drawer holds no second column and no reading view at any width: every row is a card with its
+own controls, where the Inbox page lists short rows. The actions are the same: answer, ask back,
+snooze, read a thread or open a row without losing your place. The page underneath keeps its
+state, a half-typed message included, so a reply you were drafting is still there when you close
+the drawer.
 
-The drawer carries the same **Filter** and **View**, with choices of its own. It opens on your
-own work, and what you pick there changes the drawer alone: the address of the page underneath
-never moves. The **Search asks** box is the drawer's own in the same way: the drawer keeps what
-you type there, and it narrows the drawer alone. The two settings that are yours rather than the
-list's — the thread order and the bands you folded — are shared with the page, since they
-belong to your browser.
+The drawer carries the same bar, with choices of its own. In a window 768 px wide or wider the
+drawer is narrower than 640 px, so its bar takes the narrow layout the Inbox takes on a phone:
+the switch, **Filter**, **More** with **View** and **Mark all read**, and **New message**. It
+opens on your own work, and what you pick there changes the drawer alone: the address of the
+page underneath never moves. The **Search asks** box is the drawer's own in the same way: the
+drawer keeps what you type there,
+and it narrows the drawer alone. The two settings that are yours rather than the list's — the
+thread order and the bands you folded — are shared with the page, since they belong to your
+browser.
 
 `Escape` closes the drawer before it closes anything else behind it, and returns focus to the
 button that opened it. Clicking outside the drawer closes it too. The button isn't offered on the
@@ -437,7 +516,10 @@ Inbox page itself, since the page already shows everything the drawer would.
 The Inbox works the same on a phone as below 1280 px: the same bar, the same bands, one short row
 for each question and thread. Tap a row to open it full width, with its own controls — a
 question with its options, **Assign to me** and **Snooze**, a thread with its messages and
-**Dismiss** — and **← Inbox** to go back.
+**Dismiss** — and **← Inbox** to go back. The bar takes its narrow layout there, as it does in
+the drawer: the switch reads **All** and **You · N**, **Filter** shows the number of narrowings
+on its icon in place of the chips, **View** is an item of **More**, and **New message** shows its
+icon alone.
 
 ![The Inbox on a phone in dark mode: one question open full width, under the Inbox control that goes back to the list.](/legion/media/dispatch/inbox-phone.png)
 

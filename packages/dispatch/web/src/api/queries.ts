@@ -344,6 +344,16 @@ export const agentConversationQuery = (sessionId: string) =>
     queryFn: () => api.getAgentConversation(sessionId),
   });
 
+/** One broadcast (`GET /api/v1/broadcasts/{id}`): what was sent, and where every recipient's copy
+ *  of it got to. Keyed under ["broadcast"], the prefix every issue-less message event refreshes
+ *  (`event-refresh`), so a recipient's delivery receipt or reply lands without a poll. The
+ *  broadcast's page, the Agents page's sent broadcast and the compose dialog read this one key. */
+export const broadcastQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["broadcast", id],
+    queryFn: () => api.getBroadcast(id),
+  });
+
 /** Every native project, shared by the shell, project routes, and settings. */
 export const projectsQuery = () =>
   queryOptions({
@@ -404,11 +414,11 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
 ];
 
 /**
- * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
- * the filter strip and the issue header's label picker. Every observer sets the query's function,
- * so each one takes it from here. A fetch that starts while a board move on the project is
- * unanswered waits for the answer: until then the server may not have applied the move, and its
- * list would put the card back where it came from.
+ * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List
+ * and the issue header's label picker. Every observer sets the query's function, so each one
+ * takes it from here. A fetch that starts while a board move on the project is unanswered waits
+ * for the answer: until then the server may not have applied the move, and its list would put
+ * the card back where it came from.
  */
 export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({

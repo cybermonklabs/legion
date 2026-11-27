@@ -176,6 +176,7 @@ export function Sidebar({
       : prioritySummary.work_under_no_priority.count + prioritySummary.priority_work_parked.count;
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
+  // None until every read it adds up has answered, so the link is drawn without it meanwhile.
   const inboxCount = useInboxCount();
   const agentState = useQuery(userAgentStateQuery()).data;
   const unreadReplies = totalUnreadReplies(agentState);
@@ -232,7 +233,7 @@ export function Sidebar({
             to="/"
           >
             <span>Inbox</span>
-            {inboxCount === 0 ? null : (
+            {inboxCount === undefined || inboxCount === 0 ? null : (
               <span
                 className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
               >

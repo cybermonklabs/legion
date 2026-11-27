@@ -259,7 +259,7 @@ func TestApprovalRequestSummaryAndARepeatWithANewSummary(t *testing.T) {
 	// summary; each "é" is one UTF-16 unit and two bytes, and the padding around a summary is
 	// not part of it.
 	room := contracts.DispatchEventBodyMax -
-		docs.AskWordingUnits(docs.ApprovalQuestion(approvalOf("spec.md", maxApprovalVersion), ""), approvalAskOptions) - 1
+		docs.AskWordingUnits(docs.ApprovalQuestion(oneApprovalDocument("spec.md", maxApprovalVersion), ""), approvalAskOptions) - 1
 	over := strings.Repeat("é", room+1)
 	overCap := "summary is 1 characters over the " + strconv.Itoa(room) + "-character limit (" + strconv.Itoa(room+1) + "/" + strconv.Itoa(room) + ")"
 	if refused := request(issue.PrimaryArtifactID, &over); refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"CAP_EXCEEDED"`) || !strings.Contains(refused.Body.String(), overCap) {
@@ -313,8 +313,8 @@ func TestApprovalRequestSummaryAndARepeatWithANewSummary(t *testing.T) {
 	}
 }
 
-// approvalOf is the one-document list an approval request names, for the question tests.
-func approvalOf(name string, version int) []model.AskApprovalDocument {
+// oneApprovalDocument is the one-document list an approval request names, for the question tests.
+func oneApprovalDocument(name string, version int) []model.AskApprovalDocument {
 	return []model.AskApprovalDocument{{ArtifactID: "artifact-1", Name: name, Version: version, RequestedVersion: version}}
 }
 
@@ -329,22 +329,22 @@ func TestTheLongestAcceptedSummaryFitsTheBoundAtEveryVersion(t *testing.T) {
 			// The longest summary approvalQuestion accepts, by binary search over its verdict:
 			// it accepts every length up to that one and refuses every length past it.
 			refused := sort.Search(contracts.DispatchEventBodyMax+2, func(length int) bool {
-				_, err := approvalQuestion(approvalOf(name, requested), strings.Repeat("é", length))
+				_, err := approvalQuestion(oneApprovalDocument(name, requested), strings.Repeat("é", length))
 				return err != nil
 			})
 			limit := refused - 1
 			summary := strings.Repeat("é", limit)
-			if _, err := approvalQuestion(approvalOf(name, requested), summary+"é"); err == nil || !strings.Contains(err.Error(), "summary is 1 characters over") {
+			if _, err := approvalQuestion(oneApprovalDocument(name, requested), summary+"é"); err == nil || !strings.Contains(err.Error(), "summary is 1 characters over") {
 				t.Fatalf("%s at version %d: one past the %d-unit limit = %v, want CAP_EXCEEDED", name, requested, limit, err)
 			}
 			// A move to the first version of each digit count, then to the longest of all.
 			for boundary := 9; boundary < maxApprovalVersion; boundary = boundary*10 + 9 {
-				moved := docs.ApprovalQuestion(approvalOf(name, boundary+1), summary)
+				moved := docs.ApprovalQuestion(oneApprovalDocument(name, boundary+1), summary)
 				if units := docs.AskWordingUnits(moved, approvalAskOptions); units > contracts.DispatchEventBodyMax {
 					t.Fatalf("%s requested at version %d, moved to %d: question and options are %d units, past the %d bound", name, requested, boundary+1, units, contracts.DispatchEventBodyMax)
 				}
 			}
-			longest := docs.ApprovalQuestion(approvalOf(name, maxApprovalVersion), summary)
+			longest := docs.ApprovalQuestion(oneApprovalDocument(name, maxApprovalVersion), summary)
 			if units := docs.AskWordingUnits(longest, approvalAskOptions); units != contracts.DispatchEventBodyMax {
 				t.Fatalf("%s requested at version %d, moved to the longest version: question and options are %d units, want exactly the %d bound", name, requested, units, contracts.DispatchEventBodyMax)
 			}

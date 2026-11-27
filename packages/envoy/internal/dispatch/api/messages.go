@@ -348,7 +348,8 @@ func (w messageStoreWrite) rowNode() (nodeKind, nodeAddress *string) {
 // and left to the backfill and no tuple stated (inboxwrite.Write.Unstored). The record is planned
 // before the message's replies_to is written, so it names the message this one answers
 // (inboxwrite.Write.RepliesTo), and a message that answers nothing starts its own thread under
-// the id its write drew (inboxwrite.Write.StartsThread).
+// the id its write drew (inboxwrite.Write.StartsThread). A broadcast's copy and a session's reply
+// record it as it is, and createStoredMessage marks it its writer's own (inboxwrite.Write.Own).
 func (w messageStoreWrite) inbox(message model.Message, author model.Actor) inboxwrite.Write {
 	write := inboxwrite.Message(message.ID, author, message.CreatedAt, message.IssueKey, w.node.Project)
 	if message.InReplyTo != nil {
@@ -569,7 +570,11 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	inbox := stored.inbox(message, actor)
+	// The message is its writer's own write (inboxwrite.Write.Own): the message createMessage and
+	// createAgentMessage store, which its writer makes at that moment, so a reply by a person acting
+	// as themselves takes its thread out of their Inbox, an issue message's from the issue route and
+	// a direct conversation's from the Agents route (the own-answer rule, R1).
+	inbox := stored.inbox(message, actor).Own()
 	// An issue message's thread_logins are read by its event's insert, after the message's insert,
 	// on the thread root found here; the message's threads_recorded passes it by the user_threads
 	// trigger, so the event also names the row its writer's record keeps after it
@@ -627,15 +632,41 @@ func (s *server) createStoredMessage(
 	// The failure point between the message's node and its row (failpoint.Message), decided
 	// before the batch is sent and queued where it fails.
 	fails := failpoint.Planned(ctx, failpoint.Message)
-	// The thread's root where the message is a session's reply that clears its Agent dismissals
-	// (inboxwrite.Recording.QueueRootLock), the parent's lock, the index its blocks owe, the
-	// message's node, the insert, the recovery point, this message's own index, the event, its
-	// stamp, what the node write and the index stated, its author, its record in its thread and a
-	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
-	// known before the insert runs, and the stamp and every cause name the event's id as the id
-	// sequence left it.
+	// A person's own reply under an Agent thread dismisses it for them where a session answered its
+	// root (inboxwrite's step 6). Its plan took that root `for update` in the statement that walked
+	// to it (inboxwrite.PlanRecord, inboxwrite.AgentDismissalRootWalkLockStatement), the first lock
+	// of the root this transaction holds and before the reply's insert, whose foreign key holds its
+	// parent `for key share`: taken after either, the lock would be an upgrade that can deadlock
+	// against the dismiss route, which takes the root before the person's rows at that same level
+	// (inboxDismissLockAgentRoots; D6, the lock order on markInboxReadThreads, api/inbox_read.go),
+	// or against a reply of the release before, which holds the root `for key share` and then takes
+	// it `for no key update` to delete a mark (migration 20261125053125). The dismissal's row then
+	// moves the root's agent_dismissed_at under this lock (that migration's trigger), as the
+	// dismiss route's does. Whether a session answered the root is read here, in a statement of its
+	// own once that lock is granted, so its snapshot holds every session's reply that committed
+	// while the lock waited, and no session's reply commits after it before this transaction does,
+	// since each takes the root before it can (inboxwrite.Recording.Unanswered). A root still
+	// unanswered is no Agent row, so the reply writes no dismissal of it.
+	if root, dismisses := recording.AgentDismissal(); dismisses {
+		var answered bool
+		if err := tx.QueryRow(ctx, ownAgentRootAnswered, root).Scan(&answered); err != nil {
+			return model.Message{}, nil, fmt.Errorf("read whether a session answered the agent thread's root %s: %w", root, err)
+		}
+		if !answered {
+			recording = recording.Unanswered()
+		}
+	}
+	// The thread's root - `for no key update` where the message is a session's reply that clears
+	// its Agent dismissals and its plan did not take the root (inboxwrite.Recording.QueueRootLock)
+	// - the parent's lock, the index its blocks owe, the message's node, the insert, the recovery
+	// point, this message's own index, the event, its stamp, what the node write and the index
+	// stated, its author, its record in its thread and a targeted message's first delivery attempt
+	// go in one batch (store.WriteBatch): the message is known before the insert runs, and the stamp
+	// and every cause name the event's id as the id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		// The thread's root first, for a session's reply whose plan did not take it; a person's own
+		// reply under an Agent thread holds its root from its plan.
 		recording.QueueRootLock(b)
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
@@ -747,6 +778,14 @@ func (s *server) createStoredMessage(
 	}
 	return message, advice, nil
 }
+
+// ownAgentRootAnswered answers whether the thread under the Agent root $1 holds a session's reply:
+// the thread as the Inbox's reads walk it (agentThreadCTE), and a reply as the one an Agent row is
+// drawn from (myAgentRowFacts' replies), so a root it answers false for is no Agent row. Its writer
+// sends it once the plan holds the root `for update` (createStoredMessage), as a statement of its
+// own, so under read committed it takes its snapshot after that lock was granted.
+var ownAgentRootAnswered = agentThreadCTE("$1::uuid") + `
+	select exists (select 1 from thread t where t.author->>'kind' = 'session')`
 
 func messageEvent(message model.Message, eventType string, actor model.Actor, payload any) model.Event {
 	if message.IssueKey != nil {

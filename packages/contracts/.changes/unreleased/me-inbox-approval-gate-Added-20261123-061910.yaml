@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  Each entry of `GET /api/v1/me/inbox` and the issue read carry `approval_gate`: the issue's
+  approval steps and which of them stand approved.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: me-inbox-approval-gate

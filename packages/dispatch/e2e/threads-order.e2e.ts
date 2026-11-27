@@ -1,12 +1,20 @@
+import { openAgents } from "./agents";
+import { meInboxThreads } from "./api";
+import { drawer } from "./inbox-drawer";
+import { inboxPane } from "./inbox-pane";
+import { replyRowId } from "./inbox-threads";
 import { expect, test } from "./test";
 import {
+  collapsedParts,
   DECISION_BLOCK,
   expand,
   FOLD_ORDERS,
   foldParts,
+  openInPane,
   REPLIES,
   ROOT,
   readAskThrough,
+  readThrough,
   seedThreads,
   setThreadOrder,
   verticalOrder,
@@ -14,11 +22,13 @@ import {
 import { asUser } from "./users";
 
 /**
- * One thread order everywhere (INFRA-450), in the two surfaces that sit on the live document: a
- * document block's thread in the spec, and the margin thread beside the passage it is about,
- * with the Conversation card next to it. The Inbox's own surfaces - its reading pane, its card
- * and an ask's own thread - are in `threads-order.stub.e2e.ts`, and the three threads both
- * files are read over are in `threads-order.ts`.
+ * One thread order everywhere, in the surfaces that sit on the live document: a
+ * document block's thread in the spec, the margin thread beside the passage it is about, with
+ * the Conversation card next to it, and the Inbox's reading pane over the comment thread, with
+ * its reading view below the pane's width and the drawer's card. That thread is anchored to the
+ * spec, so the pane draws it inside the spec's live room, under its block (the in-document pane,
+ * R3). An ask's own thread in the Inbox is in `threads-order.stub.e2e.ts`, and the three threads
+ * both files are read over are in `threads-order.ts`.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
@@ -123,6 +133,115 @@ test("a margin thread and the Conversation show every reply in the chosen order"
         root: margin.getByText(ROOT).first(),
       })
     ).toEqual(["root", "box", "first"]);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the Inbox's pane, its reading view and the drawer's card read a thread in the chosen order, and keep it over a reload", async ({
+  browser,
+}) => {
+  // The comment thread read through its fourth reply, so the fold holds four.
+  const scene = await seedThreads();
+  await readThrough(scene.commentIssue, scene.comment, 4);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    const id = replyRowId(scene.comment);
+
+    // Oldest first: the root, the fold over the four read replies, 5, 6, then the reply box.
+    await setThreadOrder(page, "oldest");
+    let body = await openInPane(page, id);
+    const box = body.getByRole("textbox", { name: "Reply" });
+    expect(await verticalOrder(collapsedParts(body, 4, box))).toEqual([
+      "root",
+      "fold",
+      "reply-5",
+      "reply-6",
+      "box",
+    ]);
+    // The fifth reply, the first unread, is on screen. The pane draws this thread inside the
+    // spec and opens at the thread's section, not at its first unread reply; the spec is one
+    // heading and one sentence, so the whole thread is in view.
+    expect(
+      await inboxPane(page).evaluate((pane, text) => {
+        let scroller = pane;
+        for (const candidate of pane.querySelectorAll<HTMLElement>("*")) {
+          const overflow = window.getComputedStyle(candidate).overflowY;
+          if (overflow === "auto" || overflow === "scroll") {
+            scroller = candidate;
+            break;
+          }
+        }
+        const fifth = [...pane.querySelectorAll<HTMLElement>("[data-inbox-thread-turn]")].find(
+          (turn) => (turn.textContent ?? "").includes(text)
+        );
+        if (fifth === undefined) return false;
+        const box = scroller.getBoundingClientRect();
+        const rect = fifth.getBoundingClientRect();
+        return rect.bottom > box.top && rect.top < box.bottom;
+      }, REPLIES[4] ?? "")
+    ).toBe(true);
+
+    // Newest first: the root, the box, 6, 5, then the fold.
+    await setThreadOrder(page, "newest");
+    body = await openInPane(page, id);
+    expect(
+      await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
+    ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
+
+    // The choice is the reader's, kept for their browser across a reload.
+    await page.reload();
+    body = await openInPane(page, id);
+    expect(
+      await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
+    ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
+
+    // Below the pane's width the row opens in place of the list, in the same pane, and the drawer's
+    // row is its own card; both read the same way.
+    await page.setViewportSize({ height: 900, width: 1024 });
+    await page.goto("/");
+    body = await openInPane(page, id);
+    await expect(page.getByTestId("inbox-reading-view")).toBeVisible();
+    expect(
+      await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
+    ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
+    // The drawer's key is bound once sign-in answers, which `openAgents` waits for.
+    await openAgents(page);
+    await page.keyboard.press("i");
+    const card = drawer(page).locator(`[data-inbox-row="${id}"] [data-inbox-thread-body]`);
+    await expect(card).toBeVisible();
+    expect(
+      await verticalOrder(collapsedParts(card, 4, card.getByRole("textbox", { name: "Reply" })))
+    ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("an unread reply is never folded: with 3 to 6 unread the fold holds only 1 and 2", async ({
+  browser,
+}) => {
+  // The comment thread read through its second reply, which the server counts as four unread.
+  const scene = await seedThreads();
+  await readThrough(scene.commentIssue, scene.comment, 2);
+  expect(
+    (await meInboxThreads({ state: "unread" })).rows.find((row) => row.thread_id === scene.comment)
+      ?.unread_count
+  ).toBe(4);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await setThreadOrder(page, "oldest");
+    const body = await openInPane(page, replyRowId(scene.comment));
+    await expect(body.getByRole("button", { name: "Show 2 earlier replies" })).toBeVisible();
+    await expect(body.locator("[data-inbox-thread-turn]")).toHaveCount(5);
+    for (const reply of REPLIES.slice(2)) {
+      await expect(body.getByText(reply)).toBeVisible();
+    }
+    await expect(body.getByText(REPLIES[1] ?? "")).toHaveCount(0);
   } finally {
     await alice.close();
   }

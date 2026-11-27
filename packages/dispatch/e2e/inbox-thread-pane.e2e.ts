@@ -27,7 +27,7 @@ import {
   sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -356,7 +356,9 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     // thread's own, drawn with it: a row is selected before its thread has been read, so the
     // wait is for the thread on the page and then for the box holding what was typed, never
     // for the box alone - a draft written while the thread is still landing goes with the
-    // mount that lands it.
+    // mount that lands it. The reader's own reply takes the thread out of their Inbox
+    // (the own-answer rule, R1), so its row leaves, and the reply is read in the Dismissed
+    // view's thread.
     //
     // Every body is matched exactly: the column draws the thread's newest line twice, once as
     // its own turn and once as the head's one-line preview (`— <body>`), and which of the two
@@ -368,16 +370,19 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
     await reply.fill("Then we widen the window.");
     await expect(reply).toHaveValue("Then we widen the window.");
     await pane.getByRole("button", { name: "Send" }).click();
-    await expect(pane.getByText("Then we widen the window.", { exact: true })).toBeVisible();
+    await expect(page.locator(`[data-inbox-row="${replyRowId(root.id)}"]`)).toHaveCount(0);
+    await expectInDismissedThread(alice, replyRowId(root.id), "Then we widen the window.");
 
-    // A reply to an Agent thread goes to the session in the mode the Agents page would use.
+    // A reply to an Agent thread goes to the session in the mode the Agents page would use, and
+    // takes that thread out of the Inbox the same way.
     await selectRow(page, agentRowId(agent));
     await expect(pane.getByText("Green.", { exact: true })).toBeVisible();
     const comment = pane.getByRole("textbox", { name: "Comment" });
     await comment.fill("Hold the mirror for an hour.");
     await expect(comment).toHaveValue("Hold the mirror for an hour.");
     await pane.getByRole("button", { name: "Send" }).click();
-    await expect(pane.getByText("Hold the mirror for an hour.", { exact: true })).toBeVisible();
+    await expect(page.locator(`[data-inbox-row="${agentRowId(agent)}"]`)).toHaveCount(0);
+    await expectInDismissedThread(alice, agentRowId(agent), "Hold the mirror for an hour.");
 
     // The mode the sent reply was delivered in, read back off the session's conversation, is
     // the one the Agents page would have picked for this exchange.
@@ -399,6 +404,19 @@ test("a reply sent from the pane reaches the thread, and an Agent reply goes in 
   }
 });
 
+/** Reads `text` in the thread of row `id` as the Dismissed view draws it, on a page of its own. */
+async function expectInDismissedThread(context: BrowserContext, id: string, text: string) {
+  const dismissed = await context.newPage();
+  try {
+    await holdReadMarks(dismissed);
+    await dismissed.goto("/?show=dismissed");
+    await selectRow(dismissed, id);
+    await expect(inboxPane(dismissed).getByText(text, { exact: true })).toBeVisible();
+  } finally {
+    await dismissed.close();
+  }
+}
+
 test("a reply the session takes as its own turn says so and links the live view", async ({
   browser,
 }) => {
@@ -409,7 +427,9 @@ test("a reply the session takes as its own turn says so and links the live view"
     replies: ["Green."],
   });
   // The reader's own follow-up into the same conversation, which the session takes as a turn of
-  // its live conversation; the Inbox still lists the row, because its root was never accepted.
+  // its live conversation. The follow-up is the reader's own reply, so it takes the thread out of
+  // their Inbox (the own-answer rule, R1), and the row stands in the Dismissed view: the root was
+  // never accepted, so the row is still listed there.
   const followUp = await createAgentMessage(THREAD_SESSION.session_id, {
     body: "Then hold the mirror.",
     delivery: "steer",
@@ -421,7 +441,7 @@ test("a reply the session takes as its own turn says so and links the live view"
   try {
     const page = await alice.newPage();
     await holdReadMarks(page);
-    await page.goto("/");
+    await page.goto("/?show=dismissed");
     await selectRow(page, agentRowId(root));
     const turn = inboxPane(page).locator(`[data-inbox-thread-turn="${followUp.id}"]`);
     await expect(turn).toBeVisible();

@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The Inbox's Thread order switch reorders the open thread at once: a preference written in one
+  place reaches every reader of it on the page, and an open ask's thread keeps its folds.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: thread-order-live

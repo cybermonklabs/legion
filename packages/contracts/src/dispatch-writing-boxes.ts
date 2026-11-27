@@ -514,13 +514,14 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Reason",
     write: "approval-reason",
   },
-  // The Agents page's broadcast box: one message to each selected agent, which tells nobody the
-  // body names, and which belongs to no issue.
+  // The broadcast box of the Agents page and the Inbox's compose dialog (one `BroadcastComposer`):
+  // one message to each selected agent, which tells nobody the body names, and which belongs to
+  // no issue.
   {
     box: "broadcast",
     covered: true,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/agents/AgentsPage.tsx"],
+    files: ["packages/dispatch/web/src/features/agents/BroadcastComposer.tsx"],
     issueRows: false,
     reach: "Broadcast message",
     write: "broadcast",

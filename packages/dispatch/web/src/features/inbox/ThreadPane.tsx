@@ -4,9 +4,10 @@
  *
  * A thread that needs no document is drawn whole under its subject line (`ThreadBodyPane`); a
  * thread whose document the column can open is drawn in that document, at the block it belongs
- * to (`ThreadDocumentBody`) - the anchored comment thread below its block, a decision block's
- * ask in the block itself. A document that cannot be opened, and an anchor that cannot be
- * placed, fall back to the thread alone with the text it is anchored to.
+ * to (`ThreadDocumentBody`) - a comment thread anchored to text of a document, an issue's or a
+ * project's, below its block, a decision block's ask in the block itself. A document that cannot
+ * be opened, and an anchor that cannot be placed, fall back to the thread alone with the text it
+ * is anchored to.
  */
 
 import { inboxThreadRow } from "@legion/contracts";
@@ -15,7 +16,8 @@ import type { ReactNode } from "react";
 
 import { askThreadQuery } from "../../api/queries";
 import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
-import { textPrimaryOnCanvas } from "../../theme/classes";
+import { inlineWarningText, textPrimaryOnCanvas } from "../../theme/classes";
+import { CHANGED_TEXT_SENTENCE } from "../doc/changed-text";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
 import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
@@ -61,21 +63,33 @@ interface ThreadBodyProps {
   /** Whether this is the document body falling back to the thread alone. */
   fallback?: boolean;
   quote: boolean;
+  /** Whether the text the thread is anchored to is gone from its document, which the fall-back
+   *  says above the quote in the document page's words. */
+  textChanged?: boolean;
   thread: MyReplyRow;
 }
 
 /** What a thread body is: the thread's subject line and the thread itself, marked as the
  *  column's own body. The document body draws this in its place where it falls back. */
-function ThreadBodyContent({ body, fallback = false, quote, thread }: ThreadBodyProps): ReactNode {
+function ThreadBodyContent({
+  body,
+  fallback = false,
+  quote,
+  textChanged = false,
+  thread,
+}: ThreadBodyProps): ReactNode {
   return (
     <div data-inbox-pane-body={body} data-inbox-pane-fallback={fallback ? "" : undefined}>
       <ThreadSubject thread={thread} />
+      {textChanged ? (
+        <p className={`mt-2 text-xs font-medium ${inlineWarningText}`}>{CHANGED_TEXT_SENTENCE}</p>
+      ) : null}
       <ThreadBody openAtFirstUnread quote={quote} thread={thread} />
     </div>
   );
 }
 
-/** A thread that needs no document: a comment thread on an issue, an issue message
+/** A thread that needs no document: a comment thread anchored to no text, an issue message
  *  conversation, an ask that is not a decision block, and a thread whose document the column
  *  could not open, which shows the quote the thread is anchored to in place of it. */
 function ThreadBodyPane(pane: ThreadBodyProps): ReactNode {
@@ -90,10 +104,10 @@ function ThreadBodyPane(pane: ThreadBodyProps): ReactNode {
  * A thread drawn in its own document: the live document, opened at the section that holds the
  * thread's block, with the quote highlighted.
  *
- * The two shapes differ in what the block carries. A comment thread anchored in a project
- * document is drawn inside the document column directly below its block, through the node
- * view's own slot (`anchoredThread`); a decision block's ask needs none, because the block
- * draws the question, its answer and its thread itself (`AskBlockCard`).
+ * The two shapes differ in what the block carries. A comment thread anchored to text of a
+ * document, an issue's or a project's, is drawn inside the document column directly below its
+ * block, through the node view's own slot (`anchoredThread`); a decision block's ask needs none,
+ * because the block draws the question, its answer and its thread itself (`AskBlockCard`).
  *
  * It falls back to the thread alone, with its quote, when the document cannot be opened - and,
  * for a thread the column must place itself, when the document holds no such block: an orphaned
@@ -105,6 +119,7 @@ function ThreadDocumentBody({
   blockId,
   body,
   issueKey,
+  loadingName,
   questionDocument,
   thread,
 }: {
@@ -113,6 +128,8 @@ function ThreadDocumentBody({
   blockId: string;
   body: Extract<ThreadPaneBody, "ask" | "document">;
   issueKey: string | null;
+  /** The document the skeleton says it is opening. */
+  loadingName: string;
   /** The issue document of a decision block's ask, which the head's **Open page** opens once
    *  the column shows it; undefined for every other thread. */
   questionDocument: QuestionDocument | undefined;
@@ -124,17 +141,23 @@ function ThreadDocumentBody({
       artifactId={artifactId}
       blockId={blockId}
       fallback={<ThreadBodyContent body={body} fallback quote thread={thread} />}
+      // The open-page link lands at the section only where the row's own page is the document's:
+      // an issue comment's page is the comment's, whose `#b-` would name a block of its body.
       head={(document) => (
         <ThreadPaneHead
           questionDocument={document.showsDocument ? questionDocument : undefined}
-          sectionBlockId={document.sectionBlockId}
+          sectionBlockId={
+            thread.kind === "comment" && thread.document === undefined
+              ? undefined
+              : document.sectionBlockId
+          }
           thread={thread}
         />
       )}
       issueKey={issueKey}
       item={thread.thread_id}
       label="Selected thread"
-      loadingName={thread.document?.name ?? "the document"}
+      loadingName={loadingName}
       onAskAnswered={noAnswer}
       paneBody={body}
     />
@@ -156,6 +179,7 @@ function AskThreadPane({ thread }: { thread: MyReplyThreadRow }): ReactNode {
         blockId={ask.block_id}
         body="ask"
         issueKey={ask.issue_key}
+        loadingName={thread.document?.name ?? "the document"}
         questionDocument={
           ask.issue_key === null
             ? undefined
@@ -179,14 +203,10 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
   }
   const anchor = row.anchor;
   const blockId = anchor?.block_id;
-  const inDocument = row.kind === "comment" && row.document !== undefined;
-  if (
-    inDocument &&
-    anchor !== undefined &&
-    !anchor.orphaned &&
-    blockId !== null &&
-    blockId !== undefined
-  ) {
+  // A comment anchored to text of a document opens in that document, whether the document is an
+  // issue's (the row carries `issue`) or a project's (the row carries `document`).
+  const inDocument = row.kind === "comment" && anchor !== undefined;
+  if (inDocument && !anchor.orphaned && blockId !== null && blockId !== undefined) {
     return (
       <ThreadDocumentBody
         anchoredThread={{
@@ -203,19 +223,32 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
         artifactId={anchor.artifact_id}
         blockId={blockId}
         body="document"
-        issueKey={null}
+        // An issue's document is read with its issue, as the issue page reads it, so a closed
+        // issue's document opens closed here too.
+        issueKey={row.issue?.key ?? null}
+        // A project document's row names its document; the anchor names none, so an issue's
+        // document is named by its issue.
+        loadingName={
+          row.document?.name ??
+          (row.issue === undefined ? "the document" : `${row.issue.key}'s document`)
+        }
         questionDocument={undefined}
         thread={row}
       />
     );
   }
   // A thread in a document whose anchor cannot be placed - orphaned, or naming no block - is the
-  // document body falling back to the thread alone, with its quote.
+  // document body falling back to the thread alone, with its quote and the document page's
+  // sentence that the text changed. It reads no document. A project document's thread anchored
+  // to no text is drawn as that fall-back too, with no quote and no sentence, since no text of
+  // it changed.
+  const ofDocument = inDocument || row.document !== undefined;
   return (
     <ThreadBodyPane
-      body={inDocument ? "document" : "issue"}
-      fallback={inDocument}
+      body={ofDocument ? "document" : "issue"}
+      fallback={ofDocument}
       quote={inDocument}
+      textChanged={inDocument}
       thread={row}
     />
   );

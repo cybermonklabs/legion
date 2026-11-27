@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -484,6 +486,116 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 	}
 	dismissRanAndLeftTheThread(t, seed, response, 2, seed.agent,
 		agentThreadDismissal(t, database, "alice", seed.agent))
+}
+
+// A person's own reply under an Agent thread dismisses it for them (the own-answer rule, R1), so
+// it takes the thread's root `for update` before its own insert and only then writes the person's
+// user_agent_thread_dismissed row: the root and then the row, the order a Dismiss of that root
+// takes them in (steps 2 and 4 of the lock order on markInboxReadThreads, D6). So the reply and a
+// Dismiss of the same root, in two transactions, meet at the root whichever reaches it first, and
+// both commit: neither waits on a row the other holds while holding one it wants, so neither ends
+// in a 40P01, which its route would answer 500. Whichever commits last leaves the row, and the row
+// holds the moment of the person's newest dismissed tuple to the root.
+//
+// The dismiss first: the gate is the caller's own row of the Reply thread the request names, step
+// 3, so the dismiss queued there holds the Agent root it took at step 2, and the reply queues at
+// that root. The reply first: the gate is the session's reply the person answers, held `for
+// update` by the test, so the reply's insert, whose foreign key takes that parent `for key share`,
+// waits there with the root it took before it, and the dismiss queues at that root.
+func TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther(t *testing.T) {
+	replyBody := func(seed inboxReadSeed) map[string]any {
+		return map[string]any{"body": "Thanks, that settles it.", "delivery": "btw", "in_reply_to": seed.agentReply}
+	}
+	t.Run("the dismiss holds the root first", func(t *testing.T) {
+		seed := seedInboxRead(t)
+		handler, database := seed.handler, seed.database
+		body := dismissBody(t, database, "alice", []string{
+			inboxDismissReplyPrefix + seed.document, inboxDismissAgentPrefix + seed.agent,
+		})
+		held := holdGateThread(t, database, seed.document)
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
+		if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockThreads) == 0 {
+			t.Fatal("the dismiss never queued on the caller's rows, which it locks after the agent thread's root")
+		}
+		replied := make(chan *httptest.ResponseRecorder, 1)
+		go func() { replied <- postAgentMessage(t, handler, "s1", replyBody(seed), "alice") }()
+		if waiting := storetest.WaitForLockWaiters(t, held.tx, 2); waiting < 2 {
+			t.Fatalf("%d transactions queued behind the gate row, want the dismiss and alice's reply waiting at the root it holds", waiting)
+		}
+		held.release()
+
+		dismissed, reply := <-answered, <-replied
+		if dismissed.Code != http.StatusOK || dismissedBy(t, dismissed) != 2 {
+			t.Fatalf("the dismiss answered %d %s, want 200 dismissing both threads", dismissed.Code, dismissed.Body.String())
+		}
+		if reply.Code != http.StatusCreated {
+			t.Fatalf("alice's reply answered %d %s, want 201", reply.Code, reply.Body.String())
+		}
+		// The reply committed last, so its own dismissal is the row's.
+		written := decodeBody[model.Message](t, reply)
+		if mark := requireTheAgentMarkIsTheNewestTuple(t, database, seed.agent); !mark.Equal(written.CreatedAt) {
+			t.Errorf("alice's mark on the agent thread is %s, want her reply's moment %s, the write that committed last",
+				mark.Format(time.RFC3339Nano), written.CreatedAt.Format(time.RFC3339Nano))
+		}
+	})
+	t.Run("the reply holds the root first", func(t *testing.T) {
+		seed := seedInboxRead(t)
+		handler, database := seed.handler, seed.database
+		body := dismissBody(t, database, "alice", []string{inboxDismissAgentPrefix + seed.agent})
+		held := holdGateRow(t, database, "the session reply alice answers",
+			`select 1 from messages where id = $1 for update`, seed.agentReply)
+		replied := make(chan *httptest.ResponseRecorder, 1)
+		go func() { replied <- postAgentMessage(t, handler, "s1", replyBody(seed), "alice") }()
+		if waiting := storetest.WaitForLockWaiters(t, held.tx, 1); waiting < 1 {
+			t.Fatal("alice's reply never queued at the session reply it answers, which its insert takes after the root")
+		}
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
+		if waiting := storetest.WaitForLockWaiters(t, held.tx, 2); waiting < 2 {
+			t.Fatalf("%d transactions queued behind the gate row, want alice's reply and the dismiss waiting at the root it holds", waiting)
+		}
+		held.release()
+
+		reply, dismissed := <-replied, <-answered
+		if reply.Code != http.StatusCreated {
+			t.Fatalf("alice's reply answered %d %s, want 201", reply.Code, reply.Body.String())
+		}
+		if dismissed.Code != http.StatusOK || dismissedBy(t, dismissed) != 1 {
+			t.Fatalf("the dismiss answered %d %s, want 200 dismissing the agent thread", dismissed.Code, dismissed.Body.String())
+		}
+		// The dismiss committed last, after the reply's own dismissal, so its later mark is the row's.
+		written := decodeBody[model.Message](t, reply)
+		if mark := requireTheAgentMarkIsTheNewestTuple(t, database, seed.agent); !mark.After(written.CreatedAt) {
+			t.Errorf("alice's mark on the agent thread is %s, want the dismiss's, after her reply's moment %s",
+				mark.Format(time.RFC3339Nano), written.CreatedAt.Format(time.RFC3339Nano))
+		}
+	})
+}
+
+// requireTheAgentMarkIsTheNewestTuple fails unless alice's user_agent_thread_dismissed row at root
+// holds the moment of her newest dismissed tuple to that root, which stands, and answers that
+// moment.
+func requireTheAgentMarkIsTheNewestTuple(t *testing.T, database *store.Store, root string) time.Time {
+	t.Helper()
+	mark := agentThreadDismissal(t, database, "alice", root)
+	if mark == nil {
+		t.Fatalf("alice holds no dismissal of the agent thread %s after both writes committed", root)
+	}
+	var at time.Time
+	var asserted bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select at, asserted from graph_tuples
+		where kind = $1 and from_kind = $2 and from_id = 'alice' and to_kind = $3 and to_id = $4
+		order by seq desc limit 1
+	`, graphstore.TupleDismissed, graphstore.KindPerson, graphstore.KindMessage, root).Scan(&at, &asserted); err != nil {
+		t.Fatalf("read alice's newest dismissed tuple to %s: %v", root, err)
+	}
+	if !asserted || !at.Equal(*mark) {
+		t.Errorf("alice's newest dismissed tuple to %s is at %s (asserted %v), and her row holds %s: want the row to hold the standing tuple's moment",
+			root, at.Format(time.RFC3339Nano), asserted, mark.Format(time.RFC3339Nano))
+	}
+	return *mark
 }
 
 // The writer first, on the Agent half, with its transaction begun before the dismiss was sent:

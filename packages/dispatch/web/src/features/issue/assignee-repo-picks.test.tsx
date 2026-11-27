@@ -8,11 +8,14 @@ import {
   bodies,
   details as issueDetails,
   issue as pickedIssue,
+  pickIn,
+  pickRepo,
   repoSuggestions,
+  shownBy,
   signedInHolding,
-  typeRepo,
 } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
@@ -33,7 +36,7 @@ const details: IssueDetails = { ...issueDetails, ...issue };
 
 const detailKey = issueQuery(issue.key).queryKey;
 
-/** CORE, whose default repository, acme/widgets, is the one repository the box suggests. */
+/** CORE, whose default repository, acme/widgets, is the one repository the list suggests. */
 const projects: Project[] = [
   {
     created_at: "2026-10-01T00:00:00Z",
@@ -98,9 +101,10 @@ function Picker({
   );
 }
 
-/** Renders the picker of `field` on CORE-1, with the people who have signed in read once the
- *  reader reaches for it, and the project list. The assignee's picker is a `<select>`; the
- *  repository's is a box, which suggests the project's default repository. */
+/** Renders the picker of `field` on CORE-1, with the people who have signed in and the project
+ *  list read once the reader reaches for it. Each picker is the shared list's single pick
+ *  (`MultiSelect`): the assignee's lists the people, and the repository's suggests the project's
+ *  default repository after Inherit and takes any other as typed text (`pickRepo`). */
 async function renderPicker(field: "assignee" | "repo") {
   const listUsers = spyOn(api, "listUsers").mockResolvedValue(
     ["alice", "bob", "carol", "dave"].map((login) => ({ login }))
@@ -115,28 +119,28 @@ async function renderPicker(field: "assignee" | "repo") {
     </QueryClientProvider>
   );
   const name = field === "assignee" ? "Assignee of CORE-1" : "Repository of CORE-1";
-  const select = () => screen.getByRole("combobox", { name }) as HTMLSelectElement;
-  const box = () => screen.getByRole("combobox", { name }) as HTMLInputElement;
+  const trigger = () => screen.getByRole("button", { name: pickNamed(name) });
   const user = userEvent.setup();
-  // What the control offers: the select's people, Unassigned first, read once the reader reaches
-  // for it, or the box's suggestion, the project's default repository from the project list.
+  // What the control offers is read once the reader reaches for it, and its list, opened, holds
+  // it: the people, Unassigned first, or the suggestion after Inherit, the project's default
+  // repository.
+  await user.hover(trigger());
+  await user.click(trigger());
   if (field === "assignee") {
-    await user.hover(select());
-    await waitFor(() => expect(select().options.length).toBe(5));
+    await waitFor(() => expect(rows(panelOf(trigger())).length).toBe(5));
   } else {
-    await waitFor(() => expect(repoSuggestions(box())).toEqual(["acme/widgets"]));
+    await waitFor(() => expect(repoSuggestions(panelOf(trigger()))).toEqual(["acme/widgets"]));
   }
   return {
     ...server,
     client,
-    /** The picker, whose value is what it shows. */
-    control: field === "assignee" ? select : box,
-    // A pick of the select is its option; a pick of the box is the repository typed into it,
-    // written as Enter is pressed.
+    /** What the picker shows: the words its trigger's name reads after its label. */
+    control: () => shownBy(trigger()),
+    // A pick is the value's row in the picker's list, which the reach above left open.
     pick:
       field === "assignee"
-        ? (value: string) => user.selectOptions(select(), value)
-        : (value: string) => typeRepo(user, box, value),
+        ? (value: string) => pickIn(user, trigger, value)
+        : (value: string) => pickRepo(user, trigger, value),
     unmount: () => {
       view.unmount();
       server.patchIssue.mockRestore();
@@ -196,14 +200,14 @@ test("three assignee picks made while the first is out send two requests, the fi
       ["CORE-1 assigned to bob", "issue:CORE-1", "sending"],
       ["CORE-1 assigned to dave", "issue:CORE-1", "queued"],
     ]);
-    expect(control().value).toBe("dave");
+    expect(control()).toBe("dave");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await act(async () => release());
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ assignee: "bob" }, { assignee: "dave" }]);
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "dave" }, keyedAttempt);
-    expect(control().value).toBe("dave");
+    expect(control()).toBe("dave");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -220,14 +224,14 @@ test("three repository picks made while the first is out send two requests, the 
       ["CORE-1 on acme/gadgets", "issue:CORE-1", "sending"],
       ["CORE-1 on acme/widgets", "issue:CORE-1", "queued"],
     ]);
-    expect(control().value).toBe("acme/widgets");
+    expect(control()).toBe("acme/widgets");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await act(async () => release());
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     expect(bodies(patchIssue)).toEqual([{ repo: "acme/gadgets" }, { repo: "acme/widgets" }]);
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt);
-    expect(control().value).toBe("acme/widgets");
+    expect(control()).toBe("acme/widgets");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();

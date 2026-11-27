@@ -591,8 +591,10 @@ function drawnTitlesByRow(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
-// @pr: The live document: every reference of the shared table drawn in the editor, followed, and the stored text left as written.
-test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written @pr", async ({
+// Off the pull-request lane, where it was the slowest row (55.0 s on dispatch-browser-pr at
+// 93561b1e): reference-titles.e2e.ts and reference-cards.e2e.ts keep reference rows there, and the
+// full lane, the merge queue and the nightly run this one.
+test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);

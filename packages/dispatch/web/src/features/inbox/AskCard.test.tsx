@@ -3,17 +3,20 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, textBoxes } from "../../__tests__/list-picks";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import { askThreadQuery, meInboxOwnerQuery } from "../../api/queries";
+import { askThreadQuery, meInboxKey, meInboxOwnerQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
   AnswerAskInput,
@@ -25,7 +28,9 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { OrderPicker } from "../threads/order-picker-fixture";
 import { replyRow, seedUnread, unreadSetAnswer } from "../threads/replies-fixture";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
 import {
@@ -35,6 +40,7 @@ import {
   renderCard,
   thread,
 } from "./ask-card-fixture";
+import { AskAnswerWritesContext, useOutstandingAnswerWrites } from "./outstanding-answers";
 import { ThreadBody } from "./ThreadBody";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -968,22 +974,123 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
-    expect(control.value).toBe("");
+    const control = await card.findByLabelText("Hand this question to");
+    expect(control).toHaveAccessibleName("Hand this question to Asked of nobody");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
     await user.click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    // The list is portalled to the body, outside the card's own container.
+    const bob = await within(document.body).findByRole("option", { name: "bob" });
     const before = threadReads;
-    await user.selectOptions(control, "bob");
+    await user.click(bob);
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
     // What that read is for: the person the write moved the ask to is on the screen.
-    await waitFor(() => expect(control.value).toBe("bob"));
+    await waitFor(() =>
+      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleName(
+        "Hand this question to Asked of bob"
+      )
+    );
   } finally {
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();
     getMeInbox.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The card's "Hand this question to" is such a list: its options are the people who
+// have signed in, which grow with the team. Opened, it holds a text box of its own, a word typed
+// into it leaves only the people who match, and a pick hands the question on and puts the focus
+// back on the control.
+test("the hand-on list holds a text box that narrows its people, and a pick hands the question on", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+    { login: "carol" },
+  ]);
+  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({
+    ...open,
+    asked_of: "carol",
+    waiting_on_person: "carol",
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    const before = new Set(textBoxes());
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    // The people are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(page.queryAllByRole("option", { name: /^bob\b/ }).length).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the hand-on list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await user.type(own[0] as HTMLElement, "car");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^bob\b/ }),
+        `"car" leaves bob in the hand-on list`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(list).queryAllByRole("option", { name: /^alice\b/ }),
+      `"car" leaves alice in the hand-on list`
+    ).toHaveLength(0);
+    await user.click(within(list).getByRole("option", { name: /^carol\b/ }));
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-1", "carol", keyedAttempt));
+    expect(page.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(within(view.container).getByLabelText("Hand this question to")).toHaveFocus();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, round 12: the hand-on list passed no failure, so after a failed read of the people
+// it offered the person the question waits on as if that were everyone, with nothing to say the
+// people never came. It says so, as the Inbox's own people list does.
+test("the hand-on list says the people could not be loaded when their read fails", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockRejectedValue(new Error("users unreachable"));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    const list = await page.findByRole("listbox", { name: "Hand this question to options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
     listUsers.mockRestore();
   }
 });
@@ -1041,6 +1148,67 @@ for (const order of ["oldest", "newest"] as const) {
     }
   });
 }
+
+// An order picked while an open ask's card is on screen moves the ask's thread to the other side
+// of its answer box. The thread is moved, not drawn again, so the fold the reader opened stays
+// open.
+test("an open ask's thread keeps its fold and its element when the thread order changes", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({ answer: null, state: "open" });
+  const replies = [
+    askReply("reply-1", "2026-10-08T01:00:00Z"),
+    askReply("reply-2", "2026-10-08T02:00:00Z"),
+    askReply("reply-3", "2026-10-08T03:00:00Z"),
+  ];
+  const { queryClient, view } = renderCard(
+    <>
+      <OrderPicker />
+      <AskCard ask={open} initialThread={{ ...thread(open, []), replies }} />
+    </>
+  );
+  try {
+    // The order is the signed-in reader's, so the picks wait for who that is.
+    await waitFor(() => expect(queryClient.getQueryData(["whoami"])).toBeDefined());
+    // Oldest first: the fold over the earliest reply, the newest two, then the answer box.
+    await waitFor(() =>
+      expect(threadReplyBodies(view.getByTestId("thread-ask-1"))).toEqual([
+        "Reply reply-2",
+        "Reply reply-3",
+      ])
+    );
+    await user.click(view.getByRole("button", { name: "Show 1 earlier reply" }));
+    const threadElement = view.getByTestId("thread-ask-1");
+    expect(threadReplyBodies(threadElement)).toEqual([
+      "Reply reply-1",
+      "Reply reply-2",
+      "Reply reply-3",
+    ]);
+    expect(precedes(threadElement, view.getByLabelText("Your answer"))).toBe(true);
+
+    for (const [pick, bodies] of [
+      ["Newest first", ["Reply reply-3", "Reply reply-2", "Reply reply-1"]],
+      ["Oldest first", ["Reply reply-1", "Reply reply-2", "Reply reply-3"]],
+    ] as const) {
+      await user.click(view.getByRole("button", { name: pick }));
+      // The same section, not one drawn again, on the side of the answer box the order names.
+      expect(view.getByTestId("thread-ask-1"), pick).toBe(threadElement);
+      expect(precedes(view.getByLabelText("Your answer"), threadElement), pick).toBe(
+        pick === "Newest first"
+      );
+      // The fold the reader opened is still open, and every reply reads in the order picked.
+      expect(
+        within(threadElement)
+          .getByRole("button", { name: "Show fewer replies" })
+          .getAttribute("aria-expanded"),
+        pick
+      ).toBe("true");
+      expect(threadReplyBodies(threadElement), pick).toEqual([...bodies]);
+    }
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(THREAD_ORDER_KEY);
+  }
+});
 
 // The fold holds what the reader has already read, never a reply they have not: the unread set
 // the mark reads (`useMarkThreadRead`) says where their reading stopped.
@@ -1115,6 +1283,167 @@ test("a reply that is nothing but a reference shows its card", async () => {
     ).toBe("/issues/CORE-2");
   } finally {
     getIssueSummary.mockRestore();
+    view.unmount();
+  }
+});
+
+/** A card drawn in an Inbox, as the reading pane draws one: the Inbox's own answer writes around
+ *  it (`AskAnswerWritesContext`), where the own-answer rule, R1, holds the answer's Send. Where
+ *  `read` is given, the page holds a read of the Inbox that it answers. */
+function InInbox({
+  children,
+  read,
+}: {
+  readonly children: ReactNode;
+  readonly read?: () => Promise<number>;
+}) {
+  useQuery({
+    enabled: read !== undefined,
+    queryFn: read ?? (() => Promise.resolve(0)),
+    queryKey: [...meInboxKey, "page"],
+  });
+  return (
+    <AskAnswerWritesContext value={useOutstandingAnswerWrites()}>{children}</AskAnswerWritesContext>
+  );
+}
+
+/** An open question on its card in an Inbox, whose answer write is `answerAsk`: the reader picks
+ *  Ship, puts the focus on Answer and presses Enter there, as a keyboard reader sends an answer.
+ *  It answers the card's Answer button, which keeps its element while its label changes. The
+ *  client is Dispatch's own, which never cancels a read already out (`DispatchQueryClient`). */
+async function answerWithEnter(
+  answerAsk: (id: string, input: AnswerAskInput) => Promise<Ask>,
+  user: UserEvent,
+  { read }: { readonly read?: () => Promise<number> } = {}
+) {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const rendered = renderCard(
+    <InInbox read={read}>
+      <AskCard
+        answerAsk={answerAsk}
+        ask={open}
+        getAskThread={async () => thread(open, [])}
+        initialThread={thread(open, [])}
+      />
+    </InInbox>,
+    new DispatchQueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    })
+  );
+  await waitFor(() =>
+    expect(rendered.queryClient.getQueryState(["whoami"])?.status).toBe("success")
+  );
+  const card = within(rendered.view.container);
+  await user.click(await card.findByRole("radio", { name: "Ship" }));
+  const send = card.getByRole("button", { name: "Answer" });
+  act(() => send.focus());
+  await user.keyboard("{Enter}");
+  return { ...rendered, card, send };
+}
+
+// The own-answer rule (R1): in an Inbox the answer's Send is held by `aria-disabled`
+// while its write is out, not `disabled`, so the focus Enter put on it stays there. A refusal gives
+// it back at once, pressable, with its error shown, and the focus is still on it.
+test("the answer's Send comes back enabled with its error", async () => {
+  const user = userEvent.setup();
+  const refused = Promise.withResolvers<Ask>();
+  const { card, send, view } = await answerWithEnter(() => refused.promise, user);
+  try {
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBe("true"));
+    expect(send.hasAttribute("disabled")).toBe(false);
+    expect(send).toHaveFocus();
+
+    refused.reject(new ApiError(400, { code: "ANSWER_INPUT", error: "the answer was refused" }));
+    await waitFor(() =>
+      expect(card.getByRole("alert").textContent).toContain("Could not save your answer.")
+    );
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBeNull());
+    expect(send.hasAttribute("disabled")).toBe(false);
+    expect(send.textContent).toBe("Answer");
+    expect(send).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A press on the held Send, by Enter or by a click, sends nothing: the one write out is
+// the first press's.
+test("a press on the held Send sends nothing", async () => {
+  const user = userEvent.setup();
+  const out = Promise.withResolvers<Ask>();
+  const sent: AnswerAskInput[] = [];
+  const { send, view } = await answerWithEnter((_id, input) => {
+    sent.push(input);
+    return out.promise;
+  }, user);
+  try {
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBe("true"));
+    await user.keyboard("{Enter}");
+    await user.click(send);
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    expect(send).toHaveFocus();
+    expect(sent).toHaveLength(1);
+  } finally {
+    out.resolve(answeredAsk());
+    view.unmount();
+  }
+});
+
+// The answer's Send stays held once the answer has landed, until
+// the read of the Inbox its landing started has come back, and a press on it then sends nothing
+// either. The answer lands with no body - a write a reload resumed answers none - so the form
+// stays drawn while the card reads the ask again; the page's read of the Inbox after the landing
+// is held until the test answers it.
+test("a press on the held Send sends nothing once its answer has landed", async () => {
+  const user = userEvent.setup();
+  const out = Promise.withResolvers<Ask>();
+  const sent: AnswerAskInput[] = [];
+  const heldRead = Promise.withResolvers<number>();
+  let inboxReads = 0;
+  const { send, view } = await answerWithEnter(
+    (_id, input) => {
+      sent.push(input);
+      return out.promise;
+    },
+    user,
+    { read: () => (inboxReads++ === 0 ? Promise.resolve(0) : heldRead.promise) }
+  );
+  try {
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBe("true"));
+    expect(inboxReads).toBe(1);
+
+    await act(async () => out.resolve(null as unknown as Ask));
+    await waitFor(() => expect(inboxReads).toBe(2));
+    await waitFor(() => expect(send.textContent).toBe("Answer"));
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    act(() => send.focus());
+    await user.keyboard("{Enter}");
+    await user.click(send);
+    expect(sent).toHaveLength(1);
+
+    await act(async () => heldRead.resolve(1));
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBeNull());
+    expect(sent).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The hold ends at the latest at the write deadline from the press
+// (`SEND_DEADLINE_MS`), whatever became of the write: Send is held no longer.
+test("the answer's hold ends at the write deadline", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const never = new Promise<Ask>(() => {});
+  const { send, view } = await answerWithEnter(() => never, user);
+  try {
+    await waitFor(() => expect(send.getAttribute("aria-disabled")).toBe("true"));
+    await jump(SEND_DEADLINE_MS - 1_000);
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    await jump(1_000);
+    expect(send.getAttribute("aria-disabled")).toBeNull();
+  } finally {
+    realClock();
     view.unmount();
   }
 });

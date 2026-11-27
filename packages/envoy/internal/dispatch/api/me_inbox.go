@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -73,7 +74,9 @@ const (
 // nodes, the skip over their kinds and the walk out of them, so a generic plan of each can take
 // graph_tuples_current where that index is partial on leaving the delivery kind out: a column proves
 // nothing of that predicate, and this literal does. No delivery runs out of a person or a session,
-// so it leaves out nothing those reads would answer.
+// so it leaves out nothing those reads would answer. Under state=dismissed the walk reads the
+// relations out of the person into each of the page's nodes by graph_tuples_as_of_in, and states
+// none of it (meInboxBuild).
 const meInboxOutOfPerson = `t.kind <> '` + graphstore.TupleDeliveredTo + `'`
 
 // The kinds of row the page draws, as an entry's page column names them (meInboxPageRows).
@@ -124,6 +127,10 @@ type meInboxEntry struct {
 	Ask    *openAskRow       `json:"ask,omitempty"`
 	Thread *model.MyReplyRow `json:"thread,omitempty"`
 	Agent  *meInboxAgent     `json:"agent,omitempty"`
+	// ApprovalGate is the approval gate of the issue the entry's row belongs to (approvalGate), as
+	// GET /api/v1/issues/{key} answers it, and absent for an entry of no issue: an Agent row, an
+	// ask or a thread on a project document, and an entry the page draws no row for.
+	ApprovalGate []approvalGateLine `json:"approval_gate,omitempty"`
 }
 
 // meInboxResponse is what GET /api/v1/me/inbox answers.
@@ -241,6 +248,8 @@ func parseMeInboxRequest(r *http.Request) (meInboxRequest, error) {
 		// The Dismissed view is the person's whole pile, so it is read a page at a time whatever
 		// the request names: an absent limit is the page GET /api/v1/me/replies?state=dismissed
 		// answered, myRepliesDismissedPage rows, and the page after it is read from next_cursor.
+		// The arms are cut to that page before the walk (meInboxDismissedCut), and a limit above
+		// it is refused by its key above, as it is in every state.
 		if request.limit == nil {
 			page := myRepliesDismissedPage
 			request.limit = &page
@@ -685,9 +694,10 @@ type meInboxRead struct {
 // meInboxPage is what the page's rows draw, read once for the whole page (meInboxPageReads) and kept
 // by the node each part belongs to: each Ask row with its reach, its thread's replies (each with the
 // targets it names, its attempts and the block it names), its rewordings and its followers; each
-// Reply row; and each Agent row's root, the replies under it (each with its attempts and its block)
-// and its session's name. The ask details every list of asks carries beside its rows are kept where
-// meInboxAsks reads them (openedEvents, backlinkCounts and askParts).
+// Reply row; each Agent row's root, the replies under it (each with its attempts and its block)
+// and its session's name; and the approval gate of each issue a row belongs to, by issue key. The
+// ask details every list of asks carries beside its rows are kept where meInboxAsks reads them
+// (openedEvents, backlinkCounts and askParts).
 type meInboxPage struct {
 	asks      map[string]openAskRow
 	reaches   map[string]askReach
@@ -698,6 +708,7 @@ type meInboxPage struct {
 	roots     map[string]model.Message
 	chains    map[string][]model.Message
 	titles    map[string]string
+	gates     map[string][]approvalGateLine
 }
 
 // meInboxRow is one entry as the statement answered it, with the parts of its page row that are
@@ -798,12 +809,13 @@ type meInboxColumns struct {
 // meInboxOnceColumns is what the statement read once for the page, each an array of the records one
 // statement answered over every row of its kind (meInboxPageReads), in that statement's order.
 type meInboxOnceColumns struct {
-	asks, opened, backlinks, parts, reach            []pgtype.UndecodedBytes
-	replies, replyNamed, replyAttempts               []pgtype.UndecodedBytes
-	askBlocks, commentBlocks, edits, followers       []pgtype.UndecodedBytes
-	threads, threadAnswers                           []pgtype.UndecodedBytes
-	roots, messages, attempts, messageBlocks, titles []pgtype.UndecodedBytes
-	trees                                            []pgtype.UndecodedBytes
+	asks, opened, backlinks, parts, reach                []pgtype.UndecodedBytes
+	replies, replyNamed, replyAttempts                   []pgtype.UndecodedBytes
+	askBlocks, commentBlocks, edits, followers           []pgtype.UndecodedBytes
+	threads, threadAnswers                               []pgtype.UndecodedBytes
+	roots, messages, attempts, messageBlocks, titles     []pgtype.UndecodedBytes
+	gateIssues, gateDocuments, gateReviews, gateRequests []pgtype.UndecodedBytes
+	trees                                                []pgtype.UndecodedBytes
 }
 
 func (once *meInboxOnceColumns) targets() []any {
@@ -812,6 +824,7 @@ func (once *meInboxOnceColumns) targets() []any {
 		&once.replies, &once.replyNamed, &once.replyAttempts, &once.askBlocks, &once.commentBlocks, &once.edits, &once.followers,
 		&once.threads, &once.threadAnswers,
 		&once.roots, &once.messages, &once.attempts, &once.messageBlocks, &once.titles,
+		&once.gateIssues, &once.gateDocuments, &once.gateReviews, &once.gateRequests,
 		&once.trees,
 	}
 }
@@ -923,7 +936,7 @@ func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns, agent
 // followers and the claim and route, answers left empty as an Inbox row is an open ask; a Reply row
 // as listMyReplies reads one; and an Agent row's session named as nameAgentSessions names it, with
 // the conversation it draws as hydrateMessageThreads reads one, the root and every reply under it
-// oldest first.
+// oldest first. An Ask or a Reply row of an issue carries that issue's approval gate.
 func (read *meInboxRead) assemble(row *meInboxRow) error {
 	page := &read.page
 	missing := func(what string) error {
@@ -945,12 +958,18 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 		row.Ask, row.askThread = &ask, &thread
 		row.askReplies = append([]model.Comment{}, page.replies[row.Node.ID]...)
 		row.askEdits = append([]model.AskEdit{}, page.edits[row.Node.ID]...)
+		if ask.Issue != nil {
+			row.ApprovalGate = page.gates[ask.Issue.Key]
+		}
 	case meInboxPageThread:
 		thread, held := page.threads[row.Node.ID]
 		if !held {
 			return missing("thread")
 		}
 		row.Thread = &thread
+		if thread.Issue != nil {
+			row.ApprovalGate = page.gates[thread.Issue.Key]
+		}
 	case meInboxPageAgent:
 		root, held := page.roots[row.Node.ID]
 		if !held {
@@ -969,7 +988,8 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 // the rewordings and followers; the Reply rows (scanMyReplyRow), each whose newest write by
 // somebody else is its ask's answer with that answer as the ask's node holds it (answerReply); each
 // Agent row's root and the replies under it, each message's attempts and the block it names, and
-// the sessions' names; and every stored tree their texts read.
+// the sessions' names; the approval gate of each issue a row belongs to (readApprovalGates); and
+// every stored tree their texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
 		asks: make(map[string]openAskRow, len(columns.asks)), reaches: make(map[string]askReach, len(columns.reach)),
@@ -978,6 +998,7 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 		roots:   make(map[string]model.Message, len(columns.roots)),
 		chains:  make(map[string][]model.Message, len(columns.roots)),
 		titles:  make(map[string]string, len(columns.titles)),
+		gates:   map[string][]approvalGateLine{},
 	}
 	if err := read.readAsks(types, columns, &page); err != nil {
 		return err
@@ -1001,6 +1022,9 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 		page.threads[thread.ThreadID] = thread
 	}
 	if err := readAgentConversations(types, columns, &page); err != nil {
+		return err
+	}
+	if err := readApprovalGates(types, columns, &page); err != nil {
 		return err
 	}
 	for _, record := range records(types, columns.trees) {
@@ -1155,6 +1179,59 @@ func readAgentConversations(types *pgtype.Map, columns *meInboxOnceColumns, page
 			return fmt.Errorf("scan the agent row's session name: %w", err)
 		}
 		page.titles[session] = title
+	}
+	return nil
+}
+
+// readApprovalGates reads the approval gate of each issue a row of the page belongs to into page
+// (meInboxGateReads): each gate document's approval from its latest version, its latest review
+// and its open approval request (approvalOf), then each issue's lines (approvalGate).
+func readApprovalGates(types *pgtype.Map, columns *meInboxOnceColumns, page *meInboxPage) error {
+	reviews := map[string]model.ArtifactReview{}
+	for _, record := range records(types, columns.gateReviews) {
+		review, err := docs.ScanReview(record)
+		if err != nil {
+			return fmt.Errorf("read a gate document's latest review: %w", err)
+		}
+		reviews[review.ArtifactID] = review
+	}
+	requests := map[string]openApprovalRequest{}
+	for _, record := range records(types, columns.gateRequests) {
+		artifactID, request, err := scanOpenApprovalRequest(record)
+		if err != nil {
+			return fmt.Errorf("read a gate document's open approval request: %w", err)
+		}
+		requests[artifactID] = request
+	}
+	documents := map[string]approvalGateDocument{}
+	for _, record := range records(types, columns.gateDocuments) {
+		var id string
+		var latest int
+		if err := record.Scan(&id, &latest); err != nil {
+			return fmt.Errorf("read a gate document: %w", err)
+		}
+		var review *model.ArtifactReview
+		if found, held := reviews[id]; held {
+			review = &found
+		}
+		var request *openApprovalRequest
+		if found, held := requests[id]; held {
+			request = &found
+		}
+		// A gate document is one the issue's list holds, which a retired document is not
+		// (meInboxGateReads), so none of them is retired.
+		approval := approvalOf(latest, false, review, request)
+		documents[id] = approvalGateDocument{id: id, approval: &approval}
+	}
+	for _, record := range records(types, columns.gateIssues) {
+		var key string
+		var root bool
+		var steps []string
+		var primary, verification *string
+		if err := record.Scan(&key, &root, &steps, &primary, &verification); err != nil {
+			return fmt.Errorf("read a gate's issue: %w", err)
+		}
+		page.gates[key] = approvalGate(root, steps, documents[deref(primary)], documents[deref(verification)])
 	}
 	return nil
 }
@@ -1328,13 +1405,18 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // Under a state the entries are the page's own rows in that state, read from the caches the page's
 // lists read (meInboxPageRows), and the walk reads only the tuples between the person's nodes and
 // the nodes those rows are (page_nodes): for each relation kind that touches the person, one keyed
-// probe from each of those nodes. A relation out of the person is read by graph_tuples_current on
-// its whole key, one index descent, and a relation into the person by graph_tuples_as_of_out from
-// the node, whose own tuples of a kind are few. The read into the person leaves out the `to_kind <>
-// 'value'` test, which every person node passes, so graph_tuples_as_of_in - keyed by the person,
-// which read all the person's tuples of a kind for each node it was asked about (the scale check,
-// c-p99: 8,002 probes, 71 s of 74, for the person whose history is a hundred times the median) - is
-// no index its plan can take. So the walk costs the state's rows and not the person's history:
+// probe from each of those nodes, whose own tuples of a kind are few. A relation into the person is
+// read by graph_tuples_as_of_out from the node: the read leaves out the `to_kind <> 'value'` test,
+// which every person node passes, so graph_tuples_as_of_in - keyed by the person, which read all
+// the person's tuples of a kind for each node it was asked about (the scale check, c-p99: 8,002
+// probes, 71 s of 74, for the person whose history is a hundred times the median) - and
+// graph_tuples_current, whose predicates need that test, are no index its plan can take. Under
+// state=inbox and state=unread a relation out of the person is read by graph_tuples_current on its
+// whole key, one index descent. Under state=dismissed it is read by graph_tuples_as_of_in into the
+// node: the read tests the person's end as an expression, each column concatenated with the empty
+// string, so graph_tuples_current and graph_tuples_as_of_out, the two indexes led by that end, are
+// no index its plan can take either (the Dismissed page below says what a plan led by the person
+// read). So the walk costs the state's rows and not the person's history:
 // every dismissal appends a dismissed tuple and every Mark all read a read_through tuple for each
 // thread it marks (api/read_marks.go), and a walk of every tuple read all of them for every state.
 // At 5,000 dismissed threads it read state=inbox in 71 ms and state=unread in 93 ms, against 12 ms
@@ -1351,8 +1433,18 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // the person's whole pile, so its page is cut before the walk: in the dismissed scale test the
 // dismissals and Mark all read runs it times append some 35,000 dismissed and read_through tuples to
 // the person, and a walk of every tuple then read 11,830 tuples for each of three kinds for a page
-// of 200. state=inbox and state=unread answer every row of their state, whose count is the live
-// rows' and not the history's, so their page's nodes are every row of the state.
+// of 200. The person's end of the read out of the person is tested off every index for what this
+// state's page met: tested on the columns, that end let the plan probe graph_tuples_as_of_out, which
+// no predicate keeps out: led by the person and the kind, it holds every dismissed and every
+// read_through tuple the person ever wrote, and the generic plan estimates its probe at one row, as
+// it does the probe of graph_tuples_current's whole key, so which of the two a connection took
+// turned on the statistics it planned under. With 5,000 threads dismissed in one Dismiss, a plan
+// that took graph_tuples_as_of_out read the person's 5,000 tuples of a kind in each of 402 probes,
+// two kinds for each of the page's 201 nodes: 1,244 ms for a page the other plan read in 50 ms, in a
+// pod. TestTheDismissedPageWalksFromThePagesOwnNodes holds the walk to the page's nodes.
+// state=inbox and state=unread answer every row of their state, whose count is the live rows' and
+// not the history's, so their page's nodes are every row of the state, walked by the keyed reads
+// above.
 //
 // Either way the page's rows and the walk's relations are put together by grouping the two by node
 // (sides) rather than by joining one to the other, so the read costs one pass over the walk and one
@@ -1395,6 +1487,18 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	),`
 			cut = `
 		limit ` + meInboxDismissedLimit
+			// The person's end is tested off every index (meInboxBuild's comment), so this read
+			// takes graph_tuples_as_of_in from the page's node and never an index led by the person.
+			outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = any(k.kinds)
+				and t.from_kind || '' = k.node_kind and t.from_id || '' = k.node_id
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + atHorizon
+		} else {
+			// The person's end and then the page's node bind graph_tuples_current's whole key, and
+			// the value test and meInboxOutOfPerson state that index's predicate, so this read is one
+			// index descent.
+			outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = any(k.kinds)
+				and t.to_kind = p.node_kind and t.to_id = p.node_id
+				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
 		}
 		pageNodes = `
 	page_nodes(node_kind, node_id) as materialized (
@@ -1404,9 +1508,6 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		cross join page_nodes p`
 		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = any(k.kinds)
 				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
-		outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = any(k.kinds)
-				and t.to_kind = p.node_kind and t.to_id = p.node_id
-				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
 	}
 
 	var statement strings.Builder
@@ -1745,7 +1846,7 @@ func meInboxOwnerArgs(shape meInboxShape) (issue, artifact string) {
 
 // meInboxDismissedKeys selects the keys of the rows the Dismissed view's page is taken from
 // (page_keys): each of the two arms cut to the page (meInboxDismissedCut) - the Reply rows off
-// user_threads_dismissed, and the Agent roots off their dismissal marks
+// user_threads_dismissed_replied, and the Agent roots off their dismissal marks
 // (myAgentDismissedRootsSelect) - then the two merged and cut again to the same offset + limit + 1,
 // or not at all where ?kind= narrows the entries (meInboxDismissedLimit), in the order the page
 // answers in (meInboxOrder). A key is the row's node, its id as the uuid both indexes hold, the kind
@@ -1755,8 +1856,10 @@ func meInboxOwnerArgs(shape meInboxShape) (issue, artifact string) {
 // keeps are the rows the page answers, in its order and with its tie-break, and the one past it.
 // One test runs after the cut: an Agent root's facts are an inner lateral (myAgentRowFacts), which
 // drops a root holding no session reply. No dismissal mark names such a root: a dismissal is
-// refused for a root whose newest reply the page did not draw (inboxDismissCheckAgentRoots), and no
-// statement deletes a message.
+// refused for a root whose newest reply the page did not draw (inboxDismissCheckAgentRoots), no own
+// reply writes an Agent dismissal mark for a root no session answered, which its writer reads
+// under the root's lock (createStoredMessage, inboxwrite.Recording.Unanswered), and no statement
+// deletes a message.
 //
 // page_rows reads each row from its key (meInboxPageRows), so every step after it meets those rows
 // alone, and an Agent root's thread (myAgentRowFacts) is walked for the Agent rows among them and
@@ -1798,10 +1901,10 @@ const meInboxDismissedLimit = `case when ` + meInboxKindsParam + `::text[] is nu
 // meInboxDismissedCut cuts one arm of the Dismissed view to the page before the walk meets it, as
 // GET /api/v1/me/replies cuts its own (myRepliesDismissedCut, myAgentDismissedPageCut): the arm's
 // rows past the cursor, in the order of the state's own index - the dismissal's moment, then the
-// root's id (user_threads_dismissed, user_agent_thread_dismissed_login_dismissed_at; meInboxOrder)
-// - and of those the first offset + limit + 1, the one past the page saying whether another page
-// follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its root's uuid
-// and its dismissal. The two arms' cuts are merged and cut to that many again
+// root's id (user_threads_dismissed_replied, user_agent_thread_dismissed_login_dismissed_at;
+// meInboxOrder) - and of those the first offset + limit + 1, the one past the page saying whether
+// another page follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its
+// root's uuid and its dismissal. The two arms' cuts are merged and cut to that many again
 // (meInboxDismissedKeys), so the walk, the grouping, the count and the sort meet at most that many
 // rows, where they met the whole pile: at the dismissed scale test's seed a page of 200 read a p50
 // of 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and with each arm cut, 86 ms at
@@ -1916,6 +2019,7 @@ type meInboxReads struct {
 //     reply under it (messageReplyChainsQuery), each message's attempts (messageDeliveriesQuery) and
 //     the block it names (refs.ReplyBlocksStatement) - and the names of their sessions
 //     (delivery.ResolveSessionTitlesQuery); each row itself is page_rows', read for its order;
+//   - the approval gate of each issue an Ask or a Reply row belongs to (meInboxGateReads);
 //   - the stored display tree of every text those rows may register with the request's reader,
 //     where the page asks for trees (meInboxTrees).
 //
@@ -2023,7 +2127,8 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 			union all
 			select b.excerpt from agent_named b`)
 	}
-	return meInboxReads{ctes: ctes, columns: []string{
+	gateCTEs, gateColumns := meInboxGateReads(askIDs, threadIDs)
+	return meInboxReads{ctes: ctes + gateCTEs, columns: append([]string{
 		`array(select row(listed.*) from (
 			select ` + openAskRowColumns + `
 			` + openAskRowFrom("$1") + `
@@ -2054,8 +2159,53 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 		`array(select row(attempt.*) from (` + bindFragment(messageDeliveriesQuery, messageIDs) + `) attempt)`,
 		`array(select row(b.*) from agent_named b)`,
 		`array(select row(titled.*) from (` + bindFragment(delivery.ResolveSessionTitlesQuery, sessions) + `) titled)`,
-		trees,
-	}}, nil
+	}, append(gateColumns, trees)...)}, nil
+}
+
+// meInboxGateReads reads the approval gate of each issue a row of the page belongs to, once for the
+// page, over the ids askIDs and threadIDs name: the issues of the Ask rows (their asks' issue_key)
+// and of the Reply rows (their user_threads rows' issue_key), each with whether it is a root of its
+// project - no parent, or a parent whose key's project, the part before its first hyphen, is
+// another project, gateRoot's rule read off the issue's own row - its project's stored gated
+// steps, and its primary and its Verification document, each named as the issue read names it
+// (issueRowStatement); each of those documents that the issue's list holds - one not retired, as
+// issueArtifactsStatement lists them - with its latest version, one probe of artifact_versions'
+// unique (artifact_id, number) rather than a read of its version rows; and their latest reviews
+// and open approval requests, by the statements the document reads run (latestReviewsStatement,
+// openApprovalAsksStatement). Its columns come in the order meInboxOnceColumns reads them, and
+// readApprovalGates reads them.
+func meInboxGateReads(askIDs, threadIDs string) (string, []string) {
+	documentIDs := `(select ids from gate_documents)`
+	ctes := `,
+	gate_issues(key, root, steps, primary_id, verification_id) as materialized (
+		select i.key, i.parent_key is null or split_part(i.parent_key, '-', 1) <> i.project_key, p.gated_steps,
+		       (select a.id from artifacts a where a.issue_key = i.key and a.is_primary),
+		       (select a.id from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `)
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = any(array(
+			select a.issue_key from asks a where a.id = any(` + askIDs + `::uuid[])
+			union
+			select u.issue_key from user_threads u where u.login = $1 and u.thread_id = any(` + threadIDs + `::uuid[])
+		))
+	),
+	gate_documents(ids) as materialized (
+		select coalesce(array_agg(d.id::text), '{}')
+		from artifacts d
+		where d.id = any(array(
+			select g.primary_id from gate_issues g
+			union
+			select g.verification_id from gate_issues g
+		))
+		  and d.retired_at is null
+	)`
+	return ctes, []string{
+		`array(select row(g.key, g.root, g.steps, g.primary_id::text, g.verification_id::text) from gate_issues g)`,
+		`array(select row(d.id::text, coalesce((select max(v.number) from artifact_versions v where v.artifact_id = d.id), 0))
+			from artifacts d where d.id = any(` + documentIDs + `::uuid[]))`,
+		`array(select row(review.*) from (` + bindFragment(latestReviewsStatement, documentIDs) + `) review)`,
+		`array(select row(request.*) from (` + bindFragment(openApprovalAsksStatement, documentIDs) + `) request)`,
+	}
 }
 
 // meInboxTrees is the stored display tree of each of texts that has one (texttrees.ReadStatement),

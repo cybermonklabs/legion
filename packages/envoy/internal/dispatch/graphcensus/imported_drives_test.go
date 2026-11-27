@@ -744,6 +744,45 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindPerson, graphstore.TupleDismissed}:       {"dismissal"},
 		}),
 	}, {
+		// alice's own reply under that BTW, as herself (the own-answer rule, R1): it takes the
+		// Agent thread out of her Inbox as a Dismiss press does - her dismissed to the root, and the
+		// session's follow-up she had not read marked read by its id - and its send reaches the
+		// session, which the listener takes at once.
+		Name: "inboxwrite/record.go#Queue, a person's own reply under an Agent thread", Database: r.database,
+		Sites: []string{"inboxwrite/record.go#Queue", "api/messages.go#createStoredMessage",
+			"graphstore/people.go#QueueAuthored",
+			"api/message_delivery.go#completeMessageDelivery", "graphstore/people.go#QueueReached"},
+		Drive: func(t *testing.T) {
+			reply := decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/agents/"+messageSession+"/messages",
+				map[string]any{"body": "Thanks, both noted.", "delivery": "btw", "in_reply_to": oneOff}, "alice", http.StatusCreated)).ID
+			r.awaitTrue(t, "alice's reply "+reply+" dismissing her Agent thread and its attempt settling sent", `
+				select exists (select 1 from user_agent_thread_dismissed where login = 'alice' and message_id = $1::uuid)
+				   and not exists (select 1 from message_deliveries where message_id = $2::uuid and state = 'pending')
+				   and exists (select 1 from message_deliveries where message_id = $2::uuid and state = 'sent')
+			`, oneOff, reply)
+		},
+		// The reply, a message between alice and the session on no project: its node, author,
+		// target and parent, its body block, alice's part in the thread, her dismissed, which the
+		// term dismissal counts, the reply_read of the follow-up she had not read, which the term
+		// read_mark counts, and the attempt of its send to the session the listener took.
+		Counts: merged(attemptDelivered("message_delivery"), attemptCounted(append(openedAttempt,
+			graphstore.AttemptClaimedAt, graphstore.AttemptEnvelopeID)...), map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeParties}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.TupleAuthoredBy}:     {"message_relation"},
+			{graphstore.KindMessage, graphstore.TupleAddressedTo}:    {"message_pointer"},
+			{graphstore.KindMessage, graphstore.TuplePartOf}:         {"reply"},
+			{graphstore.KindMessage, graphstore.TupleRepliesTo}:      {"reply"},
+			{graphstore.KindPerson, graphstore.TupleParticipatesIn}:  {"participation"},
+			{graphstore.KindPerson, graphstore.TupleDismissed}:       {"dismissal"},
+			{graphstore.KindPerson, graphstore.TupleReplyRead}:       {"read_mark"},
+		}),
+	}, {
 		// A broadcast to the message's session: the copy it stores for that session, a message on
 		// no issue, between alice and the session, whose node names those parties.
 		Name: "api/broadcasts.go#queueBroadcastCopy", Database: r.database,

@@ -82,8 +82,12 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		},
 		// The answer's text, selection, time, answerer as answered_by and as decided_by, and the
 		// ask's answer_state. alice's node stands from her first comment. The answer's body
-		// block, and alice's part in the ask's thread with the read mark the answer moves.
-		Counts: merged(answerCounted, bodyBlockCounted, ownThreadCounted),
+		// block, and alice's part in the ask's thread with the read mark the answer moves; and her
+		// own answer, written as herself, takes the ask's thread out of her Inbox, her dismissed,
+		// which the term dismissal counts (the own-answer rule, R1).
+		Counts: merged(answerCounted, bodyBlockCounted, ownThreadCounted, map[graphcensus.StoredKind][]string{
+			{graphstore.KindPerson, graphstore.TupleDismissed}: {"dismissal"},
+		}),
 	}, {
 		// The close of an issue of its own holding an open ask, which withdraws the ask.
 		Name: "api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", Database: r.database,

@@ -8,7 +8,7 @@
  * selection and the row itself all ask the same seven questions of whichever row they hold.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { type InboxRowGate, inboxThreadRow } from "@legion/contracts";
 
 import type {
   Ask,
@@ -24,10 +24,11 @@ import type { DispatchReferenceRoute } from "../refs/routes";
 import { isDecisionAsk } from "./ask-decision";
 import { askUrgency } from "./ask-urgency";
 
-/** One row of the Inbox list: an open ask, or a thread of the reader's own. */
+/** One row of the Inbox list: an open ask, or a thread of the reader's own, each with the approval
+ *  gate of its issue where the one read carried one (`InboxRowGate`, `rowApprovalGate`). */
 export type InboxListRow =
-  | { kind: "ask"; ask: OpenAskRow }
-  | { kind: "thread"; thread: MyReplyRow };
+  | { kind: "ask"; ask: OpenAskRow & InboxRowGate }
+  | { kind: "thread"; thread: MyReplyRow & InboxRowGate };
 
 /** What kind of row this is, as the Type filter, the Type grouping and the row's own icon name
  *  it: the three shapes an ask comes in, and the two a thread does. */

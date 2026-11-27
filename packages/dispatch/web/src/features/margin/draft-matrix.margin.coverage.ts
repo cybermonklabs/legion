@@ -17,7 +17,7 @@ const REASONS = {
   5: "5. On a page with no margin above the compact layout `Margin` draws nothing, which unmounts the compose and every card as leaving the document does; below it `Margin` stays drawn there with no document, and so with no compose, which is the shown document's (`useMarginSheet`). The compose is the provider's (`MarginProvider`) and a reply's draft is held under its name, as the document-left rows' and the another-thread row's returns show.",
   6: "6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and its editor as opening another thread does (the second row, and the edit file's margin card).",
   7: "7. A thread's card is drawn per thread of the open document, keyed by it (`ThreadList`): a thread that leaves the list, by its resolution or another document's list, unmounts its card as opening another thread does, and a resolved thread folded away under Show resolved is the same; its reply is held by its thread's name.",
-  8: "8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in `ThreadCard`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
+  8: "8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in `ThreadCard`) is the reader's thread order, which a pick in the Inbox's display menu changes for every reader on the page at once, and another tab's pick for this tab's readers (`useUserPreference`). A pick moves the reply to the other end of an open card: the card draws the two ends in two places, so the reply's mount ends at one and starts at the other, at the same thread under the same send name (`replyMutationKey`), and the reply drawn there holds what the reply held, as the reply the second row draws on return does.",
   9: "9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and Escape, `toggleSheet`) and moves no address: closed, only the stylesheet hides what is in it (`hidden xl:block`), so the compose and every card, reply and editor stay mounted under it, and opening it shows them as they were. Closing it closes a phone thread as Back does (`closeThread`), the first row. The margin opens it for each compose it shows (`openCompactSheet`), which the first two phone rows assert.",
   10: "10. On a phone a card's tap and a mark's click open the thread full-screen in place of opening it in the list (`onToggleThread`, `selectMarginItem`), so the first row's Back is the way off a thread there, and another thread is opened after it; a comment or ask link only selects its card (`openPhoneThread` false), which moves no composer.",
   11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`), and the band the hook holds for the collapsed panel for the floats above it (`useFootInset`). Each branch of the hook only measures a box, publishes a CSS property and gives each scroller under a float its end room (an attribute, a custom property or an inline bottom padding), so it moves no composer. That end room reaches the margin's column and Details' drawer. The expanded panel's own height, published for the editor's selection bar (`--margin-sheet-height`), is the same: a box measured into a property.",
@@ -147,7 +147,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[4] }
   ),
   ...answers(
-    "Margin | MarginSheet | conditional | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
+    "Margin | MarginSheet | conditional | <div hidden={!isCompactViewport && !columnShown}>",
     { reason: REASONS[4] },
     { reason: REASONS[5] }
   ),
@@ -294,10 +294,9 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[12] }
   ),
   ...answers("Margin | MarginSheet | form | <div className>", { reason: REASONS[11] }),
-  ...answers(
-    "Margin | MarginSheet | form | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
-    { reason: REASONS[4] }
-  ),
+  ...answers("Margin | MarginSheet | form | <div hidden={!isCompactViewport && !columnShown}>", {
+    reason: REASONS[4],
+  }),
   ...answers("Margin | MarginSheet | form | if (!isCompactViewport && !hasMargin) return …", {
     reason: REASONS[5],
   }),
@@ -329,7 +328,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[4],
   }),
   ...answers("Margin | - | form | (railShown) ? …", { reason: REASONS[4] }),
-  ...answers("Margin | - | form | railShown || …", { reason: REASONS[4] }),
+  ...answers("Margin | - | form | !isCompactViewport && …", { reason: REASONS[4] }),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
   ...answers(

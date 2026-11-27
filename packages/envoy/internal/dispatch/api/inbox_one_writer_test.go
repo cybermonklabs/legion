@@ -104,7 +104,7 @@ func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
 
 	t.Run("a reply retracts the dismissal of everyone it reaches and clears their mark", func(t *testing.T) {
 		root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Dismiss me later."}, "alice")
-		createThreadComment(t, handler, issue.Key, map[string]any{"body": "Read this.", "reply_to": root.ID}, "bob")
+		bob := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Read this.", "reply_to": root.ID}, "bob")
 		if dismissed := dismissRows(t, handler, database, "alice", inboxDismissReplyPrefix+root.ID); dismissed != 1 {
 			t.Fatalf("dismissed = %d, want alice's thread", dismissed)
 		}
@@ -112,14 +112,20 @@ func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
 			t.Fatalf("alice's row carries no dismissal after her dismiss")
 		}
 		// The dismissal's tuple from the person, which the dismiss route states under the event it
-		// appends (the spec's R6): the reply below retracts it.
+		// appends (the spec's R6): the reply below retracts it. Each reply is also its
+		// writer's own, so it dismisses the thread for its writer (the own-answer rule, R1): bob's
+		// for bob, and carol's for carol, which brings bob's back with alice's.
 		dismissEvent := newestEventOf(t, database, "user_thread_state.updated", "alice")
 		thread := "comment:" + root.ID
+		bobEvent := writeEventOf(t, database, "comment.created", bob.ID)
 		carol := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One more.", "reply_to": root.ID}, "carol")
 		carolEvent := writeEventOf(t, database, "comment.created", carol.ID)
 		requireRelationTuples(t, database, graphstore.TupleDismissed, thread,
 			fmt.Sprintf("person:alice > %s @%d", thread, dismissEvent),
-			fmt.Sprintf("person:alice > %s @%d retracted", thread, carolEvent))
+			fmt.Sprintf("person:alice > %s @%d retracted", thread, carolEvent),
+			fmt.Sprintf("person:bob > %s @%d", thread, bobEvent),
+			fmt.Sprintf("person:bob > %s @%d retracted", thread, carolEvent),
+			fmt.Sprintf("person:carol > %s @%d", thread, carolEvent))
 		if at := threadDismissal(t, database, "alice", root.ID); at != nil {
 			t.Errorf("alice's row still carries the dismissal %s after carol wrote in the thread", at)
 		}

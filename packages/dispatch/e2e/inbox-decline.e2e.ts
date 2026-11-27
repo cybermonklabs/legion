@@ -1,6 +1,7 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { openAgents } from "./agents";
 import {
   answerAsk,
   createAsk,
@@ -185,8 +186,7 @@ test("an approval request beside a question in one Inbox draws no Decline to ans
   // The drawer draws every row as its own card, so the question and the approval request stand
   // as two cards in one list, which is what this row compares. The page itself reads an
   // approval as the document under review, at every width (INFRA-575, INFRA-5200).
-  await page.goto("/agents");
-  await page.locator("body").focus();
+  await openAgents(page);
   await page.keyboard.press("i");
   const drawer = page.getByRole("dialog", { name: "Inbox" });
   await expect(drawer.locator("[data-inbox-row]")).toHaveCount(2);

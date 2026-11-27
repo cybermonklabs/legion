@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
 
 import type { CredentialPendingRow, OpenAskRow } from "../../api/types";
-import { BlockedOnYou } from "./BlockedOnYou";
+import { blockedOnYouText, needsYou } from "./BlockedOnYou";
 import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {
@@ -63,31 +61,18 @@ function ask(id: string, overrides: Partial<OpenAskRow> = {}): OpenAskRow {
 }
 
 // The broker's `requested_at` reaches the SPA verbatim, and the count this rule gives also drives
-// the shell's `Needs you N` badges, outside every page's error boundary.
-test("a request whose time cannot be read still counts, and the banner's age comes from the rest", () => {
+// the shell's Inbox badges, outside every page's error boundary.
+test("a request whose time cannot be read still counts, and the control's age comes from the rest", () => {
   const unreadable = request("record-1", "yesterday");
   const threeHoursAgo = request(
     "record-2",
     new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
   );
 
-  const view = render(
-    <MemoryRouter>
-      <BlockedOnYou asks={[]} credentialRequests={[unreadable, threeHoursAgo]} viewer="alice" />
-    </MemoryRouter>
+  expect(blockedOnYouText(needsYou([], [unreadable, threeHoursAgo], "alice"))).toBe(
+    "Blocked on you: 2 items, oldest 3h"
   );
-  try {
-    expect(screen.getByRole("link").textContent).toBe("Blocked on you: 2 items, oldest 3h");
-
-    view.rerender(
-      <MemoryRouter>
-        <BlockedOnYou asks={[]} credentialRequests={[unreadable]} viewer="alice" />
-      </MemoryRouter>
-    );
-    expect(screen.getByRole("link").textContent).toBe("Blocked on you: 1 item");
-  } finally {
-    view.unmount();
-  }
+  expect(blockedOnYouText(needsYou([], [unreadable], "alice"))).toBe("Blocked on you: 1 item");
 });
 
 // INFRA-3921: an expired credential request stays listed until somebody dismisses it, but nobody
@@ -104,29 +89,17 @@ test("an expired credential request is neither counted nor the oldest", () => {
     state: "expired" as const,
   };
 
-  const view = render(
-    <MemoryRouter>
-      <BlockedOnYou asks={[]} credentialRequests={[pending, expired]} viewer="alice" />
-    </MemoryRouter>
+  expect(blockedOnYouText(needsYou([], [pending, expired], "alice"))).toBe(
+    "Blocked on you: 1 item, oldest 3h"
   );
-  try {
-    expect(screen.getByRole("link").textContent).toBe("Blocked on you: 1 item, oldest 3h");
-
-    view.rerender(
-      <MemoryRouter>
-        <BlockedOnYou asks={[]} credentialRequests={[expired]} viewer="alice" />
-      </MemoryRouter>
-    );
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-  }
+  // The Inbox draws no Blocked on you control while this count is 0.
+  expect(needsYou([], [expired], "alice").count).toBe(0);
 });
 
 // One meaning for every count of what waits on the reader: whose turn it is AND whose issue it
 // is, whatever the list on screen is filtered to. A credential request is nobody's issue and
 // anyone signed in may decide one, so it is counted whether or not the login has resolved.
-test("the banner counts the reader's own questions, and no question before the login resolves", () => {
+test("the count is the reader's own questions, and no question before the login resolves", () => {
   const asks = [
     ask("ask-mine"),
     ask("ask-bob", { issue: { assignee: "bob", key: "CORE-2", title: "Bob's" } }),
@@ -137,30 +110,7 @@ test("the banner counts the reader's own questions, and no question before the l
     ask("ask-agent", { waiting_on: "agent" }),
   ];
 
-  const loading = render(
-    <MemoryRouter>
-      <BlockedOnYou
-        asks={asks}
-        credentialRequests={[request("record-1", "yesterday")]}
-        viewer={undefined}
-      />
-    </MemoryRouter>
-  );
-  try {
-    // No question is the reader's yet; the credential request waiting on them still counts.
-    expect(screen.getByRole("link").textContent).toContain("Blocked on you: 1 item");
-  } finally {
-    loading.unmount();
-  }
-
-  const view = render(
-    <MemoryRouter>
-      <BlockedOnYou asks={asks} viewer="alice" />
-    </MemoryRouter>
-  );
-  try {
-    expect(screen.getByRole("link").textContent).toContain("Blocked on you: 1 item");
-  } finally {
-    view.unmount();
-  }
+  // No question is the reader's yet; the credential request waiting on them still counts.
+  expect(needsYou(asks, [request("record-1", "yesterday")], undefined).count).toBe(1);
+  expect(needsYou(asks, [], "alice").count).toBe(1);
 });

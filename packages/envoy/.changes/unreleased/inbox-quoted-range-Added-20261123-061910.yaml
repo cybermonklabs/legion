@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The Inbox's reading pane shows a comment on document text inside its document, with the quoted
+  range marked and scrolled into view, and the quote with "Text changed" when the range is gone.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: inbox-quoted-range

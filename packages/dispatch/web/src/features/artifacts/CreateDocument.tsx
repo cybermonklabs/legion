@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import type { BarActionProps, BarActionRefusal } from "../../components/BarAction";
+import { textGlyph } from "../../components/bar-look";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
@@ -51,30 +53,41 @@ function documentHolding(documents: readonly Artifact[], title: string): Artifac
   );
 }
 
+/** What makes a document, for a host to draw: `start` opens the form, `close` shuts it as
+ *  **Cancel** does, `open` says whether it stands open, and `form` draws the strip with `idle`, the
+ *  control the strip holds while the form is closed, or none where that control stands outside
+ *  the strip (`opener`, the Artifacts tab's control bar). */
+interface DocumentCreate {
+  readonly close: () => void;
+  readonly form: (idle: ReactNode, opener?: () => HTMLElement | null) => ReactNode;
+  readonly open: boolean;
+  readonly start: () => void;
+}
+
 /**
- * The one control that makes a document, on an issue's Documents tab and on a project's document
- * list: a `New document` button, then a title and a submit. It writes under an idempotency key, so
+ * The one way a document is made, on an issue's Artifacts tab and on a project's document list:
+ * a `New document` control, then a title and a submit. It writes under an idempotency key, so
  * two presses make one document, and it sends the title alone - no content - so the document holds
  * nothing and the person writes the first word in it. When it is made the person is taken to it,
  * which on an issue is the artifacts panel of the page they are already on.
  *
  * A title the owner already holds is refused here, before the write, in the words of the list the
  * control was given; every other refusal is the server's own sentence, shown as it came. With a
- * `refusal` - the issue is closed - nothing can be made, and the button says why: on the line the
- * host already shows it on (`refusalShownBy`, the one line a closed issue's strip shows for every
- * control in it), or on a hidden line of the button's own.
+ * `refusal` - the issue is closed - nothing can be made, and the submit says why: on the line the
+ * host already shows it on (`refusalShownBy`, the one line a closed issue's tab shows for every
+ * control of its bar), or on a hidden line of its own.
  */
-export function CreateDocument({
+function useDocumentCreate({
   documents,
   owner,
-  refusal = null,
+  refusal,
   refusalShownBy,
 }: {
   readonly documents: readonly Artifact[];
   readonly owner: DocumentOwner;
-  readonly refusal?: string | null;
-  readonly refusalShownBy?: string;
-}): ReactNode {
+  readonly refusal: string | null;
+  readonly refusalShownBy: string | undefined;
+}): DocumentCreate {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [takenBy, setTakenBy] = useState<Artifact | undefined>();
@@ -90,7 +103,7 @@ export function CreateDocument({
     onSuccess: (made) => {
       setCreating(false);
       setTitle("");
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       // Made, with no answer to open: the form closes, so a second press makes nothing, and the
       // control says what was made (`create.unanswered`).
       if (made === null) return;
@@ -130,47 +143,106 @@ export function CreateDocument({
           : apiErrorMessage(create.error, "Could not create the document.")
         : undefined;
 
-  return (
-    <TitleForm
-      busyLabel="Creating…"
-      formLabel="New document"
-      idle={
-        <RefusableButton
-          look="secondary-compact"
-          onPress={() => {
-            setCreating(true);
-            setTakenBy(undefined);
-            create.forgetUnanswered();
-          }}
-          refusal={refusal}
-          refusalShownBy={refusalShownBy}
-        >
-          New document
-        </RefusableButton>
-      }
-      onCancel={() => {
-        setCreating(false);
-        setTitle("");
-        setTakenBy(undefined);
-      }}
-      onSubmit={submit}
-      onTitleChange={(typed) => {
-        setTitle(typed);
-        setTakenBy(undefined);
-      }}
-      open={creating}
-      pending={create.isPending}
-      problem={problem}
-      refusal={refusal}
-      refusalShownBy={refusalShownBy}
-      submitLabel="Create"
-      title={title}
-    >
-      {create.unanswered === undefined ? null : (
-        <div className="w-full">
-          <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />
-        </div>
-      )}
-    </TitleForm>
+  const close = () => {
+    setCreating(false);
+    setTitle("");
+    setTakenBy(undefined);
+  };
+
+  return {
+    close,
+    form: (idle, opener) => (
+      <TitleForm
+        busyLabel="Creating…"
+        formLabel="New document"
+        idle={idle}
+        onCancel={close}
+        onSubmit={submit}
+        onTitleChange={(typed) => {
+          setTitle(typed);
+          setTakenBy(undefined);
+        }}
+        open={creating}
+        opener={opener}
+        pending={create.isPending}
+        problem={problem}
+        refusal={refusal}
+        refusalShownBy={refusalShownBy}
+        submitLabel="Create"
+        title={title}
+      >
+        {create.unanswered === undefined ? null : (
+          <div className="w-full">
+            <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />
+          </div>
+        )}
+      </TitleForm>
+    ),
+    open: creating,
+    start: () => {
+      setCreating(true);
+      setTakenBy(undefined);
+      create.forgetUnanswered();
+    },
+  };
+}
+
+/** The glyph **New document** draws before its words where the control bar draws it. */
+const NEW_DOCUMENT_GLYPH = textGlyph("+");
+
+/**
+ * **New document** in an issue's Artifacts tab's control bar: the action the bar draws (a quiet
+ * button of its line, and an item of **More** below 640 px of the bar's width), refused with the
+ * tab's one line on a closed issue (`refusal`), and the form it opens, which the tab draws under
+ * the bar, outside it. A press while the form stands open shuts it, as **Cancel** does. The form
+ * hands the focus back to the action as it closes, or to **More** where the action is its item
+ * (`opener`).
+ */
+export function useNewDocument({
+  documents,
+  opener,
+  owner,
+  refusal,
+}: {
+  readonly documents: readonly Artifact[];
+  readonly opener: () => HTMLElement | null;
+  readonly owner: DocumentOwner;
+  /** The closed issue's refusal and the id of the line under the bar that shows it, or
+   *  undefined while a document can be made. */
+  readonly refusal: BarActionRefusal | undefined;
+}): { action: BarActionProps; form: ReactNode } {
+  const create = useDocumentCreate({
+    documents,
+    owner,
+    refusal: refusal?.words ?? null,
+    refusalShownBy: refusal?.id,
+  });
+  return {
+    action: {
+      icon: NEW_DOCUMENT_GLYPH,
+      label: "New document",
+      onPress: create.open ? create.close : create.start,
+      refusal,
+    },
+    form: create.form(null, opener),
+  };
+}
+
+/**
+ * The control that makes a document on a project's document list (`useDocumentCreate`): a
+ * `New document` button, which the form takes the place of while it stands open.
+ */
+export function CreateDocument({
+  documents,
+  owner,
+}: {
+  readonly documents: readonly Artifact[];
+  readonly owner: DocumentOwner;
+}): ReactNode {
+  const create = useDocumentCreate({ documents, owner, refusal: null, refusalShownBy: undefined });
+  return create.form(
+    <RefusableButton look="secondary-compact" onPress={create.start} refusal={null}>
+      New document
+    </RefusableButton>
   );
 }

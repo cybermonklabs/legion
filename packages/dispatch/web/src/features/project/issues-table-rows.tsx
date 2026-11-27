@@ -1,8 +1,12 @@
-import { flexRender, type Row } from "@tanstack/react-table";
+import type { Row } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
-import { DataTableGroupRow, drawsPinnedDivider } from "../../components/DataTable";
+import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
+import { heldPress } from "../../components/held-press";
+import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   borderDefault,
   focusVisibleRing,
@@ -19,10 +23,12 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
-import { Popover } from "./issues-table-controls";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
-/** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
+/** One issue's row: its cells, and the Start next the reader reaches by hovering it, which is
+ *  held while a table action is out (`busy`, `heldPress`) as a `StepButton` is, and for the same
+ *  reason: from its own press until the list read again moves its issue up the queue and takes
+ *  it away, so it keeps the focus while its write is out and its going is the press's doing. */
 export function IssueRow({
   busy,
   index,
@@ -55,42 +61,31 @@ export function IssueRow({
       ref={measure}
       tabIndex={-1}
     >
-      {row.getVisibleCells().map((cell) => {
-        const pinned = cell.column.getIsPinned() === "left";
-        return (
-          <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${drawsPinnedDivider(cell.column, onStartNext !== undefined) ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
-            key={cell.id}
-            style={{
-              width: cell.column.getSize(),
-              left: pinned ? cell.column.getStart("left") : undefined,
-            }}
-          >
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-          </td>
-        );
-      })}
-      {onStartNext === undefined ? null : (
-        <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-          {queue !== undefined && queue > 1 ? (
+      <DataTableCells
+        cellClass={(cell) => (row.depth > 0 && cell.column.id === "select" ? "pl-6" : "")}
+        highlight={changed ? selectedCardBg : undefined}
+        row={row}
+        // A table that offers no Start next (`onStartNext`) draws no cell after its columns.
+        trailing={
+          onStartNext === undefined ? undefined : queue !== undefined && queue > 1 ? (
             <button
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-              disabled={busy}
-              onClick={() => onStartNext(issue.key)}
+              {...heldPress(busy, () => onStartNext(issue.key))}
               type="button"
             >
               Start next
             </button>
-          ) : null}
-        </td>
-      )}
+          ) : null
+        }
+      />
     </tr>
   );
 }
 
 /** A group's header row: its value, how many issues, its issues by status, and for an epic its
- *  actions. */
+ *  actions, whose trigger is held while a table action is out (`busy`). */
 export function GroupRow({
+  busy,
   row,
   grouping,
   columns,
@@ -104,6 +99,7 @@ export function GroupRow({
   shown,
   viewportWidth,
 }: {
+  busy: boolean;
   /** A repeat of the header of a group the page opens in the middle of. */
   continued?: boolean;
   /** How many of the group's rows this page holds, when that is fewer than the group has. */
@@ -191,6 +187,7 @@ export function GroupRow({
           </span>
           {epicKey === undefined ? null : (
             <EpicActions
+              busy={busy}
               epicKey={epicKey}
               epics={epics}
               onMerge={onMerge === undefined ? undefined : (into) => onMerge(epicKey, into)}
@@ -205,13 +202,20 @@ export function GroupRow({
   );
 }
 
+/** An epic's actions, behind one trigger. While a table action is out (`busy`) the trigger is
+ *  held (`PanelTrigger`'s `ariaDisabled`): it keeps the focus the closed panel or the merge's
+ *  confirmation handed back to it until the group row goes with it - the merge moving the epic's
+ *  last issue out - and the action's hold keeps the reader's press live through that
+ *  (`holdHandOff`), so the row's going reads as the reader's own (`causedByReader`). */
 function EpicActions({
+  busy,
   epicKey,
   epics,
   onRename,
   onMerge,
   onStartAll,
 }: {
+  busy: boolean;
   epicKey: string;
   epics: readonly IssueSummary[];
   onRename: () => void;
@@ -220,73 +224,92 @@ function EpicActions({
 }): ReactNode {
   /** The epic the reader has picked to merge into, which no write has been sent for yet. */
   const [target, setTarget] = useState("");
+  const [open, setOpen] = useState(false);
+  const innerPanel = useNestedPanels<"merge">(open);
   return (
     <span className="ml-auto">
-      <Popover align="right" label="Epic actions ▾">
-        {(close) => (
-          <>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onRename();
-              }}
-              type="button"
-            >
-              Rename
-            </button>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onStartAll();
-              }}
-              type="button"
-            >
-              Start all its queued issues next
-            </button>
-            {onMerge === undefined ? null : (
-              <>
-                {/* Two steps, because a merge closes an issue: the select stages a target, and
-                    Merge… asks before anything is written. A closed `<select>` commits on an
-                    arrow key in Chrome on Linux and Windows, which is one keystroke from a
-                    closed epic. */}
-                <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-                  Merge into another epic
-                  <select
-                    className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                    onChange={(event) => setTarget(event.target.value)}
-                    value={target}
+      <PanelTrigger
+        align="right"
+        ariaDisabled={busy}
+        label="Epic actions ▾"
+        onOpenChange={setOpen}
+        open={open}
+        size="compact"
+      >
+        {(close) => {
+          const others = epics.filter((epic) => epic.key !== epicKey);
+          const titles = new Map(others.map((epic) => [epic.key, epic.title]));
+          return (
+            <>
+              <button
+                className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
+                onClick={() => {
+                  close();
+                  onRename();
+                }}
+                type="button"
+              >
+                Rename
+              </button>
+              <button
+                className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
+                onClick={() => {
+                  close();
+                  onStartAll();
+                }}
+                type="button"
+              >
+                Start all its queued issues next
+              </button>
+              {onMerge === undefined ? null : (
+                <>
+                  {/* Two steps, because a merge closes an issue: the list stages a target, and
+                      Merge… asks before anything is written, so no press or key in the list
+                      closes an epic. The list is a panel of this one (`useNestedPanels`): a
+                      press in it closes neither, and Escape in it closes it alone. The words
+                      over it are its trigger's name, which a screen reader hears from the
+                      trigger itself. */}
+                  <div className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                    <span aria-hidden="true">Merge into another epic</span>
+                    <MultiSelect
+                      {...innerPanel("merge")}
+                      emptyMessage={
+                        others.length === 0
+                          ? "No other epic to merge into."
+                          : "No epic matches that."
+                      }
+                      label="Merge into another epic"
+                      mode="single"
+                      onPick={setTarget}
+                      optionLabel={(key) => titles.get(key)}
+                      options={others.map((epic) => epic.key)}
+                      searchLabel="Search epics"
+                      triggerClassName={`mt-1 block w-full rounded-md border px-1 py-1 text-left text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+                      value={target === "" ? undefined : target}
+                    >
+                      {target === "" ? "Choose an epic…" : undefined}
+                    </MultiSelect>
+                  </div>
+                  <button
+                    className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
+                    disabled={target === ""}
+                    onClick={() => {
+                      close();
+                      onMerge(target);
+                    }}
+                    type="button"
                   >
-                    <option value="">Choose an epic…</option>
-                    {epics
-                      .filter((epic) => epic.key !== epicKey)
-                      .map((epic) => (
-                        <option key={epic.key} value={epic.key}>
-                          {epic.title}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <button
-                  className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-                  disabled={target === ""}
-                  onClick={() => {
-                    close();
-                    onMerge(target);
-                  }}
-                  type="button"
-                >
-                  Merge…
-                </button>
-                <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-                  To split it, tick some of its issues and choose “New epic from these”.
-                </span>
-              </>
-            )}
-          </>
-        )}
-      </Popover>
+                    Merge…
+                  </button>
+                  <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                    To split it, tick some of its issues and choose “New epic from these”.
+                  </span>
+                </>
+              )}
+            </>
+          );
+        }}
+      </PanelTrigger>
     </span>
   );
 }

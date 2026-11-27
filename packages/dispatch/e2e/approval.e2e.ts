@@ -3,9 +3,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { WriteAdvice } from "@legion/contracts";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Artifact } from "../web/src/api/types";
+import { COPY_REF_SELECTOR } from "../web/src/features/refs/CopyRefButton";
 
+import { openAgents, setLiveSessions } from "./agents";
 import {
   answerAsk,
+  createArtifactAsk,
+  createArtifactComment,
   createAsk,
   createComment,
   createIssue,
@@ -22,15 +26,27 @@ import {
   patchIssue,
   rejectSuggestion,
   requestApproval,
+  resolveAsk,
   reviewArtifact,
+  setGatedSteps,
   withOpenedAsk,
 } from "./api";
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
-import { askControls, inboxRow } from "./inbox-pane";
+import { peekTrigger } from "./inbox-drawer";
+import { askControls, inboxPane, inboxRow, selectRow } from "./inbox-pane";
+import {
+  agentRowId,
+  asSession,
+  replyRowId,
+  seedAgentThread,
+  seedCommentThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
+import { hasReadingPane } from "./reading-pane";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
-import { assertWhole } from "./unclipped";
+import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 function drawer(page: Page) {
@@ -46,11 +62,15 @@ function drawer(page: Page) {
  * width: it opens over whatever page is showing, so this navigates to one.
  */
 async function approvalCard(page: Page, askId: string): Promise<Locator> {
-  await page.goto("/agents");
-  await page.locator("body").focus();
+  await openDrawer(page);
+  return drawer(page).getByTestId(`ask-${askId}`);
+}
+
+/** Opens the Inbox drawer with `i` over the Agents page. */
+async function openDrawer(page: Page): Promise<void> {
+  await openAgents(page);
   await page.keyboard.press("i");
   await expect(drawer(page)).toBeVisible();
-  return drawer(page).getByTestId(`ask-${askId}`);
 }
 
 const session = {
@@ -560,7 +580,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
       await requestApproval(issue.primary_artifact_id, { summary }, session)
     );
     expect(handedBack.ask.id).toBe(requested.ask.id);
-    await expect(page.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await page.reload();
     await expect(row).toHaveAttribute("data-inbox-section", "human");
     await expect(row).toContainText(`Approve spec.md (version 1)? ${summary}`);
@@ -663,9 +683,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
     await answering.routeWebSocket(/\/ws\/live$/u, (route) =>
       route.close({ code: 1011, reason: "test network drop" })
     );
-    await answering.goto("/agents");
-    await answering.locator("body").focus();
-    await answering.keyboard.press("i");
+    await openDrawer(answering);
     const shown = drawer(answering)
       .locator('[data-inbox-section="agent"]')
       .getByTestId(`ask-${requested.ask.id}`);
@@ -682,10 +700,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
       "data-inbox-section",
       "human"
     );
-    await watching.goto("/agents");
-    await watching.locator("body").focus();
-    await watching.keyboard.press("i");
-    const handedBack = drawer(watching).getByTestId(`ask-${requested.ask.id}`);
+    const handedBack = await approvalCard(watching, requested.ask.id);
     await expect(handedBack).toBeVisible();
     await expect(handedBack).not.toContainText("Edited");
 
@@ -1158,6 +1173,830 @@ test("an approval ask keeps its document link and the version it asked about onc
     await expect(link).toBeVisible();
     await link.click();
     await expect(page).toHaveURL(`/issues/${issue.key}/spec?ask=${requested.ask.id}`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// R2, the approval state: each Inbox row of an issue wears the approval state of its issue,
+// and its reading pane draws the issue's design gate, in the issue page's words.
+// ---------------------------------------------------------------------------------------------
+
+/** The approval mark of one Inbox row, on the page or in the drawer. */
+function markOf(scope: Page | Locator, rowId: string): Locator {
+  return scope.locator(`[data-inbox-row="${rowId}"] [data-inbox-approval]`);
+}
+
+/** The reading column's head. */
+function paneHead(page: Page): Locator {
+  return inboxPane(page).locator("header").first();
+}
+
+/** The head's gate lines, in their order. */
+function paneLines(page: Page): Locator {
+  return paneHead(page).locator("[data-inbox-approval-line]");
+}
+
+/** One gate line of the head, by its step: "" is the line of the primary document alone. */
+function paneLine(page: Page, step: string): Locator {
+  return paneHead(page).locator(`[data-inbox-approval-line="${step}"]`);
+}
+
+/** Reads each gate line the head draws, in order, as the issue page draws a step line: the step's
+ *  word, where the line has one, and then its state. */
+async function expectGateLines(
+  page: Page,
+  lines: readonly (readonly [step: string, word: string | undefined, state: string])[]
+): Promise<void> {
+  await expect(paneLines(page)).toHaveCount(lines.length);
+  expect(
+    await paneLines(page).evaluateAll((drawn) =>
+      drawn.map((line) => line.getAttribute("data-inbox-approval-line"))
+    )
+  ).toEqual(lines.map(([step]) => step));
+  for (const [step, word, state] of lines) {
+    const line = paneLine(page, step);
+    await expect(line.getByText(state, { exact: true }), `${step}: ${state}`).toBeVisible();
+    if (word === undefined) {
+      await expect(line, `${step} draws its state alone`).toHaveText(state);
+    } else {
+      await expect(line.locator(":scope > span").first(), `${step}'s word`).toHaveText(word);
+    }
+  }
+}
+
+/** A new version of the spec `id`, written by the session, which moves its latest version. */
+async function editSpec(id: string): Promise<void> {
+  const before = (await getArtifact(id, { login: "alice" })).approval?.latest_version ?? 0;
+  await editArtifact(
+    id,
+    { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
+    session
+  );
+  await expect
+    .poll(async () => (await getArtifact(id, { login: "alice" })).approval?.latest_version)
+    .toBeGreaterThan(before);
+}
+
+/** An issue of `project` with a thread of the reader's in it, which is a Reply row of their
+ *  Inbox. It is forced past the near-copy check, which titles of one test would trip. */
+async function issueWithThread(project: string, title: string, parent?: string) {
+  const issue = await createIssue({
+    force: true,
+    project,
+    spec: "The plan.",
+    title,
+    ...(parent === undefined ? {} : { parent }),
+  });
+  const thread = await seedCommentThread(issue.key, `Is "${title}" ready?`, "Read it and see.");
+  return { issue, row: replyRowId(thread), spec: issue.primary_artifact_id };
+}
+
+// SLOW(>=2s): eight issues seeded, each with a thread and its own approval history, then each of
+// five rows selected and its pane read, a card read in the drawer and one Approve waited on.
+test("the five approval states of an issue", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "STATES", name: "Five states" });
+  await setGatedSteps("STATES", ["spec"]);
+  const approve = (id: string) => reviewArtifact(id, { state: "approved" }, { login: "alice" });
+  const verificationOf = (key: string) =>
+    createIssueArtifact(key, {
+      content: "# Verification\n\nOne check.\n",
+      name: "verification.md",
+    });
+
+  const approved = await issueWithThread("STATES", "Approved at its latest version");
+  await approve(approved.spec);
+  const awaiting = await issueWithThread("STATES", "Under an open request");
+  const request = withOpenedAsk(await requestApproval(awaiting.spec, {}, session));
+  const edited = await issueWithThread("STATES", "Approved and then edited");
+  await approve(edited.spec);
+  await editSpec(edited.spec);
+  const sentBack = await issueWithThread("STATES", "Asked for changes");
+  await reviewArtifact(
+    sentBack.spec,
+    { reason: "Name the rollback path.", state: "changes_requested" },
+    { login: "alice" }
+  );
+  const never = await issueWithThread("STATES", "Never requested nor reviewed");
+  // The sixth: approved at version 1, edited, and requested again.
+  const again = await issueWithThread("STATES", "Approved, edited and requested again");
+  await approve(again.spec);
+  await editSpec(again.spec);
+  const againRequest = withOpenedAsk(await requestApproval(again.spec, {}, session));
+  // The seventh: an approved spec and an unapproved Verification document under one request.
+  const shared = await issueWithThread("STATES", "An approved spec beside its checks");
+  await verificationOf(shared.issue.key);
+  await approve(shared.spec);
+  const sharedRequest = withOpenedAsk(
+    await requestApproval(shared.spec, { include_verification: true }, session)
+  );
+  // The eighth: an edited spec and the Verification document under one request.
+  const both = await issueWithThread("STATES", "An edited spec beside its checks");
+  await verificationOf(both.issue.key);
+  await editSpec(both.spec);
+  withOpenedAsk(await requestApproval(both.spec, { include_verification: true }, session));
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // The issue page's whole text for the eighth issue's spec, which the pane line holds.
+    await page.goto(`/issues/${both.issue.key}`);
+    const issueChip = page
+      .locator('[data-approval-step="spec"]')
+      .getByRole("button", { name: /^Awaiting approval of / });
+    await expect(issueChip).toBeVisible();
+    const whole = (await issueChip.innerText()).trim();
+
+    await page.goto("/");
+    // Each row's mark, read from the list without selecting it, in the issue page's words.
+    const states = [
+      [approved.row, "Approved v1"],
+      [awaiting.row, "Awaiting approval"],
+      [edited.row, "Approved v1 · changed since"],
+      [sentBack.row, "Changes requested"],
+      [never.row, "Not requested"],
+    ] as const;
+    for (const [row, state] of states) {
+      await expect(markOf(page, row), row).toHaveText(state);
+    }
+    // The word `Draft` is drawn nowhere on the page.
+    await expect(page.getByText(/\bDraft\b/)).toHaveCount(0);
+    // Each pane line, as the issue page draws a step line: the word Spec, then the state.
+    for (const [row, state] of states) {
+      await selectRow(page, row);
+      await expectGateLines(page, [["spec", "Spec", state]]);
+    }
+
+    // The open request's row: the head keeps Approve and Request changes, and its one gate line
+    // is the document's own chip, so it draws one approval area.
+    let head = await askControls(page, request.ask.id);
+    await expect(head.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(head.getByRole("button", { exact: true, name: "Request changes" })).toBeVisible();
+    await expect(paneLines(page)).toHaveCount(1);
+    await expect(head.getByRole("button", { name: /^Awaiting approval/ })).toHaveCount(1);
+    await expect(head.locator("[data-inbox-approval-state]")).toHaveCount(0);
+
+    // The sixth issue: under its request again, with the same controls and one approval area.
+    await expect(markOf(page, again.row)).toHaveText("Awaiting approval");
+    head = await askControls(page, againRequest.ask.id);
+    await expect(head.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(head.getByRole("button", { exact: true, name: "Request changes" })).toBeVisible();
+    await expect(paneLines(page)).toHaveCount(1);
+    await expect(head.getByRole("button", { name: /^Awaiting approval/ })).toHaveCount(1);
+    // The request's card in the drawer draws the approval it follows.
+    const card = await approvalCard(page, againRequest.ask.id);
+    await expect(card).toContainText("Approved at version 1");
+    await expect(card.getByRole("button", { name: "Show diff" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(drawer(page)).toHaveCount(0);
+
+    // Approving that request moves the sixth issue's thread row and its pane line.
+    await page.goto("/");
+    const latest = (await getArtifact(again.spec, { login: "alice" })).approval?.latest_version;
+    head = await askControls(page, againRequest.ask.id);
+    await head.getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect(markOf(page, again.row)).toHaveText(`Approved v${latest}`);
+    await selectRow(page, again.row);
+    await expectGateLines(page, [["spec", "Spec", `Approved v${latest}`]]);
+
+    // The seventh issue: its spec stands approved, so the head draws no Approve, and beside the
+    // gate line the approval the request follows.
+    head = await askControls(page, sharedRequest.ask.id);
+    await expect(head.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(0);
+    await expect(paneLine(page, "spec")).toContainText("Approved at version 1");
+    await expect(paneLine(page, "spec").getByRole("button", { name: "Show diff" })).toBeVisible();
+
+    // The eighth issue: the mark is the state alone, and the pane line the issue page's text.
+    await expect(markOf(page, both.row)).toHaveText("Awaiting approval");
+    await selectRow(page, both.row);
+    await expect(paneLine(page, "spec")).toContainText(whole);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): three issues seeded with a thread each, then a document written and two approvals,
+// each waited on live in the row's mark and the pane, and two more rows selected and read.
+test("the step that holds the gate", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "FIRSTSTEP", name: "First step" });
+  await setGatedSteps("FIRSTSTEP", ["criteria", "spec"]);
+  const root = await issueWithThread("FIRSTSTEP", "The gated root");
+  await requestApproval(root.spec, {}, session);
+  await createProject({ key: "NOSTEP", name: "No gate" });
+  const ungated = await issueWithThread("NOSTEP", "An ungated issue");
+  const child = await issueWithThread("FIRSTSTEP", "A child of the gated root", root.issue.key);
+  await reviewArtifact(child.spec, { state: "approved" }, { login: "alice" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+
+    // No Verification document written, the spec under request: the gate waits on the first
+    // step, which nobody has asked for.
+    await expect(markOf(page, root.row)).toHaveText("Verification · Not requested");
+    await selectRow(page, root.row);
+    await expectGateLines(page, [
+      ["criteria", "Verification", "Not requested"],
+      ["spec", "Spec", "Awaiting approval"],
+    ]);
+
+    // The Verification document approved, the spec still under request.
+    const verification = await createIssueArtifact(root.issue.key, {
+      content: "# Verification\n\nOne check.\n",
+      name: "verification.md",
+    });
+    await reviewArtifact(verification.artifact.id, { state: "approved" }, { login: "alice" });
+    await expect(markOf(page, root.row)).toHaveText("Spec · Awaiting approval");
+    await expectGateLines(page, [
+      ["criteria", "Verification", "Approved v1"],
+      ["spec", "Spec", "Awaiting approval"],
+    ]);
+
+    // Both approved at their latest versions: the mark is the last step.
+    await reviewArtifact(root.spec, { state: "approved" }, { login: "alice" });
+    await expect(markOf(page, root.row)).toHaveText("Spec · Approved v1");
+    await expectGateLines(page, [
+      ["criteria", "Verification", "Approved v1"],
+      ["spec", "Spec", "Approved v1"],
+    ]);
+
+    // An issue of a project that gates nothing, and a child of the gated project: one line for
+    // the primary document, and a mark that names no step.
+    for (const [row, state] of [
+      [ungated.row, "Not requested"],
+      [child.row, "Approved v1"],
+    ] as const) {
+      await expect(markOf(page, row), row).toHaveText(state);
+      await selectRow(page, row);
+      await expectGateLines(page, [["", undefined, state]]);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Which of the four renderers drew a row: the short rows beside the reading pane, or the cards
+ *  below its width. */
+type MarkRenderer = "short ask row" | "short thread row" | "ask card" | "thread card";
+
+/** One row whose mark the place test reads: its id, the key of its issue, the renderer that drew
+ *  it and its mark's words. */
+interface PlacedMark {
+  readonly id: string;
+  readonly key: string;
+  readonly renderer: MarkRenderer;
+  readonly words: string;
+}
+
+/** The words of row `rowId` that the box of its approval mark covers by more than half a pixel
+ *  each way: every text of the row outside the mark, read by the boxes its lines are drawn in. */
+async function textUnderMark(page: Page, rowId: string): Promise<string[]> {
+  return inboxRow(page, rowId).evaluate((row) => {
+    const mark = row.querySelector("[data-inbox-approval]");
+    if (mark === null) return ["(the row draws no mark)"];
+    const box = mark.getBoundingClientRect();
+    const covered: string[] = [];
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = (node.textContent ?? "").trim();
+      if (text === "" || mark.contains(node)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      for (const rect of range.getClientRects()) {
+        const across = Math.min(box.right, rect.right) - Math.max(box.left, rect.left);
+        const down = Math.min(box.bottom, rect.bottom) - Math.max(box.top, rect.top);
+        if (across > 0.5 && down > 0.5) {
+          covered.push(text);
+          break;
+        }
+      }
+    }
+    return covered;
+  });
+}
+
+/** Reads where each row's mark starts, and requires the marks drawn by one renderer to start at
+ *  one x, within a pixel. A failure prints every row's x with the renderer that drew it. */
+async function expectMarksInOnePlace(page: Page, rows: readonly PlacedMark[]): Promise<void> {
+  const placed: (PlacedMark & { x: number })[] = [];
+  for (const row of rows) {
+    const box = await markOf(page, row.id).boundingBox();
+    expect(box, `${row.renderer} ${row.id}: its mark has a box`).not.toBeNull();
+    placed.push({ ...row, x: box?.x ?? Number.NaN });
+  }
+  const report = placed
+    .map((row) => `  ${row.renderer} ${row.id} "${row.words}": x = ${row.x}`)
+    .join("\n");
+  for (const renderer of new Set(placed.map((row) => row.renderer))) {
+    const xs = placed.filter((row) => row.renderer === renderer).map((row) => row.x);
+    expect(
+      Math.max(...xs) - Math.min(...xs),
+      `the marks of every ${renderer} start at one x, within a pixel; the marks start at:\n${report}`
+    ).toBeLessThanOrEqual(1);
+  }
+}
+
+/** Where an item of a row is drawn, in the page's pixels. */
+interface Box {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+}
+
+/** The row's own items the line of its approval mark and the line of its owner draw, beside the
+ *  issue key: the mark, the priority tag, the urgency mark and the copy-reference button. */
+const LINE_ITEMS = {
+  copy: COPY_REF_SELECTOR,
+  mark: "[data-inbox-approval]",
+  priority: "[data-inbox-priority]",
+  urgency: "[data-inbox-urgency]",
+} as const;
+
+/** A box as a failure prints it, to a tenth of a pixel. */
+function boxWords(box: Box): string {
+  const at = (n: number) => Math.round(n * 10) / 10;
+  return `x ${at(box.left)}..${at(box.right)}, y ${at(box.top)}..${at(box.bottom)}`;
+}
+
+/** Reads the boxes of row `row`'s own items on the line its approval mark stands on and on the
+ *  line its owner stands on - the mark, the priority tag, the urgency mark, the issue key and the
+ *  copy-reference button - and requires that no two of them overlap by more than half a pixel
+ *  each way and that each stands inside the row's box. The key is the span of the owner's link
+ *  that reads it, since a thread row's owner link carries no marker of its own. The two lines are
+ *  the band from the top of the mark or the key, whichever is higher, to the bottom of the lower:
+ *  what a card draws under them stands on neither. A failure prints the row and every box. */
+async function expectLineItemsApart(page: Page, row: PlacedMark): Promise<void> {
+  // Every caller reads each row's mark words with a waiting `expect` before this, so the list has
+  // settled; the `null` branch only stops a row with no mark or key, which the expect below fails.
+  const read = await inboxRow(page, row.id).evaluate(
+    (element, { key, selectors }) => {
+      const boxOf = (part: Element): Box => {
+        const { bottom, left, right, top } = part.getBoundingClientRect();
+        return { bottom, left, right, top };
+      };
+      const keySpan = [...element.querySelectorAll("a > span")].find(
+        (span) => span.textContent?.trim() === key
+      );
+      const mark = element.querySelector(selectors.mark);
+      if (keySpan === undefined || mark === null) return null;
+      const ends = [boxOf(mark), boxOf(keySpan)];
+      const top = Math.min(...ends.map((box) => box.top));
+      const bottom = Math.max(...ends.map((box) => box.bottom));
+      const items: { box: Box; part: string }[] = [{ box: boxOf(keySpan), part: "key" }];
+      for (const [part, selector] of Object.entries(selectors)) {
+        for (const item of element.querySelectorAll(selector)) {
+          const box = boxOf(item);
+          if (Math.min(bottom, box.bottom) - Math.max(top, box.top) > 0.5) {
+            items.push({ box, part });
+          }
+        }
+      }
+      // The row is an `<li>`, whose text reads with the breaks its lines are drawn with.
+      const text = element instanceof HTMLElement ? element.innerText : element.textContent;
+      return { items, row: boxOf(element), text: (text ?? "").replace(/\s+/g, " ") };
+    },
+    { key: row.key, selectors: LINE_ITEMS }
+  );
+  expect(read, `${row.renderer} ${row.id}: the row draws its mark and its key ${row.key}`).not.toBe(
+    null
+  );
+  if (read === null) return;
+  const report = [
+    `${row.renderer} ${row.id} "${row.words}" of ${row.key}: row ${boxWords(read.row)}, reading "${read.text}"`,
+    ...read.items.map((item) => `  ${item.part}: ${boxWords(item.box)}`),
+  ].join("\n");
+  const overlaps: string[] = [];
+  for (const [index, first] of read.items.entries()) {
+    for (const second of read.items.slice(index + 1)) {
+      const across =
+        Math.min(first.box.right, second.box.right) - Math.max(first.box.left, second.box.left);
+      const down =
+        Math.min(first.box.bottom, second.box.bottom) - Math.max(first.box.top, second.box.top);
+      if (across > 0.5 && down > 0.5) {
+        overlaps.push(`${first.part} and ${second.part}: ${across} px across, ${down} px down`);
+      }
+    }
+  }
+  expect(
+    overlaps,
+    `${row.renderer} ${row.id}: no two items of the mark's line and the owner's line overlap by more than half a pixel each way:\n${report}`
+  ).toEqual([]);
+  const outside = read.items
+    .filter(
+      ({ box }) =>
+        box.left < read.row.left - 0.5 ||
+        box.right > read.row.right + 0.5 ||
+        box.top < read.row.top - 0.5 ||
+        box.bottom > read.row.bottom + 0.5
+    )
+    .map((item) => item.part);
+  expect(
+    outside,
+    `${row.renderer} ${row.id}: each item of the mark's line and the owner's line stands inside the row's box:\n${report}`
+  ).toEqual([]);
+}
+
+/** Reads that the issue key of ask row `row` stands on the line of its approval mark, and the
+ *  start of its title after it on that line: where the line has room, the owner is drawn beside
+ *  the marks, with its title cut. */
+async function expectOwnerBesideMarks(page: Page, row: PlacedMark): Promise<void> {
+  const boxes = await inboxRow(page, row.id).evaluate((element) => {
+    const boxOf = (part: Element | null | undefined): Box | null => {
+      if (part === null || part === undefined) return null;
+      const { bottom, left, right, top } = part.getBoundingClientRect();
+      return { bottom, left, right, top };
+    };
+    const key = element.querySelector("[data-inbox-owner] > span");
+    return {
+      key: boxOf(key),
+      mark: boxOf(element.querySelector("[data-inbox-approval]")),
+      title: boxOf(key?.nextElementSibling),
+    };
+  });
+  const { key, mark, title } = boxes;
+  const onMarkLine = (box: Box) =>
+    mark !== null && Math.min(box.bottom, mark.bottom) - Math.max(box.top, mark.top) > 0.5;
+  expect(
+    key !== null &&
+      title !== null &&
+      onMarkLine(key) &&
+      onMarkLine(title) &&
+      title.left >= key.right &&
+      title.right - title.left > 0.5,
+    `${row.renderer} ${row.id}: its key and the start of its title stand on its mark's line: ${JSON.stringify(boxes)}`
+  ).toBe(true);
+}
+
+// SLOW(>=2s): four issues seeded with a thread, an ask and an approval each, then eight rows
+// measured box by box at two window sizes.
+test("the approval mark stands at one place on every row", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "MARKPLACE", name: "One place" });
+  await setGatedSteps("MARKPLACE", ["spec"]);
+  // Four issues whose rows differ in everything beside the mark: titles of 12 and of 80
+  // characters, an urgent ask and a calm one, a priority or none, and a mark of two lengths. The
+  // last one's long mark, priority and urgency fill its short ask row's line at 1440, so its key
+  // moves under them (`fullLine`); every other short ask row has room for its key beside them.
+  const seeds = [
+    { changed: false, fullLine: false, priority: 1, title: "Lease window", urgency: "high" },
+    {
+      changed: false,
+      fullLine: false,
+      priority: null,
+      title: "Retire the old mirror retry budget once every region reads the shared lease sets",
+      urgency: "low",
+    },
+    { changed: true, fullLine: false, priority: null, title: "Mirror retry", urgency: "low" },
+    {
+      changed: true,
+      fullLine: true,
+      priority: 3,
+      title: "Move the nightly ledger replays onto the new storage cluster before the cutover.",
+      urgency: "high",
+    },
+  ] as const;
+  // Each issue's ask row and thread row, as the short rows and as the cards draw them, and the
+  // short ask rows whose line has room for the key beside the marks.
+  const short: PlacedMark[] = [];
+  const cards: PlacedMark[] = [];
+  const roomy: PlacedMark[] = [];
+  for (const seed of seeds) {
+    const { issue, row, spec } = await issueWithThread("MARKPLACE", seed.title);
+    if (seed.priority !== null) await patchIssue(issue.key, { priority: seed.priority });
+    const ask = await createAsk(
+      issue.key,
+      {
+        options: [{ label: "Ship" }, { label: "Hold" }],
+        question: `Ship "${seed.title}"?`,
+        urgency: seed.urgency,
+      },
+      session
+    );
+    await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
+    if (seed.changed) await editSpec(spec);
+    const words = seed.changed ? "Approved v1 · changed since" : "Approved v1";
+    const { key } = issue;
+    const shortAsk: PlacedMark = { id: ask.id, key, renderer: "short ask row", words };
+    short.push(shortAsk, { id: row, key, renderer: "short thread row", words });
+    if (!seed.fullLine) roomy.push(shortAsk);
+    cards.push(
+      { id: ask.id, key, renderer: "ask card", words },
+      { id: row, key, renderer: "thread card", words }
+    );
+  }
+
+  /** The list draws the eight rows and no other, each wearing its mark; the marks of one
+   *  renderer start at one x; no mark covers any other text of its row; and no item of the
+   *  mark's line or the owner's line draws over another or past its row. */
+  const expectMarksInPlace = async (page: Page, rows: readonly PlacedMark[]) => {
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+    for (const row of rows) {
+      await expect(markOf(page, row.id), `${row.renderer} ${row.id}`).toHaveText(row.words);
+    }
+    await expectMarksInOnePlace(page, rows);
+    for (const row of rows) {
+      expect(
+        await textUnderMark(page, row.id),
+        `${row.renderer} ${row.id}: the text its mark covers`
+      ).toEqual([]);
+      await expectLineItemsApart(page, row);
+    }
+  };
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+
+    // Beside the reading pane: the two short rows, which draw no card.
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/");
+    expect(hasReadingPane(page)).toBe(true);
+    await expect(inboxPane(page)).toBeVisible();
+    await expectMarksInPlace(page, short);
+    await expect(page.locator("[data-inbox-row] [data-inbox-thread-card]")).toHaveCount(0);
+    // Where the line has room, the owner stands beside the marks: the key, then the start of its
+    // title.
+    for (const row of roomy) await expectOwnerBesideMarks(page, row);
+
+    // Below its width: the two cards. The Inbox page lists short rows there too (INFRA-5200), so
+    // the cards are the drawer's, opened over a page that draws no Inbox list of its own.
+    await page.setViewportSize({ height: 768, width: 1024 });
+    await openDrawer(page);
+    for (const row of cards) {
+      await expect(
+        row.renderer === "ask card"
+          ? page.getByTestId(`ask-${row.id}`)
+          : inboxRow(page, row.id).locator("[data-inbox-thread-card]"),
+        `${row.renderer} ${row.id}`
+      ).toBeVisible();
+    }
+    await expectMarksInPlace(page, cards);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Reads that the approval mark and the issue key of row `rowId` stand inside the row's card,
+ *  left and right. Neither shrinks, so where the two do not fit on one line the key must move
+ *  under the mark rather than run past the card's edge. */
+async function expectMarkAndKeyInCard(scope: Page | Locator, rowId: string): Promise<void> {
+  const boxes = await scope.locator(`[data-inbox-row="${rowId}"]`).evaluate((row) => {
+    const across = (element: Element | null) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? null : { left: box.left, right: box.right };
+    };
+    return {
+      card: across(row),
+      key: across(row.querySelector("[data-inbox-owner] > span")),
+      mark: across(row.querySelector("[data-inbox-approval]")),
+    };
+  });
+  const { card } = boxes;
+  for (const part of ["mark", "key"] as const) {
+    const at = boxes[part];
+    expect(
+      at !== null && card !== null && at.left >= card.left - 0.5 && at.right <= card.right + 0.5,
+      `${rowId}: the ${part} stands inside its card: ${JSON.stringify(boxes)}`
+    ).toBe(true);
+  }
+}
+
+// SLOW(>=2s): two issues seeded, a Verification document approved and then edited and polled
+// until stale, then the Inbox and the drawer over an issue page each read and measured to fit.
+// The two short rows beside the pane are read by the five states and the live change, at the
+// pane's width. Below the pane's width the Inbox page lists short rows too (INFRA-5200), and the
+// drawer each row as a card, a claim the desktop projects cannot make, so the row runs on the
+// phone projects alone. @phone @phone-only
+test("the approval mark at phone width @phone @phone-only", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "PHONEMARK", name: "Phone mark" });
+  const issue = await createIssue({
+    project: "PHONEMARK",
+    spec: "The plan.",
+    title: "An approved issue",
+  });
+  await reviewArtifact(issue.primary_artifact_id, { state: "approved" }, { login: "alice" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the approved plan?" },
+    session
+  );
+  const row = replyRowId(
+    await seedCommentThread(issue.key, "Is the plan approved?", "It is, at version 1.")
+  );
+  // The longest mark a row draws beside the longest key a project takes, in its widest letters:
+  // a root issue of a project that gates both steps, whose Verification was approved and then
+  // changed.
+  await createProject({ key: "WMWMWMWMWM", name: "Wide keys" });
+  await setGatedSteps("WMWMWMWMWM", ["criteria", "spec"]);
+  const wide = await createIssue({
+    project: "WMWMWMWMWM",
+    spec: "The plan.",
+    title: "A root issue whose checks moved",
+  });
+  const checks = await createIssueArtifact(wide.key, {
+    content: "# Verification\n\nOne check.\n",
+    name: "verification.md",
+  });
+  await reviewArtifact(checks.artifact.id, { state: "approved" }, { login: "alice" });
+  await editArtifact(
+    checks.artifact.id,
+    { ops: [{ op: "replace", find: "One check.", with: "Two checks." }] },
+    session
+  );
+  await expect
+    .poll(async () => (await getArtifact(checks.artifact.id, { login: "alice" })).approval?.state)
+    .toBe("stale");
+  const wideAsk = await createAsk(
+    wide.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the checked plan?" },
+    session
+  );
+  const longMark = "Verification · Approved v1 · changed since";
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    expect(hasReadingPane(page)).toBe(false);
+    // Below the pane's width the Inbox page lists short rows (INFRA-5200), each wearing the mark,
+    // and draws no card in them.
+    await expect(inboxRow(page, ask.id)).toBeVisible();
+    await expect(page.getByTestId(`ask-${ask.id}`)).toHaveCount(0);
+    await expect(markOf(page, ask.id)).toHaveText("Approved v1");
+    await expect(inboxRow(page, row).locator("[data-inbox-thread-card]")).toHaveCount(0);
+    await expect(markOf(page, row)).toHaveText("Approved v1");
+    // The long mark and the long key stay inside their row.
+    await expect(markOf(page, wideAsk.id)).toHaveText(longMark);
+    await expectMarkAndKeyInCard(page, wideAsk.id);
+    await assertPageFits(page);
+
+    // The drawer draws each row as a card over another page, and each card wears the mark.
+    await page.goto(`/issues/${issue.key}`);
+    await peekTrigger(page).click();
+    await expect(drawer(page)).toBeVisible();
+    await expect(drawer(page).getByTestId(`ask-${ask.id}`)).toBeVisible();
+    await expect(
+      drawer(page).locator(`[data-inbox-row="${row}"] [data-inbox-thread-card]`)
+    ).toBeVisible();
+    await expect(markOf(drawer(page), ask.id)).toHaveText("Approved v1");
+    await expect(markOf(drawer(page), row)).toHaveText("Approved v1");
+    await expect(markOf(drawer(page), wideAsk.id)).toHaveText(longMark);
+    await expectMarkAndKeyInCard(drawer(page), wideAsk.id);
+    await assertPageFits(page);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): six rows seeded over a project document, an agent and three issues, then five rows
+// dismissed one press at a time and the Dismissed view loaded and read.
+test("a row with no issue carries no mark", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "NOISSUE", name: "No issue" });
+  // Three items of no issue: an ask on a project document, a thread on one, and an Agent row.
+  const runbook = await createProjectDocument("NOISSUE", {
+    content: "# Runbook\n\nRestart it.\n",
+    name: "Runbook",
+  });
+  const docAsk = await createArtifactAsk(
+    runbook.artifact.id,
+    { question: "Keep the runbook in the repository?" },
+    session
+  );
+  const docRoot = await createArtifactComment(runbook.artifact.id, {
+    body: "Is the runbook current?",
+  });
+  await createArtifactComment(
+    runbook.artifact.id,
+    { body: "It is.", reply_to: docRoot.id },
+    asSession()
+  );
+  const agent = agentRowId(
+    await seedAgentThread({ body: "Check the runbook, please.", replies: ["Checked."] })
+  );
+  const docThread = replyRowId(docRoot.id);
+  // Three that belong to an issue: one nobody asked about, one approved, and one approved and
+  // then closed.
+  const unasked = await issueWithThread("NOISSUE", "Nobody asked about it");
+  const approved = await issueWithThread("NOISSUE", "Approved");
+  await reviewArtifact(approved.spec, { state: "approved" }, { login: "alice" });
+  const closed = await issueWithThread("NOISSUE", "Approved and closed");
+  await reviewArtifact(closed.spec, { state: "approved" }, { login: "alice" });
+  await patchIssue(closed.issue.key, { status: "done" });
+
+  const marked = [
+    [unasked.row, "Not requested"],
+    [approved.row, "Approved v1"],
+    [closed.row, "Approved v1"],
+  ] as const;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    for (const id of [docAsk.id, docThread, agent]) {
+      await expect(inboxRow(page, id), id).toBeVisible();
+      await expect(markOf(page, id), id).toHaveCount(0);
+    }
+    for (const [id, state] of marked) {
+      await expect(markOf(page, id), id).toHaveText(state);
+    }
+
+    // The Dismissed view draws the same rows the same way.
+    for (const id of [docThread, agent, ...marked.map(([row]) => row)]) {
+      await selectRow(page, id);
+      await page.locator(`[data-inbox-dismiss="${id}"]`).first().click();
+      await expect(inboxRow(page, id), id).toHaveCount(0);
+    }
+    await page.goto("/?show=dismissed");
+    for (const id of [docThread, agent]) {
+      await expect(inboxRow(page, id), id).toBeVisible();
+      await expect(markOf(page, id), id).toHaveCount(0);
+    }
+    for (const [id, state] of marked) {
+      await expect(markOf(page, id), id).toHaveText(state);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): six approval changes written while the page is open, each waited on live in two
+// marks and the pane's line with the ask's selection read after each, then the Dismissed view
+// loaded and one more approval waited on.
+test("a change recorded while the Inbox is open", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "LIVEGATE", name: "A moving gate" });
+  const issue = await createIssue({ project: "LIVEGATE", spec: "The plan.", title: "Live gate" });
+  const spec = issue.primary_artifact_id;
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Start" }, { label: "Wait" }], question: "Start the work?" },
+    session
+  );
+  const row = replyRowId(await seedCommentThread(issue.key, "Is the plan read?", "Not yet."));
+  const dismissed = replyRowId(
+    await seedCommentThread(issue.key, "Who reads the plan?", "Alice does.")
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    // The thread the Dismissed view shows at the end goes out of the Inbox first.
+    await selectRow(page, dismissed);
+    await page.locator(`[data-inbox-dismiss="${dismissed}"]`).first().click();
+    await expect(inboxRow(page, dismissed)).toHaveCount(0);
+    await selectRow(page, ask.id);
+
+    /** Both marks, the pane's gate line and the ask's selection after each refresh. */
+    const reads = async (state: string) => {
+      await expect(markOf(page, ask.id), `the ask row at ${state}`).toHaveText(state);
+      await expect(markOf(page, row), `the thread row at ${state}`).toHaveText(state);
+      await expect(paneLine(page, ""), `the pane's line at ${state}`).toHaveText(state);
+      await expect(inboxRow(page, ask.id), `the ask stays selected at ${state}`).toHaveAttribute(
+        "data-inbox-selected",
+        "true"
+      );
+    };
+    await reads("Not requested");
+
+    // An approval request opened, then answered with an approval.
+    await requestApproval(spec, {}, session);
+    await reads("Awaiting approval");
+    await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
+    await reads("Approved v1");
+    // A new version written.
+    await editArtifact(
+      spec,
+      { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
+      session
+    );
+    await reads("Approved v1 · changed since");
+    // A request for changes.
+    await reviewArtifact(
+      spec,
+      { reason: "Name the rollback path.", state: "changes_requested" },
+      { login: "alice" }
+    );
+    await reads("Changes requested");
+    // A second request, resolved with no review.
+    const second = withOpenedAsk(await requestApproval(spec, {}, session));
+    await reads("Awaiting approval");
+    await resolveAsk(second.ask.id, { kind: "retracted", reason: "Asked too early." }, session);
+    await reads("Changes requested");
+
+    // The approval again, with the Dismissed view open on the dismissed thread of the issue.
+    await page.goto("/?show=dismissed");
+    await expect(markOf(page, dismissed)).toHaveText("Changes requested");
+    const latest = (await getArtifact(spec, { login: "alice" })).approval?.latest_version;
+    await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
+    await expect(markOf(page, dismissed)).toHaveText(`Approved v${latest}`);
   } finally {
     await alice.close();
   }

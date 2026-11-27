@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The Inbox's Dismissed view draws only a window of its loaded rows and reads the next page as the
+  window nears the end, so it stays fast with thousands of dismissed threads.
+time: 2026-11-23T06:19:10Z
+custom:
+  Issue: inbox-dismissed-window

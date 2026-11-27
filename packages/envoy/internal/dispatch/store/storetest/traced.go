@@ -132,6 +132,62 @@ func (r *StatementRecorder) Statements() []string {
 	return append([]string(nil), r.sql...)
 }
 
+// RecordedStatement is one statement a BatchStatementRecorder saw: its SQL and the arguments bound
+// to it.
+type RecordedStatement struct {
+	SQL  string
+	Args []any
+}
+
+// BatchStatementRecorder records the SQL and the bound arguments of every statement run on the
+// pool it traces (Traced): each statement sent on its own, and each statement of a batch, one by
+// one (pgx.BatchTracer). StatementRecorder keeps no argument and sees a batch only as its start,
+// and a write phase sends all of its statements as one batch (store.WriteBatch), with every id
+// they name bound as an argument. So a test that reads which rows a write's statements reach
+// reads them here.
+type BatchStatementRecorder struct {
+	mu         sync.Mutex
+	statements []RecordedStatement
+}
+
+func (r *BatchStatementRecorder) record(sql string, args []any) {
+	r.mu.Lock()
+	r.statements = append(r.statements, RecordedStatement{SQL: sql, Args: slices.Clone(args)})
+	r.mu.Unlock()
+}
+
+func (r *BatchStatementRecorder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.record(data.SQL, data.Args)
+	return ctx
+}
+
+func (r *BatchStatementRecorder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (r *BatchStatementRecorder) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (r *BatchStatementRecorder) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	r.record(data.SQL, data.Args)
+}
+
+func (r *BatchStatementRecorder) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// Statements is every statement r has recorded since it was made or last reset, in the order pgx
+// reported them.
+func (r *BatchStatementRecorder) Statements() []RecordedStatement {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.statements)
+}
+
+// Reset forgets every statement r has recorded, so the next Statements holds only what runs after.
+func (r *BatchStatementRecorder) Reset() {
+	r.mu.Lock()
+	r.statements = nil
+	r.mu.Unlock()
+}
+
 // CommitBetweenReads runs the commit it was armed with, once, the moment the first statement
 // naming one of its tables ends on the pool it traces (Traced), and holds every other statement
 // naming one of them from starting until that commit has returned: a commit landing between a

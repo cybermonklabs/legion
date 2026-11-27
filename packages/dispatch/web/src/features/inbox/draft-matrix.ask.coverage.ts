@@ -15,7 +15,7 @@ const TYPED = ["typed"];
 
 /** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
-  1: "1. Which end of the card the answer field and the reply composer sit at (`answerFirst`, `composerFirst`) is the reader's thread order (`useThreadOrder`), which the card reads when it is drawn and again only when who is signed in changes (`useUserPreference`), and never sets, so it never moves a field that is on screen; the shell draws no card before it knows who is signed in, and another person's sign-in forgets every ask draft (`DraftStore.signedIn`).",
+  1: "1. Which end of the card the answer field and the reply composer sit at (`answerFirst`, `composerFirst`) is the reader's thread order (`useThreadOrder`), which the card never sets: a pick in the Inbox's display menu changes it for every reader on the page at once, and another tab's pick for this tab's readers (`useUserPreference`). The card draws its thread and its answer form as one list of two blocks, each keyed by a literal of its own (`thread`, `answer`), so a pick moves the answer field past the thread on screen with both still mounted. Inside a thread a pick moves the reply composer to the thread's other end, which ends its mount at one end and starts it at the other, for the same ask, and the composer drawn there holds the ask's one draft (`useReplyDraft(ask.id)`), as the composer of a card ended and drawn again does; the shell draws no card before it knows who is signed in, and another person's sign-in forgets every ask draft (`DraftStore.signedIn`).",
   2: '2. Each host draws its cards in one variant and with one thread, literals of its own (`variant="compact"` and `thread="collapsed"` in the Conversation and a decision block, `variant="compact"` in the margin, `variant="full"`, `thread="inline"` or the defaults elsewhere), so no card switches between its full and its compact form, or moves its reply composer between its inline thread and its collapsed one; both composers hold the ask\'s one draft (`useReplyDraft(ask.id)`).',
   3: "3. A compact card holds its answer field behind the note disclosure (`ownWordsOpen`). Folding the note takes the field off the screen while the card stays drawn, and with it the form hook that holds the ask's draft (`useAskAnswerForm`), so the field the disclosure opens again shows the draft, as the field of a card ended and drawn again does.",
   4: "4. The card draws the ask's record in place of its form once the ask is settled (`completed`). An answer the server records for the reader ends the draft with the form, since it is no longer unsent (`answer-drafts.ts`); a question settled otherwise draws the reader's text under the record, read-only (`unsentAnswer`; `AskCard.test.tsx`, \"a question closed under the reader keeps their unsent answer, out of the form\"), and the draft stays the ask's, so a form drawn for the ask again holds it. A change of the reader's recorded answer (`changing`) draws the form over that answer's own text, which is the form's and no draft (`changeAnswer` in `useAskAnswerForm.ts`).",
@@ -51,6 +51,9 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(`${ANSWER_FIELD} | early return | if (completed !== null) return …`, {
     reason: REASONS[4],
   }),
+  ...answers(`${ANSWER_FIELD} | key | <Fragment key="answer">`, { reason: REASONS[1] }),
+  ...answers(`${ANSWER_FIELD} | conditional | (answerFirst) ? …`, { reason: REASONS[1] }),
+  ...answers(`${ANSWER_FIELD} | conditional | !(answerFirst) ? …`, { reason: REASONS[1] }),
   ...answers(
     `${ANSWER_FIELD} | lifetime | <MentionField askAnswer={true}>`,
     cells(`${ANSWER} · the page reloaded, then back`, TYPED)
@@ -118,6 +121,7 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("AskCard | AskThread | conditional | (answerFirst) ? …", { reason: REASONS[1] }),
   ...answers("AskCard | AskThread | conditional | !(answerFirst) ? …", { reason: REASONS[1] }),
+  ...answers('AskCard | AskThread | key | <Fragment key="thread">', { reason: REASONS[1] }),
   ...answers(
     "AskCard | AskThread | address prop | ask={currentAsk}",
     cells(`${REPLY} · the card drawn for another ask, then back`, TYPED)
@@ -148,6 +152,9 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[1],
   }),
   ...answers("AskCard | AskThreadDisclosure | conditional | !(answerFirst) ? …", {
+    reason: REASONS[1],
+  }),
+  ...answers('AskCard | AskThreadDisclosure | key | <Fragment key="thread">', {
     reason: REASONS[1],
   }),
   ...answers(

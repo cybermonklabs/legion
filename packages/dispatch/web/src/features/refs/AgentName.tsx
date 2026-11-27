@@ -220,6 +220,10 @@ function AgentStateMark({
   );
 }
 
+/** What becomes of a message sent to an unresponsive session: the Agents page's words, which the
+ *  Inbox's compose dialog also draws beside such a recipient before Send. */
+export const UNRESPONSIVE_KEEPS_MESSAGES = "messages sent to it are stored until it answers";
+
 /**
  * The visible mark beside an unresponsive session on a surface that lists sessions (the Agents
  * page's row, its live conversation's header). The state mark alone is a ring a reader must
@@ -250,7 +254,7 @@ export function AgentUnresponsiveNote({
       data-testid="agent-unresponsive"
       title={
         tooltips
-          ? `This session has missed its heartbeats${seen === undefined ? "" : ` since ${new Date(seen).toLocaleString()}`}. It has not ended: it keeps its roles and claims, and messages sent to it are stored until it answers.`
+          ? `This session has missed its heartbeats${seen === undefined ? "" : ` since ${new Date(seen).toLocaleString()}`}. It has not ended: it keeps its roles and claims, and ${UNRESPONSIVE_KEEPS_MESSAGES}.`
           : undefined
       }
     >

@@ -17,7 +17,9 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
+import { OrderPicker } from "../threads/order-picker-fixture";
 import { agentRow, plannerAgentRow, withConversation } from "../threads/replies-fixture";
+import { ThreadBody } from "./ThreadBody";
 import { ThreadRowCard } from "./ThreadRowCard";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -553,4 +555,74 @@ test("an Agent card whose thread moves on under a refused reply says what its bo
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
+});
+
+// The reading pane's thread opens at its first unread reply under Oldest first. An order picked
+// while it is open reorders it where it stands: the pick back to Oldest first does not scroll to
+// that reply again.
+test("ThreadBody keeps its place for an order given after it opened", async () => {
+  const user = userEvent.setup();
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  const reply = (id: string, body: string, hour: number) =>
+    comment(id, body, {
+      author: { id: "bob", kind: "user" },
+      created_at: `2026-10-12T0${hour}:00:00Z`,
+      reply_to: "comment-1",
+    });
+  spy("listComments", [
+    comment("comment-1", "The retry budget is too small."),
+    reply("comment-2", "First reply.", 1),
+    reply("comment-3", "Second reply.", 2),
+    reply("comment-4", "Third reply.", 3),
+    reply("comment-5", "Fourth reply.", 4),
+  ]);
+  // The turn each scroll into view brought to the top of the column.
+  const scrolledTo: string[] = [];
+  restores.push(
+    spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+      const turn = this.querySelector("[data-inbox-thread-turn]");
+      if (turn !== null) scrolledTo.push(turn.getAttribute("data-inbox-thread-turn") ?? "");
+    })
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <OrderPicker />
+        <ThreadBody
+          openAtFirstUnread
+          thread={commentRow({
+            // Read through the second reply, so the third and the fourth are unread.
+            read_through: "2026-10-12T02:30:00Z",
+            reply: {
+              author: { id: "bob", kind: "user" },
+              created_at: "2026-10-12T04:00:00Z",
+              first_line: "Fourth reply.",
+              id: "comment-5",
+              kind: "reply",
+            },
+            unread_count: 2,
+          })}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const body = await screen.findByTestId("inbox-thread-comment");
+  const turns = () =>
+    [...body.querySelectorAll("[data-inbox-thread-turn]")].map((turn) =>
+      turn.getAttribute("data-inbox-thread-turn")
+    );
+
+  // Oldest first when it opened: the two read replies folded, and the first unread one brought
+  // into view, once.
+  await waitFor(() => expect(turns()).toEqual(["comment-1", "comment-4", "comment-5"]));
+  await waitFor(() => expect(scrolledTo).toEqual(["comment-4"]));
+
+  await user.click(screen.getByRole("button", { name: "Newest first" }));
+  expect(turns()).toEqual(["comment-1", "comment-5", "comment-4"]);
+  await user.click(screen.getByRole("button", { name: "Oldest first" }));
+  expect(turns()).toEqual(["comment-1", "comment-4", "comment-5"]);
+  // Both orders came after the thread opened, and neither scrolled it.
+  expect(scrolledTo).toEqual(["comment-4"]);
 });

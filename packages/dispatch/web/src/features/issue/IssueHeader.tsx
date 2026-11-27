@@ -12,7 +12,7 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { projectsQuery, userStateQuery } from "../../api/queries";
+import { userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
@@ -22,6 +22,9 @@ import type {
   UserState,
 } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
+import { focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -39,6 +42,7 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
+  hasFocusVisibleRing,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -53,7 +57,7 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusText } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy } from "../refs/ReferencedBy";
@@ -65,7 +69,7 @@ import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink, isPullRequestLink } from "./GitHubLink";
-import { gatedStepEntries, isProjectRoot } from "./gated-steps";
+import { approvalGateSteps } from "./gated-steps";
 import { HeaderDetails, type HeaderDetailsRow } from "./HeaderDetails";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueParentDetails, IssueRouteDetails } from "./IssueHeaderForms";
@@ -86,6 +90,19 @@ import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
+
+/** The Status list's trigger carries this attribute, valued with the status it shows (`Todo`
+ *  shows `todo`): the issue page's `s` and Escape find the trigger by it, since the shared list
+ *  hands out no element of its own, and a reader outside the page (the docs' screenshots) reads
+ *  the status off it as it read a select's value. */
+const STATUS_TRIGGER_ATTRIBUTE = "data-issue-status";
+/** The Status list's trigger (`STATUS_TRIGGER_ATTRIBUTE`). */
+export const STATUS_TRIGGER_SELECTOR = `[${STATUS_TRIGGER_ATTRIBUTE}]`;
+
+/** The Status list's marks: its trigger's attribute, valued with the status it shows. */
+function statusMarks(shown: string): ListMarks {
+  return { trigger: { [STATUS_TRIGGER_ATTRIBUTE]: shown } };
+}
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -185,7 +202,7 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
-  // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
+  // Every status write of the header - the Status pick, Close, Reopen and the palette's rows - goes
   // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
   // refuse it.
@@ -234,8 +251,8 @@ export function IssueHeader({
   const requestStatus = (status: string) => {
     statusMove.move(status, () => drafts.requestStatusSubmit(status));
   };
-  // A status write is out, or the rule's question is checking or asking about one: no second
-  // status write can start.
+  // A write of the header's fields is out - its status, title, route or parent - or the rule's
+  // question is checking or asking about a status: no second status write can start.
   const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
@@ -246,8 +263,9 @@ export function IssueHeader({
       keys: [],
       label: "Close issue",
       run: () => requestStatus("done"),
-      // `disabled={statusBusy}` on the button, and `isClosed` decides whether it is rendered at
-      // all; a row offered while a status write is in flight would submit a second one.
+      // The button is held (`heldPress`) while a write of the header's fields or the rule's
+      // question is out (`statusBusy`), and `isClosed` decides whether it is rendered at all; a
+      // row offered while a status write is in flight would submit a second one.
       when: () => !isClosed && !statusBusy,
     },
     {
@@ -266,7 +284,7 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  // The status the select and the closed line show while it is out: the one the rule's question
+  // The status the Status pick and the closed line show while it is out: the one the rule's question
   // is checking or asking about, else the one the write is saving.
   const checkingStatus = statusMove.pending;
   const statusSaving =
@@ -282,6 +300,14 @@ export function IssueHeader({
   const pendingStatus =
     checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
+  // The status the Status shows: `pendingStatus`, else the issue's.
+  const shownStatus = pendingStatus ?? issue.status;
+  const [statusOpen, setStatusOpen] = useState(false);
+  // A closed issue's Status takes no pick, and while a write of the header's fields is out, or the
+  // rule's question is checking or asking about a status (`statusBusy`), it takes no second one.
+  // Either way it is held (`aria-disabled`), never disabled: it keeps the focus the reader's pick
+  // handed back to it, and a press of it opens nothing.
+  const statusHeld = isClosed || statusBusy;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -295,19 +321,14 @@ export function IssueHeader({
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
-  // The one shared read of the projects, under the key the shell's sidebar and the search
-  // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
-  // no reload and the header makes no second, per-issue read. While that read is pending or
-  // failed there is no row, so the steps are empty and the header draws its one chip below
-  // rather than claiming a gate it has not read. Only a root of the issue's project has steps at
-  // all (`isProjectRoot`: no parent, or a parent of another project), so a child issue does not
-  // ask for the list: a disabled query still reads whatever the shared cache holds, and a child
-  // draws the single chip either way.
-  const projects = useQuery({ ...projectsQuery(), enabled: isProjectRoot(issue) });
-  const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
-  const entries = gatedStepEntries(projectRow, issue);
-  // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
-  // entries rather than the gate's words: a gate that names no step for the primary document
+  // The steps come from the issue read's own approval gate (`approval_gate`), which the server
+  // computes: a root of the issue's project (no parent, or a parent of another project) in a
+  // gated project has one line for each step, and every other issue a line with no step, which
+  // draws none (`approvalGateSteps`). So a child issue, and an issue read with no gate at all,
+  // draws the single chip.
+  const entries = approvalGateSteps(issue);
+  // Which document each step reviews is the gate's line to say, so the chip asks the drawn
+  // entries rather than the step words: a gate that names no step for the primary document
   // leaves that document's own state and its two controls to the chip.
   const stepHoldsPrimaryDocument = entries.some(
     (entry) => entry.document?.id === issue.primary_artifact_id
@@ -392,6 +413,7 @@ export function IssueHeader({
       : null;
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const titleId = useId();
   const pullRequests: ExternalLink[] = [];
   const otherLinks: ExternalLink[] = [];
   for (const link of issue.external_links ?? []) {
@@ -554,8 +576,10 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={statusBusy}
-            onClick={() => requestStatus("backlog")}
+            // Held, not disabled, while a write of the header's fields or the rule's question is
+            // out (`statusBusy`): the pressed Reopen keeps the keyboard focus, and a second press
+            // sends nothing.
+            {...heldPress(statusBusy, () => requestStatus("backlog"))}
             title="Reopen into Backlog"
             type="button"
           >
@@ -605,34 +629,38 @@ export function IssueHeader({
                   }
                   saveTitleOnEnter(event);
                 }}
-                ref={(node) => node?.focus()}
+                ref={focusOnMount}
                 value={drafts.title}
               />
             ) : (
-              <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  isClosed ? "" : `cursor-text ${borderStrongHover}`
-                }`}
-                onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    setEditingTitle(true);
-                  }
-                }}
-                tabIndex={isClosed ? -1 : 0}
-              >
-                {drafts.title}
-              </h1>
+              // The heading holds the title and takes no Tab stop and no press. The Edit title
+              // button laid over the heading's box is the control: a screen reader reads it as
+              // "Edit title, button", with the title as its description. The button shows no text
+              // of its own, since a button that showed the title under the name "Edit title" would
+              // leave its visible words out of its name (WCAG 2.5.3, Label in Name). It stands
+              // beside the heading and not inside it, since a heading's name is computed from
+              // what it holds, a button's `aria-label` included. It opens the editor when the
+              // reader activates it - a click, Enter or Space - and never as it takes the focus:
+              // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
+              // Focus), and a focus can come to the button with no act of the reader's. A closed
+              // issue's title edits nothing, so it is the heading alone.
+              <div className="relative min-w-0 flex-1">
+                <h1
+                  className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
+                  id={titleId}
+                >
+                  {drafts.title}
+                </h1>
+                {isClosed ? null : (
+                  <button
+                    aria-describedby={titleId}
+                    aria-label="Edit title"
+                    className={`absolute inset-0 cursor-text rounded-lg border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
+                    onClick={() => setEditingTitle(true)}
+                    type="button"
+                  />
+                )}
+              </div>
             )}
             <PinButton
               disabled={updateState.isPending}
@@ -647,27 +675,43 @@ export function IssueHeader({
           data-testid="issue-state-actions"
         >
           <div className={headerGroup} data-testid="issue-state">
-            <label
-              className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            {/* The Status is the shared list's single pick, whose text box narrows the statuses
+                as the reader types. Its trigger fills the pill, which draws the keyboard focus
+                ring round it as `badge-select.ts`'s wrappers do. A pick goes through the rule's
+                question (`requestStatus`) and then writes through `updateIssueGuard`
+                (`requestStatusSubmit`), and a pick of the status it shows writes nothing, as a
+                select set to the value it holds fires nothing. A list that stood open as the hold
+                began picks nothing. */}
+            <span
+              className={`flex min-h-11 shrink-0 items-center rounded-full border text-sm font-semibold uppercase tracking-wide md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
             >
-              <span
-                aria-hidden="true"
-                className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-              />
-              <select
-                aria-label="Status"
-                className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-                disabled={isClosed || statusBusy}
-                onChange={(event) => requestStatus(event.target.value)}
-                value={pendingStatus ?? issue.status}
+              <MultiSelect
+                ariaDisabled={statusHeld}
+                chevron={false}
+                emptyMessage="No status matches that."
+                label="Status"
+                marks={statusMarks(shownStatus)}
+                mode="single"
+                onOpenChange={(next) => setStatusOpen(next && !statusHeld)}
+                onPick={(picked) => {
+                  if (!statusHeld && picked !== shownStatus) requestStatus(picked);
+                }}
+                open={statusOpen}
+                optionLabel={statusText}
+                options={selectableStatuses}
+                searchLabel="Search statuses"
+                triggerClassName="flex cursor-pointer items-center self-stretch rounded-full px-2 outline-none sm:px-3 xl:px-2 refused:cursor-not-allowed refused:opacity-50"
+                value={shownStatus}
               >
-                {selectableStatuses.map((status) => (
-                  <option key={status} value={status}>
-                    {statusLabel(status)}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <span className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+                  />
+                  {statusText(shownStatus)}
+                </span>
+              </MultiSelect>
+            </span>
             <PriorityEditor
               disabled={isClosed || updateIssue.isPending}
               issueKey={issue.key}
@@ -682,8 +726,8 @@ export function IssueHeader({
             {/* A root issue of a gated project reads its gate step by step, after the chip's
                 place; the chip itself stays beside those steps whenever no step drawn reviews the
                 primary document, since otherwise an open request on that document could not be
-                answered on this page at all. Every other issue - and any issue whose project is
-                still unread - keeps that chip for the primary document alone, unchanged. */}
+                answered on this page at all. Every other issue - and any issue read with no gate
+                - keeps that chip for the primary document alone, unchanged. */}
             {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
               <ApprovalChip
                 artifact={documentArtifact}
@@ -779,8 +823,10 @@ export function IssueHeader({
               <button
                 aria-label="Close issue"
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                disabled={statusBusy}
-                onClick={() => requestStatus("done")}
+                // Held, not disabled, while a write of the header's fields or the rule's question
+                // is out (`statusBusy`): the pressed Close keeps the keyboard focus, and a second
+                // press sends nothing.
+                {...heldPress(statusBusy, () => requestStatus("done"))}
                 type="button"
               >
                 {pendingStatus === "done" ? (

@@ -18,6 +18,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickIn } from "../../__tests__/issue-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -51,7 +52,7 @@ import {
   oneReadDismissedPages,
   oneReadEntry,
 } from "./inbox-fixture";
-import { askWaitingOnPerson } from "./list-row";
+import { askWaitingOnPerson, type InboxListRow, rowId } from "./list-row";
 import {
   dismissesThread,
   dismissRefusalText,
@@ -59,6 +60,7 @@ import {
   inboxDismissBody,
   useInboxDismiss,
 } from "./useInboxDismiss";
+import { useInboxSelection } from "./useInboxSelection";
 
 // A thread row's checkbox is named after its subject's plain-text reading (`PlainText`), which
 // reads nothing until the lazy Markdown engine has loaded, and the rows find each checkbox by that
@@ -542,6 +544,71 @@ test("a read of either view or the count asked while a dismiss is out waits for 
   );
 });
 
+/** The selection one list keeps, over one listed Reply row, `c1`, with the client that serves it:
+ *  `dismissedHere` and `forgetDismissed` are read off it. */
+function renderSelection() {
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const row: InboxListRow = { kind: "thread", thread: replyRow("c1") };
+  const id = rowId(row);
+  const { result } = renderHook(
+    () =>
+      useInboxSelection({
+        asOf: undefined,
+        candidates: [row],
+        drawnIds: new Set([id]),
+        filters: {},
+        order: () => [id],
+        rows: new Map([[id, row]]),
+        showDismissed: false,
+      }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  return { id, result };
+}
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 06:2xZ): the bar's hand-off parks the
+// focus in the row the reader marked last while its Dismiss is out, and the list's hand hold skips
+// a row named here (`dismissedHere`). A name that ended when Dispatch took the press, while a read
+// still drew the row, let that hold keep the row for the parked focus, and in WebKit the row never
+// left the page (builds Job `infra-3135-infra-3135-r30e-d70p`). So the name stands until the page
+// no longer draws the row.
+test("a Dismiss Dispatch took names its row until the page no longer draws it", async () => {
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current.dismissedHere(id)).toBe(true);
+
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  // Dispatch took it, and the page still draws the row: a read has not dropped it yet.
+  act(() => result.current.forgetDismissed((drawn) => drawn === id));
+  expect(result.current.dismissedHere(id)).toBe(true);
+  // The page has let the row go.
+  act(() => result.current.forgetDismissed(() => false));
+  expect(result.current.dismissedHere(id)).toBe(false);
+});
+
+// The rollback of a refused Dismiss puts the row back as an ordinary row, so nothing of the press
+// is left to wait for, and its name ends at once, whatever the page draws.
+test("a Dismiss Dispatch refused no longer names its row", async () => {
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.dismissedHere(id)).toBe(false));
+});
+
 /** A `user_thread_state.updated` the live feed delivers: `payload.login`'s read of the Inbox's
  *  threads moved, of `payload.thread_id` alone or, with none, of every thread a dismiss or a
  *  Mark all read changed. */
@@ -894,10 +961,8 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
     await user.click(asksMark as HTMLElement);
     await screen.findByText("1 selected");
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(
-      screen.getByLabelText("Snooze selected asks"),
-      "tomorrow"
-    );
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(userOnFakeClock(), () => picker, "Tomorrow");
     await stopTheLateWrite(client);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toBe(

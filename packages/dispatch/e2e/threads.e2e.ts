@@ -443,7 +443,7 @@ test("a session retraction leaves its reason on the card and removes the human's
   const inboxPage = await alice.newPage();
   await inboxPage.goto("/");
   await expect(inboxRow(inboxPage, ask.id)).toBeVisible();
-  await expect(inboxPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+  await expect(inboxPage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
 
   const issuePage = await alice.newPage();
   await issuePage.goto(`/issues/${issue.key}`);
@@ -460,9 +460,12 @@ test("a session retraction leaves its reason on the card and removes the human's
     bobSession
   );
 
-  // The retraction takes the question out of the human's Inbox, live: the "Blocked on you"
-  // strip counts what the server lists, and it drops with no reload.
-  await expect(inboxPage.getByText(/^Blocked on you:/)).toHaveCount(0);
+  // The retraction takes the question out of the human's Inbox, live: the switch's Blocked on you
+  // counts what the server lists, and with no reload it counts nothing once nothing waits on the
+  // reader - named for no item, and drawing no number (R8: the part stays, its number gone).
+  const blockedOnYou = inboxPage.getByRole("button", { name: /^Blocked on you: 0 items$/ });
+  await expect(blockedOnYou).toBeVisible();
+  await expect(blockedOnYou).toHaveText("Blocked on you");
   // The row itself: a question the server withdraws leaves the list at once, at every width and
   // with no reload - a withdrawn question with a live answer form invites an answer the server
   // refuses, and nothing holds a row the reader has not touched (INFRA-575).
