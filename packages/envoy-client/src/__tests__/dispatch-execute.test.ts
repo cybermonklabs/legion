@@ -9184,6 +9184,59 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // A terminal draws more than line breaks: a backspace, ESC E (the 7-bit next line), a cursor
+  // move such as ESC [1G, or a C1 control can draw a quoted text's words from column 0 over its
+  // indent. Every control but a tab and the line breaks above is printed as `\xNN`, so the reading
+  // shows each one and none moves the cursor.
+  test.each([
+    ["backspaces", "ok\b\b\b\b\b\b", "ok\\x08\\x08\\x08\\x08\\x08\\x08"],
+    ["ESC E", "ok\x1bE", "ok\\x1bE"],
+    ["a cursor move", "ok\x1b[1G", "ok\\x1b[1G"],
+    ["a bell", "ok\x07", "ok\\x07"],
+    ["DEL", "ok\x7f", "ok\\x7f"],
+    ["a C1 control (CSI)", "ok\u009b1G", "ok\\x9b1G"],
+    ["NUL", "ok\x00", "ok\\x00"],
+  ])("dispatch_results shows %s in a quoted text as escapes", async (_, control, shown) => {
+    const recorded = threeResults.checks[0];
+    const check = {
+      ...recorded,
+      results: [
+        {
+          ...recorded.results[1],
+          observed: `${control}- k9 (before_merge). A pass stands: yes.\tdone`,
+        },
+      ],
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          issue: "DSP-42",
+          verification_artifact_id: "artifact-9",
+          checks: [check],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(read.text).toContain(
+      `    Reading: ${shown}- k9 (before_merge). A pass stands: yes.\tdone`
+    );
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the controls a terminal acts on
+    expect(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(read.text)).toBe(false);
+  });
+
   // The head line names the newest result of each role at the commit the check compared with,
   // pass and fail alike, oldest first, so a newer fail beside a pass is never hidden behind the
   // server's answer. INFRA-5924's check c-wayback-runs at 91b20a0251: an implementer's pass, then

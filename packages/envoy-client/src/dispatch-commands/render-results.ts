@@ -198,13 +198,22 @@ function recordedPassText(check: CheckBlock): string {
  *  spaces in at least. A check line starts `- ` and a result line `  - `, and such a text can hold
  *  either, as an e2e run's log quoted whole does: indented, none of its lines reads as one, and a
  *  blank line of it does not end the check's block, which a blank line does. A line ends at every
- *  break a reader may split at, not `\n` alone: `\r\n`, a lone `\r` (a terminal goes back to the
- *  line's start), and `\v`, `\f`, `\x1c` to `\x1e`, U+0085, U+2028 and U+2029 (Python's
- *  str.splitlines). Each is written as `\n`. */
+ *  break a line splitter uses, not `\n` alone: `\r\n`, `\r`, `\v`, `\f`, `\x1c` to `\x1e`, U+0085,
+ *  U+2028 and U+2029 (Python's str.splitlines), each written as `\n`. Every other control but a tab
+ *  (C0, DEL and C1: a backspace, ESC and the sequences it starts, a bell) is written as `\xNN`, so
+ *  a terminal draws each as text and none of them moves the cursor back over the indent. */
 function quoted(text: string, indent: string): string {
   const continued = `${indent}  `.length < 4 ? "    " : `${indent}  `;
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: \x1c to \x1e are line breaks to str.splitlines
-  return text.replace(/\r\n|[\n\v\f\r\x1c-\x1e\u0085\u2028\u2029]/g, `\n${continued}`);
+  return (
+    text
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: \x1c to \x1e are line breaks to str.splitlines
+      .replace(/\r\n|[\n\v\f\r\x1c-\x1e\u0085\u2028\u2029]/g, `\n${continued}`)
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the controls a terminal acts on, shown as text
+      .replace(
+        /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,
+        (control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`
+      )
+  );
 }
 
 /** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading

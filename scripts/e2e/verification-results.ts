@@ -5608,10 +5608,9 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
   const { expect, failure } = expectations();
   for (const kind of headKinds) {
     const commit = (n: string) => seededSha(`${kind.prefix}${n}`);
-    const late = (read: { readonly ended: number; readonly met: boolean; readonly ms: number }) =>
-      read.met
-        ? `the route answered ${read.ms} ms after it, and the command ended ${read.ended} ms after it`
-        : `took ${read.ms} ms, not within ${headReadWaitMs} ms`;
+    // A read that never showed the head keeps the words the negative control's line is quoted by.
+    const late = (read: HeadRead) =>
+      read.met ? readTimeText(read) : `took ${read.ms} ms, not within ${headReadWaitMs} ms`;
     note(`${kind.name}: ${kind.repo}`);
 
     const key = await seedHeadIssue(`The change in ${kind.repo}`, kind.own);
@@ -5628,9 +5627,7 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
         passStands(k1Line(text), "yes"),
       opened.at
     );
-    note(
-      `S1 ${key}, answered ${s1.ms} ms after the opening of #${kind.pr} (the command ended ${s1.ended} ms after it): ${k1Line(s1.text)}`
-    );
+    note(`S1 ${key}, after the opening of #${kind.pr}: ${readTimeText(s1)}: ${k1Line(s1.text)}`);
     expect(
       s1.met && s1.ms <= headAfterEventMs,
       `S1 ${kind.name}: dispatch results compares k1 with the head of #${kind.pr} and a pass stands within ${headAfterEventMs} ms of the event (${late(s1)})`
@@ -5657,9 +5654,7 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
         passStands(k1Line(text), "no"),
       pushed.at
     );
-    note(
-      `S2 answered ${s2.ms} ms after the push to C2 (the command ended ${s2.ended} ms after it): ${k1Line(s2.text)}`
-    );
+    note(`S2 after the push to C2: ${readTimeText(s2)}: ${k1Line(s2.text)}`);
     note(`S2 ${resultLineAt(s2.text, commit("1"))}`);
     expect(
       s2.met && s2.ms <= headAfterEventMs,
@@ -5684,9 +5679,7 @@ async function headNoSettings(seed: Record<string, FakeRepository>): Promise<str
       (text) => k1Line(text).includes(`pull request #${kind.pr3} at ${commit("3")}`),
       opened3.at
     );
-    note(
-      `S3 ${key3}, answered ${s3.ms} ms after the opening of #${kind.pr3} (the command ended ${s3.ended} ms after it): ${k1Line(s3.text)}`
-    );
+    note(`S3 ${key3}, after the opening of #${kind.pr3}: ${readTimeText(s3)}: ${k1Line(s3.text)}`);
     expect(
       s3.met && s3.ms <= headAfterEventMs,
       `S3 ${kind.name}: with no result yet dispatch results names #${kind.pr3} within ${headAfterEventMs} ms of the event (${late(s3)})`

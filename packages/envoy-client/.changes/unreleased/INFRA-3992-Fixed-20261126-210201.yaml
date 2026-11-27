@@ -7,7 +7,9 @@ body: |-
   the output on those prefixes, and a blank line of the text no longer ends the check's block.
   A line of such a text ends at every break a reader may split at, not `\n` alone: `\r\n`, a lone
   `\r`, `\v`, `\f`, `\x1c` to `\x1e`, U+0085, U+2028 and U+2029 are each written as `\n` and
-  indented.
+  indented. Every other control character but a tab (a backspace, ESC and the sequences it
+  starts, DEL, a C1 control) is printed as `\xNN`, so a terminal draws none of them as a cursor
+  move over the indent.
 
   A recorded check's head line names the newest result of each role at what the check compared
   with, pass and fail alike, oldest first, in place of the roles a pass stands from:

@@ -4361,7 +4361,8 @@ The driver seeds the fake with the case's repositories alone before the start, a
 Every read of the results is the `dispatch` command's.
 
 - `head-no-settings` — in `acme/default` and in `acme/tools`, a repository an issue of `ACME` names as its own: a pass at C1, then the pull request opens at C1, and within 5 seconds of the event the check is compared with that head and the pass stands (S1); a late copy of an older push, which GitHub's answer no longer holds, leaves the head at C1, a push to C2 leaves the pass at none of the compared commits within 5 seconds, and a pass at C2 stands at the next read (S2); a pull request that opens before any result is named within 5 seconds, and a pass at its head stands at the next read (S3).
-  Each time runs from the event's publish to the route's answer of the read that shows it, which the server's log gives that read's GET, so the command's own start, seconds on a loaded machine, is no part of it.
+  Each time runs from the event's publish to the route's answer of the read that shows it, the `time=` of the server's log line of that read's GET.
+  It holds the start of the read's own `dispatch` command, which sends its GET only once it runs, and leaves out what the command does after the answer; where the server logged no such line, the time is the command's end, and the case's line says so.
   Each read waits 45 seconds before it says a head is missing, as the negative control does.
 
 - `head-from-github` — `#48` opens and closes, then gets a labeled and an edited event while GitHub holds it closed: 3 seconds after each it is still no basis (L); that the opening makes it a basis and the close takes it away are the case's self-checks, and a run where either fails stops, `UNKNOWN`.
