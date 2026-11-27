@@ -38,8 +38,9 @@ type writeScope string
 const (
 	// scopeProject is a write to an object that belongs to one project: the issue-key rows, the
 	// project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the
-	// message rows that carry an issue. A caller whose credential names another project is
-	// refused, naming both projects.
+	// message rows that carry an issue. A caller whose credential names one project may write
+	// such an object of any project. The one exception is a private project it does not name
+	// (access.CredentialCovers). A target that resolves to no project or to nothing is refused.
 	scopeProject writeScope = "project"
 	// scopeSession is a write that belongs to the calling session rather than to any project:
 	// an agent conversation's own artifact, messages and stream frames, the two routes a
@@ -61,13 +62,16 @@ const (
 	//     written by a credential holding the `person` scope and keyed on that person.
 	scopeSession writeScope = "session"
 	// scopeDeployment is a write that belongs to the deployment rather than to any project: a
-	// credential that may write one project may not create another or change a deployment-wide
+	// credential that names one project may not create another or change a deployment-wide
 	// setting, so a project-scoped caller is refused these by name.
 	scopeDeployment writeScope = "deployment"
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
-	// than its path: the issue create, whose project comes from the body. There is no object to
-	// resolve before the handler runs, so createIssue makes the check itself once it has read
-	// that project (refuseWriteOutsideProjectScope), and withinProjectScope passes the row
+	// than its path: the issue create, whose project comes from the body, and the question of an
+	// answer run. There is no object to resolve before the handler runs. So createIssue and
+	// createGoingRequest each read that project's visibility and ask access.CredentialCovers once
+	// they have read that project. Each answers a private project that the credential does not
+	// name, and a project that does not exist, with one answer at that one step: createIssue 404
+	// NOT_FOUND, and createGoingRequest 404 PROJECT_NOT_FOUND. withinProjectScope passes the row
 	// through by this class rather than by a name it compares.
 	scopeProjectInBody writeScope = "project-in-body"
 	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
@@ -259,8 +263,7 @@ type routeDecl struct {
 	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
 	// released (model.Credential.ApproveOnly). It acts as its person with the scopes person and
 	// approve (brokerApproveOnlyScopes), and every route that does not state ApproveOnly, and GET
-	// /ws/live beside them,
-	// answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
+	// /ws/live beside them, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
 	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
 	// it.
 	//
@@ -396,10 +399,16 @@ func (s *server) routes() []apiRoute {
 		}
 		routes = append(routes, apiRoute{routeDecl: route, Handler: s.bound(route.Handler)})
 	}
-	slices.SortFunc(routes, func(left, right apiRoute) int {
-		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
-	})
+	slices.SortFunc(routes, func(left, right apiRoute) int { return byPatternThenMethod(left.routeDecl, right.routeDecl) })
 	return routes
+}
+
+// byPatternThenMethod is the one order every reader of the declarations walks them in: by pattern,
+// and by method where one pattern has more than one. routes() sorts what it mounts with it, and so
+// does the approve-only refusal, whose message promises the order routes() mounts them in
+// (approveOnlyRefusal).
+func byPatternThenMethod(left, right routeDecl) int {
+	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
 }
 
 // bound is handler, a method of the server, served by s.
