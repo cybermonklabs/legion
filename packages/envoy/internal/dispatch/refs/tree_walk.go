@@ -134,6 +134,14 @@ func asOfValue(kind, id, attribute, bound string, opening bool) string {
 		limit 1`
 }
 
+// AsOfValue is asOfValue for a statement outside refs: a lateral's body reading, as held, the
+// value of attribute out of the node whose kind and id the SQL kind and id name, at the cut the
+// SQL predicate bound names, its first line alone where opening is set, as the walk of an issue's
+// tree reads it.
+func AsOfValue(kind, id, attribute, bound string, opening bool) string {
+	return asOfValue(kind, id, attribute, bound, opening)
+}
+
 // asOfPlacement is a lateral's body reading, at the cut the SQL predicate bound names, the parent
 // of the node whose kind and id the SQL kind and id name: of its part_of tuples, the newest of
 // each far end kept while it asserts, and of those the newest, so a node stands under one parent
@@ -150,6 +158,11 @@ func asOfPlacement(kind, id, bound string) string {
 		order by held.at desc, held.seq desc
 		limit 1`
 }
+
+// AsOfPlacement is asOfPlacement for a statement outside refs: a lateral's body reading the
+// parent, as to_kind and to_id, of the node whose kind and id the SQL kind and id name, at the cut
+// the SQL predicate bound names, as the walk of an issue's tree reads it.
+func AsOfPlacement(kind, id, bound string) string { return asOfPlacement(kind, id, bound) }
 
 // treeNodeColumns are the columns of a node the children read and the placed-above read answer
 // beside its parent and its address: its rank, its supertag, when it was made and the opening of
@@ -325,6 +338,11 @@ func treeOwnsSQL(owner, kind, id string) string {
 	return `(` + kind + ` <> '` + graphstore.KindIssue + `' and (` + kind + ` not in ('` + graphstore.KindArtifact + `', '` +
 		graphstore.KindVersion + `', '` + BlockNodeKind + `') or ` + graphstore.FindingIDSQL(id) + ` or split_part(` + id + `, '/', 1) = ` + owner + `))`
 }
+
+// TreeOwnsSQL is treeOwnsSQL for a statement outside refs: whether the node whose kind and id the
+// SQL kind and id name is a node of the tree of the issue whose key the SQL owner names, which the
+// walk of that tree takes and enters (TreeOwns).
+func TreeOwnsSQL(owner, kind, id string) string { return treeOwnsSQL(owner, kind, id) }
 
 // TreeChild is one node a walk's read answers under a parent at a cut: the parent and the node;
 // its rank, and whether it holds one; its supertag and when it was made, off its row (the zero

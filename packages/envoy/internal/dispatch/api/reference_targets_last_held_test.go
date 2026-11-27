@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -131,8 +132,21 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 	if spec.room != tree.id || spec.id == tree.id {
 		t.Fatalf("spec %+v is not a fragment of issue tree %+v", spec, tree)
 	}
+	// A row put under a conversation item, as New node under and Retype make one (R3, R5): a
+	// typed block of the issue's own fragment whose parent names the item. The walk holds it
+	// through the issue's conversation, which the part_of climb does not pass.
+	comment := created201[model.Comment](t, "alice's comment", dispatchRequest(t, rig.handler, http.MethodPost,
+		"/api/v1/issues/"+key+"/comments", map[string]any{"body": "A criterion stands under this comment."}, "alice"))
+	message := created201[model.Comment](t, "alice's message", dispatchRequest(t, rig.handler, http.MethodPost,
+		"/api/v1/issues/"+key+"/messages", map[string]any{"body": "A statement stands under this message."}, "alice"))
+	underItems := map[string]model.IssueTreeParent{
+		"under-comment": {Kind: graphstore.KindComment, ID: comment.ID},
+		"under-message": {Kind: graphstore.KindMessage, ID: message.ID},
+	}
 	editLastHeldTree(t, rig.handler, tree, map[string]any{"op": "insert", "after": "end", "markdown": lastHeldProse +
-		"\n\n:::requirement{#tree-statement}\nThe tree fragment's statement.\n:::\n"})
+		"\n\n:::requirement{#tree-statement}\nThe tree fragment's statement.\n:::\n" +
+		"\n:::criterion{#under-comment parent=\"dispatch://" + key + "/comment/" + comment.ID + "\"}\nThe criterion under a comment.\n:::\n" +
+		"\n:::requirement{#under-message parent=\"dispatch://" + key + "/message/" + message.ID + "\"}\nThe statement under a message.\n:::\n"})
 	_, prose := textBlockOf(t, rig.database, tree.id, "paragraph", lastHeldProse)
 	// These edits leave the removed blocks' words unchanged. The answer must use the last
 	// version that held them, not the version of their last non-null text row.
@@ -148,12 +162,20 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 	editSpec(t, rig.handler, key, []map[string]any{{"op": "delete", "block": "removed_statement"}})
 	lastHeldQuiet(t, rig)
 	beforeTreeStatement := newestQueryVersion(t, rig.database, spec.id).number
-	if nodes := treeNodes(t, rig.handler, key, fmt.Sprintf("?view=spec&v=%d", beforeTreeStatement)); nodes[tree.address("tree-statement")].ID == "" {
+	held := treeNodes(t, rig.handler, key, fmt.Sprintf("?view=spec&v=%d", beforeTreeStatement))
+	if held[tree.address("tree-statement")].ID == "" {
 		t.Fatalf("the spec query version %d does not hold the statement in the tree fragment", beforeTreeStatement)
 	}
+	for block, item := range underItems {
+		if parent := held[tree.address(block)].Parent; parent == nil || parent.Kind != item.Kind || parent.ID != item.ID {
+			t.Fatalf("the spec query version %d holds %s under %+v, want it under %s %s", beforeTreeStatement, block, parent, item.Kind, item.ID)
+		}
+	}
 	editLastHeldTree(t, rig.handler, tree, map[string]any{"op": "delete", "block": prose},
-		map[string]any{"op": "delete", "block": "tree-statement"})
-	// A version after the removal must not replace the last version that held either block.
+		map[string]any{"op": "delete", "block": "tree-statement"},
+		map[string]any{"op": "delete", "block": "under-comment"},
+		map[string]any{"op": "delete", "block": "under-message"})
+	// A version after the removal must not replace the last version that held each removed block.
 	editSpec(t, rig.handler, key, []map[string]any{{"op": "replace", "find": "The kept statement, revised.", "with": "The kept statement, revised again."}})
 	editLastHeldTree(t, rig.handler, tree, map[string]any{"op": "insert", "after": "end", "markdown": "A later, unrelated paragraph."})
 	succeeded(t, "take the lens gone", writeStateAs(t, rig.handler, key, lens, graphstore.StateGone, "alice"))
@@ -161,6 +183,8 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 	checkLastHeld(t, rig.handler,
 		lastHeldWant{lastHeldBlockRef(t, key, "spec", "removed_statement"), beforeSpec.number, true},
 		lastHeldWant{lastHeldBlockRef(t, key, "spec", "tree-statement"), beforeTreeStatement, true},
+		lastHeldWant{lastHeldBlockRef(t, key, "spec", "under-comment"), beforeTreeStatement, true},
+		lastHeldWant{lastHeldBlockRef(t, key, "spec", "under-message"), beforeTreeStatement, true},
 		lastHeldWant{lastHeldBlockRef(t, key, issueTreeName, prose), beforeTree.number, true},
 		lastHeldWant{lastHeldBlockRef(t, key, "spec", "kept"), 0, false},
 		lastHeldWant{"dispatch://" + lens, 0, true},
@@ -351,5 +375,20 @@ func TestReferenceTargetsETagChangesWithLastHeld(t *testing.T) {
 	first[0].LastHeld, second[0].LastHeld = "", ""
 	if !reflect.DeepEqual(first, second) {
 		t.Errorf("the ETag control changed more than last_held: %+v and %+v", first, second)
+	}
+}
+
+// The last_held statement tests each issue of a view's chain by docs' readers of the tests of
+// viewChainStatement, the statement ViewOf reads. The statement must hold each reader's text
+// verbatim, so neither of the two can change without the other.
+func TestViewRuleFragmentsStandVerbatimInTheViewChainStatement(t *testing.T) {
+	statement := docs.ViewChainStatement()
+	for name, fragment := range map[string]string{
+		"ViewableSQL":        docs.ViewableSQL("v"),
+		"RequirementHeldSQL": docs.RequirementHeldSQL("c.key"),
+	} {
+		if !strings.Contains(statement, fragment) {
+			t.Errorf("docs' viewChainStatement does not hold %s verbatim:\n%s\nThe statement:\n%s", name, fragment, statement)
+		}
 	}
 }

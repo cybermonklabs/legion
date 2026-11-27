@@ -7,9 +7,11 @@ import (
 	"strconv"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -22,34 +24,9 @@ func lastHeldDocumentVisible(alias string) string {
 		and ` + refs.VisibleKind(graphstore.KindIssue, alias+".issue_key", "$2") + `))`
 }
 
-// lastHeldParentAtCut selects the standing placement by the same order as refs.TreeSubtrees:
-// the newest assertion or retraction of each far end, then the newest asserted parent.
-// The caller has joined the recorded query cut as cut.
-func lastHeldParentAtCut(kind, id string) string {
-	return `select p.to_kind, p.to_id from (
-		select distinct on (t.to_kind, t.to_id) t.to_kind, t.to_id, t.asserted, t.at, t.seq
-		from graph_tuples t
-		where t.from_kind = ` + kind + ` and t.from_id = ` + id + ` and t.kind = '` + graphstore.TuplePartOf + `'
-		  and t.to_kind <> 'value' and t.seq <= cut.read_seq
-		order by t.to_kind, t.to_id, t.at desc, t.seq desc
-	) p where p.asserted order by p.at desc, p.seq desc limit 1`
-}
-
-// lastHeldOwnNode admits a node belonging to block.issue_key (or a finding, or a kind whose id
-// does not carry an issue prefix).
-func lastHeldOwnNode(kind, id string) string {
-	return `(` + kind + ` not in ('artifact', 'version', '` + refs.BlockNodeKind + `')
-		    or split_part(` + id + `, '/', 1) = block.issue_key
-		    or ` + graphstore.FindingIDSQL(id) + `)`
-}
-
-// lastHeldStateAtCut reads the node's standing state at cut.read_seq.
-func lastHeldStateAtCut(kind, id string) string {
-	return `(select case when t.asserted then t.to_id end from graph_tuples t
-		       where t.from_kind = ` + kind + ` and t.from_id = ` + id + `
-		         and t.kind = '` + graphstore.AttributeState + `' and t.to_kind = 'value' and t.seq <= cut.read_seq
-		       order by t.at desc, t.seq desc limit 1)`
-}
+// lastHeldCut bounds a read at the recorded query cut, which the statement joins as cut: a
+// record's cut, which holds each tuple whose seq is at or below its read_seq (refs.TreeCut).
+const lastHeldCut = `t.seq <= cut.read_seq`
 
 // lastHeldBlocksStatement finds the real gone node and its last document before reading versions.
 // ReadableFarEnds resolves visible live aliases. NamedBlockSQL also follows the address after the
@@ -68,7 +45,9 @@ func lastHeldStateAtCut(kind, id string) string {
 //
 // spec_chain and spec_scope implement docs.ViewOf's current-issue rule in the same batch:
 // follow parent_key up, then carry the nearest non-view spec down. A view's Spec query can
-// answer its memo, but not a requirement or criterion of its own.
+// answer its memo, but not a requirement or criterion of its own. The tests of each issue of the
+// chain are docs' own (docs.ViewableSQL, docs.RequirementHeldSQL); the judgement from the root
+// down, which docs makes in Go (viewOfChain), is the recursion of spec_scope.
 var lastHeldBlocksStatement = `
 	with recursive addressed as materialized (
 		select request.address, ` + refs.NamedBlockSQL("request.address") + ` as node
@@ -98,12 +77,8 @@ var lastHeldBlocksStatement = `
 		where chain.depth < $6
 	), spec_ancestors as materialized (
 		select chain.*, a.status = 'done' as closed,
-		       coalesce((v.converted = 'born' or v.converted = 't19b' and v.view_marked)
-		         and v.own_spec_at is null, false) as viewable,
-		       chain.depth > 0 and exists (
-		         select 1 from artifacts doc join document_blocks d on d.artifact_id = doc.id
-		         where doc.issue_key = a.key and d.type = 'requirement'
-		       ) as has_requirements,
+		       ` + docs.ViewableSQL("v") + ` as viewable,
+		       chain.depth > 0 and ` + docs.RequirementHeldSQL("a.key") + ` as has_requirements,
 		       max(chain.depth) over (partition by chain.subject) as deepest
 		from spec_chain chain
 		join issues a on a.key = chain.key
@@ -131,54 +106,58 @@ var lastHeldBlocksStatement = `
 		    or not exists (select 1 from spec_scope scope where scope.subject = block.issue_key and scope.depth = 0 and scope.is_view))
 	), query_presence as materialized (
 	select block.address, block.issue_key, block.slug, block.block_id, version.number, block.query,
-	       opening.text as opening, (block.supertag <> 'callout' or block.node = memo.from_id) as taken
+	       opening.held as opening, (block.supertag <> 'callout' or block.node = memo.from_id) as taken
 	from query_blocks block
 	join version_renders cut on cut.artifact_id = block.query_id
 	  and cut.read_seq is not null and cut.at is not null and not cut.tree_mismatch
 	join artifact_versions version on version.artifact_id = cut.artifact_id and version.number = cut.number
-	cross join lateral (
-		select case when t.asserted then split_part(t.to_id, chr(10), 1) end as text
-		from graph_tuples t where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = block.node
-		  and t.kind = '` + graphstore.AttributeText + `' and t.to_kind = 'value' and t.seq <= cut.read_seq
-		order by t.at desc, t.seq desc limit 1
-	) opening
+	cross join lateral (` + refs.AsOfValue(`'`+refs.BlockNodeKind+`'`, "block.node", graphstore.AttributeText, lastHeldCut, true) + `) opening
 	left join lateral (
 		select first_child.from_id
 		from (
 			select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
 			from graph_tuples t
-			where t.to_kind = 'issue' and t.to_id = block.issue_key and t.kind = '` + graphstore.TuplePartOf + `' and t.seq <= cut.read_seq
+			where t.to_kind = 'issue' and t.to_id = block.issue_key and t.kind = '` + graphstore.TuplePartOf + `' and ` + lastHeldCut + `
 			order by t.from_kind, t.from_id, t.at desc, t.seq desc
 		) first_child
-		cross join lateral (` + lastHeldParentAtCut("first_child.from_kind", "first_child.from_id") + `) parent
-		cross join lateral (
-			select case when t.asserted then t.to_id end as rank
-			from graph_tuples t where t.from_kind = first_child.from_kind and t.from_id = first_child.from_id
-			  and t.kind = '` + refs.AttributeRank + `' and t.to_kind = 'value' and t.seq <= cut.read_seq
-			order by t.at desc, t.seq desc limit 1
-		) rank
-		where block.supertag = 'callout' and first_child.asserted and rank.rank is not null
+		cross join lateral (` + refs.AsOfPlacement("first_child.from_kind", "first_child.from_id", lastHeldCut) + `) parent
+		cross join lateral (` + refs.AsOfValue("first_child.from_kind", "first_child.from_id", refs.AttributeRank, lastHeldCut, false) + `) rank
+		where block.supertag = 'callout' and first_child.asserted and rank.held is not null
 		  and parent.to_kind = 'issue' and parent.to_id = block.issue_key
 		  and first_child.from_kind not in ('comment', 'issue', 'step', 'plan', 'handoff')
-		  and ` + lastHeldOwnNode("first_child.from_kind", "first_child.from_id") + `
-		  and ` + lastHeldStateAtCut("first_child.from_kind", "first_child.from_id") + ` is distinct from $4
-		order by rank.rank collate "C", (first_child.from_kind || ':' || first_child.from_id) collate "C"
+		  and ` + refs.TreeOwnsSQL("block.issue_key", "first_child.from_kind", "first_child.from_id") + `
+		  and (` + refs.AsOfValue("first_child.from_kind", "first_child.from_id", graphstore.AttributeState, lastHeldCut, false) + `) is distinct from $4
+		order by rank.held collate "C", (first_child.from_kind || ':' || first_child.from_id) collate "C"
 		limit 1
 	) memo on true
-	where opening.text is not null and exists (
+	where opening.held is not null and exists (
 		with recursive placed(kind, id, child_kind, child_id) as (
 			select '` + refs.BlockNodeKind + `'::text, block.node, null::text, null::text
 			union
 			select parent.to_kind, parent.to_id, child.kind, child.id
 			from placed child
-			cross join lateral (` + lastHeldParentAtCut("child.kind", "child.id") + `) parent
-			-- The part_of log alone does not prove that a comment or message's thread
-			-- passed the conversation filter at this cut. Do not use it as a root proof.
+			cross join lateral (` + refs.AsOfPlacement("child.kind", "child.id", lastHeldCut) + `) parent
+			-- The climb ends at a comment or a message. The part_of log alone does not prove
+			-- that the walk's conversation held it at this cut; the item's row does (below).
 			where child.kind not in ('issue', 'comment', 'comment_block', 'message', 'message_block')
-			  and ` + lastHeldOwnNode("child.kind", "child.id") + `
-			  and ` + lastHeldStateAtCut("child.kind", "child.id") + ` is distinct from $4
+			  and ` + refs.TreeOwnsSQL("block.issue_key", "child.kind", "child.id") + `
+			  and (` + refs.AsOfValue("child.kind", "child.id", graphstore.AttributeState, lastHeldCut, false) + `) is distinct from $4
 		)
 		select 1 from placed where kind = 'issue' and id = block.issue_key
+		union all
+		-- A comment or a message is a root of the walk where the walk's conversation reads it
+		-- at the cut (WalkIssueTree, refs.ConversationNodes): an item of the block's issue
+		-- written at or before the cut's time. The conversation also leaves out an item no
+		-- person wrote or wrote in the thread of, which this statement does not test: a write
+		-- places a block under no such item (pmdoc's itemReach), so only a block placed before
+		-- that rule could stand under one.
+		select 1 from placed item_root
+		join comments item on item.id = ` + store.CastableUUID("item_root.id") + `
+		where item_root.kind = '` + graphstore.KindComment + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		union all
+		select 1 from placed item_root
+		join messages item on item.id = ` + store.CastableUUID("item_root.id") + `
+		where item_root.kind = '` + graphstore.KindMessage + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
 		union all
 		-- A block placed directly under an ancestor's block is also a root of the
 		-- second half of WalkIssueTree (TreePlacedAbove). Prove its membership at the cut.
@@ -188,12 +167,12 @@ var lastHeldBlocksStatement = `
 		where foreign_parent.kind = '` + refs.BlockNodeKind + `' and foreign_parent.child_kind = '` + refs.BlockNodeKind + `'
 		  and exists (
 		      select 1 from artifacts d
-		      cross join lateral (` + lastHeldParentAtCut("'artifact'", "d.ref_key") + `) top
+		      cross join lateral (` + refs.AsOfPlacement(`'`+graphstore.KindArtifact+`'`, "d.ref_key", lastHeldCut) + `) top
 		      where d.issue_key = block.issue_key and top.to_kind = 'issue' and top.to_id = block.issue_key
 		        and (select t.asserted from graph_tuples t
 		             where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = foreign_parent.child_id
 		               and t.kind = '` + refs.TupleInDocument + `' and t.to_kind = 'artifact' and t.to_id = d.ref_key
-		               and t.seq <= cut.read_seq order by t.at desc, t.seq desc limit 1)
+		               and ` + lastHeldCut + ` order by t.at desc, t.seq desc limit 1)
 		  )
 	))
 	select address, issue_key, '' as project_key, slug, block_id, max(number), query, opening
