@@ -180,6 +180,7 @@ type Engine struct {
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
 	// the set takes its own lock (intake.RecentKeys).
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
+	settlementReaders  map[string][]ciReader
 }
 
 var _ intake.Handler = (*Engine)(nil)

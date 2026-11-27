@@ -321,6 +321,10 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
+	if e.settlementReaders == nil {
+		e.settlementReaders = map[string][]ciReader{}
+	}
+	e.settlementReaders[issue.Key] = readers
 	recipients, err := e.ciReceivers(ctx, tx, issue)
 	if err != nil {
 		return err
@@ -373,6 +377,9 @@ func (e *Engine) promptReaders(ctx context.Context, tx pgx.Tx, issue record.Issu
 	readers, err := e.ciReaders(ctx, tx, issue, w)
 	if err != nil {
 		return err
+	}
+	if chosen, ok := e.settlementReaders[issue.Key]; ok {
+		readers = chosen
 	}
 	for _, r := range readers {
 		reader := r.reader
