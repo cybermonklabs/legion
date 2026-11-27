@@ -39,10 +39,11 @@
 #                                                  pod of the Job stored (RT_STORE): the pack its
 #                                                  row names, checked and unpacked into
 #                                                  <work>/runs (cmd_restore_stored)
-#   rig.sh check-stored <dir> <job log>...         a download of a Job's store, checked against
+#   rig.sh check-stored <dir> <count> <job log>... a download of a Job's store, checked against
 #                                                  the sha256 its logs and its rows name: each run
 #                                                  unpacked into <dir>/checked, or a rig error row
-#                                                  naming each fault; then the cells
+#                                                  naming each fault; each entry no run's object
+#                                                  named; then the cells at the Job's count
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
@@ -2717,8 +2718,9 @@ cmd_restore_stored() {
   note "the store lists $listed names under runs/; $restored runs of $1 restored from it"
 }
 
-# cmd_check_stored DIR LOG... (the header). DIR is a download of a Job's store, DIR/runs/<run>.tar.gz
-# and DIR/runs/<run>.row.json, and the LOGs every log of the Job, in the order its pods ran
+# cmd_check_stored DIR COUNT LOG... (the header). DIR is a download of a Job's store,
+# DIR/runs/<run>.tar.gz and DIR/runs/<run>.row.json; COUNT is the count the Job ran each case's cell
+# to (scored-job.sh --count); and the LOGs are every log of the Job, in the order its pods ran
 # (legion-remote-test.sh keeps every attempt's in <out>.attempts, in that order). Their `stored`
 # and `got` lines name each object's sha256. A `stored` line sets it, and these are faults:
 #   - a `got` line of another sha256 than the `stored` line before it: the object changed between
@@ -2728,25 +2730,36 @@ cmd_restore_stored() {
 #     refused, never counted;
 #   - a `stored` line, of another sha256, for an object of a run whose row a LOG stored before: a
 #     stored run is never run, or stored, again.
-# A pack stored twice before its run's row is no fault: a pod stopped between the two puts, and
-# the later pod ran and stored the run again. Each owner-walk run whose row the download holds, or
-# whose object a LOG names, is checked: its row must be in the download, stored by a LOG, and of
+# A `stored` line of the same sha256 again is no fault: the same sha256 is the same bytes, so
+# nothing was replaced, and giving a pod's --out and its <out>.attempts both puts each of its
+# `stored` lines in twice, so a check that refused it would refuse every honest run checked that
+# way. A pack stored twice before its run's row is no fault either: a pod stopped between the two
+# puts, and the later pod ran and stored the run again.
+#
+# Every entry of DIR/runs is read, a dotfile and a directory too. A regular file named
+# <run>.tar.gz or <run>.row.json, for an owner-walk run's name, belongs to that run; any other
+# entry is left out, printed as UNKNOWN by its name. Each owner-walk run that a file of the download
+# or an object of a LOG names is checked: its row must be in the download, stored by a LOG, and of
 # that sha256; its pack must be in the download, of the sha256 its row names (the row, checked
-# against the LOGs, vouches for it), pass pack_problem, and hold the row's own row.json. A run that passes is unpacked
-# into DIR/checked, through a fresh directory. One that fails gets a rig error row there, naming
-# each fault, and its pack is not unpacked; with no world.json, it is in no cell. Then a line for
-# each run, and the cells (score.ts cells). It exits 0 only when every run is as stored and no
-# file of the download was left out; any fault, or UNKNOWN, exits 1.
+# against the LOGs, vouches for it), pass pack_problem, and hold the row's own row.json. A run that
+# passes is unpacked into DIR/checked, through a fresh directory. One that fails gets a rig error
+# row there, naming each fault, and its pack is not unpacked; with no world.json, it is in no cell.
+# Then a line for each run, and the cells at COUNT (score.ts cells; a control form's cell keeps its
+# own count). It exits 0 only when every run is as stored, no entry was left out, and no cell is
+# UNKNOWN, that is, short of the runs its count needs; any fault, any entry left out, any of its
+# own UNKNOWN lines and any UNKNOWN cell exit 1.
 #
 # What it cannot see: an object an agent in the same pod changed before the rig stored it; and a
-# run that only a LOG not given names, whose objects are gone from the store, since nothing else
-# names it. check-stored cannot know that a log is missing: give it every attempt's.
+# `stored` line written outside the rig's own put. A run that only a LOG not given names, and whose
+# objects are gone from the store, is named nowhere it reads; its cell is then short of COUNT, and
+# reads UNKNOWN. Give it every attempt's log.
 cmd_check_stored() {
-  [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
-  local dir=$1 log line file name run object hex faults joined kind form family kase label rest want problem fresh
-  local left=0 faulted=0 status
+  [ $# -ge 3 ] || fail "usage: rig.sh check-stored <dir> <count> <job log>..."
+  local dir=$1 count=$2 log line file name run object hex faults joined kind form family kase label rest want problem fresh
+  local left=0 faulted=0 listed=0 unknown=0 status cells cell
   local -A logged=() named=() conflict=() rowstored=()
-  shift
+  [[ $count =~ ^[1-9][0-9]*$ ]] || fail "check-stored: the count '$count' is no positive whole number"
+  shift 2
   faults=()
   for log in "$@"; do
     [ -f "$log" ] || fail "the Job's log $log is not a file"
@@ -2768,22 +2781,23 @@ cmd_check_stored() {
       fi
     done <"$log"
   done
-  # A download that holds nothing was not checked, whatever the logs name: each run would read as
-  # its objects missing, and the count of that is no measurement of the store.
-  if ! compgen -G "$dir/runs/*" >/dev/null; then
-    echo "UNKNOWN: $dir/runs holds no object: nothing was checked"
-    return 1
-  fi
-  for file in "$dir"/runs/*.row.json; do
-    [ -f "$file" ] || continue
+  [ -d "$dir/runs" ] || fail "check-stored: $dir/runs is not a directory"
+  while IFS= read -r -d '' file; do
+    listed=$((listed + 1))
     name=${file##*/}
-    if [[ $name =~ ^(owner-walk-[A-Za-z0-9_-]+)\.row\.json$ ]]; then
+    if [ -f "$file" ] && [ ! -L "$file" ] && [[ $name =~ ^(owner-walk-[A-Za-z0-9_-]+)\.(row\.json|tar\.gz)$ ]]; then
       named[${BASH_REMATCH[1]}]=1
     else
       printf 'UNKNOWN: %q in %s/runs is no run'"'"'s object: it is left out\n' "$name" "$dir"
       left=$((left + 1))
     fi
-  done
+  done < <(find "$dir/runs" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  # A download that holds nothing was not checked, whatever the logs name: each run would read as
+  # its objects missing, and the count of that is no measurement of the store.
+  if [ "$listed" = 0 ]; then
+    echo "UNKNOWN: $dir/runs holds no object: nothing was checked"
+    return 1
+  fi
   if [ ${#named[@]} = 0 ]; then
     echo "UNKNOWN: neither the Job's logs nor $dir/runs name an owner-walk run: nothing was checked"
     return 1
@@ -2849,11 +2863,16 @@ cmd_check_stored() {
     printf 'checked %s: rig error: %s\n' "$run" "$joined"
     faulted=$((faulted + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
-  bun "$here/score.ts" cells "$dir/checked" owner-walk
+  cells=$(bun "$here/score.ts" cells "$dir/checked" owner-walk "$count")
   status=$?
+  [ -z "$cells" ] || printf '%s\n' "$cells"
   [ "$status" = 0 ] || return "$status"
-  if [ "$faulted" != 0 ] || [ "$left" != 0 ]; then
-    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, and $left files of the download were left out"
+  while IFS= read -r cell; do
+    [ -n "$cell" ] || continue
+    [ "$(jq -r .verdict <<<"$cell")" != UNKNOWN ] || unknown=$((unknown + 1))
+  done <<<"$cells"
+  if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ]; then
+    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, and $unknown cells are UNKNOWN at count $count"
     return 1
   fi
 }

@@ -3458,17 +3458,21 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       change?.(dir);
       return dir;
     };
-    const check = (dir: string, ...logs: string[]) => {
+    /** `rig.sh check-stored` of DIR at COUNT against LOGS (the Job's log when none is given). */
+    const checkAt = (count: string, dir: string, ...logs: string[]) => {
       const result = childSpawn([
         "bash",
         path.join(scenarios, "rig.sh"),
         "check-stored",
         dir,
+        count,
         ...(logs.length > 0 ? logs : [log]),
       ]);
       const stdout = result.stdout.toString().trim().split("\n");
       return { code: result.exitCode, stdout, stderr: result.stderr.toString() };
     };
+    // The Job ran root-B-claude's cell to 2: runs 1 and 2.
+    const check = (dir: string, ...logs: string[]) => checkAt("2", dir, ...logs);
     const scored = (lines: string[]) => JSON.parse(lines.at(-1) ?? "{}").scored;
 
     const clean = download();
@@ -3496,7 +3500,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect({ code: differs.code, line: differs.stdout[1], last: differs.stdout.at(-1) }).toEqual({
       code: 1,
       line: `checked ${run(2)}: rig error: ${fault}`,
-      last: "check-stored: 1 of 2 runs are rig errors of the store, and 0 files of the download were left out",
+      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, and 1 cells are UNKNOWN at count 2",
     });
     const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
     expect(row).toEqual({
@@ -3628,6 +3632,62 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         `checked ${run(1)}: as stored`,
         `checked ${run(2)}: as stored`,
       ],
+    });
+
+    // Entries of runs/ that are no run's object: a text file, a dotfile and a directory are each
+    // named and left out, and the check exits 1 though every run is as stored.
+    const extra = download((dir) => {
+      writeFileSync(path.join(dir, "runs", "notes.txt"), "a note\n");
+      writeFileSync(path.join(dir, "runs", ".hidden"), "hidden\n");
+      mkdirSync(path.join(dir, "runs", "extra"));
+    });
+    const leftOut = check(extra);
+    expect({
+      code: leftOut.code,
+      first: leftOut.stdout.slice(0, 5),
+      last: leftOut.stdout.at(-1),
+    }).toEqual({
+      code: 1,
+      first: [
+        `UNKNOWN: .hidden in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: extra in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: notes.txt in ${extra}/runs is no run's object: it is left out`,
+        `checked ${run(1)}: as stored`,
+        `checked ${run(2)}: as stored`,
+      ],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 3 entries of the download were left out, and 0 cells are UNKNOWN at count 2",
+    });
+
+    // A pack with no row beside it and no line in any log: its run is named by the pack, and is a
+    // rig error.
+    const packOnly = download((dir) => cpSync(at(dir, 1, "tar.gz"), at(dir, 5, "tar.gz")));
+    const lone = check(packOnly);
+    expect({ code: lone.code, line: lone.stdout[2] }).toEqual({
+      code: 1,
+      line: `checked ${run(5)}: rig error: runs/${run(5)}.row.json is not in the download`,
+    });
+
+    // The cells are at the Job's count: at 3, two scored runs leave the cell UNKNOWN, and the check
+    // exits 1; a count that is no positive whole number is refused.
+    const short = checkAt("3", download());
+    const shortCell = JSON.parse(short.stdout.at(-2) ?? "{}");
+    expect({
+      code: short.code,
+      cell: [shortCell.cell, shortCell.count, shortCell.scored, shortCell.verdict],
+      last: short.stdout.at(-1),
+    }).toEqual({
+      code: 1,
+      cell: ["guidance/root-B-claude", 3, 2, "UNKNOWN"],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, and 1 cells are UNKNOWN at count 3",
+    });
+    expect(JSON.parse(kept.stdout.at(-1) ?? "{}").count).toBe(2);
+    const zero = checkAt("0", download());
+    expect({
+      code: zero.code,
+      refused: zero.stderr.includes("the count '0' is no positive whole number"),
+    }).toEqual({
+      code: 1,
+      refused: true,
     });
 
     // The store emptied before the check: UNKNOWN, never a pass, whatever the Job's log names.

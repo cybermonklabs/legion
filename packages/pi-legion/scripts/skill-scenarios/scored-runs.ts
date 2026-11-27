@@ -3,7 +3,7 @@
  * input, and the cells a scenario's runs make. score.ts runs it:
  *
  *   score.ts runs <runs dir> --run <name>   unscored's rules, then ownerWalk, then row.json
- *   score.ts cells <runs dir> <scenario>    cells, one CellLine of JSON a line
+ *   score.ts cells <runs dir> <scenario> [<count>]  cells, one CellLine of JSON a line
  *   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
  *                                           caseCell, the line of one case's cell (`rig.sh cell`)
  *
@@ -23,8 +23,9 @@
  *   score.json            the run's clauses, what is reported beside them, and its reach (Score)
  *   judge-input.md        the texts the run's judged items need, naming no label and no form;
  *                         a run with no judged item gets none
- * cells(runsDir, scenario) reads row.json and world.json of each run directory of the scenario, and
- * caseCell the runs of one case, or for a control form every run of the form, under one label.
+ * cells(runsDir, scenario, count?) reads row.json and world.json of each run directory of the
+ * scenario, and caseCell the runs of one case, or for a control form every run of the form, under
+ * one label.
  */
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -673,9 +674,11 @@ function requireScored(scenario: string): void {
  * verdict (cellLine). A run counts by its row.json (score.ts runs --run) and its world.json; a run
  * directory without both is in no cell, and stderr names it. owner-walk's cells, per label, are
  * cellOf's: a control form's one cell over all its owners, `passes` counting the owners that pass
- * the control's clause, and every other form's cell one case.
+ * the control's clause, and every other form's cell one case. `count`, when given, is the count its
+ * batch ran each case's cell to, as `rig.sh cell`'s: a case form's cell takes it in place of its
+ * stage's runs, and a control form's cell keeps its own.
  */
-export function cells(runsDir: string, scenario: string): CellLine[] {
+export function cells(runsDir: string, scenario: string, count?: number): CellLine[] {
   requireScored(scenario);
   const groups = new Map<string, CellGroup>();
   for (const name of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
@@ -700,6 +703,7 @@ export function cells(runsDir: string, scenario: string): CellLine[] {
         `${name}: its row names ${row.run}, label ${row.label} and case ${row.case}, and its world the case ${caseName(world)}`
       );
     const empty = cellOf(named.label, world.stage, stageOf(world.stage), world);
+    if (count !== undefined && empty.control === undefined) empty.count = count;
     // A group's label and cell, a tab between them, are its own; a tab sorts before any character
     // of a name, so `ctl-D` comes before `ctl-D-strict`.
     const id = `${named.label}\t${empty.cell}`;

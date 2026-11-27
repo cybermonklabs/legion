@@ -759,6 +759,19 @@ describe("cells", () => {
       },
     ]);
   });
+
+  // Catches: a download's cells read at the stage's count rather than the batch's, so a cell the
+  // batch ran to two reads UNKNOWN at three, or one short of the batch's count reads decided.
+  test("cells at a given count: a case form's cell takes the count its batch ran to", () => {
+    const runs = fresh();
+    for (let n = 1; n <= 2; n += 1)
+      plantRow(runs, { form: "A", n, clauses: [clause("read", true), clause("choices", true)] });
+    const at = (count?: number) =>
+      cells(runs, "owner-walk", count).map(({ count: c, scored, verdict }) => [c, scored, verdict]);
+    expect(at()).toEqual([[3, 2, "UNKNOWN"]]);
+    expect(at(2)).toEqual([[2, 2, "pass"]]);
+    expect(at(4)).toEqual([[4, 2, "UNKNOWN"]]);
+  });
 });
 
 /** A run directory with the transcripts `sessions` names: each file's entries, by its path under

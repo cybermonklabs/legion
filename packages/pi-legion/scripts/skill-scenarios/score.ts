@@ -23,9 +23,10 @@
 //     rig error), which it also prints as one line of JSON. A rig error takes away the run's
 //     score.json and judge-input.md. Run it again once judgment.json is written: it reads the
 //     verdicts. Exit 0 for either row; 2 for a name of no scored scenario's run.
-//   score.ts cells <runs dir> <scenario>
+//   score.ts cells <runs dir> <scenario> [<count>]
 //     Each cell of the scenario's runs (scored-runs.ts cells), one CellLine of JSON a line, from
-//     each run's row.json and world.json; stderr names each run that is in no cell.
+//     each run's row.json and world.json; stderr names each run that is in no cell. A count is the
+//     one the batch ran each case's cell to; a control form's cell keeps its own.
 //   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
 //     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
 //     prints: a case form's at <count>, and a control form's the control's own over every owner,
@@ -3653,9 +3654,14 @@ if (import.meta.main) {
     scoreScoredRun(rest[0] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
     scoreRuns(rest[0] ?? "", rest[1]);
-  } else if (command === "cells" && rest.length === 2) {
+  } else if (
+    command === "cells" &&
+    (rest.length === 2 || (rest.length === 3 && /^[1-9][0-9]*$/.test(rest[2] ?? "")))
+  ) {
+    const count = rest.length === 3 ? Number(rest[2]) : undefined;
     try {
-      for (const cell of cells(rest[0] ?? "", rest[1] ?? "")) console.log(JSON.stringify(cell));
+      for (const cell of cells(rest[0] ?? "", rest[1] ?? "", count))
+        console.log(JSON.stringify(cell));
     } catch (error) {
       console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
@@ -3670,7 +3676,7 @@ if (import.meta.main) {
     }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> [<count>] | cell <runs dir> <scenario> <stage> <label> <case> <count>"
     );
     process.exit(2);
   }
