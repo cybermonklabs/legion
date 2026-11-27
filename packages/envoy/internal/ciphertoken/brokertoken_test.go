@@ -109,7 +109,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	tick := newClock()
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
-		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+		Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
@@ -1078,16 +1078,47 @@ func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 	}
 }
 
+// A broker URL holding a made-up token, as the user name or in the query, that cannot be reached:
+// the unreachable outcome holds no part of the token, though net/http's error quotes the request's
+// URL with only a password masked. Boot refuses such a DISPATCH_AGENT_SECRETS_URL; the verifier
+// prints none of it all the same.
+func TestAnUnreachableBrokerURLWithACredentialPrintsNoneOfIt(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	refused := testport.Refused(t)
+	for name, brokerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "?token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newRig(t, func(o *ciphertoken.Options) { o.BrokerURL = brokerURL })
+			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-nobody-can-be-asked-about"))
+			if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) {
+				t.Fatalf("Verify = %v, want ErrBrokerUnreachable", err)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("Verify = %v, which holds part of the broker URL's token", err)
+			}
+		})
+	}
+}
+
 // TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing: Dispatch's own missing credential is
-// its deployment's failure, so it is the unreachable outcome and the error names the file.
+// its deployment's failure, so it is the unreachable outcome and the error names the setting that
+// holds the file and why it could not be read, never the path, which here is a made-up token, as
+// one pasted where the path goes is.
 func TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "nothing-here")
-	rig := newRig(t, func(o *ciphertoken.Options) { o.Account = ciphertoken.NewAccountToken(missing) })
+	const pasted = "madeUpAccountTokenPath0123456789"
+	missing := filepath.Join(t.TempDir(), pasted)
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", missing)
+	})
 	caller := newSigner(t)
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-token-never-asked-about"))
-	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || !strings.Contains(err.Error(), missing) {
-		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming %s", err, missing)
+	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) ||
+		!strings.Contains(err.Error(), "read the ServiceAccount token DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names: its file cannot be read: it does not exist") ||
+		strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming the setting and why, and not the path", err)
 	}
 	var unreadable *ciphertoken.AccountTokenError
 	if !errors.As(err, &unreadable) {
@@ -1169,7 +1200,7 @@ func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 				Origins:   origins,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
@@ -1190,7 +1221,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	options := func() ciphertoken.Options {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}

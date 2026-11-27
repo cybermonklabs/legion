@@ -12,7 +12,7 @@ import (
 )
 
 // SessionHeld answers whether claim_sessions holds every name a claim's record gives its session
-// and file for that claim, as LiveRoleHolders reads a holder: true for the claim holding them, false
+// and file for that claim, as RoleHolders reads a holder: true for the claim holding them, false
 // for another claim of the same project and for the same claim in another project, and false for a
 // claim that records no session.
 func TestSessionHeldReadsTheHoldsOfItsClaim(t *testing.T) {

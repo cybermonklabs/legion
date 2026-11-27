@@ -214,8 +214,8 @@ func installLockWait(boot time.Duration, intervals int) int {
 //     same cold entry at the same moment. One retry, then the failure branch.
 func installBlock(stateHome string, generation uint64, plugins *runtime.PluginInstall, lockWait int) string {
 	root, genDir := pluginsRoot(stateHome), pluginGenDir(stateHome, generation)
-	legionSpec := bunSpec("@sjawhar/pi-legion", plugins.PiLegion)
-	envoySpec := bunSpec("@sjawhar/pi-envoy", plugins.PiEnvoy)
+	legionSpec := bunSpec(runtime.PiLegionPackage, plugins.PiLegion)
+	envoySpec := bunSpec(runtime.PiEnvoyPackage, plugins.PiEnvoy)
 	failMsg := fmt.Sprintf("legion plugins: installing %s and %s failed", legionSpec, envoySpec)
 	return fmt.Sprintf(`(
   rm -rf -- %s/g*

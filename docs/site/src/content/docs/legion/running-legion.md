@@ -1783,7 +1783,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`,
   `hooks` with each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file` but never its
   words, and the rest as the daemon runs them — with every credential, credential source and credential
-  file path left out, and a URL's userinfo masked as `xxxxx@`), and `agentSecretsLogin` when the
+  file path left out, and a URL with userinfo shown as its scheme and `[a URL with credentials]`), and `agentSecretsLogin` when the
   broker is configured:
 
   ```sh

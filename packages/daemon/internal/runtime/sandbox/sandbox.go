@@ -151,6 +151,9 @@ type Runtime struct {
 	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
 	// short.
 	helloBindBound time.Duration
+	// gitHubRefresh is how often the gh refresher start runs ticks: Options.GitHubRefreshInterval,
+	// or gitHubRefreshInterval where that is zero.
+	gitHubRefresh time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// issue pods' guard off.
@@ -399,6 +402,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("the registration deadline intervals %d is not positive", opts.RegistrationIntervals)
 	case opts.BusyBackoff <= 0:
 		return refuse("the busy backoff %s is not positive", opts.BusyBackoff)
+	case opts.GitHubRefreshInterval < 0:
+		return refuse("the GitHub refresh interval %s is negative", opts.GitHubRefreshInterval)
 	case (opts.DispatchURL == "") != (opts.Dispatch.Bearer == "" && !opts.Dispatch.Broker):
 		return refuse("the Dispatch URL and its credential are configured together (URL %q, Dispatch.Bearer given: %t, Dispatch.Broker: %t)",
 			opts.DispatchURL, opts.Dispatch.Bearer != "", opts.Dispatch.Broker)
@@ -496,7 +501,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
-		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
+		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace, gitHubRefresh: cmp.Or(opts.GitHubRefreshInterval, gitHubRefreshInterval),
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace, len(issueRoles)),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
@@ -597,7 +602,7 @@ func (r *Runtime) start(ctx context.Context, c runtimeClients) error {
 	if err := r.startInformers(ctx, c); err != nil {
 		return err
 	}
-	go r.refreshGitHubCredentialsEvery(ctx, gitHubRefreshInterval)
+	go r.refreshGitHubCredentialsEvery(ctx, r.gitHubRefresh)
 	return nil
 }
 
