@@ -612,7 +612,7 @@ the same helper, so both filters hold the same patterns.
 dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
 dispatch command its rows spawn through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` and `packages/dispatch/e2e/dispatch-cli.ts#runDispatch`, dispatch_two_builds_go's
 set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
-(`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
+(`build:dispatch`) compiles nothing outside the first.
 
 ## dispatch_browser: The workflow that holds every browser step, which this job
 
