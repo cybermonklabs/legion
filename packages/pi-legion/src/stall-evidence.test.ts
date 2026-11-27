@@ -741,9 +741,12 @@ test("a refused publish and a session with Envoy off leave a line in the log", a
     ownerTold: true,
   });
 
-  // A claim whose issue key no role token can be built from is one owner not told, and the
-  // evidence is written all the same.
-  const unbuildable = tellerRig({ claim: claimOf({ issue: "not-an-issue-key" }) });
+  // A claim whose tree key no role token can be built from is one owner not told, and the
+  // evidence is written all the same. The session's own role is its claim's token, so the key
+  // `roleToken` builds is the tree's, for the architect told when the daemon names no owner.
+  const unbuildable = tellerRig({
+    claim: claimOf({ tree: "not-an-issue-key", issue: "not-an-issue-key" }),
+  });
   expect(await unbuildable.teller.tellOverdue(evidenceOf())).toEqual({
     evidenceWritten: true,
     ownerTold: false,
