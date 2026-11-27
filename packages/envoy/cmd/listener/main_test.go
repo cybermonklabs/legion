@@ -4041,12 +4041,14 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
 		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
-		// The walk's other two counts, and its dead letters stored as main.go stores them, on
-		// the sender's agent subject of this test's own stream.
-		roleDeadLetters:     met.NewCounter("test_role_dead_letters", "test"),
-		roleKeptUndecodable: met.NewCounter("test_role_kept_undecodable", "test"),
-		publishDeadLetter:   client.PublishStoredAs,
-		keepPublish:         client.PublishStoredAck,
+		// The walk's other counts, and its dead letters stored as main.go stores them, on the
+		// sender's agent subject of this test's own stream.
+		roleDeadLetters:       met.NewCounter("test_role_dead_letters", "test"),
+		roleKeptExpiryNotices: met.NewCounter("test_role_kept_expiry_notices", "test"),
+		roleKeptUndecodable:   met.NewCounter("test_role_kept_undecodable", "test"),
+		publishDeadLetter:     client.PublishStoredAs,
+		publishExpiryNotice:   client.PublishKeptCopyExpiry,
+		keepPublish:           client.PublishStoredAck,
 		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
 		// main.go's always has both; the harness's two handlers share these as main.go's do. The
 		// clock is main.go's too, which a test that crosses a kept copy's hour replaces on its copy.
