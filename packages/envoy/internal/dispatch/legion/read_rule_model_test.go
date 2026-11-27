@@ -187,8 +187,9 @@ var readRuleInvariants = map[int]string{
 // its own NATS account (testnats.URL), its own fake daemons and its own intake, whose clock,
 // logger and client window are the rig's (Intake.log, Intake.stateOptions) — so the seeds share
 // nothing but the test process, and most of a sequence's time is a wait on the real clock rather
-// than work (the whole package used 2 % of one core over its 913 s alone, job 140689032400).
-// storetest.DefaultParallel of them run at once (TestMain).
+// than work (the whole package used 2 % of one core over its 913 s alone, job 140689032093).
+// storetest.DefaultParallel of them run at once (TestMain). They are the package's only parallel
+// tests: every other test of it runs alone, and none runs while a seed does.
 func TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute(t *testing.T) {
 	for _, row := range readRuleRowsOf(t) {
 		t.Run(fmt.Sprintf("seed=%d", row.seed), func(t *testing.T) {
@@ -1367,7 +1368,11 @@ func (m *readRuleModel) stepList() string {
 	return list.String()
 }
 
-// logDigest is every line the rig's intakes logged, without its time and level.
+// logDigest is every line the rig's intakes wrote to the rig's own logger (Intake.log), without
+// its time and level. The durable under an intake (delivery.HeldDurable) takes slog.Default() as
+// it is built, so its hold, take-over and stop lines are not here: they go where the process's
+// default logger points, as they do in a program, where they went to the rig's buffer while the
+// rig replaced that default.
 func (m *readRuleModel) logDigest() string {
 	var digest strings.Builder
 	for line := range strings.Lines(m.rig.logs.String()) {

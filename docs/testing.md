@@ -860,7 +860,7 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 
 `packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes: the
 whole package used 2 % of one core over the 913 s it took alone on a four-CPU CI runner
-(`/usr/bin/time -v`, job 140689032400). Its seeded test of the read rule
+(`/usr/bin/time -v`, job 140689032093). Its seeded test of the read rule
 (`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`) was
 508 s of that, because a row that ends with a message handed back with a delay waits in real time
 for its redelivery, up to `ReadRetryAfter`, a minute. So each of its seeds is a parallel subtest,
@@ -874,9 +874,12 @@ are the rig's. The intake writes its lines to `Intake.log` and calls its daemons
 logger nor `http.DefaultTransport`, which every test of the process shares. That is what lets the
 seeds run beside each other.
 
-The package's other tests run one at a time, before the seeds, as a test that calls no
-`t.Parallel` does, and five of them still write something the whole process shares, which is what
-stands in the way of making them parallel next:
+The package's other tests are the package's serial ones, and **none of them runs while a seed
+does**: a top-level test that calls no `t.Parallel` holds the binary to itself, and the seeds'
+parent holds it while they run. The 86 tests of the files declared before
+`read_rule_model_test.go` run before them and the 33 of the five files after it run after. Five of
+those tests still write something the whole process shares, which is what stands in the way of
+making them parallel next:
 
 - `TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes`,
   `TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes`,

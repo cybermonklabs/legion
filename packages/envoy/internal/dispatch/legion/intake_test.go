@@ -34,7 +34,9 @@ import (
 // intakeRig is one test's intake: its database, the NATS client that publishes as the daemon's
 // listener does, the lease pool reservation the intake takes its durable's hold on, the settings
 // wake, the intake's clock and the log every intake of the test writes, through a logger of the
-// rig's own (Intake.log), so the test reads its own intakes' lines alone and runs beside others.
+// rig's own (Intake.log), so the test reads the lines of its own intakes alone. That is what lets
+// the read rule's seeds, the package's only parallel tests, hold a rig each and run at once; the
+// package's other tests have a rig each too and still run alone.
 type intakeRig struct {
 	t         *testing.T
 	database  *store.Store

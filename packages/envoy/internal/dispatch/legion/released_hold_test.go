@@ -20,7 +20,8 @@ const (
 // windowed has every whole read of the rig's intakes wait readWindow at the most for a daemon's
 // answer (Intake.stateOptions), rather than the production RequestTimeout. It is the rig's own
 // client option, not a change of http.DefaultTransport, which every test of the process shares, so
-// a test that calls it runs beside the others. Call it before start.
+// it gives no other test's reads this window: that is what lets the read rule's seeds, which call
+// it, run at once. Call it before start.
 func (r *intakeRig) windowed(readWindow time.Duration) {
 	r.t.Helper()
 	r.stateOptions = append(r.stateOptions, WithTimeout(readWindow))

@@ -220,8 +220,8 @@ type Intake struct {
 	firstRetry, lastRetry time.Duration
 	// log is where the intake writes its lines (logger): nil writes each where slog.Default()
 	// points as the line is written, as every line of the package went before the intake took a
-	// logger, and no program sets it. A test sets it over a handler of its own, so it reads its own
-	// intake's lines alone and runs beside other tests.
+	// logger, and no program sets it. A test sets it over a handler of its own, so it reads the
+	// lines of its own intake alone: that is what lets the read rule's seeds run beside each other.
 	log *slog.Logger
 	// stateOptions are the options of the Client a whole read calls its daemon with (fetchWhole):
 	// none in a program, so every read shares the default transport and its production
