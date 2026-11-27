@@ -81,7 +81,8 @@ func ReadWork(run func(args ...string) (string, error), jj, dir string, global .
 	if err != nil {
 		return "", false, nil, err
 	}
-	if beside {
+	// CONTROL (fb8-fixcopy): the read snapshots no fix's working copy, as the merged tree's did not.
+	if beside && false {
 		if _, err := run(command("workspace", "update-stale", "-R", fix)...); err != nil {
 			return "", false, nil, err
 		}
