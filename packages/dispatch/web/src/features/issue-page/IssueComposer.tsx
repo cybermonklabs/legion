@@ -691,14 +691,18 @@ function CriterionLine({
  *
  * A write the reader stopped (Stop trying, at the pending-writes indicator) may have reached
  * Dispatch, so the line says so in place of the refusal's sentence, in the page's own words
- * (`criterionStopped`), with a Retry that makes that very write again under its key. Until then
- * the field keeps the write's words and takes no typing, and Enter and Send make the same write
- * again as Retry does (`useCriterionLine`), so while the line keeps its aim on the node the
- * stopped write is never written twice. Nothing is out after a stop, so the box no longer holds
- * that aim: Escape, the target line's control and any other target - a Reply, a criterion under
- * another row - end it. `IssueComposer` keys the line by its node, so each unmounts the stopped
- * write and its Retry, and a criterion the reader then writes under that node goes under a new
- * key, and may be written twice.
+ * (`criterionStopped`), with a Retry that makes that very write again. Until then the field
+ * keeps the write's words and takes no typing, and Enter and Send make the same write again as
+ * Retry does (`useCriterionLine`). That write is written at most once only while the line keeps
+ * its aim on the node and the Retry goes under the write's own key: within `KEY_HOURS` of the
+ * first try, Dispatch answers it with what that try did. A Retry later than that, or one after
+ * Dispatch no longer holds the key, which then goes under a new key (`retriesUnderItsKey`),
+ * writes the criterion anew and may write it a second time, as the line's sentence tells the
+ * reader. Nothing is out after a stop, so the box no longer holds the aim: Escape, the target
+ * line's control and any other target - a Reply, a criterion under another row - end it.
+ * `IssueComposer` keys the line by its node, so each unmounts the stopped write and its Retry,
+ * and a criterion the reader then writes under that node goes under a new key, and may be
+ * written twice.
  *
  * It is a form of its own, with the line that writes on the issue kept mounted and hidden beside
  * it, so the page keeps one box. Its words go into the issue's own text, which tells nobody they
