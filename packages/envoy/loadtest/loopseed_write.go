@@ -954,6 +954,20 @@ func readLoopPlan(path string) (*loopPlan, error) {
 	return &p, nil
 }
 
+// workerPool opens the Postgres pool a seed's workers write through (loop-seed-write's and
+// replay-seed's), holding one connection per worker. Each worker runs one statement at a time, and
+// nothing else of the seed uses the pool while the workers run, so no worker waits for a
+// connection. pgxpool.New's own size is max(4, runtime.NumCPU()): 288 connections on a large
+// machine and 4 on a small one for the same -workers.
+func workerPool(ctx context.Context, pgURL string, workers int) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(pgURL)
+	if err != nil {
+		return nil, err
+	}
+	config.MaxConns = int32(workers)
+	return pgxpool.NewWithConfig(ctx, config)
+}
+
 // runLoopSeedWrite writes a whole planned seed to a Dispatch deployment, resumably. It does not
 // check the stack (guard.go checkStack): the seed goes to a Dispatch, which need not run an Envoy
 // listener, and its first write proves the endpoint answers.
@@ -1004,7 +1018,7 @@ func runLoopSeedWrite(args []string) error {
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, ep.pg)
+	pool, err := workerPool(ctx, ep.pg, *workers)
 	if err != nil {
 		return err
 	}

@@ -584,7 +584,7 @@ func TestAPinnedReadGivesItsConnectionBackWhenItsClientStopsReading(t *testing.T
 	served.transfer = transferBounds{idle: idle}
 	const pattern = "/api/v1/stalled-reader-test"
 	pinned := make(chan struct{})
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, Handler: func(w http.ResponseWriter, r *http.Request) {
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny}, Handler: func(w http.ResponseWriter, r *http.Request) {
 		var one int
 		if err := database.Pool.QueryRow(r.Context(), "select 1").Scan(&one); err != nil {
 			t.Errorf("take the read's pinned connection: %v", err)
@@ -598,7 +598,7 @@ func TestAPinnedReadGivesItsConnectionBackWhenItsClientStopsReading(t *testing.T
 				return
 			}
 		}
-	}}}
+	}}
 	if !route.pinsConnection() {
 		t.Fatal("the test's route is not pinned, so it does not hold a request-pool connection to give back")
 	}
@@ -638,7 +638,7 @@ func TestAnOrdinaryReadWhoseAnswerIsCutIsAbortedAndLogged(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle}
 	const pattern = "/api/v1/cut-ordinary-reader-test"
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, Handler: func(w http.ResponseWriter, _ *http.Request) {
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny}, Handler: func(w http.ResponseWriter, _ *http.Request) {
 		// Far past what the sockets hold between a handler and a client that reads none of
 		// it, and the failed write is swallowed, as a read's own writer swallows it
 		// (WriteJSON logs and returns).
@@ -648,7 +648,7 @@ func TestAnOrdinaryReadWhoseAnswerIsCutIsAbortedAndLogged(t *testing.T) {
 				return
 			}
 		}
-	}}}
+	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
@@ -690,7 +690,7 @@ func TestASlowButSteadyReaderOfALargeAnswerIsAnsweredInFull(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle}
 	const pattern = "/api/v1/steady-reader-test"
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, Handler: func(w http.ResponseWriter, r *http.Request) {
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny}, Handler: func(w http.ResponseWriter, r *http.Request) {
 		block := make([]byte, chunk)
 		began := time.Now()
 		for written := 0; written < answer; written += len(block) {
@@ -701,7 +701,7 @@ func TestASlowButSteadyReaderOfALargeAnswerIsAnsweredInFull(t *testing.T) {
 				return
 			}
 		}
-	}}}
+	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
@@ -755,12 +755,12 @@ func TestASlowButSteadyReaderOfAnAnswerWrittenInOneWriteIsAnsweredInFull(t *test
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle, grace: 2 * time.Second, floor: 32 << 10}
 	const pattern = "/api/v1/one-write-answer-test"
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, Handler: func(w http.ResponseWriter, r *http.Request) {
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny}, Handler: func(w http.ResponseWriter, r *http.Request) {
 		began := time.Now()
 		if _, err := w.Write(make([]byte, answer)); err != nil {
 			t.Errorf("write the whole answer in one call, %v in: %v", time.Since(began), err)
 		}
-	}}}
+	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
@@ -814,9 +814,9 @@ func TestAReaderSteadilyAboveTheFloorIsAnsweredInFullOverARealConnection(t *test
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle, grace: 2 * time.Second, floor: 32 << 10}
 	const pattern = "/api/v1/steady-reader-test"
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, Handler: func(w http.ResponseWriter, r *http.Request) {
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny}, Handler: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(make([]byte, answer))
-	}}}
+	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), 5*time.Minute))
 	httpServer := httptest.NewServer(mux)
@@ -881,10 +881,10 @@ func TestAReaderThatStopsReadingIsCutWithinTheSendBuffersDrain(t *testing.T) {
 	served.transfer = transferBounds{idle: idle, grace: time.Minute, floor: floor}
 	const pattern = "/api/v1/stopped-reader-test"
 	cut := make(chan error, 1)
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, Handler: func(w http.ResponseWriter, r *http.Request) {
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny}, Handler: func(w http.ResponseWriter, r *http.Request) {
 		_, err := w.Write(make([]byte, answer))
 		cut <- err
-	}}}
+	}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)

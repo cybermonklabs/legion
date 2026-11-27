@@ -502,6 +502,7 @@ func requireApprovedAt(t *testing.T, service *Service, artifactID string, number
 // tree in this build's spelling, which the version holds in another: it writes no version, so an
 // approval of that version still reads approved. An edit that stays is still versioned.
 func TestSettlementWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTree(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, looseList)
@@ -3927,6 +3928,9 @@ func TestReplaceCarriesAnAskTheBrowserLeftUnreadable(t *testing.T) {
 // whose spans took the render's whole budget would make some 400,000, and their upload is refused
 // when it is parsed, before any ask is checked.
 func TestAnUploadOfTheDocumentsOwnMarkdownKeepsAsksOverSpannedTables(t *testing.T) {
+	// Not parallel: it holds what the whole process allocates across the asks' check
+	// (runtime.MemStats TotalAlloc) to 512 MiB, which the allocations of the tests beside it would
+	// add to.
 	var source strings.Builder
 	for index := range 20 {
 		fmt.Fprintf(&source, ":::ask{#ask-%d urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich %d?\n\n- A\n- B\n:::\n\n", index, index)

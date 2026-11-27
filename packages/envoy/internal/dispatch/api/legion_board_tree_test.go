@@ -46,7 +46,7 @@ func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
 	if tree := legionCard(t, board, "INFRA-7").Tree; tree != "INFRA-6" {
 		t.Errorf("the board puts INFRA-7 in tree %q, want INFRA-6: Dispatch observed a phase of its parent", tree)
 	}
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestTheBoardAndTheMetricsPutAnIssueInTheSameTree(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 	now := time.Now().UTC()
 	hourAgo := now.Add(-time.Hour)
 	// Two chains, each a reported ancestor over a middle issue the daemon reports nothing of
-	// over a reported child; under each child a closed issue, so the metrics' window reaches the
-	// whole chain. The first middle carries a handoff, the second a Legion role session's event.
+	// over a reported child; under each child a closed issue. The first middle carries a
+	// handoff, the second a Legion role session's event.
 	for _, chain := range []struct{ ancestor, middle, card, closed int }{{800, 801, 802, 803}, {810, 811, 812, 813}} {
 		for _, issue := range []struct {
 			number int
@@ -146,7 +146,7 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -185,9 +185,9 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 // TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue: the walk stops below the first
 // issue above it that is neither reported by the daemon nor carrying Legion phase work
 // (dispatch://INFRA-1077's spec, "The top issue of a tree"), rather than passing over it to the
-// Legion issue above. One chain, bottom to top: a closed issue, so the metrics' window reaches
-// the chain; a bottom the daemon reports; a middle in neither half of the rule, which an event
-// of a session titled for another issue does not put in either; and a top the daemon reports.
+// Legion issue above. One chain, bottom to top: a closed issue; a bottom the daemon reports; a
+// middle in neither half of the rule, which an event of a session titled for another issue does
+// not put in either; and a top the daemon reports.
 // Both readers answer the bottom its own root, and the top roots nothing below the gap.
 func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) {
 	t.Parallel()
@@ -206,7 +206,7 @@ func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) 
 		{840, "The top, which the daemon reports", "a", "", true},
 		{841, "The tracking issue in neither half of the rule", "b", "INFRA-840", false},
 		{842, "The bottom, which the daemon reports", "c", "INFRA-841", true},
-		{843, "Its closed child, which brings the chain into the window", "d", "INFRA-842", false},
+		{843, "Its closed child", "d", "INFRA-842", false},
 	} {
 		key := seedLegionIssue(t, database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
 		if issue.reported {
@@ -221,7 +221,7 @@ func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) 
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -294,8 +294,8 @@ func TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn(t *testing
 	if want := []string{"INFRA-821"}; !slices.Equal(named, want) {
 		t.Fatalf("the board's cards are %v, want %v: the admitted issue keeps the card it carried", named, want)
 	}
-	if column := columns["INFRA-821"]; column != legionColumnQueue {
-		t.Errorf("INFRA-821 is in the %q column, want %q: it is waiting for a slot", column, legionColumnQueue)
+	if column := columns["INFRA-821"]; column != legion.ColumnQueue {
+		t.Errorf("INFRA-821 is in the %q column, want %q: it is waiting for a slot", column, legion.ColumnQueue)
 	}
 	if children := cards["INFRA-821"].Children; children != 1 {
 		t.Errorf("INFRA-821 counts %d unstarted children, want the one below it: a count on a root the board shows no card of is a count nobody reads", children)
@@ -305,12 +305,12 @@ func TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn(t *testing
 	}
 }
 
-// TestTheMetricsClimbThroughPhaseWorkOutsideTheirWindow: the phase-work half of what makes an
-// issue Legion's is a fact of the project and not of a window, so the metrics read it for every
-// issue of the project and not only for the issues their window's scope covers
-// (legion/metrics/population.go's scopeKeys). Nothing here closed in the window, so nothing but
-// that project-wide read puts the card issue in its ancestor's tree.
-func TestTheMetricsClimbThroughPhaseWorkOutsideTheirWindow(t *testing.T) {
+// TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed: the phase-work half of what makes an
+// issue Legion's is a fact of the project (legion.PhaseWorkKeys, which the facts' read makes
+// project-wide), so a chain in which nothing has closed still climbs through an issue whose only
+// Legion work is a handoff and a role session's event, and the card issue stands in its
+// ancestor's tree in the facts' read as on the board.
+func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
@@ -338,12 +338,12 @@ func TestTheMetricsClimbThroughPhaseWorkOutsideTheirWindow(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
 	if root := population.TreeRoot("INFRA-832"); root != "INFRA-830" {
-		t.Errorf("the metrics put INFRA-832 in tree %q, want INFRA-830: no issue of this chain finished in the window", root)
+		t.Errorf("the metrics put INFRA-832 in tree %q, want INFRA-830: no issue of this chain has closed", root)
 	}
 	if root := population.TreeRoot("INFRA-831"); root != "INFRA-830" {
 		t.Errorf("the metrics put INFRA-831 in tree %q, want INFRA-830", root)
@@ -383,7 +383,7 @@ func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 		{860, "The top, which the daemon reports", "a", "", true},
 		{861, "The tracking issue the renamed session wrote on", "b", "INFRA-860", false},
 		{862, "The bottom, which the daemon reports", "c", "INFRA-861", true},
-		{863, "Its closed child, which brings the chain into the window", "d", "INFRA-862", false},
+		{863, "Its closed child", "d", "INFRA-862", false},
 	} {
 		key := seedLegionIssue(t, database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
 		if issue.reported {
@@ -399,7 +399,7 @@ func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	seedLegionRoleEvent(t, database, "INFRA-861", "s-860", "implementer", "INFRA-861", hourAgo)
 	seedLegionRoleEvent(t, database, "INFRA-862", "s-860", "implementer", "INFRA-862", now.Add(-30*time.Minute))
 
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}

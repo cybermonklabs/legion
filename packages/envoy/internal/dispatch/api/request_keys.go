@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -33,9 +34,10 @@ import (
 // One keyed path for every write (INFRA-258). A caller names the intent behind a POST or PATCH with
 // an Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
-// and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of
-// which says whether the first attempt ran. keyedWrites, which register wraps around every POST and
-// PATCH route, makes that retry safe with one request_keys row per key (migration 0137):
+// and both retry a failed fetch, a timeout, a 5xx, a 408, a 429 and a 409 KEY_IN_FLIGHT under it
+// (retriesUnderKey in packages/contracts), none of which says whether the first attempt ran.
+// keyedWrites, which register wraps around every POST and PATCH route, makes that retry safe with
+// one request_keys row per key (migration 0137):
 //
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
@@ -1382,12 +1384,12 @@ func versionNumber(version any) (int64, bool) {
 	return value, err == nil
 }
 
-// storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of
-// whether the write could succeed, and a 401 (a session that lapsed mid-write), a 408 and a 429 say
-// only that this attempt was not heard: each leaves the next attempt to run the request again.
+// storedStatus reports whether an answer of this status is a key's answer. An outage
+// (httpoutage.Is: a 5xx, which says nothing of whether the write could succeed, a 408 or a 429)
+// and a 401 (a session that lapsed mid-write) say only that this attempt was not heard: each
+// leaves the next attempt to run the request again.
 func storedStatus(status int) bool {
-	return status < http.StatusInternalServerError && status != http.StatusUnauthorized &&
-		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+	return !httpoutage.Is(status) && status != http.StatusUnauthorized
 }
 
 // settleRequestKey records what claim's handler answered: a stored status finishes the row with

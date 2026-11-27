@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -1016,11 +1017,12 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
-	// A 5xx and a 401 say GitHub could not answer or did not take the App's credentials. Every
-	// other status, a limit aside, is left to the caller, because the same answer is data at one
-	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
-	// workflow path to the next), and only the caller can tell the two apart.
-	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
+	// An outage status (httpoutage.Is: a 408 or a 5xx) and a 401 say GitHub could not answer
+	// or did not take the App's credentials; its 429 is a limit, noted as one. Every other status, a
+	// limit aside, is left to the caller, because the same answer is data at one point and a failure
+	// at another (a 404 is a deleted repository to one caller and a wrong workflow path to the
+	// next), and only the caller can tell the two apart.
+	if status := response.StatusCode; status != http.StatusTooManyRequests && httpoutage.Is(status) || status == http.StatusUnauthorized {
 		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
@@ -1037,17 +1039,17 @@ func noteFailure(ctx context.Context, err error) {
 }
 
 // failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
-// own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 5xx or a 401, and
-// "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for a
-// limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
+// own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 408, a 5xx or a 401,
+// and "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for
+// a limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
 // send shows it, and each ending at its head where there is no body (withBody). Its text is made
 // only where the note can still become a cause (githubreads.NoteFailure), so a request outside the
 // leased passes formats nothing. The target carries no token: every token travels in the
 // Authorization header.
 //
 // Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
-// for a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit its
-// Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body. So no
+// for a 408, a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit
+// its Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body. So no
 // failedAnswer has a text that carries a 2xx answer's data.
 //
 // It is not the only note of a limit. A limit github_rate_limits already holds is noted as its own

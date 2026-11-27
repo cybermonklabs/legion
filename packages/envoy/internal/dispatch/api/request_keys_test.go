@@ -92,7 +92,7 @@ func routeOrJSONBody(t *testing.T, method, pattern string) apiRoute {
 			return route
 		}
 	}
-	return apiRoute{routeRow: routeRow{Method: method, Pattern: pattern, Auth: authAny}}
+	return apiRoute{routeDecl: routeDecl{Method: method, Pattern: pattern, Auth: authAny}}
 }
 
 // send posts body to thing's writes as login under key.

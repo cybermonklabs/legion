@@ -157,6 +157,7 @@ type compactPane struct {
 // fresh sessions both doors start, and the fresh session that starts a worker whose process is
 // gone, which runs last because it kills the panes the steps before it drive.
 func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newClaimCompactionLive(t)
 	r.step("step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted", r.overlaysAreTheDeployments)
@@ -226,7 +227,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.registerController()
 	r.backends[r.onClaude] = runtime.BackendClaude
 	r.note("worker_backends now runs %s on %s, and the %s claim of %s is stopped and never launched",

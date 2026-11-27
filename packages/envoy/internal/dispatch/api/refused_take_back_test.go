@@ -112,11 +112,10 @@ func TestARefusedTakeBackOfAServiceTokenBehindALayerThatSwallowsItIsAnsweredOver
 		store: database, admission: limiter, oidc: oidc.NewLazyVerifier(address, serviceTokenAudience),
 	})
 	var ran atomic.Bool
-	route := apiRoute{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/test-refused-take-back", Auth: authAny,
-		Handler: func(w http.ResponseWriter, _ *http.Request) {
-			ran.Store(true)
-			w.WriteHeader(http.StatusNoContent)
-		}}}
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodPost, Pattern: "/api/v1/test-refused-take-back", Auth: authAny}, Handler: func(w http.ResponseWriter, _ *http.Request) {
+		ran.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}}
 	request := httptest.NewRequest(http.MethodPost, route.Pattern, nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set(contracts.DispatchLoginHeader, "alice")
@@ -158,13 +157,12 @@ func TestARefusedTakeBackOfACookiesRefreshBehindACallerCheckThatSwallowsItIsAnsw
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{store: database, admission: limiter, identity: person})
 	t.Cleanup(answerIssuer)
 	var ran atomic.Bool
-	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/test-refused-take-back", Auth: authAny,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			human := served.callerHoldsScope(r, model.ScopePerson)
-			ran.Store(true)
-			w.Header().Set("X-Test-Person", fmt.Sprint(human))
-			w.WriteHeader(http.StatusNoContent)
-		}}}
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: "/api/v1/test-refused-take-back", Auth: authAny}, Handler: func(w http.ResponseWriter, r *http.Request) {
+		human := served.callerHoldsScope(r, model.ScopePerson)
+		ran.Store(true)
+		w.Header().Set("X-Test-Person", fmt.Sprint(human))
+		w.WriteHeader(http.StatusNoContent)
+	}}
 	request := httptest.NewRequest(http.MethodGet, route.Pattern, nil)
 	request.AddCookie(lapsedCookie(t, database, people, sessions, "lapsed@d.example"))
 	answered := serveInBackground(served.routeHandler(route, limiter, time.Minute), request)

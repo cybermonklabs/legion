@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrNestedAcquire is a pool this package guards (Pool: the request pool and the pools it wraps)
@@ -178,6 +179,111 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 		split.request = state.owner()
 	}
 	return context.WithValue(ctx, holdingKey{}, split), nil
+}
+
+// ReadSideBySide runs reads at once and answers the first error. Each runs on a hold mark of its
+// own (ForConcurrentRead), so it takes at most one connection of the pool and one read's open
+// cursor refuses no other; a read holds no lock past its own statements and waits on no other
+// read, so none waits on another: a read opens no transaction, or reads in one that only reads,
+// which its caller opened before the group on a hold mark of its own and the read commits once
+// its statements end (legion/metrics' read opens it, and readSampled reads in it and commits it).
+// A caller that holds a connection is refused (ErrNestedAcquire) before any read starts.
+//
+// Where ctx carries a read limit (WithReadLimit), at most that many of the reads run at once across
+// every group the call tree opens: a read waits for a place before it starts, and a read that
+// itself opens a group lets go of its place while it waits for that group's reads, so a group
+// nested in a group takes the places its parent left, and no read waits for a place a read that is
+// waiting for it holds.
+func ReadSideBySide(ctx context.Context, reads ...func(ctx context.Context) error) error {
+	limit := readLimitOf(ctx)
+	var waiting *readPlace
+	if limit != nil {
+		// The caller may be a read of an outer group, holding one of the places.
+		if waiting, _ = ctx.Value(readPlaceKey{}).(*readPlace); waiting != nil && !waiting.let() {
+			waiting = nil
+		}
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, read := range reads {
+		readCtx, err := ForConcurrentRead(groupCtx)
+		if err != nil {
+			_ = group.Wait()
+			_ = waiting.take(ctx)
+			return err
+		}
+		if limit == nil {
+			group.Go(func() error { return read(readCtx) })
+			continue
+		}
+		place := &readPlace{limit: limit}
+		readCtx = context.WithValue(readCtx, readPlaceKey{}, place)
+		group.Go(func() error {
+			if err := place.take(readCtx); err != nil {
+				return err
+			}
+			defer place.let()
+			return read(readCtx)
+		})
+	}
+	err := group.Wait()
+	if takeErr := waiting.take(ctx); err == nil {
+		err = takeErr
+	}
+	return err
+}
+
+type readLimitKey struct{}
+
+type readPlaceKey struct{}
+
+// readLimit is the places of a request's side-by-side reads (WithReadLimit).
+type readLimit chan struct{}
+
+// WithReadLimit returns ctx with a limit of n on the reads ReadSideBySide runs at once under it,
+// which is how many request-pool connections one request's reads hold at once: the weight
+// admission counts its route at. A context that carries a limit already keeps it, so a read that
+// is itself a limited group's is not given places of its own, and n below one is one.
+func WithReadLimit(ctx context.Context, n int) context.Context {
+	if readLimitOf(ctx) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, readLimitKey{}, readLimit(make(chan struct{}, max(n, 1))))
+}
+
+func readLimitOf(ctx context.Context) readLimit {
+	limit, _ := ctx.Value(readLimitKey{}).(readLimit)
+	return limit
+}
+
+// readPlace is one read's hold on a place of its limit: held while the read runs, and let go of
+// while it waits for the reads of a group it opened (ReadSideBySide).
+type readPlace struct {
+	limit readLimit
+	held  atomic.Bool
+}
+
+// take waits for a place of p's limit and answers ctx's cause if its end came first. A place taken
+// is marked held; a nil p, a caller that held none, takes none.
+func (p *readPlace) take(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	select {
+	case p.limit <- struct{}{}:
+		p.held.Store(true)
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
+// let gives p's place back and answers whether it held one.
+func (p *readPlace) let() bool {
+	if p == nil || !p.held.CompareAndSwap(true, false) {
+		return false
+	}
+	<-p.limit
+	return true
 }
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side

@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/testpool"
 )
 
 func TestMaskTextOrdinals(t *testing.T) {
@@ -93,7 +94,7 @@ func TestReplaySeedReadsPublicUnderAShadowingUserSchema(t *testing.T) {
 		pgx.Identifier{database}.Sanitize())); err != nil {
 		t.Fatalf("set the database's search_path: %v", err)
 	}
-	shadowed, err := pgxpool.New(ctx, dsn)
+	shadowed, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

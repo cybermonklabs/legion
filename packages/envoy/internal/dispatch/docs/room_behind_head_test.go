@@ -644,6 +644,7 @@ func TestAWriteThatOpensBeforeTheCloseTakesItsLockLeavesTheRoomOpen(t *testing.T
 // and warns of nothing, since a browser joining the room is no fault. Once the caller has left,
 // the same close closes the room.
 func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	pair := newProcessPair(t)
 	pair.replaceTaskAsHistory(t)
 	logs := &storetest.LockedLog{}

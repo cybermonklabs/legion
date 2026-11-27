@@ -695,6 +695,7 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 // the sweep finds nothing due. Once the quiet time passes, one notice covers both people's
 // versions, so each person's version is in exactly one sent notice's range.
 func TestEditNoticeSweepDuringSettlement(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)
@@ -795,6 +796,7 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 // A document deleted after the sweep read its id, which took its notice row with it, is skipped:
 // the sweep does not fail, and the next due notice of the same sweep still goes.
 func TestEditNoticeSweepSkipsDeletedArtifact(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, _ := newTestService(t)
@@ -1144,6 +1146,7 @@ func TestOutsideReviewJoinedHumanEditLastHuman(t *testing.T) {
 // room credits every connected peer and records no sender (creditContentChange). The notice must
 // then name nobody, rather than pick a person out of the credited names: no window names anyone.
 func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, artifactID := newTestService(t)

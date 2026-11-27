@@ -19,7 +19,6 @@ import (
 	"time"
 	"weak"
 
-	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
@@ -71,7 +70,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				return
 			default:
 			}
-			connection, _, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, _, err := documentDialer(t).Dial(wsURL, headers)
 			if err != nil {
 				continue
 			}
@@ -165,7 +164,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				if err := version(); err != nil {
 					refuse("version %d: %v", round, err)
 				}
-				connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+				connection, response, err := documentDialer(t).Dial(wsURL, headers)
 				if err != nil {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
@@ -230,7 +229,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
-	peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+	peer, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
 	}
@@ -434,6 +433,7 @@ func (w *roomLoads) count() int {
 // goroutine and fires the observer there), and a third is the service projecting comment records.
 // Under -race the walk of the live tree is a data race with the other writers.
 func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -545,6 +545,8 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 // document, so a listing that held it past the room would keep that copy for a collection more
 // for every room the server evicts, and one that outlived the room would keep it for good.
 func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC, in its wait for the
+	// evicted room's document to be collected).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -613,6 +615,8 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 // does not take. A running Dispatch process keeps one service for its whole life, so a record
 // the cleanup fails to take is one more for every room the process ever loads.
 func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC, in its wait for the
+	// evicted room's document to be collected).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -810,7 +814,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			if test.peer {
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 				testcleanup.Add(t, httpServer.Close)
-				peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+				peer, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 				if err != nil {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}
@@ -924,6 +928,9 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 // commit returns either way. The longer the document, the longer its room's update observer
 // renders, and the wider that window.
 func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
+	// Not parallel: each trial orders its issue's close onto the owner lock before the write's
+	// commit by a 30 ms time.Sleep, which the load of the tests beside it could outlast, so a trial
+	// would pass without the interleaving it is for.
 	markdown := func(paragraphs int, tag string) string {
 		var text strings.Builder
 		for index := range paragraphs {

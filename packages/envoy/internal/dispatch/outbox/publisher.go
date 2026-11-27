@@ -99,13 +99,23 @@ type Deps struct {
 	Sessions   roles.SessionLookup
 	// KeptLanes is where the handover behind a keep reads the role's kept lane and its drain
 	// cursor, to tell whether the copy just kept is the one that lane's drain would hand over
-	// next (handOverKept). cmd/dispatch passes the same bus.Client it publishes through, whose
-	// grant covers that read. A nil reader makes no handover at all, as a nil role reader is
-	// errNoRoleReaders: the kept copy then waits for the listener's next handover of the lane -
-	// the role's next claim, a keep, the registration that makes a session holding the role live
-	// again or the claim route's refresh that does, or the sweep (handOverKept) - which is what
-	// this package's tests that publish through a stand-in with no stream behind it leave it to.
+	// next (handOverKept), and where the expiry pass reads the listeners' expiry notices, the
+	// copies they name and the stream's identity (passKeptExpiries). cmd/dispatch passes the same
+	// bus.Client it publishes through, whose grant covers those reads. A nil reader makes no
+	// handover at all, as a nil role reader is errNoRoleReaders: the kept copy then waits for the
+	// listener's next handover of the lane - the role's next claim, a keep, the registration that
+	// makes a session holding the role live again or the claim route's refresh that does, or the
+	// sweep (handOverKept) - which is what this package's tests that publish through a stand-in
+	// with no stream behind it leave it to. A nil reader reads no notice either.
 	KeptLanes KeptLaneReader
+	// PostIssueMessage posts message, written by actor, a system actor, on the issue
+	// message.IssueKey names, under the id message.ID, and answers the id of the message it
+	// stored: the message that tells the issue's people which events a role did not take within
+	// an hour's window, once each had ended undelivered (postUndeliveredNotes). A post made again
+	// under one id writes no second message. cmd/dispatch passes the API server's own writer of an
+	// issue message (api.Background.PostSystemMessage). A nil one posts nothing, and the windows
+	// wait.
+	PostIssueMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
 	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
 	// which is what cmd/dispatch runs. A test sets it longer than its own run so that a forward
@@ -134,6 +144,24 @@ type Deps struct {
 	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
 	// need not wait a claim lease out; it is unexported, so no importer can.
 	heldCopyWarnAfter time.Duration
+	// clock is the time a role forward is judged at: its resolution's fence before it publishes,
+	// and its acknowledgement once the stream answers (roleForward.forward, roles.ResolutionTooOld,
+	// roles.ForwardStoredTooLate). nil is time.Now, which is what cmd/dispatch runs. A test moves
+	// it past a forward's fence and acknowledgement window while the forward waits, which no test
+	// could otherwise wait out; it is unexported, so no importer can.
+	clock func() time.Time
+	// holdRead, when set, runs inside a holder transaction right after its first, unlocked read of
+	// the publisher hold found the hold this process's (inHolderTransaction), before the
+	// transaction writes anything. A test takes the hold over there, so the transaction's final
+	// lock (lockPublisherHold) must see the takeover and roll back; it is unexported, and nil in
+	// cmd/dispatch.
+	holdRead func()
+	// holdLocked, when set, runs inside a holder transaction right after its final lock of the
+	// publisher hold's row found the hold this process's (lockPublisherHold, inHolderTransaction),
+	// and holds the transaction there, before its commit, until it returns. A test opens a
+	// takeover of the hold while a transaction holds that lock, which no test could time
+	// otherwise; it is unexported, and nil in cmd/dispatch.
+	holdLocked func()
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
@@ -148,6 +176,14 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// now is the outbox's clock (clock), time.Now unless a test set one.
+func (d Deps) now() time.Time {
+	if d.clock != nil {
+		return d.clock()
+	}
+	return time.Now()
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

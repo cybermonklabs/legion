@@ -634,15 +634,14 @@ func (g *networkWaitGuard) outboundCall(call *ast.CallExpr) string {
 // the routes it read, each as `METHOD pattern`.
 func (g *networkWaitGuard) walkTable(t *testing.T) []string {
 	t.Helper()
-	var routes []string
-	for _, route := range tableRoutes(t, g.graph) {
-		name := route.method + " " + route.pattern
-		routes = append(routes, name)
-		for _, handler := range route.handlers {
+	routes, _ := routeDeclHandlers(t, g.graph, func(string) bool { return true })
+	names := slices.Sorted(maps.Keys(routes))
+	for _, name := range names {
+		for _, handler := range routes[name] {
 			g.walk(handler, networkWaitStep{route: name})
 		}
 	}
-	return routes
+	return names
 }
 
 // walk marks fn, which runs while the request holds its admission unit, reached, and walks
@@ -1199,9 +1198,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 )
 
-type routeRow struct {
+type routeDecl struct {
 	Method, Pattern, Auth, Description string
-	Handler                            http.HandlerFunc
+	Handler                            func(*server, http.ResponseWriter, *http.Request)
+}
+
+var routeRegistry []routeDecl
+
+func declareRoute(route routeDecl) routeDecl {
+	routeRegistry = append(routeRegistry, route)
+	return route
 }
 
 type backgroundWork struct{}
@@ -1219,25 +1225,21 @@ func givenBackAlready(ctx context.Context, wait func(context.Context) error) err
 
 func detachedFromRequest(ctx context.Context) context.Context { return context.WithoutCancel(ctx) }
 
-func (s *server) routes() []routeRow {
-	return []routeRow{
-		{http.MethodGet, "/held", "any", "the listener, on the request's goroutine", s.held},
-		{http.MethodGet, "/deep", "any", "GitHub, two calls down", s.deep},
-		{http.MethodPost, "/group", "any", "a send an errgroup the request waits for makes", s.group},
-		{http.MethodGet, "/value", "any", "the embedder's method handed on as a value", s.value},
-		{http.MethodGet, "/carried", "any", "the broker through a carrier handed no network wait", s.carried},
-		{http.MethodPost, "/fired", "any", "a go statement on the request's own context", s.fired},
-		{http.MethodPost, "/through", "any", "a carrier handed a wait and a function that is none", s.through2},
-		{http.MethodGet, "/away", "any", "the listener inside awayOnNetwork", s.away},
-		{http.MethodGet, "/waits", "any", "carriers handed only network waits", s.waits},
-		{http.MethodPost, "/detached", "any", "work that outlives the request", s.detachedWork},
-		{http.MethodGet, "/allowed", "any", "an allowlisted call beside one whose entry has no reason", s.allowed},
-		{http.MethodPost, "/inplace", "any", "the listener inside givenBackAlready, holding its unit", s.inPlace},
-		{http.MethodGet, "/aside", "any", "the embedder beside the request's own work, waited on alone inside awayOnNetwork", s.aside},
-		{http.MethodGet, "/asideheld", "any", "the embedder on a goroutine waited on alone holding the unit", s.asideHeld},
-		{http.MethodGet, "/asideclock", "any", "the embedder on a goroutine waited on beside the request's context alone", s.asideClock},
-	}
-}
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/held", Auth: "any", Description: "the listener, on the request's goroutine", Handler: (*server).held})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/deep", Auth: "any", Description: "GitHub, two calls down", Handler: (*server).deep})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/group", Auth: "any", Description: "a send an errgroup the request waits for makes", Handler: (*server).group})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/value", Auth: "any", Description: "the embedder's method handed on as a value", Handler: (*server).value})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/carried", Auth: "any", Description: "the broker through a carrier handed no network wait", Handler: (*server).carried})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/fired", Auth: "any", Description: "a go statement on the request's own context", Handler: (*server).fired})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/through", Auth: "any", Description: "a carrier handed a wait and a function that is none", Handler: (*server).through2})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/away", Auth: "any", Description: "the listener inside awayOnNetwork", Handler: (*server).away})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/waits", Auth: "any", Description: "carriers handed only network waits", Handler: (*server).waits})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/detached", Auth: "any", Description: "work that outlives the request", Handler: (*server).detachedWork})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/allowed", Auth: "any", Description: "an allowlisted call beside one whose entry has no reason", Handler: (*server).allowed})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/inplace", Auth: "any", Description: "the listener inside givenBackAlready, holding its unit", Handler: (*server).inPlace})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/aside", Auth: "any", Description: "the embedder beside the request's own work, waited on alone inside awayOnNetwork", Handler: (*server).aside})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/asideheld", Auth: "any", Description: "the embedder on a goroutine waited on alone holding the unit", Handler: (*server).asideHeld})
+var _ = declareRoute(routeDecl{Method: http.MethodGet, Pattern: "/asideclock", Auth: "any", Description: "the embedder on a goroutine waited on beside the request's context alone", Handler: (*server).asideClock})
 
 func (s *server) held(w http.ResponseWriter, r *http.Request) { s.deps.Envoy.Sessions(r.Context()) }
 
@@ -1437,6 +1439,7 @@ func plantedNetworkWaitGraph(t *testing.T, real *lockGraph) *lockGraph {
 		stored: map[*types.Var][]*lockFunction{}, implementations: map[*types.Func][]*lockFunction{},
 	}
 	source := moduleSource{path: path, file: file, positions: fset}
+	graph.sources = []moduleSource{source}
 	graph.addFile(source)
 	graph.addStored(source)
 	return graph

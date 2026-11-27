@@ -57,7 +57,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 			return len(service.srv.Rooms()) <= written
 		})
 	}
-	if connection, err := dialDocument(httpServer.URL, untouched); err != nil {
+	if connection, err := dialDocument(t, httpServer.URL, untouched); err != nil {
 		t.Errorf("open a document nobody touched after %d were: %v, want it admitted", len(ids)-1, err)
 	} else {
 		leaveDocument(connection)
@@ -91,7 +91,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 	waitFor(t, 30*time.Second, "the rooms the API opened to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
-	connection, err := dialDocument(httpServer.URL, untouched)
+	connection, err := dialDocument(t, httpServer.URL, untouched)
 	if err != nil {
 		t.Fatalf("open a document nobody touched after %d were: %v, want it admitted", len(touched), err)
 	}
@@ -316,7 +316,7 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 		go func() {
 			defer workers.Done()
 			for id := range work {
-				connection, err := dialDocument(serverURL, id)
+				connection, err := dialDocument(t, serverURL, id)
 				if err != nil {
 					failures <- fmt.Errorf("open document %s: %w", id, err)
 					continue
@@ -347,10 +347,11 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 	}
 }
 
-// dialDocument opens id's document socket as a browser does; a refusal names the status it
-// answered.
-func dialDocument(serverURL, id string) (*gws.Conn, error) {
-	connection, response, err := gws.DefaultDialer.Dial(
+// dialDocument opens id's document socket as a browser does, through documentDialer; a refusal
+// names the status it answered.
+func dialDocument(t *testing.T, serverURL, id string) (*gws.Conn, error) {
+	t.Helper()
+	connection, response, err := documentDialer(t).Dial(
 		"ws"+strings.TrimPrefix(serverURL, "http")+"/ws/doc/"+id,
 		http.Header{"X-Dispatch-User": []string{"alice"}},
 	)

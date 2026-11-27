@@ -540,6 +540,7 @@ func askEditsOf(t *testing.T, service *Service, ask string) int {
 // resolved ask's block leaves its row as it was decided, appends no ask.edited, and settlement
 // writes the decided wording back into the block beside its decision, logging that it did.
 func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	writes := map[string]func(t *testing.T, service *Service, document string){
@@ -635,6 +636,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 // on, writes it back into the block, and logs the ask, its document and the restored question;
 // the boot's restoration then finds nothing left to restore.
 func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	for _, closing := range []string{"answered", "resolved"} {
@@ -807,6 +809,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // they are logs nothing more, and one that shows a change of a source's state logs that block
 // again.
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	service, original := newTestService(t)

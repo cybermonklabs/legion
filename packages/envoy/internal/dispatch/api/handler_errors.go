@@ -149,8 +149,8 @@ func deletedPostError(kind refs.ItemKind) *apiError {
 // request. Only then is err mapped to the failure it names.
 //
 // Whether this request can have written is what WriteUnserved's answer turns on, and the route's
-// method is what says so (admission.Reads), the four GET rows that write included (readClasses'
-// readWritesState): none of them hands a write's error here. The three delivery reads' insert of
+// method is what says so (admission.Reads), the four GET rows that write included (their
+// declarations' Read class readWritesState): none of them hands a write's error here. The three delivery reads' insert of
 // a run's configuration warning fails open, logged, and the read answers on (firstToWarn); the
 // going stream writes its run's ending only once its answer has begun, where a failure is logged
 // and ends the stream (streamGoingAnswer, pollGoingStream). So a GET's call the database never

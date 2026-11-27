@@ -19,9 +19,10 @@ import (
 // The two routes are not alike, on purpose. Turning the setting on makes a check stronger, so any
 // credential that may write the project's issues may turn it on: the PUT is scopeProject and
 // declares no OAuth scope, so the project's daemon can turn it on with its own project-scoped
-// token. Turning it off makes a check weaker, so the DELETE needs the person scope (routeScopes),
-// as PUT /api/v1/projects/{key}/default-assignee does, and records the person (actingPerson). No
-// credential the deployment configured holds that scope, so no machine turns the setting off.
+// token. Turning it off makes a check weaker, so the DELETE needs the person scope (its
+// declaration's OAuthScopes), as PUT /api/v1/projects/{key}/default-assignee does, and records the
+// person (actingPerson). No credential the deployment configured holds that scope, so no machine
+// turns the setting off.
 //
 // Turning it on before the project's daemon writes with a credential that proves its session
 // stops every architect write and every role-holder publication on the shared token, until a

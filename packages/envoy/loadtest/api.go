@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -121,9 +122,10 @@ func (r callResult) landed() bool {
 	return r.replayed && r.status/100 == 2 && errorCode(r.body) == contracts.IdempotencyAnswerNotKept
 }
 
-// transient is a failure worth retrying: a transport error, 429 or 5xx.
+// transient is a failure worth retrying: a transport error or an outage status
+// (httpoutage.Is: a 408, a 429 or a 5xx).
 func (r callResult) transient() bool {
-	return r.err != nil || r.status == http.StatusTooManyRequests || r.status >= 500
+	return r.err != nil || httpoutage.Is(r.status)
 }
 
 // arrival is when the request reached Dispatch's socket, or its start when the trace never saw
@@ -351,8 +353,8 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	return res
 }
 
-// callRetry retries a transient failure (a transport error, 429 or 5xx) once a second, up to six
-// times, as the seed always has; any other answer returns at once.
+// callRetry retries a transient failure (a transport error, a 408, a 429 or a 5xx) once a second,
+// up to six times, as the seed always has; any other answer returns at once.
 func (a *api) callRetry(ctx context.Context, method, path string, w who, body any) callResult {
 	return a.callRetryKeyed(ctx, method, path, w, body, "")
 }

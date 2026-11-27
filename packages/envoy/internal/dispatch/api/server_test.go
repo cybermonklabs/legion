@@ -115,6 +115,7 @@ func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 // it down, and its compaction worker would outlive every server it served. An input with none is
 // refused, naming the field.
 func TestNewDepsRefusesAnInputWithNoDocumentService(t *testing.T) {
+	t.Parallel()
 	if _, err := NewDeps(DepsInput{}); err == nil || !strings.Contains(err.Error(), "Docs is required") {
 		t.Fatalf("an input with no document service = %v, want it refused naming Docs", err)
 	}

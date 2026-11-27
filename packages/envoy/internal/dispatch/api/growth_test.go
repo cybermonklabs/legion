@@ -253,6 +253,8 @@ func TestAskEditsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 // units, which refuses each of these sooner and as cheaply, naming the field. A description at
 // that bound is taken.
 func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
+	// Not parallel: it reads the whole process's heap statistics (runtime.ReadMemStats, TotalAlloc)
+	// around its request, which every goroutine's allocations move.
 	handler, _ := blockAskHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask text", openAsksSpec(1))
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "ask-0", "Question 0?")

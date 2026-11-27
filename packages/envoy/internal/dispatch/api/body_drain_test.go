@@ -788,6 +788,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 // is ended only by the wait below, at the shared bound, which names it. The server's handler ends
 // with the test as well, so that its Close, a cleanup, does not wait on a post that never ended.
 func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
+	t.Parallel()
 	testEnded := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -1192,10 +1193,9 @@ func TestAKeyedWriteWhoseBodyStopsArrivingIsNotTakenForAGoneClient(t *testing.T)
 func TestAKeyedBodyWhoseSpoolCannotBeReadBackIsTheServersFault(t *testing.T) {
 	t.Parallel()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
-	route := apiRoute{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/issues", Auth: authAny,
-		Handler: func(http.ResponseWriter, *http.Request) {
-			t.Error("the handler ran on a body the server could not read")
-		}}}
+	route := apiRoute{routeDecl: routeDecl{Method: http.MethodPost, Pattern: "/api/v1/issues", Auth: authAny}, Handler: func(http.ResponseWriter, *http.Request) {
+		t.Error("the handler ran on a body the server could not read")
+	}}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", nil)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")
