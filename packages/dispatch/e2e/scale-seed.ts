@@ -133,10 +133,16 @@ const DRAIN_BOUND_MS = 300_000;
  *  (`BlockIndexReconcileInterval`). The bound is two such ticks. */
 const CURSOR_BOUND_MS = 60_000;
 
+/** The census keys of the three copies (`COPIES`), in the order R21's rows read them. */
+export const SCALE_COPIES = ["INFRA-663", "INFRA-3149", "INFRA-1098"] as const;
+
+/** One copy's census key, as `SCALE_COPIES` lists them. */
+export type ScaleCensusKey = (typeof SCALE_COPIES)[number];
+
 /** One copy, as the plan's table under "The sizes from the real system" writes it. */
 interface CopyShape {
   /** The issue of INFRA whose size the copy takes. */
-  readonly census: string;
+  readonly census: ScaleCensusKey;
   /** How the copy's text names the issue it copies: by its size, and never by its key. */
   readonly label: string;
   /** The census's documents beyond the three role documents, and, where the copy takes them, the
@@ -200,7 +206,7 @@ export interface ScaleNodes {
 /** One copy as R21's row reads it. */
 export interface ScaleCopy {
   /** The issue of INFRA whose size the copy takes. */
-  readonly census: string;
+  readonly census: ScaleCensusKey;
   readonly key: string;
   /** The documents and files the issue read lists, which Documents' list draws 20 at a time. */
   readonly listed: number;
@@ -215,7 +221,7 @@ export interface ScaleCopy {
   readonly nodes: readonly ScaleNodes[];
 }
 
-export interface ScaleSeed {
+interface ScaleSeed {
   readonly copies: readonly ScaleCopy[];
   /** The person the row signs in as, who never read a copy. */
   readonly reader: string;
@@ -655,27 +661,34 @@ async function seedCopies(shapes: readonly CopyShape[], drained: string): Promis
   return { copies, reader: SCALE_READER };
 }
 
-/** Writes the three copies (`seedCopies`). */
-export function seedScale(): Promise<ScaleSeed> {
-  return seedCopies(COPIES, "the copies");
-}
-
 /**
- * Writes the copy of INFRA-3149 alone, the largest of the three, as `seedScale` writes each copy
- * and checks it, for a row that reads one copy: the header's reading of its labels (the plan's
- * g24, check `c-header-labels`), of which the other two copies, minutes more of writing and of the
- * block index's drain, change nothing. The reader has read none of it.
+ * Writes the copy of `census` alone into a project of its own, waits for the block index to take
+ * it in, and reads every count back through the API (`seedCopies`), signed in as the reader who
+ * never read it.
  */
-export async function seedLargestScaleCopy(): Promise<{
+export async function seedScaleCopy(census: ScaleCensusKey): Promise<{
   readonly copy: ScaleCopy;
   readonly reader: string;
 }> {
-  const shape = COPIES.find((each) => each.census === "INFRA-3149");
-  if (shape === undefined) throw new Error("the scale seed holds no copy of INFRA-3149");
+  const shape = COPIES.find((each) => each.census === census);
+  if (shape === undefined) throw new Error(`the scale seed holds no copy of ${census}`);
   const {
     copies: [copy],
     reader,
   } = await seedCopies([shape], `the copy of ${shape.census}`);
-  if (copy === undefined) throw new Error("the scale seed wrote no copy of INFRA-3149");
+  if (copy === undefined) throw new Error(`the scale seed wrote no copy of ${census}`);
   return { copy, reader };
+}
+
+/**
+ * Writes the copy of INFRA-3149 alone, the largest of the three, for a row that reads one copy:
+ * the header's reading of its labels (the plan's g24, check `c-header-labels`), of which the
+ * other two copies, minutes more of writing and of the block index's drain, change nothing. The
+ * reader has read none of it.
+ */
+export function seedLargestScaleCopy(): Promise<{
+  readonly copy: ScaleCopy;
+  readonly reader: string;
+}> {
+  return seedScaleCopy("INFRA-3149");
 }

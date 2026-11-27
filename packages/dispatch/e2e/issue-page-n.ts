@@ -2578,10 +2578,53 @@ async function failOnOwnerSigns(
   }
 }
 
+/**
+ * Draw wait for INFRA-663's copy alone (decision 503): while `main`'s outline still renders all
+ * 9,272 rows of its comments read at once (until part T's tree read lands), probe Job
+ * `e2e-rows-9pkrd` at `37d1efb9` measured `[data-issue-page]` at 5.0–21.5 s and the view row at
+ * 18.7–33.0 s at 1440 px, and 17.9 s and 27.7 s at 390 px (all 9,272 rows drawn). Every other
+ * copy (`INFRA-3149`, `INFRA-1098`) and every other wait keeps the default 15 s.
+ */
+const INFRA_663_DRAW_TIMEOUT_MS = 60_000;
+
+/** Opens `path` for `readScaleLoad`: on `INFRA-663`'s copy alone, waits up to
+ *  `INFRA_663_DRAW_TIMEOUT_MS` for `[data-issue-page]` and `issueRead`'s column-or-heading at
+ *  both widths (decision 503, probe Job `e2e-rows-9pkrd`); every other copy uses `gotoIssue`'s
+ *  default 15 s. */
+async function gotoScaleIssue(page: Page, copy: ScaleCopy, path: string): Promise<void> {
+  if (copy.census !== "INFRA-663") {
+    await gotoIssue(page, path);
+    return;
+  }
+  await page.goto(path);
+  await expect(issuePage(page), `${path} drew no [data-issue-page]`).toHaveCount(1, {
+    timeout: INFRA_663_DRAW_TIMEOUT_MS,
+  });
+  await expect(
+    page
+      .getByTestId("issue-column")
+      .or(issuePage(page).getByRole("heading", { level: 1 }))
+      .first(),
+    `${path} is still loading its issue`
+  ).toBeVisible({ timeout: INFRA_663_DRAW_TIMEOUT_MS });
+}
+
 /** Waits until the load of `preset` draws what the row reads: Dashboard with its list read
  *  (`expectDashboardDrawn`); else the control on, and Documents' list with its rows, or the
- *  outline under a control that draws it. */
-async function expectScaleControlDrawn(page: Page, preset: Preset, where: string): Promise<void> {
+ *  outline under a control that draws it. The longer view-row wait applies only to the
+ *  largest comments copy. The outline and list checks keep their own waits. */
+async function expectScaleControlDrawn(
+  page: Page,
+  preset: Preset,
+  where: string,
+  drawTimeoutMs?: number
+): Promise<void> {
+  if (drawTimeoutMs !== undefined) {
+    await expect(
+      presetToolbar(page).or(presetChooser(page)).first(),
+      `${where} draws no view row`
+    ).toBeVisible({ timeout: drawTimeoutMs });
+  }
   if (preset === "dashboard") {
     await expectDashboardDrawn(page, where);
     return;
@@ -2811,8 +2854,9 @@ export async function readScaleLoad(
   ).toBe(0);
 
   const load = watchScaleLoad(page);
-  await gotoIssue(page, presetPath(copy.key, preset));
-  await expectScaleControlDrawn(page, preset, where);
+  const drawTimeoutMs = copy.census === "INFRA-663" ? INFRA_663_DRAW_TIMEOUT_MS : undefined;
+  await gotoScaleIssue(page, copy, presetPath(copy.key, preset));
+  await expectScaleControlDrawn(page, preset, where, drawTimeoutMs);
   await expectLoadSettled(load.api);
   // What the load sent between navigation and network idle; a poll the page sends later is no
   // part of it.
