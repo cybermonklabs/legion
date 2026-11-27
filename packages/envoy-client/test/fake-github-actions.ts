@@ -14,6 +14,8 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 //   - GET /repos/{owner}/{repo}/check-runs/{id}, the one check run Dispatch reads by its id;
 //   - GET /repos/{owner}/{repo}/git/trees/{sha}:{dir} and GET .../git/blobs/{sha}, the reads of
 //     githubapp.Client.Dir and DirFiles;
+//   - GET /repos/{owner}/{repo}/contents/{path}?ref={sha}, the read of githubapp.Client.File, by
+//     which Dispatch reads the run's workflow file to know which job makes the run's check run;
 //   - the App installation of a repository and the installation token Dispatch mints there.
 //
 // Every route answers what this process set and nothing else, as GitHub's 404 for the rest.
@@ -69,6 +71,8 @@ export interface FakeGitHubActions {
     dir: string,
     files: Readonly<Record<string, string>>
   ): void;
+  /** The one file at `path` at `sha`, as the contents read answers it. */
+  setFile(repository: string, sha: string, path: string, content: string): void;
   stop(): Promise<void>;
 }
 
@@ -108,6 +112,8 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   // "<owner>/<name>@<sha>:<dir>" → file name → blob id, and blob id → content.
   const trees = new Map<string, Map<string, string>>();
   const blobs = new Map<string, string>();
+  // "<owner>/<name>@<sha>:<path>" → content, for the contents read.
+  const contents = new Map<string, string>();
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -253,6 +259,21 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
             encoding: "base64",
           });
         }
+        // `contents/{path}?ref={sha}`, each part of the path percent-encoded, as the Go client
+        // escapes it; GitHub's 404 both for a path the commit does not hold and for no such ref.
+        const file = rest.match(/^contents\/(.+)$/);
+        if (file !== null) {
+          const path = (file[1] ?? "").split("/").map(decodeURIComponent).join("/");
+          const sha = url.searchParams.get("ref") ?? "";
+          const content = contents.get(`${repository}@${sha}:${path}`);
+          if (content === undefined) return notFound(`${path} at ${sha}`);
+          return Response.json({
+            type: "file",
+            size: Buffer.byteLength(content),
+            encoding: "base64",
+            content: Buffer.from(content).toString("base64"),
+          });
+        }
       }
 
       return notFound(`${request.method} ${url.pathname}`);
@@ -276,6 +297,9 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         listing.set(name, id);
       }
       trees.set(`${repository}@${sha}:${dir}`, listing);
+    },
+    setFile(repository, sha, path, content): void {
+      contents.set(`${repository}@${sha}:${path}`, content);
     },
     async stop(): Promise<void> {
       await server.stop(true);

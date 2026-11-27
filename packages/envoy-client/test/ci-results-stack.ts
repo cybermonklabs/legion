@@ -66,6 +66,22 @@ const PROJECT = "ACME";
 const REPOSITORY = "local-org/local-repo";
 /** The workflow the result entry lists, as ci-results.yaml is listed in production. */
 const WORKFLOW = ".github/workflows/ci-results.yaml";
+/** The workflow file at each commit {@link CIResultsStack.setFiles} sets: the jobs go-checks and
+ *  lint, which the probe checks name, each with no matrix, so a check run named exactly the job
+ *  is that job's (Dispatch reads the file to know which job makes a check run, spec_results.go
+ *  `jobOfCheckRun`). */
+const WORKFLOW_FILE = `name: ci-results
+on: push
+jobs:
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go vet ./...
+`;
 /** The refs the entry takes: every branch of two segments, such as `refs/heads/topic/one`. */
 const REF_PATTERN = "refs/heads/*/*";
 /** The person the entry acts for, which a result entry needs (`exchange.checkGrant`) and which no
@@ -249,7 +265,8 @@ export interface CIResultsStack {
   jobEnv(run: JobRun): Record<string, string>;
   /** The argv that runs `argv` under `agent-secrets result-grant`, as a job's step runs it. */
   jobCommand(argv: readonly string[]): string[];
-  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`. */
+  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`; and the workflow
+   *  file of the result entry at `sha`, whose jobs are the probe checks' go-checks and lint. */
   setFiles(sha: string, dir: string): void;
   /** Every result of the project at `commit`, as a person reads them, newest first. */
   results(commit: string): Promise<StoredResult[]>;
@@ -711,6 +728,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
           }
         }
         github.setFiles(REPOSITORY, sha, SPEC_DIR, files);
+        github.setFile(REPOSITORY, sha, WORKFLOW, WORKFLOW_FILE);
       },
       async results(commit: string): Promise<StoredResult[]> {
         const read = (await asPerson(
