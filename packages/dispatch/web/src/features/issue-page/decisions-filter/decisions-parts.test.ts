@@ -1130,11 +1130,9 @@ test("an overtaken decision stays in its part and is not in waitingOrder", () =>
 });
 
 /** The reads of a decision `waits` that waits, tied to `s-late`, a statement the coverage read
- *  holds a row of, with its words and the server's reading of them: `partsOver` reads the parts
- *  of the tree that holds `children` with them. */
-function tiedToCoverage(): {
-  readonly partsOver: (children: readonly TreeNode[]) => DecisionsParts;
-} {
+ *  holds a row of, with its words and the server's reading of them: it answers the function that
+ *  reads the parts of the tree that holds `children` with them. */
+function tiedToCoverage(): (children: readonly TreeNode[]) => DecisionsParts {
   const made = [decision("waits", { decision: { links: [shaped(specRef("s-late"))] } })];
   const tree = displayTree("The read's words for s-late. And more.");
   if (tree === undefined) throw new Error("the markdown engine has not loaded");
@@ -1155,18 +1153,16 @@ function tiedToCoverage(): {
     ],
     spec_artifact_id: SPEC_DOCUMENT.id,
   };
-  return {
-    partsOver: (children) =>
-      decisionsParts({
-        asks: [],
-        coverageStatement: coverageStatementOf(issueDetails(), coverage),
-        decisions: decisionsOf(made),
-        issueKey: KEY,
-        nodeIdOf,
-        reader: READER,
-        root: issueTree(children),
-      }),
-  };
+  return (children) =>
+    decisionsParts({
+      asks: [],
+      coverageStatement: coverageStatementOf(issueDetails(), coverage),
+      decisions: decisionsOf(made),
+      issueKey: KEY,
+      nodeIdOf,
+      reader: READER,
+      root: issueTree(children),
+    });
 }
 
 // R35, and INFRA-1196's architect on R2: a tie counts where its far end is a statement, and the
@@ -1178,7 +1174,7 @@ function tiedToCoverage(): {
 // of its words where the read sent one, at the row's own address, named by the reading the body
 // publishes for it.
 test("a waiting decision whose tied statement only the coverage read holds stands in the review list and draws that statement from the coverage row", () => {
-  const { partsOver } = tiedToCoverage();
+  const partsOver = tiedToCoverage();
   const parts = partsOver([decisionNode("waits")]);
   expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
   expect(parts.review[0]).toMatchObject({ standing: "waiting_review" });
@@ -1215,7 +1211,7 @@ test("a waiting decision whose tied statement only the coverage read holds stand
 // stands in the review list, and its line draws the coverage read's words for it, at that row's
 // own address and named by the reading of those words, never the criterion's words.
 test("a tie whose address the tree holds a node of another kind at, and the coverage read a statement, draws the coverage statement and stands in the review list", () => {
-  const { partsOver } = tiedToCoverage();
+  const partsOver = tiedToCoverage();
   const criterion = node({
     id: statement("s-late").id,
     reference: specRef("s-late"),

@@ -262,17 +262,15 @@ export function DecisionsFilterBody({
   // the line the names store projects beside its name from the reading the page published for
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
-  // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it. The page's names read
-  // is asked for the addresses the outline's chips and words name (`useIssueTree.ts`), and the
-  // decisions this view draws come from the decisions view read, whose ties it never asks for;
-  // a statement only the coverage read holds, past the pages of Conversation's read, is not in
-  // the outline at all. So the body publishes each tied statement's own reading to the names
-  // store, the reading of the words a decision's row draws it by (`ShapedStatement.node`,
-  // `nodeReading`): the tree's requirement node of it, else the coverage read's row of it, as a
-  // view publishes the blocks only its own tree holds (`slots/view-readings.ts`), and names it by
-  // the same rule, by its own address, so each line is named from the first drawing ("586 (F),
-  // corrected").
+  // does, as a chip draws nothing until its name comes. The page's names read is asked for the
+  // addresses the outline's chips and words name (`useIssueTree.ts`), and the decisions this view
+  // draws come from the decisions view read, whose ties it never asks for; a statement only the
+  // coverage read holds, past the pages of Conversation's read, is not in the outline at all. So
+  // the body publishes each tied statement's own reading to the names store, the reading of the
+  // words a decision's row draws it by (`ShapedStatement.node`, `nodeReading`): the tree's
+  // requirement node of it, else the coverage read's row of it, as a view publishes the blocks only
+  // its own tree holds (`slots/view-readings.ts`), and names it by the same rule, by its own
+  // address, so each line is named from the first drawing ("586 (F), corrected").
   // Beside its name goes its whole line, the title of the link its line draws, which cuts the
   // name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
@@ -1220,14 +1218,13 @@ function pagesOf<Entry>(entries: readonly Entry[], pages: number): readonly Entr
 
 /** Names statement `id`, at address `reference`, in `names` by the line the names store holds
  *  for it (`lines`), as a chip names it (`chipName`), with that whole line as its title, where
- *  `names` names it not yet and the store holds a line for it. */
+ *  the store holds a line for it. */
 function nameStatement(
   names: Map<string, StatementName>,
   lines: ReadonlyMap<string, string>,
   id: string,
   reference: string
 ): void {
-  if (names.has(id)) return;
   const line = lines.get(reference);
   if (line !== undefined) {
     names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
