@@ -595,3 +595,43 @@ func TestABatchedReadOfAnUnreadableRepositoryWritesNothing(t *testing.T) {
 		t.Fatalf("it answered %v and asked about %v, want nothing", answer.Reads, answer.Asked)
 	}
 }
+
+// A pull request of more commits than one page of GitHub's list of them holds has its commit
+// messages read page by page, each once: GitHub answers `per_page` of them (at most 100) from
+// `page`, so a pull request of 150 commits is two pages, of 100 and 50, and Dispatch stores the 150
+// messages in the order GitHub lists them (fetchCommitMessagesWithToken). Its texts name no issue,
+// so the read pages its messages. A fake that answered every commit on every page answered the
+// first page with 150, which is no short page, so the read asked all five pages it may ask and
+// stored each message five times.
+func TestTheCommitMessagesOfMoreThanOnePageAreReadOncePageByPage(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	_, fake, github, shas := seedCommitPullsFixture(t, ctx, pool, 78, 1)
+	github.set("acme/widgets", 500, "open", shas[0], "feature/unnamed", "", time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC))
+	github.edit(500, func(pull map[string]any) { pull["title"] = "unrelated work" })
+	messages := make([]string, 150)
+	for index := range messages {
+		messages[index] = fmt.Sprintf("work %03d", index+1)
+	}
+	github.mu.Lock()
+	github.messages = map[int][]string{500: messages}
+	github.mu.Unlock()
+	before := github.commitReads.Load()
+	if _, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets", shas[0], time.Now()); err != nil {
+		t.Fatalf("the read of a pull request of 150 commits: %v", err)
+	}
+	pages := github.commitReads.Load() - before
+	var stored []string
+	if err := pool.QueryRow(ctx, `select commit_messages from pull_request_texts where repo = 'acme/widgets' and number = 500`).Scan(&stored); err != nil {
+		t.Fatalf("read the stored messages of #500: %v", err)
+	}
+	if pages != 2 || !slices.Equal(stored, messages) {
+		t.Fatalf("the read asked %d pages of commits and stored %d messages (the 101st %q); want 2 pages and the 150 messages in order",
+			pages, len(stored), func() string {
+				if len(stored) > 100 {
+					return stored[100]
+				}
+				return ""
+			}())
+	}
+}

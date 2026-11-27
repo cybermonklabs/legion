@@ -1134,7 +1134,7 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 					mustEncode(t, w, map[string]any{
 						"number": 11, "title": "feat: commits refused", "html_url": "https://github.com/acme/widgets/pull/11",
 						"user": map[string]any{"login": "octocat"}, "labels": []any{},
-						"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T01:00:00Z",
+						"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T01:00:00Z", "updated_at": "2024-01-01T01:00:00Z",
 						"merge_commit_sha": "abc", "additions": 1, "deletions": 1, "body": "",
 						// The head is this repository's own, so each read of the pull request reads
 						// its commit messages.

@@ -829,12 +829,34 @@ func resultsGitHubOptions(
 		}
 		fmt.Fprintf(w, `{"status":%q}`, comparison)
 	})
+	// The pull requests GitHub names for a commit, which the record's read-through and the read's
+	// read of every result's commit ask (delivery.Attributor.ReadThroughCommitPulls, and its
+	// batched query, commitPullsThroughMux): none, for a commit of a repository repos holds, and
+	// the 422 of a commit held does not name, which GitHub's list answers for a commit the
+	// repository lacks. Served for the reason the commit route above is: left to the mux's own 404,
+	// each such read failed, and a failed read is no answer about the commit (commitStands), so a
+	// test of a result at no pull request's head read the failure, and proved nothing about that
+	// answer.
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
+		sha := r.PathValue("sha")
+		switch {
+		case !repos[r.PathValue("owner")+"/"+r.PathValue("repo")]:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		case held != nil && !held[sha]:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprintf(w, `{"message":"No commit found for SHA: %s"}`, sha)
+		default:
+			fmt.Fprint(w, `[]`)
+		}
+	})
 	if checkRuns != nil {
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
 	}
 	for _, route := range routes {
 		mux.HandleFunc(route.pattern, route.handler)
 	}
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
@@ -1020,6 +1042,11 @@ type linkedGitHub struct {
 	// GET /repos/{owner}/{repo}/commits/{sha}/pulls names. A commit it does not name heads no
 	// pull request.
 	heads map[string]int
+	// updated is the updated_at each route answers for a pull request linkedGitHub names, keyed
+	// `owner/repo#n`, and the head it answered at (pullUpdatedAt). Guarded by mu. samePushSecond
+	// is a push inside the second of the answer before it: the head moves and updated_at stays.
+	updated        map[string]linkedUpdate
+	samePushSecond bool
 	// branches is the commits each branch carries, keyed `owner/repo:branch`, which
 	// GET /repos/{owner}/{repo}/compare/{base}...{head} answers from: `behind` for a commit the
 	// branch carries, `diverged` for every other commit the repository holds, and GitHub's 404
@@ -1123,6 +1150,45 @@ func (g *linkedGitHub) compareReads(repo string) int {
 // rateLimitWait is the Retry-After linkedGitHub's rate-limited answer names.
 const rateLimitWait = time.Minute
 
+// linkedPullUpdated is the updated_at linkedGitHub answers for a pull request the first time a
+// route names it (pullUpdatedAt).
+const linkedPullUpdated = "2026-11-14T00:00:00Z"
+
+// linkedUpdate is one pull request's updated_at as linkedGitHub answers it, and the head it
+// answered then.
+type linkedUpdate struct {
+	head string
+	at   time.Time
+}
+
+// pullUpdatedAt is the updated_at of repo's pull request number at head, as GitHub's every answer
+// about a pull request carries it, over REST and GraphQL alike: linkedPullUpdated the first time a
+// route names the pull request, the same moment while its head stays where it was, and a second
+// later each time its head has moved since, as a push moves GitHub's updated_at. A fake that names
+// no time lets any later answer overwrite a stored row, and one that keeps one time across a push
+// answers a moved head no newer than the row it moved from; GitHub does neither. The caller holds
+// g.mu.
+func (g *linkedGitHub) pullUpdatedAt(repo, number, head string) string {
+	if g.updated == nil {
+		g.updated = map[string]linkedUpdate{}
+	}
+	key := repo + "#" + number
+	update, named := g.updated[key]
+	switch {
+	case !named:
+		at, _ := time.Parse(time.RFC3339, linkedPullUpdated)
+		update = linkedUpdate{head: head, at: at}
+	case update.head != head && g.samePushSecond:
+		// GitHub's updated_at counts whole seconds, so a push inside the second of the answer
+		// before it moves the head and leaves the time.
+		update.head = head
+	case update.head != head:
+		update = linkedUpdate{head: head, at: update.at.Add(time.Second)}
+	}
+	g.updated[key] = update
+	return update.at.UTC().Format(time.RFC3339)
+}
+
 // linkedRepositoriesGitHub is a Dispatch holding an App key whose GitHub answers from linked.
 // The App is installed on every repository, and every repository answers `main` as its default
 // branch, so a commit heading no pull request is `other_commit` rather than `unknown`. A pull
@@ -1221,6 +1287,7 @@ func linkedRepositoriesOptions(t *testing.T, linked *linkedGitHub) testServerOpt
 		linked.mu.Lock()
 		state, head := linked.pulls[key], linked.pullHeadOf(repo, number)
 		merge, full := linked.merged[key]
+		updated := linked.pullUpdatedAt(repo, number, head)
 		linked.mu.Unlock()
 		var facts string
 		switch state {
@@ -1239,29 +1306,32 @@ func linkedRepositoriesOptions(t *testing.T, linked *linkedGitHub) testServerOpt
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
 		}
-		// The read-through's texts for the same pull request, which name no issue. It names no
-		// updated_at, as the answer of the state alone named none, so the row it writes carries no
-		// time a later answer of the read-through, which names a fixed one, could stand older than
-		// (pull_request_heads_older_read owes a read where it does).
+		// The read-through's texts for the same pull request, which name no issue, and its
+		// updated_at, which GitHub's every answer about a pull request carries, the same over each
+		// route (pullUpdatedAt).
 		fmt.Fprintf(w, `{"number":%s,%s,"title":"The second half of the work","body":"","draft":false,
-			"html_url":"https://github.com/%s/pull/%s",
+			"html_url":"https://github.com/%s/pull/%s","updated_at":%q,
 			"head":{"ref":"work","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}`,
-			number, facts, repo, number, head, repo)
+			number, facts, repo, number, updated, head, repo)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
 		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
 		linked.mu.Lock()
 		linked.readThroughs[repo]++
-		linked.mu.Unlock()
 		number, heads := linked.heads[repo+"@"+r.PathValue("sha")]
+		updated := ""
+		if heads {
+			updated = linked.pullUpdatedAt(repo, strconv.Itoa(number), r.PathValue("sha"))
+		}
+		linked.mu.Unlock()
 		if !heads {
 			fmt.Fprint(w, `[]`)
 			return
 		}
 		fmt.Fprintf(w, `[{"number":%d,"title":"The second half of the work","body":"","html_url":"https://github.com/%s/pull/%d",
-			"state":"open","merged":false,"updated_at":"2026-11-14T00:00:00Z",
+			"state":"open","merged":false,"updated_at":%q,
 			"head":{"ref":"work","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`,
-			number, repo, number, r.PathValue("sha"), repo)
+			number, repo, number, updated, r.PathValue("sha"), repo)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
@@ -2913,7 +2983,8 @@ func (f *commitPullsFake) answersCommitPullsAgain(sha string) {
 }
 
 // commitsAnswer sets what GET /repos/{owner}/{repo}/pulls/{number}/commits answers from now on:
-// the status of GitHub's answer and, for a 200, its page of commits.
+// the status of GitHub's answer and, for a 200, the pull request's commits, which serveCommits
+// answers in GitHub's pages.
 func (f *commitPullsFake) commitsAnswer(answer func(repo, number string) (int, string)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2928,6 +2999,10 @@ func (f *commitPullsFake) commitPagesRead() int {
 	return f.commitPages
 }
 
+// serveCommits answers GET /repos/{owner}/{repo}/pulls/{number}/commits as GitHub does: the
+// commits commits names, oldest first, at most 250 of them in all, per_page of them (GitHub's
+// default 30, at most 100) from page page. A fake that answered every commit on every page answered
+// a pull request of more than one page as one that never ends.
 func (f *commitPullsFake) serveCommits(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.commitPages++
@@ -2943,7 +3018,24 @@ func (f *commitPullsFake) serveCommits(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
 		return
 	}
-	fmt.Fprint(w, body)
+	var commits []json.RawMessage
+	if err := json.Unmarshal([]byte(body), &commits); err != nil {
+		http.Error(w, `{"message":"the fake's answer is no JSON array"}`, http.StatusInternalServerError)
+		return
+	}
+	commits = commits[:min(len(commits), 250)]
+	perPage, page := 30, 1
+	if asked, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && asked > 0 {
+		perPage = min(asked, 100)
+	}
+	if asked, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && asked > 0 {
+		page = asked
+	}
+	start := min((page-1)*perPage, len(commits))
+	listed := append([]json.RawMessage{}, commits[start:min(start+perPage, len(commits))]...)
+	if err := json.NewEncoder(w).Encode(listed); err != nil {
+		http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+	}
 }
 
 // serveCommitPulls answers GET /repos/{owner}/{repo}/commits/{sha}/pulls as GitHub does, in its
@@ -3296,6 +3388,12 @@ func factsNodeOf(body string, number int) (map[string]any, error) {
 	}
 	if err := json.Unmarshal([]byte(body), &pull); err != nil {
 		return nil, err
+	}
+	if pull.UpdatedAt == nil {
+		// GitHub's every answer about a pull request carries updated_at, over REST and GraphQL
+		// alike (GraphQL's updatedAt is non-null), so a fake answer with none answers what GitHub
+		// never does: a row stored from it carries no time, and any later answer overwrites it.
+		return nil, fmt.Errorf("the answer names no updated_at, which every answer of GitHub's about a pull request carries")
 	}
 	state := "CLOSED"
 	switch {

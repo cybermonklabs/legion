@@ -72,17 +72,28 @@ func serveCommitPulls(t *testing.T, fake *fakeGitHub, g *githubPulls, repo strin
 			}
 		}
 		g.mu.Unlock()
-		perPage, page := 30, 1
-		if asked, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil {
-			perPage = min(max(asked, 1), 100)
-		}
-		if asked, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && asked > 0 {
-			page = asked
-		}
-		from := min((page-1)*perPage, len(pulls))
-		mustEncode(t, w, pulls[from:min(from+perPage, len(pulls))])
+		from, to := githubPageBounds(r, len(pulls))
+		mustEncode(t, w, pulls[from:to])
 	})
 }
+
+// githubPageBounds is the part of a list of length items that GitHub answers r with, as
+// pulls[from:to]: per_page of them (GitHub's default 30, at most 100), from the page'th page.
+func githubPageBounds(r *http.Request, length int) (from, to int) {
+	perPage, page := 30, 1
+	if asked, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil {
+		perPage = min(max(asked, 1), 100)
+	}
+	if asked, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && asked > 0 {
+		page = asked
+	}
+	from = min((page-1)*perPage, length)
+	return from, min(from+perPage, length)
+}
+
+// pullCommitsListed is the most commits GitHub's REST list of a pull request's commits answers in
+// all, over every page (GET /repos/{owner}/{repo}/pulls/{number}/commits).
+const pullCommitsListed = 250
 
 // holdsCommit reports whether pull, as githubPulls holds it, holds sha: as its head, or among the
 // earlier commits of its history a test lists under the fake's own key "fake_history", which no

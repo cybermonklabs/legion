@@ -124,9 +124,14 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 			fmt.Fprint(w, `{"message":"Server Error"}`)
 			return
 		}
-		commits := make([]map[string]any, len(messages))
-		for i, message := range messages {
-			commits[i] = map[string]any{"sha": fmt.Sprintf("%040d", i+1), "commit": map[string]any{"message": message}}
+		// GitHub lists a pull request's commits oldest first, at most 250 of them in all, in its
+		// pages (githubPageBounds). A fake that answered every commit on every page answered a
+		// pull request of more than one page as one that never ends.
+		listed := messages[:min(len(messages), pullCommitsListed)]
+		from, to := githubPageBounds(r, len(listed))
+		commits := make([]map[string]any, 0, to-from)
+		for i := from; i < to; i++ {
+			commits = append(commits, map[string]any{"sha": fmt.Sprintf("%040d", i+1), "commit": map[string]any{"message": listed[i]}})
 		}
 		mustEncode(t, w, commits)
 	})
