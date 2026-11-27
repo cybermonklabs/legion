@@ -182,7 +182,7 @@ func projectHold(t *testing.T, database *store.Store, taken bool, unlocked ...st
 	t.Helper()
 	return lockstep.HoldOwner(t, database, &lockstep.Hold{
 		Name: "project CENS's lock", Step: stepProject, Taken: taken,
-		Statement: strings.ToLower(store.OwnersLockShared), Unlocked: unlocked,
+		Statement: lockstep.OwnersLockSharedStatement, Unlocked: unlocked,
 	}, store.ProjectOwner("CENS"))
 }
 
