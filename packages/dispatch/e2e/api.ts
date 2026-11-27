@@ -1245,6 +1245,13 @@ export function createHandoff(
   );
 }
 
+/** The actor the Legion daemon of `issue`'s project writes as: the session
+ *  `legion-daemon:<PROJECT>`, `<PROJECT>` the key up to its first `-`, the server's own rule
+ *  (`legionDaemonSessionOf`, `packages/envoy/internal/dispatch/api/issue_role_holders.go`). */
+function legionDaemonOf(issue: string): Actor {
+  return { id: `legion-daemon:${issue.slice(0, issue.indexOf("-"))}`, kind: "session" };
+}
+
 /** The Legion daemon of `issue`'s project writes one run of a step, as its outbox does: under the
  *  agent bearer, naming the session `legion-daemon:<PROJECT>`, the one writer the route admits
  *  for that project's issues. A field the record already holds is kept, so a start and an end
@@ -1254,11 +1261,28 @@ export function putStep(
   id: string,
   input: Body<"/api/v1/issues/{key}/steps/{id}", "put">
 ) {
-  const project = issue.slice(0, issue.indexOf("-"));
   return put(
     "/api/v1/issues/{key}/steps/{id}",
     { body: input, params: { id, key: issue } },
-    { actor: { id: `legion-daemon:${project}`, kind: "session" }, as: "agent" }
+    { actor: legionDaemonOf(issue), as: "agent" }
+  );
+}
+
+/** `PUT /api/v1/issues/{key}/role-holders`: the session that holds each Legion role of `key`, the
+ *  issue's whole set, published as the Legion daemon of its project publishes it - over the agent
+ *  bearer, naming the session `legion-daemon:<PROJECT>`. The harness runs the server without
+ *  `DISPATCH_LEGION_STATUS_SCOPE`, so the shared bearer may name that session in the body, and a
+ *  project of the harness has `proven_sessions` off, so the session it names is taken at its word
+ *  (the route's comment in `issue_role_holders.go`). The server reads the set where a role decides
+ *  a write, such as the architect of a P0 issue filing a child under it with no p0. */
+export function putIssueRoleHolders(
+  key: string,
+  holders: NonNullable<Body<"/api/v1/issues/{key}/role-holders", "put">["holders"]>
+) {
+  return put(
+    "/api/v1/issues/{key}/role-holders",
+    { body: { holders }, params: { key } },
+    { actor: legionDaemonOf(key), as: "agent" }
   );
 }
 
