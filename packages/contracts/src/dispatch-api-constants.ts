@@ -168,6 +168,21 @@ export const MAX_ISSUE_PAGE_LIMIT = 250;
 export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
 
 /**
+ * The most threads one page of an issue's threads holds: `limit` is 1 to this on
+ * `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity`. Generated into Go as
+ * `contracts.MaxThreadPageLimit`, which the server enforces.
+ */
+export const MAX_THREAD_PAGE_LIMIT = 100;
+
+/**
+ * The page size of `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity` when a caller names no `limit`.
+ * Generated into Go as `contracts.DefaultThreadPageLimit`.
+ */
+export const DEFAULT_THREAD_PAGE_LIMIT = 20;
+
+/**
  * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
  * `events` nor `all_events`: what `DispatchClient.read` returns by default.
  */

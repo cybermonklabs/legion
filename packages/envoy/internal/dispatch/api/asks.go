@@ -820,13 +820,12 @@ type issueAskRow struct {
 	Thread    *askThread          `json:"thread,omitempty"`
 }
 
-// listIssueAsks returns every ask on an issue, filtered by state: "open" or
-// "answered" match only that state; "all" (the default) returns every ask
-// regardless of state, including resolved ones. Each ask carries its newest reply, so a
-// client can order by it; `?thread=1` adds the thread a card renders, batched over the whole
-// page in one set of reads rather than a fetch per ask. The list is unpaged and three surfaces
-// read it, so the thread is what the one surface that draws it asks for, not what every reader
-// of the ask row pays for.
+// listIssueAsks returns asks on an issue, filtered by state: "open" or "answered" match only
+// that state; "all" (the default) includes resolved ones. Each ask carries its newest reply,
+// so a client can order by it. Without order the list is unpaged, and three surfaces read it.
+// Only the surface that draws threads asks for them with ?thread=1, so other readers do not
+// pay to build them. That parameter batches thread reads over the whole answer, and under
+// order=activity only the page's asks are built (readAskThreadPage).
 func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -841,8 +840,22 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	page, err := parseThreadPage(r.URL.Query())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
+		return
+	}
+	if page != nil {
+		result, err := s.readAskThreadPage(r.Context(), who, r.PathValue("key"), state, *page, withThread, wantsDisplayTrees(r))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 		return
 	}
 	rows, err := s.loadIssueAskRows(r.Context(), who, issueOwner(r.PathValue("key")), state, withThread, wantsDisplayTrees(r))
@@ -853,34 +866,17 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, rows)
 }
 
-// loadIssueAskRows is the read behind GET /api/v1/issues/{key}/asks: every ask of one issue in
-// the state ?state= names, each with its newest reply, and with the thread a card draws when the
-// caller asked for one, all of it read for who. listIssueAsks answers it, and GET /api/v1/landing
-// carries the same rows on its issue page, which draws those cards. trees is what the request
-// asked for (wantsDisplayTrees), so the landing's rows carry the trees the route's do.
+// loadIssueAskRows is the read behind GET /api/v1/issues/{key}/asks without order: every ask of
+// one issue in the state ?state= names, each with its newest reply, and with the thread a card
+// draws when the caller asked for one, all of it read for who. listIssueAsks answers it, and GET
+// /api/v1/landing carries the same rows on its issue page, which draws those cards. trees is what
+// the request asked for (wantsDisplayTrees), so the landing's rows carry the trees the route's do.
 func (s *server) loadIssueAskRows(ctx context.Context, who model.Actor, owner owner, state string, withThread, trees bool) ([]issueAskRow, error) {
 	asks, lastReplies, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, who, owner, state)
 	if err != nil {
 		return nil, err
 	}
-	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
-	// every thread the list carries, are one query and one store.
-	reader := s.readDisplayTrees(ctx, trees)
-	rows := make([]issueAskRow, len(asks))
-	for index := range asks {
-		rows[index].shapedAsk.Ask = asks[index]
-		rows[index].shapedAsk.shape(reader)
-		if reply, ok := lastReplies[asks[index].ID]; ok {
-			rows[index].LastReply = &reply
-		}
-	}
-	if withThread {
-		if err := s.attachIssueAskThreads(ctx, who, rows, reader); err != nil {
-			return nil, err
-		}
-	}
-	reader.resolve()
-	return rows, nil
+	return s.shapeIssueAskRows(ctx, who, asks, lastReplies, withThread, trees)
 }
 
 // attachIssueAskThreads hangs each row's thread off it, read for who. loadAskThreads leaves
@@ -1194,7 +1190,15 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor,
 	default:
 		return nil, nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, query, value)
+	return queryAskReads(ctx, q, who, query, value)
+}
+
+// queryAskReads runs statement, an askReadColumns query, and answers its asks in the order it
+// lists them, each with its details (loadAskDetails), and the newest reply in each ask's thread
+// keyed by ask id (scanAskReads). An owner's asks (queryOwnerAsks) and an issue's ask page
+// (readAskThreadPage) read through it.
+func queryAskReads(ctx context.Context, q queryer, who model.Actor, statement string, args ...any) ([]model.Ask, map[string]model.AskLastReply, error) {
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, nil, err
 	}

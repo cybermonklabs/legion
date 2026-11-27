@@ -207,6 +207,13 @@ export const STEP_KINDS = ["step", "retro", "merge"] as const;
  *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
 export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
 
+/** Where a step of an issue's plan stands in the steps read (`PlannedStep.state`), from the records
+ *  of the plan's own run of the issue: not started before any run of it, running while its newest
+ *  run has no end, then that run's result (`STEP_RESULTS`). Generated into Go as
+ *  `contracts.PlannedStepNotStarted` and `contracts.PlannedStepRunning`, which Dispatch's steps read
+ *  writes; the OpenAPI document names them as the state's enum, which the web client switches on. */
+export const PLANNED_STEP_STATES = ["not started", "running", ...STEP_RESULTS] as const;
+
 /** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
  *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
  *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
@@ -233,3 +240,19 @@ export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
 /** STEP_AGENT_TEXT_PATTERN's rule in words, which Dispatch's refusal gives: generated into Go as
  *  `contracts.StepAgentTextRule`. */
 export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
+
+/** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
+ *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
+export const STEP_TASK_MAX = 64;
+
+/** The form of the id of a task a step record names, which is also the id of a `plan_task` block
+ *  of an owner's plan: lowercase letters, digits and hyphens, the first a letter or a digit, at
+ *  most `STEP_TASK_MAX` bytes. Generated into Go as `contracts.StepTaskPattern`: Dispatch refuses
+ *  a step write and a plan write that names a task outside it, and the Legion daemon, through
+ *  `github.com/sjawhar/envoy/steprecord`, refuses a plan whose task block has such an id, whose
+ *  steps Dispatch could record none of. */
+export const STEP_TASK_PATTERN = new RegExp(`^[a-z0-9][a-z0-9-]{0,${STEP_TASK_MAX - 1}}$`);
+
+/** STEP_TASK_PATTERN's rule in words, which the refusal of either side gives: generated into Go as
+ *  `contracts.StepTaskRule`. */
+export const STEP_TASK_RULE_WORDS = `lowercase letters, digits and hyphens, starting with a letter or a digit, at most ${STEP_TASK_MAX} bytes`;
