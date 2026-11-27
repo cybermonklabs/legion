@@ -171,17 +171,30 @@ func never(t *testing.T) (string, func() int) {
 // stalling is a Dispatch that holds each question open until the caller hangs up or the test ends
 // the stall (end), and answers 503 at once to every question after that; with the number of
 // questions it was asked. end returns once every question it held has had its answer written.
+//
+// Each held.Add must happen before end's held.Wait (sync.WaitGroup's rule for an Add from zero),
+// and the network between a client and this handler orders nothing for the race detector. So
+// end marks ended under mu before it waits, which orders every Add before the Wait, and a question
+// that comes after end is answered at once without joining held.
 func stalling(t *testing.T) (url string, calls func() int, end func()) {
 	t.Helper()
 	var mu sync.Mutex
 	asked := 0
+	ended := false
 	release := make(chan struct{})
 	var held sync.WaitGroup
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		asked++
-		held.Add(1)
+		after := ended
+		if !after {
+			held.Add(1)
+		}
 		mu.Unlock()
+		if after {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		defer held.Done()
 		select {
 		case <-r.Context().Done():
@@ -191,7 +204,12 @@ func stalling(t *testing.T) (url string, calls func() int, end func()) {
 	}))
 	var once sync.Once
 	end = func() {
-		once.Do(func() { close(release) })
+		once.Do(func() {
+			mu.Lock()
+			ended = true
+			mu.Unlock()
+			close(release)
+		})
 		held.Wait()
 	}
 	t.Cleanup(server.Close)
