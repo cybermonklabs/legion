@@ -27,12 +27,8 @@ package codesurvival
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"maps"
@@ -43,7 +39,6 @@ import (
 	"runtime/debug"
 	"runtime/metrics"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/survivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -80,13 +76,16 @@ var (
 	liveClock    = time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 )
 
-// liveGroups is the project's code groups as INFRA's delivery settings name them: Legion's
-// changes, by the head-branch prefix legion/ or one of Legion's two implement Apps, then every
-// other change.
-var liveGroups = []delivery.CodeGroup{
-	{Name: "Legion", BranchPrefixes: []string{"legion/"}, AuthorLogins: []string{"legion-implementer[bot]", "trajectory-s-legion-implementer[bot]"}},
-	{Name: "Other"},
-}
+// liveGroups is the project's code groups as INFRA's delivery settings name them, the reference's
+// (survivaltest.ReferenceGroups): Legion's changes, by the head-branch prefix legion/ or one of
+// Legion's two implement Apps, then every other change.
+var liveGroups = func() []delivery.CodeGroup {
+	var groups []delivery.CodeGroup
+	for _, group := range survivaltest.ReferenceGroups() {
+		groups = append(groups, delivery.CodeGroup{Name: group.Name, BranchPrefixes: group.BranchPrefixes, AuthorLogins: group.AuthorLogins})
+	}
+	return groups
+}()
 
 // The budget and the bounds k15 holds the live run to.
 const (
@@ -843,7 +842,7 @@ func (p *liveProxy) forward(w http.ResponseWriter, r *http.Request) {
 		read.Bytes, _ = io.Copy(w, response.Body)
 	}
 	p.record(read)
-	if patch && p.hold != nil && response.StatusCode == http.StatusOK {
+	if patch && p.hold != nil && ok {
 		p.hold.answered(sha)
 	}
 }
@@ -1045,13 +1044,9 @@ func (h *patchHold) stop() {
 // (api.NewDeps).
 func bootClient(t *testing.T, pool *store.Pool, base string) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate the App's key: %v", err)
-	}
-	encoded := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	_, encoded := githubapptest.Key(t)
 	t.Setenv("DISPATCH_APP_CLIENT_ID", "Iv1.codesurvival-live")
-	t.Setenv("DISPATCH_APP_PEM_B64", base64.StdEncoding.EncodeToString(encoded))
+	t.Setenv("DISPATCH_APP_PEM_B64", base64.StdEncoding.EncodeToString([]byte(encoded)))
 	t.Setenv("DISPATCH_GITHUB_API_BASE", base)
 	app, err := auth.LoadAppFromEnv(os.Getenv)
 	if err != nil || app == nil {
@@ -1071,24 +1066,11 @@ func bootClient(t *testing.T, pool *store.Pool, base string) *githubapp.Client {
 func (r *rig) seedLive(t *testing.T, ref survivaltest.Reference) (issues, projects int) {
 	t.Helper()
 	r.project(liveProject, liveRepo, liveGroups)
-	path := ref.Path("lg", "issues.tsv")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	var keys, owners, repos []string
-	var numbers []int32
-	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
-		row := strings.Split(line, "\t")
-		at := strings.LastIndexByte(row[0], '-')
-		if len(row) != 3 || at < 0 || row[0][:at] != row[1] {
-			t.Fatalf("%s: the row %q is no key of its project and a repository", path, line)
-		}
-		number, err := strconv.ParseInt(row[0][at+1:], 10, 32)
-		if err != nil {
-			t.Fatalf("%s: the key %q: %v", path, row[0], err)
-		}
-		keys, owners, numbers, repos = append(keys, row[0]), append(owners, row[1]), append(numbers, int32(number)), append(repos, row[2])
+	loaded := ref.Issues(t)
+	keys, owners, repos := make([]string, len(loaded)), make([]string, len(loaded)), make([]string, len(loaded))
+	numbers := make([]int32, len(loaded))
+	for at, issue := range loaded {
+		keys[at], owners[at], numbers[at], repos[at] = issue.Key, issue.Project, issue.Number, issue.Repo
 	}
 	named := slices.Compact(slices.Sorted(slices.Values(slices.Clone(owners))))
 	for _, project := range named {
@@ -1101,7 +1083,7 @@ func (r *rig) seedLive(t *testing.T, ref survivaltest.Reference) (issues, projec
 		select u.key, u.project, u.number, u.key, 'todo', '{"kind":"system","id":"codesurvival-live"}'::jsonb, u.key, nullif(u.repo, '')
 		from unnest($1::text[], $2::text[], $3::int[], $4::text[]) as u(key, project, number, repo)`, keys, owners, numbers, repos)
 	if err != nil || tag.RowsAffected() != int64(len(keys)) {
-		t.Fatalf("load the %d issues of %s: %v (%d loaded)", len(keys), path, err, tag.RowsAffected())
+		t.Fatalf("load the %d issues of lg/issues.tsv: %v (%d loaded)", len(keys), err, tag.RowsAffected())
 	}
 	return len(keys), len(named)
 }
@@ -1266,7 +1248,7 @@ func (r *rig) passThrough(proxy *liveProxy, now time.Time, period time.Duration,
 	ctx, cancel := context.WithCancel(r.ctx)
 	defer cancel()
 	logged := len(r.logs.lines(r.t, "codesurvival: run"))
-	r.clock.set(now)
+	r.clock.Set(now)
 	runtime.GC()
 	stop := sampleLiveHeap(period, abortAbove, func() {
 		cancel()

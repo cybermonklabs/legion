@@ -2,10 +2,11 @@ package survivaltest
 
 // reference.go reads the directory ../testdata/reference/prepare.sh writes (its README.md lists
 // it): the first-parent chain of cybermonklabs/legion the reference replays, each commit's patch
-// as git wrote it, the pull requests that chain merged and the issue each was attributed, and the
-// code groups the reference counts by. The survival package's reference tests (build tag
-// survivalref) and the code-survival run's live test read it, from the directory
-// SURVIVAL_REF_DIR names. It reads the files one at a time and holds no patch it has handed on.
+// as git wrote it, the pull requests that chain merged and the issue each was attributed, the
+// issues step 3 read, and the code groups the reference counts by. The survival package's
+// reference tests (build tag survivalref) and the code-survival run's live test read it, from the
+// directory SURVIVAL_REF_DIR names. It reads the files one at a time and holds no patch it has
+// handed on.
 
 import (
 	"bufio"
@@ -66,13 +67,12 @@ func (r Reference) PatchPath(sha string) string {
 	return r.Path("lg", "git", sha+".diff.gz")
 }
 
-// ChainCommit is one commit of lg/commits.txt: its SHA, its committer time (in UTC), its parents
-// (the first parent first) and its subject.
+// ChainCommit is one commit of lg/commits.txt: its SHA, its committer time (in UTC) and its parents
+// (the first parent first).
 type ChainCommit struct {
 	SHA         string
 	CommittedAt time.Time
 	Parents     []string
-	Subject     string
 }
 
 // Chain is lg/commits.txt, the first-parent chain the reference replays, oldest first: each line
@@ -103,21 +103,18 @@ func (r Reference) Chain(t testing.TB) []ChainCommit {
 			commit.Parents = append(commit.Parents, parent)
 			rest = after
 		}
-		commit.Subject = rest
 		chain = append(chain, commit)
 	})
 	return chain
 }
 
 // Pull is one pull request of lg/pulls.json: its number, the commit it merged as (GitHub's
-// merge_commit_sha, which GitHub answers for a pull request closed unmerged too), its head and
-// base branches, the login that opened it, its title and body, and when it merged (zero for one
-// closed unmerged).
+// merge_commit_sha, which GitHub answers for a pull request closed unmerged too), its head branch,
+// the login that opened it, its title and body, and when it merged (zero for one closed unmerged).
 type Pull struct {
 	Number   int
 	MergeSHA string
 	HeadRef  string
-	BaseRef  string
 	Author   string
 	Title    string
 	Body     string
@@ -147,9 +144,6 @@ func (r Reference) Pulls(t testing.TB) []Pull {
 			Head     struct {
 				Ref string `json:"ref"`
 			} `json:"head"`
-			Base struct {
-				Ref string `json:"ref"`
-			} `json:"base"`
 			User struct {
 				Login string `json:"login"`
 			} `json:"user"`
@@ -160,7 +154,7 @@ func (r Reference) Pulls(t testing.TB) []Pull {
 		if err := decoder.Decode(&read); err != nil {
 			t.Fatalf("survivaltest: read pull request %d of lg/pulls.json: %v", len(pulls)+1, err)
 		}
-		pull := Pull{Number: read.Number, HeadRef: read.Head.Ref, BaseRef: read.Base.Ref, Author: read.User.Login, Title: read.Title}
+		pull := Pull{Number: read.Number, HeadRef: read.Head.Ref, Author: read.User.Login, Title: read.Title}
 		if read.MergeSHA != nil {
 			pull.MergeSHA = *read.MergeSHA
 		}
@@ -173,6 +167,35 @@ func (r Reference) Pulls(t testing.TB) []Pull {
 		pulls = append(pulls, pull)
 	}
 	return pulls
+}
+
+// Issue is one line of lg/issues.tsv, an issue step 3 read: its key, its project, the number its
+// key ends with, and its own repository ("" for none).
+type Issue struct {
+	Key     string
+	Project string
+	Number  int32
+	Repo    string
+}
+
+// Issues is lg/issues.tsv, in its order; it fails t on a line whose key is not one of its
+// project's.
+func (r Reference) Issues(t testing.TB) []Issue {
+	t.Helper()
+	var issues []Issue
+	r.eachLine(t, r.Path("lg", "issues.tsv"), func(line string) {
+		fields := strings.Split(line, "\t")
+		at := strings.LastIndexByte(fields[0], '-')
+		if len(fields) != 3 || at < 0 || fields[0][:at] != fields[1] {
+			t.Fatalf("survivaltest: lg/issues.tsv line %q is no key of its project and a repository", line)
+		}
+		number, err := strconv.ParseInt(fields[0][at+1:], 10, 32)
+		if err != nil {
+			t.Fatalf("survivaltest: lg/issues.tsv line %q: %v", line, err)
+		}
+		issues = append(issues, Issue{Key: fields[0], Project: fields[1], Number: int32(number), Repo: fields[2]})
+	})
+	return issues
 }
 
 // PullIssue is one line of lg/pr_issue.tsv: a merged pull request's merge commit, its number, and

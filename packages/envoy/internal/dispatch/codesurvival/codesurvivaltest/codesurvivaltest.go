@@ -22,11 +22,7 @@ package codesurvivaltest
 
 import (
 	"bytes"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -41,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/survivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -107,9 +104,6 @@ func (h *History) Merge(branch string, pull Pull, at time.Time) string {
 	h.pulls = append(h.pulls, pull)
 	return sha
 }
-
-// Pulls is every pull request the history landed, in the order it landed them.
-func (h *History) Pulls() []Pull { return slices.Clone(h.pulls) }
 
 // Reset moves the branch main to sha, a commit of the history, and checks it out: a force-push,
 // whose new commits the test then makes from there. The pull requests that landed a commit the
@@ -308,11 +302,7 @@ func (g *GitHub) URL() string { return g.url }
 // builds its own (githubapp.New with the base URL).
 func (g *GitHub) Client(t testing.TB) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("codesurvivaltest: generate the App's key: %v", err)
-	}
-	encoded := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	_, encoded := githubapptest.Key(t)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.codesurvival", PEM: encoded}, g.url)
 	if err != nil || client == nil {
 		t.Fatalf("codesurvivaltest: the App client: %v", err)
@@ -629,7 +619,7 @@ func (g *GitHub) files(w http.ResponseWriter, r *http.Request, sha string, branc
 	g.mu.Lock()
 	withheld := g.refusals[sha].Withheld
 	g.mu.Unlock()
-	entries := FilesOf(body)
+	entries := filesOf(body)
 	for index := range entries {
 		if index < withheld {
 			entries[index].Patch = nil
@@ -692,10 +682,10 @@ func (g *GitHub) pullCommits(w http.ResponseWriter, r *http.Request, number int,
 	g.writeJSON(w, []map[string]any{{"sha": branch.Pulls[at].SHA, "commit": map[string]any{"message": branch.Pulls[at].Title}}})
 }
 
-// FilesOf is the files[] entries GitHub serves for a commit whose patch is diff, a diff as git
+// filesOf is the files[] entries GitHub serves for a commit whose patch is diff, a diff as git
 // writes it: one entry per file, its name, its previous name where it was renamed, its status, its
 // patch (the file's hunks, from its first @@ line) and the count of lines it changed.
-func FilesOf(diff []byte) []survival.FilesEntry {
+func filesOf(diff []byte) []survival.FilesEntry {
 	var entries []survival.FilesEntry
 	for _, section := range bytes.Split(diff, []byte("\ndiff --git ")) {
 		section = bytes.TrimPrefix(section, []byte("diff --git "))

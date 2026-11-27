@@ -1,21 +1,21 @@
 package codesurvival
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -39,50 +40,14 @@ var testGroups = []delivery.CodeGroup{
 	{Name: "others"},
 }
 
-// testClock is the clock a rig's run and regroup read, which the test moves.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *testClock) set(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = now
-}
-
 // syncBuffer is a log the run writes from its own goroutine and a test reads.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
+type syncBuffer struct{ logtest.Buffer }
 
 // lines is every JSON line logged with message msg, decoded.
 func (b *syncBuffer) lines(t *testing.T, msg string) []map[string]any {
 	t.Helper()
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	var found []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(b.buf.String()), "\n") {
-		if line == "" {
-			continue
-		}
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatalf("decode the log line %q: %v", line, err)
-		}
+	for _, record := range logtest.JSONLines(t, b.String()) {
 		if record["msg"] == msg {
 			found = append(found, record)
 		}
@@ -91,14 +56,14 @@ func (b *syncBuffer) lines(t *testing.T, msg string) []map[string]any {
 }
 
 // rig is one test's Dispatch: its own database with the eval registry, the GitHub double, and the
-// run and the regroup over them, each on the rig's clock.
+// run and the regroup over them, each on the rig's clock, which the test moves.
 type rig struct {
 	t        *testing.T
 	ctx      context.Context
 	database *store.Store
 	registry *evals.Store
 	github   *codesurvivaltest.GitHub
-	clock    *testClock
+	clock    *clocktest.Fake
 	logs     *syncBuffer
 	run      *Run
 	regroup  *Regroup
@@ -118,13 +83,11 @@ func newRig(t *testing.T) *rig {
 	attributor := delivery.NewAttributor(refs.Renames{})
 	github := codesurvivaltest.New(t)
 	r := &rig{t: t, ctx: testwait.Context(t), database: database, registry: evals.New(database, documents, broker, attributor),
-		github: github, clock: &testClock{}, logs: &syncBuffer{}}
+		github: github, clock: clocktest.New(time.Time{}), logs: &syncBuffer{}}
 	logger := slog.New(slog.NewJSONHandler(r.logs, nil))
 	t.Cleanup(func() {
 		if t.Failed() {
-			r.logs.mu.Lock()
-			defer r.logs.mu.Unlock()
-			t.Logf("the run's log:\n%s", r.logs.buf.String())
+			t.Logf("the run's log:\n%s", r.logs.String())
 		}
 	})
 	r.run = &Run{Pool: database.Pool, Client: github.Client(t), Attributor: attributor, Build: testBuild, Now: r.clock.Now, Logger: logger}
@@ -154,17 +117,9 @@ func (r *rig) project(key, defaultRepo string, groups []delivery.CodeGroup) {
 // saveGroups saves groups as key's code groups, as the settings route saves them.
 func (r *rig) saveGroups(key string, groups []delivery.CodeGroup) {
 	r.t.Helper()
-	tx, err := r.database.Pool.Begin(r.ctx)
-	if err != nil {
-		r.t.Fatalf("begin the settings of %s: %v", key, err)
-	}
-	defer tx.Rollback(r.ctx)
-	if _, err := delivery.PutProjectSettings(r.ctx, tx, delivery.ProjectSettingsInput{Project: key, CodeGroups: &groups},
+	if _, err := deliverytest.SaveSettings(r.ctx, r.database.Pool, delivery.ProjectSettingsInput{Project: key, CodeGroups: &groups},
 		model.Actor{Kind: "system", ID: "codesurvival-test"}); err != nil {
 		r.t.Fatalf("save the code groups of %s: %v", key, err)
-	}
-	if err := tx.Commit(r.ctx); err != nil {
-		r.t.Fatalf("commit the settings of %s: %v", key, err)
 	}
 }
 
@@ -189,7 +144,7 @@ func (r *rig) issue(project string, number int, repo string) string {
 // during it.
 func (r *rig) passAt(now time.Time) []codesurvivaltest.Request {
 	r.t.Helper()
-	r.clock.set(now)
+	r.clock.Set(now)
 	r.github.Forget()
 	r.run.Pass(r.ctx)
 	return r.github.Requests()
@@ -360,9 +315,9 @@ func patchReads(requests []codesurvivaltest.Request) map[string]int {
 func routeOf(request codesurvivaltest.Request) string {
 	parts := strings.Split(strings.TrimPrefix(request.Path, "/"), "/")
 	switch {
-	case request.Method == "POST" && len(parts) == 4 && parts[0] == "app" && parts[1] == "installations" && parts[3] == "access_tokens":
+	case request.Method == http.MethodPost && len(parts) == 4 && parts[0] == "app" && parts[1] == "installations" && parts[3] == "access_tokens":
 		return "token"
-	case request.Method != "GET" || len(parts) < 3 || parts[0] != "repos":
+	case request.Method != http.MethodGet || len(parts) < 3 || parts[0] != "repos":
 		return ""
 	}
 	rest := parts[3:]

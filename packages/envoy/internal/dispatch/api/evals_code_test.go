@@ -38,16 +38,12 @@ func TestBothCodeEvalsAreInEveryProject(t *testing.T) {
 	ctx := t.Context()
 	measured, waiting := "MEASURED", "WAITING"
 	createTestProject(t, handler, measured, waiting, "INFRA")
-	exec := func(what, statement string, args ...any) {
-		t.Helper()
-		if _, err := database.Pool.Exec(ctx, statement, args...); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	}
 	// The issue whose documents the methods link, with both documents.
-	exec("write INFRA-3117", `
+	if _, err := database.Pool.Exec(ctx, `
 		insert into issues (key, project_key, number, title, status, rank, priority, created_by)
-		values ('INFRA-3117', 'INFRA', 3117, 'Code survival, measured', 'done', 'U3117', 2, '{"kind":"user","id":"alice"}')`)
+		values ('INFRA-3117', 'INFRA', 3117, 'Code survival, measured', 'done', 'U3117', 2, '{"kind":"user","id":"alice"}')`); err != nil {
+		t.Fatalf("write INFRA-3117: %v", err)
+	}
 	for _, name := range []string{"method.md", "analysis.md"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/INFRA-3117/artifacts", map[string]string{
 			"name": name, "content": "# " + name + "\n\nThe document the code evals' methods link.\n",

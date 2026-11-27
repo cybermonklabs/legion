@@ -127,13 +127,14 @@ func TestThePatchBytesHeldStayUnderTheBound(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	for sha, reads := range patchReads(requests) {
-		if reads != 1 {
-			t.Errorf("the patch of %s was read %d times, want once", sha, reads)
+	reads := patchReads(requests)
+	for sha, times := range reads {
+		if times != 1 {
+			t.Errorf("the patch of %s was read %d times, want once", sha, times)
 		}
 	}
-	if reads := len(patchReads(requests)); reads != commits {
-		t.Fatalf("the run read %d patches, want %d", reads, commits)
+	if len(reads) != commits {
+		t.Fatalf("the run read %d patches, want %d", len(reads), commits)
 	}
 	lines := r.logs.lines(t, "codesurvival: run")
 	line := lines[len(lines)-1]

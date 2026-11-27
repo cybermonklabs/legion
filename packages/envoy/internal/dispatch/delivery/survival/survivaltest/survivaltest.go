@@ -88,9 +88,6 @@ func New(t testing.TB) *Repo {
 	return repo
 }
 
-// Dir is the repository's working tree.
-func (r *Repo) Dir() string { return r.dir }
-
 // Git runs git with args in the repository and answers its standard output; it fails the test
 // when git fails.
 func (r *Repo) Git(args ...string) string {

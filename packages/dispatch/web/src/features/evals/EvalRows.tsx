@@ -36,7 +36,7 @@ function numberOf(row: EvalItemRow, name: string): number | null {
 }
 
 /** A row's own text column `name`, "" where it holds none. */
-function textOf(row: EvalItemRow, name: string): string {
+export function textOf(row: EvalItemRow, name: string): string {
   const value = row.cols?.[name];
   return typeof value === "string" ? value : "";
 }

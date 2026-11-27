@@ -406,7 +406,7 @@ func TestTheCodeMethodsNeverStateTheMixedOrTheTipGap(t *testing.T) {
 		if !strings.Contains(method, "1.2 points") || !strings.Contains(method, "4.8 for the other agent") {
 			t.Errorf("%s's method does not state the same-age gap, so a check that it states no other proves little", slug)
 		}
-		for _, number := range []string{"1.8", "1.843", "7.0", "6.979", "76.52", "79.78"} {
+		for _, number := range []string{"1.8", "7.0", "6.979", "76.52", "79.78"} {
 			if strings.Contains(method, number) {
 				t.Errorf("%s's method states %q, a gap taken at the tip or from the published figures", slug, number)
 			}

@@ -542,8 +542,9 @@ func TestAReplaceClearsTheMarkAndTheBlockOfTheDaysItMeasures(t *testing.T) {
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatalf("commit the marks: %v", err)
 	}
-	if err := database.Pool.QueryRow(t.Context(), `select count(*) from code_days where state = 'marked'`).Scan(&files); err != nil || files != 1 {
-		t.Fatalf("marked days = %d (%v), want day 0 alone: the blocked day is no measured day", files, err)
+	var marked int
+	if err := database.Pool.QueryRow(t.Context(), `select count(*) from code_days where state = 'marked'`).Scan(&marked); err != nil || marked != 1 {
+		t.Fatalf("marked days = %d (%v), want day 0 alone: the blocked day is no measured day", marked, err)
 	}
 
 	replace(t, database, days, out)
@@ -561,7 +562,7 @@ func TestAReplaceClearsTheMarkAndTheBlockOfTheDaysItMeasures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the days: %v", err)
 	}
-	if want := (held{"measured", true, true, true, true, true}); len(got) != 2 || got[0] != want || got[1] != want {
+	if want := (held{string(survival.DayMeasured), true, true, true, true, true}); len(got) != 2 || got[0] != want || got[1] != want {
 		t.Fatalf("the days after the run that measured both = %+v, want each measured with no mark and no blocking commit", got)
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // codeShare is the share of series of the eval id over the window of a body of the evals list
@@ -56,16 +55,7 @@ func TestAMeasurementReachesTheOpenEvalsView(t *testing.T) {
 		t.Fatalf("give INFRA its default repository: %v", err)
 	}
 	groups := []delivery.CodeGroup{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "others"}}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the settings: %v", err)
-	}
-	if _, err := delivery.PutProjectSettings(ctx, tx, delivery.ProjectSettingsInput{Project: "INFRA", CodeGroups: &groups}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("save INFRA's code groups: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the settings: %v", err)
-	}
+	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{Project: "INFRA", CodeGroups: &groups})
 
 	today := measures.Midnight(time.Now())
 	first := today.AddDate(0, 0, -45)

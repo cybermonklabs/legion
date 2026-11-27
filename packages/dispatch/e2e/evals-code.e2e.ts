@@ -31,9 +31,9 @@
 // acme-shaped placeholders throughout (AGENTS.md: "This repository is public").
 
 import type {
+  CodeGroup,
   EvalItemsResponse,
   EvalListItem,
-  ProjectDeliverySettings,
   ProjectDeploySourceInput,
 } from "../web/src/api/types";
 import {
@@ -43,6 +43,7 @@ import {
   putProjectDefaultRepository,
   putProjectDeliverySettings,
 } from "./api";
+import { SEED_ACTOR } from "./delivery-seed";
 import { saveDeliverySettings } from "./delivery-settings-steps";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
@@ -54,8 +55,6 @@ const REWORK = "post-merge-rework-30d";
 
 /** The repository both projects name as their default, the branch the seed's results are of. */
 const REPO = "acme/widgets";
-
-const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
 
 /** The window every row reads: the first measured day to the fifth day after the last. */
 const WINDOW = { from: "2026-09-01T00:00:00Z", to: "2026-09-16T00:00:00Z" } as const;
@@ -159,7 +158,7 @@ const BLOCKED_SHA = sha("b7");
 type DayState = "measured" | "marked" | "blocked";
 
 /** The statements that write acme/widgets' stored results: the repository as the run reads it,
- *  each of `days` in its state, the changes and the one pair. */
+ *  each of `days` in its state, and the changes. */
 function resultsSql(
   days: readonly string[],
   states: Readonly<Record<string, DayState>> = {},
@@ -189,19 +188,14 @@ function resultsSql(
                ${change.issue === null ? "null" : sqlLiteral(change.issue)}, ${change.added}, ${change.alive}, 0)`
          )
          .join(", ")}`,
-    ...(changes === CHANGES
-      ? [
-          `INSERT INTO code_pairs (repo, adder_sha, remover_sha, remover_pr, remover_head_ref,
-             remover_author, remover_issue_key, lines, days_between)
-           VALUES ('${REPO}', '${sha("c3")}', '${sha("c6")}', 106, 'k9seed/sixth', 'octo-dev',
-             'CODEA-2', 4, 4)`,
-        ]
-      : []),
   ];
 }
 
-/** A code group as the settings hold it and a PUT sends it. */
-type CodeGroup = NonNullable<ProjectDeliverySettings["code_groups"]>[number];
+/** The statement that writes the seed's one pair: c6 removed 4 lines of c3 four days after it, a
+ *  change of the same group for a different issue. */
+const PAIR_SQL = `INSERT INTO code_pairs (repo, adder_sha, remover_sha, remover_pr, remover_head_ref,
+    remover_author, remover_issue_key, lines, days_between)
+  VALUES ('${REPO}', '${sha("c3")}', '${sha("c6")}', 106, 'k9seed/sixth', 'octo-dev', 'CODEA-2', 4, 4)`;
 
 /** CODEA's one group: the k9 seed's prefix and its login. */
 const CODEA_GROUPS: CodeGroup[] = [
@@ -224,38 +218,46 @@ const CODEA_SOURCE: ProjectDeploySourceInput = {
   repo: null,
 };
 
+/** CODEB's one deploy source: the production events posted to Dispatch. */
+const EVENTS_SOURCE: ProjectDeploySourceInput = { kind: "events" };
+
+/** `value` as an SQL literal, null where it holds none. */
+function sqlText(value: string | null | undefined): string {
+  return value === undefined || value === null ? "null" : sqlLiteral(value);
+}
+
 /** The statements that give `project` its delivery settings with delivery on, its code groups and
- *  its one deploy source. The settings row's insert notifies dispatch_delivery_settings, which
- *  wakes the regroup. */
+ *  its one deploy source, `source`, each column as `source` names it. The settings row's insert
+ *  notifies dispatch_delivery_settings, which wakes the regroup. */
 function settingsSql(
   project: string,
   groups: readonly CodeGroup[],
-  kind: "github_workflow" | "events"
+  source: ProjectDeploySourceInput
 ): string[] {
+  const jobs = source.production_job_names ?? null;
   return [
     `INSERT INTO project_delivery_settings (project_key, delivery, population_authors,
        excluded_repos, code_groups, updated_by)
      VALUES ('${project}', true, ARRAY[]::text[], ARRAY[]::text[],
        ${sqlLiteral(JSON.stringify(groups))}::jsonb, ${SEED_ACTOR})`,
-    kind === "github_workflow"
-      ? `INSERT INTO project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path,
-           production_job_names, pr_checks_workflow_path)
-         VALUES ('${project}', 0, 'github_workflow', null, '${CODEA_SOURCE.deploy_workflow_path}',
-           ARRAY['widgets-release'], '${CODEA_SOURCE.pr_checks_workflow_path}')`
-      : `INSERT INTO project_deploy_sources (project_key, position, kind) VALUES ('${project}', 0, 'events')`,
+    `INSERT INTO project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path,
+       production_job_names, pr_checks_workflow_path)
+     VALUES ('${project}', 0, '${source.kind}', ${sqlText(source.repo)},
+       ${sqlText(source.deploy_workflow_path)},
+       ${jobs === null ? "null" : `ARRAY[${jobs.map(sqlLiteral).join(", ")}]`},
+       ${sqlText(source.pr_checks_workflow_path)})`,
   ];
 }
 
-/** Both evals of `project` over the window, as the list read answers them. */
-async function codeEvals(project: string) {
+/** The code survival eval of `project` over the window, as the list read answers it. */
+async function codeSurvival(project: string): Promise<EvalListItem | undefined> {
   const answer = await listProjectEvals(project, {
     from: WINDOW.from,
     kind: "delivery",
     limit: 200,
     to: WINDOW.to,
   });
-  const find = (slug: string) => answer.items?.find((item) => item.definition.slug === slug);
-  return { rework: find(REWORK), survival: find(SURVIVAL) };
+  return answer.items?.find((item) => item.definition.slug === SURVIVAL);
 }
 
 /** A statistic of one series of `item` over the window; undefined where it holds no such series. */
@@ -288,23 +290,18 @@ async function seed(states: Readonly<Record<string, DayState>> = {}): Promise<vo
        ('CODEA-2', 'CODEA', 2, 'Cache the widget feed', 'todo', 2, ${SEED_ACTOR}, 'V'),
        ('CODEB-1', 'CODEB', 1, 'Draw the gadgets', 'todo', 2, ${SEED_ACTOR}, 'U')`,
     ...resultsSql(MEASURED_DAYS, states),
-    ...settingsSql("CODEA", CODEA_GROUPS, "github_workflow"),
-    ...settingsSql("CODEB", CODEB_GROUPS, "events")
+    PAIR_SQL,
+    ...settingsSql("CODEA", CODEA_GROUPS, CODEA_SOURCE),
+    ...settingsSql("CODEB", CODEB_GROUPS, EVENTS_SOURCE)
   );
   const built = Object.keys(states).length === 0;
   await expect
     .poll(
       async () => {
-        const [a, b] = [await codeEvals("CODEA"), await codeEvals("CODEB")];
+        const [a, b] = [await codeSurvival("CODEA"), await codeSurvival("CODEB")];
         return built
-          ? [
-              statistic(a.survival, "survival:agents", "changes"),
-              statistic(b.survival, "survival:bots", "changes"),
-            ]
-          : [
-              statistic(a.survival, "status", "marked_days"),
-              statistic(b.survival, "status", "marked_days"),
-            ];
+          ? [statistic(a, "survival:agents", "changes"), statistic(b, "survival:bots", "changes")]
+          : [statistic(a, "status", "marked_days"), statistic(b, "status", "marked_days")];
       },
       { message: "the regroup builds both projects' day rows", timeout: REGROUP_MS }
     )
@@ -476,13 +473,13 @@ test.describe("the code cards", () => {
     await putProjectDeliverySettings("CODEB", {
       code_groups: [],
       delivery: true,
-      sources: [{ kind: "events" }],
+      sources: [EVENTS_SOURCE],
     });
     // The regroup unlists the groups' series: the evals hold no group's number.
     await expect
       .poll(
         async () => {
-          const { survival } = await codeEvals("CODEB");
+          const survival = await codeSurvival("CODEB");
           return (survival?.series ?? []).filter(
             (series) => series.listed && series.series !== "status"
           ).length;
@@ -550,7 +547,7 @@ test.describe("the code cards", () => {
     await openTab(page, "CODEB");
     for (const { slug } of CARDS) await expect(card(page, slug)).toBeVisible();
 
-    await putProjectDeliverySettings("CODEB", { delivery: false, sources: [{ kind: "events" }] });
+    await putProjectDeliverySettings("CODEB", { delivery: false, sources: [EVENTS_SOURCE] });
     await openTab(page, "CODEB");
     // CODEB has no Legion daemon either: one line names both settings, and no section shows.
     await expect(page.locator("[data-missing-sources]")).toBeVisible();

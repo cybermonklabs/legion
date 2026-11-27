@@ -5,7 +5,8 @@
 // throughout (AGENTS.md: "This repository is public").
 import { sql } from "./psql";
 
-const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
+/** The writer the seeded rows name, as an SQL literal of its JSON. */
+export const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
 
 /** The statements that give `project` the delivery settings every delivery fixture reads: the
  *  project (made, under `name`, where it does not exist yet) with `acme/widgets` as its default

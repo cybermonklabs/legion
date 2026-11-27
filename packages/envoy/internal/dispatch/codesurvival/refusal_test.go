@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 )
 
 // refusals is k8's branch of 31 days, a change a day, and its three commits: first, day 10's
@@ -167,7 +168,7 @@ func TestAWithheldFileBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 			t.Errorf("blocked day %d holds %q, %d files and %q (%v), want the third commit, 3 and the refusal", n, sha, files, reason, err)
 		}
 		for _, row := range r.codeRows(widgetsProject, day(n)) {
-			if !strings.Contains(row, "|status|") || !strings.Contains(row, `"blocked": 1`) || !strings.Contains(row, `"blocked_files": 3`) {
+			if !strings.Contains(row, "|"+fold.SeriesStatus+"|") || !strings.Contains(row, `"blocked": 1`) || !strings.Contains(row, `"blocked_files": 3`) {
 				t.Errorf("blocked day %d holds the row %q, want a status row with blocked 1 and 3 files", n, row)
 			}
 		}

@@ -1,3 +1,4 @@
+import { arrayMove } from "@dnd-kit/sortable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
@@ -13,6 +14,7 @@ import {
 import { isLiveQuery } from "../../api/query-refresh";
 import type {
   AuthenticatedUser,
+  CodeGroup,
   ProjectDeliverySettings,
   ProjectDeliverySettingsInput,
   ProjectDeploySource,
@@ -132,9 +134,6 @@ const PIPELINE_JOB_FIELDS = [
   },
 ] as const;
 
-/** One code group as the record holds it and a save sends it. */
-type CodeGroup = NonNullable<ProjectDeliverySettings["code_groups"]>[number];
-
 /** What a code group's name may not hold: white space, a full stop or a control character. Each
  *  code eval names the group's series `<base>:<name>`, and Dispatch refuses a series name holding
  *  any of them; the server holds the name to that rule and to its length, and its refusal shows
@@ -160,13 +159,18 @@ interface SourceDraft {
 interface GroupDraft {
   /** Tells the groups apart while they are edited and moved: one the record or Add made. */
   readonly key: string;
-  /** The stored group these fields show until the first edit of any of them: a save sends it
-   *  back as stored. `null` for a group Add made or one that was edited. */
-  readonly stored: CodeGroup | null;
+  /** The stored group's lists, each held until its own box is edited: a save sends a list held
+   *  here back as stored, so a prefix holding a comma stays one prefix whatever else changed.
+   *  `undefined` for a group Add made, or a list whose box was edited. */
+  readonly storedPrefixes: CodeGroup["branch_prefixes"] | undefined;
+  readonly storedLogins: CodeGroup["author_logins"] | undefined;
   name: string;
   branch_prefixes: string;
   author_logins: string;
 }
+
+/** The boxes of a code group an edit changes. */
+type GroupPatch = Partial<Pick<GroupDraft, "name" | "branch_prefixes" | "author_logins">>;
 
 /** The fields as typed. A target left empty keeps the eval's target: the save leaves it out. */
 interface Draft {
@@ -230,7 +234,8 @@ function newGroup(): GroupDraft {
   addedGroups += 1;
   return {
     key: `added-group-${addedGroups}`,
-    stored: null,
+    storedPrefixes: undefined,
+    storedLogins: undefined,
     name: "",
     branch_prefixes: "",
     author_logins: "",
@@ -240,7 +245,8 @@ function newGroup(): GroupDraft {
 function groupDraft(group: CodeGroup, index: number): GroupDraft {
   return {
     key: `stored-group-${index}`,
-    stored: group,
+    storedPrefixes: group.branch_prefixes,
+    storedLogins: group.author_logins,
     name: group.name,
     branch_prefixes: group.branch_prefixes?.join(", ") ?? "",
     author_logins: group.author_logins?.join(", ") ?? "",
@@ -330,16 +336,18 @@ function sourceInput(source: SourceDraft): ProjectDeploySourceInput {
   };
 }
 
-/** A code group as a save sends it: the stored group where its fields were not edited, else the
- *  name trimmed and each list split into its entries. */
+/** A code group as a save sends it: the name trimmed, and each list as stored where its box was
+ *  not edited, else split into its entries. */
 function groupInput(group: GroupDraft): CodeGroup {
-  return (
-    group.stored ?? {
-      name: group.name.trim(),
-      branch_prefixes: listEntries(group.branch_prefixes),
-      author_logins: listEntries(group.author_logins),
-    }
-  );
+  return {
+    name: group.name.trim(),
+    branch_prefixes:
+      group.storedPrefixes === undefined
+        ? listEntries(group.branch_prefixes)
+        : group.storedPrefixes,
+    author_logins:
+      group.storedLogins === undefined ? listEntries(group.author_logins) : group.storedLogins,
+  };
 }
 
 /** A target box's text as a number or `off`, or `undefined` for one that is neither. */
@@ -635,23 +643,25 @@ function DeliverySettingsFields({
       ...draft,
       sources: draft.sources.map((source, at) => (at === index ? { ...source, ...patch } : source)),
     });
-  // An edit of a stored group's fields lets go of the stored group: Save sends what they hold.
-  const updateGroup = (
-    index: number,
-    patch: Partial<Pick<GroupDraft, "name" | "branch_prefixes" | "author_logins">>
-  ) =>
+  // An edit of a box lets go of the stored list it shows, and of no other: Save sends what that
+  // box holds, and each other list as stored.
+  const updateGroup = (index: number, patch: GroupPatch) =>
     update({
       ...draft,
       code_groups: draft.code_groups.map((group, at) =>
-        at === index ? { ...group, ...patch, stored: null } : group
+        at === index
+          ? {
+              ...group,
+              ...patch,
+              storedPrefixes:
+                patch.branch_prefixes === undefined ? group.storedPrefixes : undefined,
+              storedLogins: patch.author_logins === undefined ? group.storedLogins : undefined,
+            }
+          : group
       ),
     });
-  const moveGroup = (from: number, to: number) => {
-    const groups = [...draft.code_groups];
-    const [moved] = groups.splice(from, 1);
-    groups.splice(to, 0, moved);
-    update({ ...draft, code_groups: groups });
-  };
+  const moveGroup = (from: number, to: number) =>
+    update({ ...draft, code_groups: arrayMove(draft.code_groups, from, to) });
   const hasEvents = draft.sources.some((source) => source.kind === "events");
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -1043,9 +1053,7 @@ interface GroupFieldsProps {
   readonly nameRefused: boolean;
   /** Whether Save refused this group's prefix and login boxes. */
   readonly listsRefused: boolean;
-  readonly onChange: (
-    patch: Partial<Pick<GroupDraft, "name" | "branch_prefixes" | "author_logins">>
-  ) => void;
+  readonly onChange: (patch: GroupPatch) => void;
   /** Moves the group to place `to`, from 0. */
   readonly onMove: (to: number) => void;
   readonly onRemove: () => void;

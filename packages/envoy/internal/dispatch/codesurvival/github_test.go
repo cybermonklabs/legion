@@ -3,17 +3,14 @@ package codesurvival
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,9 +19,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -219,11 +218,7 @@ func (s *sleeps) made() []time.Duration {
 // attribution reads, nil for a test that attributes nothing.
 func newReader(t *testing.T, fake *fakeGitHub, pool *store.Pool) (*GitHub, *sleeps) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate the App's key: %v", err)
-	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	_, pemText := githubapptest.Key(t)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.survival", PEM: pemText}, fake.url)
 	if err != nil || client == nil {
 		t.Fatalf("new App client: %v", err)
@@ -496,7 +491,7 @@ func TestAPatchOfOneParentReadsTheCommitRoute(t *testing.T) {
 	answer := capture(t, "diff-answer.txt")
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/cybermonklabs/legion/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("sha") != firstParentSHA || r.Header.Get("Accept") != "application/vnd.github.diff" || r.URL.RawQuery != "" {
+		if r.PathValue("sha") != firstParentSHA || r.Header.Get("Accept") != codesurvivaltest.DiffMediaType || r.URL.RawQuery != "" {
 			t.Errorf("the commit route was asked for %s?%s with Accept %q, want %s with the diff media type", r.PathValue("sha"), r.URL.RawQuery, r.Header.Get("Accept"), firstParentSHA)
 		}
 		answer.serve(w, "")
@@ -525,14 +520,14 @@ func TestAPatchOfOneParentReadsTheCommitRoute(t *testing.T) {
 func TestAPatchOfTwoParentsReadsTheCompareRoute(t *testing.T) {
 	diff, err := os.ReadFile(filepath.Join("..", "delivery", "survival", "testdata", "diffs", "merge-compare.diff"))
 	if err != nil {
-		t.Fatalf("read T2's compare-route capture: %v", err)
+		t.Fatalf("read delivery/survival's compare-route capture (testdata/diffs/README.md): %v", err)
 	}
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/cybermonklabs/legion/compare/{range}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("range") != firstParentSHA+"..."+mergeSHA || r.Header.Get("Accept") != "application/vnd.github.diff" {
+		if r.PathValue("range") != firstParentSHA+"..."+mergeSHA || r.Header.Get("Accept") != codesurvivaltest.DiffMediaType {
 			t.Errorf("the compare route was asked for %s with Accept %q, want %s...%s with the diff media type", r.PathValue("range"), r.Header.Get("Accept"), firstParentSHA, mergeSHA)
 		}
-		w.Header().Set("Content-Type", "application/vnd.github.diff; charset=utf-8")
+		w.Header().Set("Content-Type", codesurvivaltest.DiffMediaType+"; charset=utf-8")
 		_, _ = w.Write(diff)
 	})
 	reader, _ := newReader(t, fake, nil)
@@ -553,13 +548,14 @@ func TestAPatchOfTwoParentsReadsTheCompareRoute(t *testing.T) {
 	}
 }
 
-// filesPages are the two pages of a commit's files[] the fallback reads: T2's captured page of 100
-// files, three of them with changes and no patch, and a second page of one file.
+// filesPages are the two pages of a commit's files[] the fallback reads: delivery/survival's
+// captured page of 100 files (testdata/diffs/README.md), three of them with changes and no patch,
+// and a second page of one file.
 func filesPages(t *testing.T) (first, second []byte, entries []survival.FilesEntry) {
 	t.Helper()
 	first, err := os.ReadFile(filepath.Join("..", "delivery", "survival", "testdata", "diffs", "files-page.json"))
 	if err != nil {
-		t.Fatalf("read T2's files[] page: %v", err)
+		t.Fatalf("read delivery/survival's captured files[] page (testdata/diffs/README.md): %v", err)
 	}
 	second = []byte(`{"sha":"1ffc8dec7e789c9cb2374f10a8d69069edff73ed","files":[{"filename":"docs/after.md","status":"modified","changes":2,"patch":"@@ -1 +1 @@\n-old\n+new"}]}`)
 	for _, page := range [][]byte{first, second} {
@@ -581,11 +577,11 @@ func serveFiles(t *testing.T, fake *fakeGitHub, sha string, diff func(w http.Res
 	first, second, _ := filesPages(t)
 	fake.handle("GET /repos/cybermonklabs/legion/commits/"+sha, func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
-		if r.URL.RawQuery == "" && r.Header.Get("Accept") == "application/vnd.github.diff" && diff != nil {
+		if r.URL.RawQuery == "" && r.Header.Get("Accept") == codesurvivaltest.DiffMediaType && diff != nil {
 			diff(w)
 			return
 		}
-		if r.Header.Get("Accept") == "application/vnd.github.diff" {
+		if r.Header.Get("Accept") == codesurvivaltest.DiffMediaType {
 			t.Errorf("the files[] route of %s was asked for the diff", sha)
 		}
 		switch {
@@ -871,7 +867,7 @@ func TestATransientErrorIsReadAgainAndThenFailsTheRun(t *testing.T) {
 					t.Errorf("hijack the connection: %v", err)
 					return
 				}
-				fmt.Fprintf(buffered, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.github.diff\r\nContent-Length: %d\r\n\r\n", len(answer.body))
+				fmt.Fprintf(buffered, "HTTP/1.1 200 OK\r\nContent-Type: "+codesurvivaltest.DiffMediaType+"\r\nContent-Length: %d\r\n\r\n", len(answer.body))
 				_, _ = buffered.Write(answer.body[:100])
 				_ = buffered.Flush()
 				_ = connection.Close()
@@ -1085,15 +1081,9 @@ func chainOf(pulls map[string]PullRequest) []survival.Commit {
 		numbers = append(numbers, pull.Number)
 		shas[pull.Number] = sha
 	}
-	for len(numbers) > 0 {
-		least := 0
-		for i, number := range numbers {
-			if number < numbers[least] {
-				least = i
-			}
-		}
-		chain = append(chain, survival.Commit{SHA: shas[numbers[least]]})
-		numbers = append(numbers[:least], numbers[least+1:]...)
+	slices.Sort(numbers)
+	for _, number := range numbers {
+		chain = append(chain, survival.Commit{SHA: shas[number]})
 	}
 	return chain
 }

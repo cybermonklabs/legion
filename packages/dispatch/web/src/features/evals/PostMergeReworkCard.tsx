@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { type CodeCardSpec, CodeEvalCard } from "./CodeSurvivalCard";
+import { type CodeCardSpec, CodeEvalCard } from "./CodeEvalCard";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
 /** The post-merge rework eval of dispatch://INFRA-3206, which its card draws by name. */

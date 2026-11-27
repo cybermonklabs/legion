@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 )
 
 // lowBudget is a remaining budget below the floor, a quarter of the limit, in a window that resets
@@ -98,7 +99,7 @@ func TestAForcePushMarksTheTouchedDaysBeforeAnythingElse(t *testing.T) {
 			t.Errorf("marked day %d holds %d code rows, want the status row of each eval in each of two cuts: %v", n, len(rows), rows)
 		}
 		for _, row := range rows {
-			if !strings.Contains(row, "|status|") || !strings.Contains(row, `"marked": 1`) ||
+			if !strings.Contains(row, "|"+fold.SeriesStatus+"|") || !strings.Contains(row, `"marked": 1`) ||
 				!strings.Contains(row, `"first_marked_day": `+strconv.FormatInt(day(n).Unix(), 10)) {
 				t.Errorf("marked day %d holds the row %q, want a status row with marked 1 and its first_marked_day", n, row)
 			}

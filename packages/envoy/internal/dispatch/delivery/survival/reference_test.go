@@ -15,11 +15,7 @@ package survival_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,7 +24,6 @@ import (
 	"os"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -39,9 +34,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/survivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestMain gives TestReferenceIssuesAreAttributionsSourcesThreeAndFour its database.
@@ -133,21 +130,13 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 
-	path := ref.Path("lg", "issues.tsv")
-	var keys, projects, repos []string
-	var numbers []int32
+	issues := ref.Issues(t)
+	keys, projects, repos := make([]string, len(issues)), make([]string, len(issues)), make([]string, len(issues))
+	numbers := make([]int32, len(issues))
 	held := map[string]bool{}
-	for _, row := range refRows(t, path) {
-		if len(row) != 3 {
-			t.Fatalf("%s: a row of %d fields, not 3: %v", path, len(row), row)
-		}
-		at := strings.LastIndexByte(row[0], '-')
-		number, err := strconv.ParseInt(row[0][at+1:], 10, 32)
-		if at < 0 || err != nil || row[0][:at] != row[1] {
-			t.Fatalf("%s: the key %q is not of the project %q", path, row[0], row[1])
-		}
-		keys, projects, numbers, repos = append(keys, row[0]), append(projects, row[1]), append(numbers, int32(number)), append(repos, row[2])
-		held[row[0]] = true
+	for at, issue := range issues {
+		keys[at], projects[at], numbers[at], repos[at] = issue.Key, issue.Project, issue.Number, issue.Repo
+		held[issue.Key] = true
 	}
 	made := 0
 	named := slices.Compact(slices.Sorted(slices.Values(slices.Clone(projects))))
@@ -163,7 +152,7 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 		select u.key, u.project, u.number, u.key, 'todo', '{"kind":"system","id":"survivalref"}'::jsonb, u.key, nullif(u.repo, '')
 		from unnest($1::text[], $2::text[], $3::int[], $4::text[]) as u(key, project, number, repo)`, keys, projects, numbers, repos)
 	if err != nil || tag.RowsAffected() != int64(len(keys)) {
-		t.Fatalf("load the %d issues of %s: %v (%d loaded)", len(keys), path, err, tag.RowsAffected())
+		t.Fatalf("load the %d issues of lg/issues.tsv: %v (%d loaded)", len(keys), err, tag.RowsAffected())
 	}
 
 	// The GitHub the attribution reads: every request refused, and counted.
@@ -180,9 +169,7 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 	attributor := delivery.NewAttributor(refs.Renames{})
 	// IssueOf logs each candidate it passes over through slog.Default; the test's output keeps
 	// its own lines alone.
-	logger := slog.Default()
-	slog.SetDefault(slog.New(slog.DiscardHandler))
-	t.Cleanup(func() { slog.SetDefault(logger) })
+	logtest.SetDefault(t, slog.DiscardHandler)
 
 	want := map[int]string{}
 	for _, issue := range ref.PullIssues(t) {
@@ -515,11 +502,7 @@ func refJSON(t *testing.T, path string, v any) {
 // server builds its own (githubapp.New with the base URL).
 func refAppClient(t *testing.T, server string) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate the App's key: %v", err)
-	}
-	encoded := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	_, encoded := githubapptest.Key(t)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.survivalref", PEM: encoded}, server)
 	if err != nil || client == nil {
 		t.Fatalf("the App client: %v", err)

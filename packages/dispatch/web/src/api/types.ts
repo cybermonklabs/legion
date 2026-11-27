@@ -73,6 +73,7 @@ export type {
   CheckResult,
   ChildStatusEventPayload,
   ClaimHolderLiveness,
+  CodeGroup,
   CollaboratorReason,
   Comment,
   CommentDelivery,

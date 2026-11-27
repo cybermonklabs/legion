@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -137,8 +138,8 @@ const (
 	k9Login  = "k9-seed-app[bot]"
 )
 
-// k9Groups are project ONE's groups, a group by k9's prefix and login and one with no rule after
-// it; and TWO's, a group by k9's login alone.
+// oneGroups are project ONE's groups, a group by k9's prefix and login and one with no rule after
+// it; and twoGroups TWO's, a group by k9's login alone.
 var (
 	oneGroups = []delivery.CodeGroup{{Name: "seeded", BranchPrefixes: []string{k9Prefix}, AuthorLogins: []string{k9Login}}, {Name: "rest"}}
 	twoGroups = []delivery.CodeGroup{{Name: "bots", AuthorLogins: []string{k9Login}}}
@@ -217,7 +218,7 @@ func TestARunAndARegroupOfTheSameProjectsTakeTheirLocksInOneOrder(t *testing.T) 
 	r := k9Seed(t)
 	hold := &phaseHold{release: make(chan struct{})}
 	r.run.afterRows, r.regroup.afterRows = hold.arrive, hold.arrive
-	r.clock.set(k9Pass)
+	r.clock.Set(k9Pass)
 	start, done := make(chan struct{}), make(chan struct{})
 	var (
 		wg   sync.WaitGroup
@@ -344,7 +345,7 @@ func TestAPassOpensNoRegroupOfAProjectTheSeedHasNotReached(t *testing.T) {
 	r.saveGroups("LATE", everyChange)
 	regroups := 0
 	r.regroup.afterRows = func() { regroups++ }
-	r.clock.set(k9Pass)
+	r.clock.Set(k9Pass)
 	if next := r.regroup.Pass(r.ctx); !next.Equal(k9Pass.Add(regroupRetry)) {
 		t.Errorf("the pass over LATE, whose evals are not seeded, asks to pass again at %s, want a minute later, %s", next, k9Pass.Add(regroupRetry))
 	}
@@ -376,7 +377,10 @@ func TestTwoProjectsGroupsReadTwoNumbers(t *testing.T) {
 	if value(one.survival.Share) != "0.75" || value(two.survival.Share) != "1" {
 		t.Fatalf("ONE's seeded share is %s and TWO's bots share %s, want 0.75 and 1", value(one.survival.Share), value(two.survival.Share))
 	}
-	for project, want := range map[string][]string{"ONE": {"survival:rest", "survival:seeded"}, "TWO": {"survival:bots"}} {
+	for project, want := range map[string][]string{
+		"ONE": {fold.GroupSeries(fold.SeriesSurvival, "rest"), fold.GroupSeries(fold.SeriesSurvival, "seeded")},
+		"TWO": {fold.GroupSeries(fold.SeriesSurvival, "bots")},
+	} {
 		page, err := r.registry.Current(r.ctx, []string{project}, "", 200, 0)
 		if err != nil {
 			t.Fatalf("read the evals of %s: %v", project, err)
@@ -387,7 +391,7 @@ func TestTwoProjectsGroupsReadTwoNumbers(t *testing.T) {
 				continue
 			}
 			for _, series := range entry.Series {
-				if series.Listed && series.Series != "status" {
+				if series.Listed && series.Series != fold.SeriesStatus {
 					listed = append(listed, series.Series)
 				}
 			}

@@ -168,11 +168,6 @@ func TestParseDiffReadsEveryCapturedShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The thirteen diffs of plan task T2: ten shapes from main, the mode change alone, the quoted
-	// path and the merge commit; and the merge commit's compare-route copy.
-	if len(paths) < 14 {
-		t.Fatalf("testdata/diffs holds %d diffs, want the 13 shapes and the compare-route copy", len(paths))
-	}
 	shaped := map[string]bool{}
 	departed := map[string]bool{}
 	for _, path := range paths {

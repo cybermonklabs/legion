@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -17,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The tests of the two code evals' rows of GET /api/v1/projects/{key}/evals/{slug}/items
@@ -29,8 +27,8 @@ import (
 // The repositories of the code items' seed: the one the double serves, and the one it refuses the
 // App.
 const (
-	codeItemsRepo   = "acme/code"
-	codeItemsHidden = "acme/hidden"
+	codeItemsRepo       = "acme/code"
+	codeItemsHiddenRepo = "acme/hidden"
 )
 
 // The projects of the code items' seed: CODE, whose issues the branch's pull requests name, under
@@ -48,12 +46,12 @@ const (
 )
 
 // The days of the code items' branch: 31 days of changes; day 3's commit that merged no pull
-// request, whose patch the double withholds, blocks days 0 to 3; days 4 to 27 are measured; and
-// codesurvival.WriteMarks marks days 6 and 7.
+// request, whose patch the double withholds, blocks days 0 to 3; days 4 to 27 are measured, so the
+// run stores days 0 to 27; and codesurvival.WriteMarks marks days 6 and 7.
 const (
 	codeItemsDays       = 31
 	codeItemsBlockedDay = 3
-	codeItemsMeasured   = 28
+	codeItemsStored     = 28
 )
 
 // codeItemsMarked is the days the seed marks after the run, in order.
@@ -193,7 +191,7 @@ type codeItemsRig struct {
 
 // newCodeItemsRig is the code items' seed: the five projects, their default repositories and code
 // groups, CODE's two issues, one run of the code survival measurement over the double, which serves
-// codeItemsRepo with day 3's commit withheld and refuses codeItemsHidden the App, and then
+// codeItemsRepo with day 3's commit withheld and refuses codeItemsHiddenRepo the App, and then
 // codesurvival.WriteMarks over days 6 and 7 of codeItemsRepo, as a force-push's pass marks them.
 func newCodeItemsRig(t *testing.T) *codeItemsRig {
 	t.Helper()
@@ -201,7 +199,7 @@ func newCodeItemsRig(t *testing.T) *codeItemsRig {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	createTestProject(t, handler, codeItemsCode, codeItemsTwin, codeItemsBare, codeItemsHide, codeItemsLoose)
-	for project, repo := range map[string]string{codeItemsCode: codeItemsRepo, codeItemsTwin: codeItemsRepo, codeItemsBare: codeItemsRepo, codeItemsHide: codeItemsHidden} {
+	for project, repo := range map[string]string{codeItemsCode: codeItemsRepo, codeItemsTwin: codeItemsRepo, codeItemsBare: codeItemsRepo, codeItemsHide: codeItemsHiddenRepo} {
 		setDefaultRepository(t, handler, project, repo)
 	}
 	every := []delivery.CodeGroup{{Name: "all"}}
@@ -211,16 +209,7 @@ func newCodeItemsRig(t *testing.T) *codeItemsRig {
 		codeItemsHide:  every,
 		codeItemsLoose: every,
 	} {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the settings of %s: %v", project, err)
-		}
-		if _, err := delivery.PutProjectSettings(ctx, tx, delivery.ProjectSettingsInput{Project: project, CodeGroups: &groups}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-			t.Fatalf("save %s's code groups: %v", project, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the settings of %s: %v", project, err)
-		}
+		saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{Project: project, CodeGroups: &groups})
 	}
 	for _, key := range []string{codeItemsIssue1, codeItemsIssue2} {
 		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": codeItemsCode, "title": "the work of " + key}, "alice")
@@ -236,17 +225,17 @@ func newCodeItemsRig(t *testing.T) *codeItemsRig {
 
 	double := codesurvivaltest.New(t)
 	double.Serve(codeItemsRepo, history.branch)
-	double.Unreadable(codeItemsHidden)
+	double.Unreadable(codeItemsHiddenRepo)
 	double.Refuse(history.blocked, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 3})
 	run := &codesurvival.Run{Pool: database.Pool, Client: double.Client(t), Attributor: deps.Attributor, Build: testServerBuild,
 		Now: func() time.Time { return codeItemsPass }}
 	run.Pass(ctx)
-	statuses, err := codesurvival.DayStatuses(ctx, database.Pool, codeItemsRepo, codeItemsDay(0), codeItemsDay(codeItemsMeasured-1))
+	statuses, err := codesurvival.DayStatuses(ctx, database.Pool, codeItemsRepo, codeItemsDay(0), codeItemsDay(codeItemsStored-1))
 	if err != nil {
 		t.Fatalf("read the days of %s: %v", codeItemsRepo, err)
 	}
-	if len(statuses) != codeItemsMeasured {
-		t.Fatalf("the run stored %d days of %s, want %d: %+v", len(statuses), codeItemsRepo, codeItemsMeasured, statuses)
+	if len(statuses) != codeItemsStored {
+		t.Fatalf("the run stored %d days of %s, want %d: %+v", len(statuses), codeItemsRepo, codeItemsStored, statuses)
 	}
 	for n, status := range statuses {
 		want := survival.DayMeasured
@@ -390,9 +379,6 @@ func wantPullURL(repo string, number int) string {
 // wantSettingsPage is the address of project's settings page.
 func wantSettingsPage(project string) string { return "/projects/" + project + "/settings" }
 
-// commitSHA is a commit's SHA as GitHub writes one.
-var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // figureWords is a figure as a failure states it.
 func figureWords(figure *float64) string {
 	if figure == nil {
@@ -412,7 +398,7 @@ func (r *codeItemsRig) checkCodeRow(t *testing.T, project string, row evalItemRo
 	t.Helper()
 	commit := func(sha string) {
 		t.Helper()
-		if _, held := r.history.chain[sha]; !commitSHA.MatchString(sha) || !held {
+		if _, held := r.history.chain[sha]; !held {
 			t.Errorf("%s row %s names the commit %q, which is no commit of %s's branch", row.RowKind, row.RowKey, sha, codeItemsRepo)
 		}
 	}
@@ -520,7 +506,7 @@ func TestEveryCodeItemRowCarriesAViaLinkToItsCommit(t *testing.T) {
 	causes := map[string]int{}
 	for _, project := range []string{codeItemsCode, codeItemsTwin, codeItemsBare, codeItemsHide, codeItemsLoose} {
 		for slug, counted := range codeSlugs {
-			for _, row := range r.items(t, project, slug, codeWindow(0, codeItemsMeasured)) {
+			for _, row := range r.items(t, project, slug, codeWindow(0, codeItemsStored)) {
 				if row.RowKind == evalRowDay {
 					continue
 				}
@@ -561,7 +547,7 @@ func TestTheCodeEvalItemsAnswerOneShape(t *testing.T) {
 	const limit = 7
 	counted := 0
 	for slug, series := range map[string]string{evals.SlugCodeSurvival: "survival:agents", evals.SlugPostMergeRework: "rework:agents"} {
-		query := codeWindow(8, codeItemsMeasured)
+		query := codeWindow(8, codeItemsStored)
 		query.Set("series", series)
 		whole := r.items(t, codeItemsCode, slug, query)
 		var paged []evalItemRow
@@ -664,7 +650,7 @@ func (r *codeItemsRig) checkShape(t *testing.T, project, slug, series string, ro
 func TestTheNoIssuePairsAnswerUnderTheirOwnSeriesAlone(t *testing.T) {
 	t.Parallel()
 	r := newCodeItemsRig(t)
-	const from, to = 8, codeItemsMeasured
+	const from, to = 8, codeItemsStored
 	all := rowsOfKind(r.items(t, codeItemsCode, evals.SlugPostMergeRework, codeWindow(from, to)), "pair")
 	listed := r.codeList(t, codeItemsCode, from, to)[evals.SlugPostMergeRework]
 	answered := map[string]string{}
@@ -729,8 +715,8 @@ func TestTheNoIssuePairsAnswerUnderTheirOwnSeriesAlone(t *testing.T) {
 func TestTheRepositoryNoteCountEqualsTheChangeRowsWithNoIssue(t *testing.T) {
 	t.Parallel()
 	r := newCodeItemsRig(t)
-	windows := [][2]int{{8, codeItemsMeasured}}
-	for from := 8; from+7 <= codeItemsMeasured; from++ {
+	windows := [][2]int{{8, codeItemsStored}}
+	for from := 8; from+7 <= codeItemsStored; from++ {
 		windows = append(windows, [2]int{from, from + 7})
 	}
 	counted := 0
@@ -792,14 +778,14 @@ func TestAnAbsentRowNamesEachReason(t *testing.T) {
 		from, to int
 		want     []string
 	}{
-		{codeItemsCode, 0, codeItemsMeasured, []string{
+		{codeItemsCode, 0, codeItemsStored, []string{
 			fmt.Sprintf("blocked by %s of %s, 3 files, diff refused (422), files[] withheld 3 of 12 files, days %v", r.history.blocked, codeItemsRepo, blocked),
 			marked(6), marked(7),
 		}},
-		{codeItemsCode, 8, codeItemsMeasured, nil},
-		{codeItemsBare, 8, codeItemsMeasured, []string{"no group"}},
-		{codeItemsHide, 0, codeItemsMeasured, []string{"unreadable " + codeItemsHidden}},
-		{codeItemsLoose, 0, codeItemsMeasured, []string{"no default repository"}},
+		{codeItemsCode, 8, codeItemsStored, nil},
+		{codeItemsBare, 8, codeItemsStored, []string{"no group"}},
+		{codeItemsHide, 0, codeItemsStored, []string{"unreadable " + codeItemsHiddenRepo}},
+		{codeItemsLoose, 0, codeItemsStored, []string{"no default repository"}},
 	}
 	named := 0
 	for _, c := range cases {
@@ -822,7 +808,7 @@ func TestAnAbsentRowNamesEachReason(t *testing.T) {
 			named += len(got)
 		}
 	}
-	query := codeWindow(8, codeItemsMeasured)
+	query := codeWindow(8, codeItemsStored)
 	query.Set("compare_from", codeItemsDay(0).Format(time.RFC3339))
 	query.Set("compare_to", codeItemsDay(8).Format(time.RFC3339))
 	query.Set("row_kind", "absent")
@@ -880,9 +866,9 @@ func absentWords(t *testing.T, row evalItemRow) string {
 func TestAForcePushMarkReadsNoDataOnBothReadPaths(t *testing.T) {
 	t.Parallel()
 	r := newCodeItemsRig(t)
-	windows := [][2]int{{0, codeItemsMeasured}}
+	windows := [][2]int{{0, codeItemsStored}}
 	for _, length := range []int{1, 2, 7, 14} {
-		for from := 0; from+length <= codeItemsMeasured; from++ {
+		for from := 0; from+length <= codeItemsStored; from++ {
 			windows = append(windows, [2]int{from, from + length})
 		}
 	}

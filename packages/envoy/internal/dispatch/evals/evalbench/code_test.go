@@ -219,7 +219,7 @@ func TestNoCodeAndTheBaseModesWriteNoCodeResults(t *testing.T) {
 }
 
 // codeRig is a database with INFRA written as far as the code survival results need it: its
-// project, issues and delivery settings, and its evals seeded, as a server's refresher seeds them.
+// project, issues and delivery settings.
 func codeRig(t *testing.T, spec Spec) (*store.Store, infraHistory) {
 	t.Helper()
 	database := storetest.Open(t)

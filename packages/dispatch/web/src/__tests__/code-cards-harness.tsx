@@ -16,14 +16,13 @@ import type {
   EvalDetailResponse,
   EvalItemRow,
   EvalListItem,
-  EvalListResponse,
   LiveSubscribe,
   ProjectDeliverySettings,
 } from "../api/types";
 import type { EvalRange, EvalSeriesValues } from "../features/evals/chart-model";
 import { EvalsTab } from "../features/evals/EvalsTab";
 import { deliverySettings } from "./delivery-settings";
-import { evalItem, evalSeries } from "./evals-fixture";
+import { evalItem, evalSeries, evalsAnswer, itemsPage } from "./evals-fixture";
 import {
   type FakeLiveSocket,
   type FakeLiveSockets,
@@ -56,7 +55,7 @@ export const REWORK_CARD: CodeCardCase = {
 };
 
 /** The window of the tab's 28-day preset as the view answers it: 28 whole UTC days, long past. */
-export const WINDOW: EvalRange = {
+const WINDOW: EvalRange = {
   days: 28,
   from: "2026-10-01T00:00:00Z",
   to: "2026-10-29T00:00:00Z",
@@ -81,7 +80,7 @@ const FIRST_DAY = "2026-10-01";
 
 /** One group's figures over a window, as the eval's fold states them (`share`, `lines`,
  *  `added`, `changes`, `via_repository`), every one null where the window reads "no data". */
-export interface GroupFigures {
+interface GroupFigures {
   readonly name: string;
   readonly share: number | null;
   readonly lines: number | null;
@@ -92,7 +91,7 @@ export interface GroupFigures {
 
 /** The status series' figures over a window (`fold.FoldStatus`); null for a window the server
  *  answers no figure of (before the first day, or no row at all). */
-export interface StatusFigures {
+interface StatusFigures {
   readonly measured: number;
   readonly marked?: number;
   readonly blocked?: number;
@@ -103,7 +102,7 @@ export interface StatusFigures {
   readonly waiting: number;
 }
 
-export const AGENTS: GroupFigures = {
+const AGENTS: GroupFigures = {
   added: 150,
   changes: 2,
   lines: 105,
@@ -112,7 +111,7 @@ export const AGENTS: GroupFigures = {
   via: 1,
 };
 
-export const PEOPLE: GroupFigures = {
+const PEOPLE: GroupFigures = {
   added: 40,
   changes: 1,
   lines: 20,
@@ -133,9 +132,7 @@ const GROUPS: ProjectDeliverySettings["code_groups"] = [
 ];
 
 /** ACME's delivery settings with its two code groups, as `overrides` changes them. */
-export function codeSettings(
-  overrides: Partial<ProjectDeliverySettings> = {}
-): ProjectDeliverySettings {
+function codeSettings(overrides: Partial<ProjectDeliverySettings> = {}): ProjectDeliverySettings {
   return deliverySettings("ACME", { code_groups: GROUPS, ...overrides });
 }
 
@@ -149,7 +146,7 @@ const KIND_SHARES: Readonly<Record<string, number>> = {
 /** `card`'s eval as the delivery view answers it over a window: the status series and, for each
  *  of `groups`, its headline series and its kinds, every series first holding a row on
  *  `dataSince` (null: no row at all), at `version`. `status` null answers no status figure. */
-export function codeEval(
+function codeEval(
   card: CodeCardCase,
   groups: readonly GroupFigures[],
   status: StatusFigures | null,
@@ -220,20 +217,6 @@ export function codeEval(
   return { ...item, definition: { ...item.definition, name: card.title, unit: "ratio" } };
 }
 
-/** A delivery view's answer over `window`, holding `items`. */
-function answer(items: EvalListItem[], window: EvalRange = WINDOW): EvalListResponse {
-  return {
-    compare: COMPARE,
-    delivery_freshness: null,
-    freshness: { refresher_age_seconds: null, rows_updated_at: null },
-    items,
-    limit: 200,
-    offset: 0,
-    total: items.length,
-    window,
-  };
-}
-
 /** A delta of the view `sub` that changes `upsert`. */
 function deltaFrame(sub: string, upsert: EvalListItem[], seq: string): DeliveryLiveDelta {
   return {
@@ -254,7 +237,7 @@ function deltaFrame(sub: string, upsert: EvalListItem[], seq: string): DeliveryL
 }
 
 /** The method text each eval's detail read answers. */
-export const METHOD =
+const METHOD =
   "**What the number is not.**\n\n- It is the replay's reading, not blame.\n- The diff is GitHub's, with three lines of context.";
 
 /** An eval's detail read as Dispatch answers it: its method and no declared chart. */
@@ -334,11 +317,19 @@ function absentViews(socket: FakeLiveSocket, slug: string): LiveSubscribe[] {
     );
 }
 
-/** The absent rows' view of `slug`, once the card has subscribed it. */
-function absentView(socket: FakeLiveSocket, slug: string): Promise<LiveSubscribe> {
+/** The absent rows' view of `slug` at `offset`, once the card has subscribed it. */
+function absentView(socket: FakeLiveSocket, slug: string, offset = 0): Promise<LiveSubscribe> {
   return waitFor(() => {
-    const frame = absentViews(socket, slug).at(-1);
-    if (frame === undefined) throw new Error(`no absent rows of ${slug} were subscribed`);
+    const frame = absentViews(socket, slug)
+      .filter(
+        (sent) =>
+          sent.view.kind === "items" &&
+          Number(new URLSearchParams(sent.view.query).get("offset") ?? 0) === offset
+      )
+      .at(-1);
+    if (frame === undefined) {
+      throw new Error(`no absent rows of ${slug} at offset ${offset} were subscribed`);
+    }
     return frame;
   });
 }
@@ -385,9 +376,16 @@ const BLOCKED_ROW = absentRow(
   [{ href: BLOCKED_HREF, label: "commit 1a2b3c4", recorded_at: "2026-10-08T00:00:00Z", rel: "via" }]
 );
 
-/** One page of `slug`'s absent rows. */
-function absentPage(rows: EvalItemRow[]) {
-  return { compare: null, items: rows, limit: 20, offset: 0, total: rows.length, window: WINDOW };
+/** `count` absent rows of one day a force-push marked, each of a repository of its own. */
+function markedRows(count: number): EvalItemRow[] {
+  return Array.from({ length: count }, (_, index) => {
+    const repo = `acme/repo-${index}`;
+    return absentRow(
+      `marked@2026-10-01@${repo}`,
+      { cause: "marked", day: "2026-10-01", repo, sha: null },
+      "/projects/ACME/settings"
+    );
+  });
 }
 
 /** The card of `card` in Deploys and lead time: the code card itself (`data-code-card`), never
@@ -402,7 +400,7 @@ export function cardOf(card: CodeCardCase): HTMLElement {
 }
 
 /** The card of `card`, once it has drawn. */
-export function drawnCard(card: CodeCardCase): Promise<HTMLElement> {
+function drawnCard(card: CodeCardCase): Promise<HTMLElement> {
   return waitFor(() => cardOf(card));
 }
 
@@ -464,7 +462,7 @@ async function painted(
 ): Promise<OpenTab & { sub: string }> {
   const tab = await openTab(context.sockets, context.spies, settings);
   const { sub } = await deliveryView(tab.socket);
-  serve(tab.socket, snapshotFrame(sub, answer([item]), { seq }));
+  serve(tab.socket, snapshotFrame(sub, evalsAnswer([item], WINDOW, COMPARE), { seq }));
   await drawnCard(card);
   return { ...tab, sub };
 }
@@ -654,7 +652,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         expectNoNumber(card);
         const absent = await absentView(socket, card.slug);
         expect(absent.view).toMatchObject({ kind: "items", project: "ACME", slug: card.slug });
-        serve(socket, snapshotFrame(absent.sub, absentPage([BLOCKED_ROW])));
+        serve(socket, snapshotFrame(absent.sub, itemsPage([BLOCKED_ROW])));
         await waitFor(() =>
           expect(noData(card)).toEqual([
             "No data: GitHub did not give the whole patch of commit 1a2b3c4 (3 files)",
@@ -681,7 +679,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           })
         );
         const absent = await absentView(socket, card.slug);
-        serve(socket, snapshotFrame(absent.sub, absentPage([BLOCKED_ROW])));
+        serve(socket, snapshotFrame(absent.sub, itemsPage([BLOCKED_ROW])));
         await waitFor(() => expect(noData(card)).toHaveLength(1));
         serve(socket, deltaFrame(sub, [valued(card)], "2"));
         await waitFor(() => expect(shares(card)).toEqual(VALUED));
@@ -710,7 +708,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           socket,
           snapshotFrame(
             absent.sub,
-            absentPage([
+            itemsPage([
               absentRow(
                 "repo_unreadable@acme/widgets",
                 { cause: "repo_unreadable", reason: "404 Not Found", repo: "acme/widgets" },
@@ -736,14 +734,15 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           socket,
           snapshotFrame(
             next.sub,
-            answer(
+            evalsAnswer(
               [
                 codeEval(card, [{ ...AGENTS, share: 0.6 }, PEOPLE], {
                   measured: 7,
                   waiting: 0,
                 }),
               ],
-              WINDOW_7
+              WINDOW_7,
+              COMPARE
             )
           )
         );
@@ -804,7 +803,11 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           socket,
           snapshotFrame(
             next.sub,
-            answer([codeEval(card, [blank("agents"), blank("people")], null)], WINDOW_84)
+            evalsAnswer(
+              [codeEval(card, [blank("agents"), blank("people")], null)],
+              WINDOW_84,
+              COMPARE
+            )
           )
         );
         await waitFor(() => expect(noData(card)).toEqual(["No data before 2026-10-01"]));
@@ -813,23 +816,13 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '15 no data | the absent rows name no default repository and no change | "No data: set this project\'s default repository", linked to its settings',
+      '15 no data | the project has no default repository and no change | "No data: set this project\'s default repository", linked to its settings, and no absent row read',
       row(async (context) => {
         const { socket } = await painted(
           context,
           card,
           codeEval(card, [blank("agents"), blank("people")], null, null),
           codeSettings({ default_repo: null })
-        );
-        const absent = await absentView(socket, card.slug);
-        serve(
-          socket,
-          snapshotFrame(
-            absent.sub,
-            absentPage([
-              absentRow("no_default_repo", { cause: "no_default_repo" }, "/projects/ACME/settings"),
-            ])
-          )
         );
         await waitFor(() =>
           expect(noData(card)).toEqual(["No data: set this project's default repository"])
@@ -838,6 +831,41 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           within(cardOf(card)).getByRole("link", { name: "set this project's default repository" })
         ).toHaveAttribute("href", "/projects/ACME/settings");
         expectNoNumber(card);
+        // The settings say it in full: the card reads no absent row for it.
+        expect(absentViews(socket, card.slug)).toEqual([]);
+        expect(within(cardOf(card)).queryByRole("status")).toBeNull();
+      }),
+    ],
+    [
+      "16 no data | the blocking commit's absent row is on the second page | the card reads that page and names the commit",
+      row(async (context) => {
+        const { socket } = await painted(
+          context,
+          card,
+          codeEval(card, [blank("agents"), blank("people")], {
+            blocked: 3,
+            blockedFiles: 9,
+            firstMarked: "2026-10-01",
+            marked: 25,
+            measured: 0,
+            waiting: 0,
+          })
+        );
+        // The rows come by day, and a force-push marks a row per repository and day: a whole
+        // page of them before the blocking commit's.
+        const first = await absentView(socket, card.slug);
+        serve(socket, snapshotFrame(first.sub, itemsPage(markedRows(200), 201)));
+        const second = await absentView(socket, card.slug, 200);
+        expect(within(cardOf(card)).getByRole("status").textContent).toBe("Reading why…");
+        serve(socket, snapshotFrame(second.sub, itemsPage([BLOCKED_ROW], 201, 200)));
+        await waitFor(() =>
+          expect(noData(card)).toEqual([
+            "No data: rows marked after a force-push found on 2026-10-01",
+            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (3 files)",
+          ])
+        );
+        expectNoNumber(card);
+        expect(within(cardOf(card)).queryByRole("status")).toBeNull();
       }),
     ],
   ];
@@ -860,11 +888,15 @@ export function bothCardsRow(body: () => Promise<void> | void): () => Promise<vo
       tab.socket,
       snapshotFrame(
         sub,
-        answer([
-          { ...reworkShare, definition: { ...reworkShare.definition, name: "Rework share" } },
-          valued(SURVIVAL_CARD),
-          valued(REWORK_CARD),
-        ])
+        evalsAnswer(
+          [
+            { ...reworkShare, definition: { ...reworkShare.definition, name: "Rework share" } },
+            valued(SURVIVAL_CARD),
+            valued(REWORK_CARD),
+          ],
+          WINDOW,
+          COMPARE
+        )
       )
     );
     await drawnCard(SURVIVAL_CARD);

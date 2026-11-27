@@ -23,6 +23,7 @@ import {
 } from "../../api/queries";
 import type {
   AuthenticatedUser,
+  CodeGroup,
   ProjectDeliverySettings,
   ProjectDeploySource,
 } from "../../api/types";
@@ -1241,9 +1242,6 @@ test("an agent viewer that names no session is told to open the page with one, a
   }
 });
 
-/** One code group as the record holds it and a save sends it. */
-type CodeGroup = NonNullable<ProjectDeliverySettings["code_groups"]>[number];
-
 /** Two stored code groups: one by head-branch prefix and login, and the catch-all, last. */
 const storedGroups: CodeGroup[] = [
   { author_logins: ["octo-bot[bot]"], branch_prefixes: ["bots/", "auto/"], name: "agents" },
@@ -1410,6 +1408,48 @@ test("a save that touches no group sends the stored groups", async () => {
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
     expect(sentBody(put, 1)).toMatchObject({ delivery: false });
     expect(sentGroups(put, 1)).toEqual(stored);
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("an edit of a group's name sends its lists as stored, and an edit of a list splits that list alone", async () => {
+  const user = userEvent.setup();
+  // A prefix holding a comma, which the form's splitting would cut in two.
+  const stored: CodeGroup[] = [
+    { author_logins: ["Octo-Bot[bot]"], branch_prefixes: ["bots/", "hot,fix/"], name: "agents" },
+    ...storedGroups.slice(1),
+  ];
+  const withGroups: ProjectDeliverySettings = { ...record, code_groups: stored };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(withGroups);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(withGroups);
+
+  try {
+    renderSection();
+    await screen.findByRole("group", { name: "Code group 2" });
+
+    await replace(user, groupField(1, "Name"), " bots ");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentGroups(put)).toEqual([
+      { author_logins: ["Octo-Bot[bot]"], branch_prefixes: ["bots/", "hot,fix/"], name: "bots" },
+      stored[1],
+    ]);
+
+    // The logins box edited: its text is split, and the prefixes still go back as stored.
+    await replace(user, groupField(1, "Author logins"), "octo-bot[bot], hubot");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentGroups(put, 1)).toEqual([
+      {
+        author_logins: ["octo-bot[bot]", "hubot"],
+        branch_prefixes: ["bots/", "hot,fix/"],
+        name: "bots",
+      },
+      stored[1],
+    ]);
   } finally {
     cleanup();
     get.mockRestore();

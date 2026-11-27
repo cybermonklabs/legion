@@ -424,16 +424,6 @@ func codeGroup(name string, prefixes, logins []string) map[string]any {
 	return map[string]any{"name": name, "branch_prefixes": prefixes, "author_logins": logins}
 }
 
-// codeGroupsJSON is groups as the settings answer writes them.
-func codeGroupsJSON(t *testing.T, groups []delivery.CodeGroup) string {
-	t.Helper()
-	encoded, err := json.Marshal(groups)
-	if err != nil {
-		t.Fatalf("encode the code groups %+v: %v", groups, err)
-	}
-	return string(encoded)
-}
-
 // threeCodeGroups is a save's code groups in order: one by head-branch prefix and login, one by
 // login alone, whose prefixes the body sends as null, and the catch-all, last.
 func threeCodeGroups() []any {
@@ -464,7 +454,7 @@ func TestCodeGroupsRoundTripThroughTheProjectSettings(t *testing.T) {
 	createTestProject(t, rig.handler, "ALPHA")
 
 	plain := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"delivery": true, "sources": []any{alphaDeploySource()}})
-	if got := codeGroupsJSON(t, plain.CodeGroups); got != "[]" {
+	if got := mustJSON(t, plain.CodeGroups); got != "[]" {
 		t.Fatalf("a save naming no code groups answers %s, want []", got)
 	}
 	if raw := readProjectDelivery(t, rig.handler, "ALPHA"); !strings.Contains(string(raw), `"code_groups":[]`) {
@@ -474,16 +464,14 @@ func TestCodeGroupsRoundTripThroughTheProjectSettings(t *testing.T) {
 	saved := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
 		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": threeCodeGroups(),
 	})
-	if got := codeGroupsJSON(t, saved.CodeGroups); got != threeCodeGroupsStored {
+	if got := mustJSON(t, saved.CodeGroups); got != threeCodeGroupsStored {
 		t.Fatalf("the save answers code groups %s, want %s", got, threeCodeGroupsStored)
 	}
 	read := settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA"))
-	if got := codeGroupsJSON(t, read.CodeGroups); got != threeCodeGroupsStored {
+	if got := mustJSON(t, read.CodeGroups); got != threeCodeGroupsStored {
 		t.Fatalf("GET reads code groups %s, want %s", got, threeCodeGroupsStored)
 	}
-	put, _ := json.Marshal(saved)
-	got, _ := json.Marshal(read)
-	if string(put) != string(got) {
+	if put, got := mustJSON(t, saved), mustJSON(t, read); put != got {
 		t.Errorf("the save answered %s, and GET reads %s", put, got)
 	}
 }
@@ -501,16 +489,16 @@ func TestAPutWithNoCodeGroupsKeepsTheStoredGroups(t *testing.T) {
 	kept := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
 		"delivery": true, "sources": []any{alphaDeploySource()}, "population_authors": []string{"octocat"},
 	})
-	if got := codeGroupsJSON(t, kept.CodeGroups); got != threeCodeGroupsStored || !slices.Equal(kept.PopulationAuthors, []string{"octocat"}) {
+	if got := mustJSON(t, kept.CodeGroups); got != threeCodeGroupsStored || !slices.Equal(kept.PopulationAuthors, []string{"octocat"}) {
 		t.Fatalf("a save with no code_groups answers groups %s and population %v, want %s kept and octocat saved", got, kept.PopulationAuthors, threeCodeGroupsStored)
 	}
 	null := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
 		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": nil,
 	})
-	if got := codeGroupsJSON(t, null.CodeGroups); got != threeCodeGroupsStored {
+	if got := mustJSON(t, null.CodeGroups); got != threeCodeGroupsStored {
 		t.Fatalf("a save with code_groups null answers %s, want %s kept", got, threeCodeGroupsStored)
 	}
-	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
+	if got := mustJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
 		t.Fatalf("GET reads code groups %s after the saves that named none, want %s", got, threeCodeGroupsStored)
 	}
 }
@@ -527,10 +515,10 @@ func TestAPutWithEmptyCodeGroupsClearsThem(t *testing.T) {
 	cleared := savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
 		"delivery": true, "sources": []any{alphaDeploySource()}, "code_groups": []any{},
 	})
-	if got := codeGroupsJSON(t, cleared.CodeGroups); got != "[]" {
+	if got := mustJSON(t, cleared.CodeGroups); got != "[]" {
 		t.Fatalf("a save with code_groups [] answers %s, want []", got)
 	}
-	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != "[]" {
+	if got := mustJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != "[]" {
 		t.Fatalf("GET reads code groups %s after they were cleared, want []", got)
 	}
 }
@@ -577,7 +565,7 @@ func TestCodeGroupsAreRefusedByName(t *testing.T) {
 			t.Errorf("%s is refused %q, which does not name the group %q", row.what, refusal.Message, row.name)
 		}
 	}
-	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
+	if got := mustJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
 		t.Fatalf("after the refused saves GET reads code groups %s, want %s as saved before them", got, threeCodeGroupsStored)
 	}
 }
@@ -677,7 +665,7 @@ func TestCodeGroupsOverTheSeriesBoundAreRefused(t *testing.T) {
 			t.Errorf("%d code groups are refused %q, which does not say %q", over, refusal.Message, want)
 		}
 	}
-	if got := codeGroupsJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
+	if got := mustJSON(t, settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA")).CodeGroups); got != threeCodeGroupsStored {
 		t.Fatalf("after the refused save GET reads code groups %s, want %s as saved before it", got, threeCodeGroupsStored)
 	}
 }

@@ -173,12 +173,11 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})
 	process.waitHealthy(t)
 
-	// The loops this server starts, each of which records its own read.
-	loops := []githubreads.Read{githubreads.WebhookRedelivery, githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile,
-		githubreads.CodeSurvival}
+	// The loops this server starts, each of which records its own read: every read githubreads
+	// names, so a read added there is checked here too.
 	answer := process.waitForGitHubReads(t, func(answer healthzAnswer) string {
 		var missing []string
-		for _, read := range loops {
+		for _, read := range githubreads.Reads() {
 			if lack := failedOn503(answer, read); lack != "" {
 				missing = append(missing, lack)
 			}
@@ -200,7 +199,7 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 		githubreads.CIReconcile:        {ciReconcileRow},
 		githubreads.CodeSurvival:       {ciReconcileRow},
 	}
-	for _, read := range loops {
+	for _, read := range githubreads.Reads() {
 		cause := *answer.reads[string(read)].Cause
 		if !slices.ContainsFunc(names[read], func(name string) bool { return strings.Contains(strings.ToLower(cause), strings.ToLower(name)) }) {
 			t.Errorf("%s's cause names no request of its own loop, want one naming any of %q: %s", read, names[read], cause)
