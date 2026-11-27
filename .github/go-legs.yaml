@@ -257,6 +257,7 @@ packages/envoy:
       - internal/dispatch/evals                 # 625 s
       - cmd/dispatch                            # 316 s
       - cmd/dispatch-seed                       # 83 s
+      - internal/dispatch/codesurvival          # 58 s in an issue pod; no CI time yet
       - internal/dispatch/duty                  # 31 s
       - internal/dispatch/architecture          # 31 s
       - internal/dispatch/githubapp             # 27 s
@@ -290,6 +291,7 @@ packages/envoy:
       - internal/dispatch/evals/independent/cmd
       - internal/dispatch/prodevents
       - internal/dispatch/prodevents/signals
+      - internal/dispatch/codesurvival/codesurvivaltest
     # Dispatch's heavier packages and the Legion facts, which took about 109 s in the same CI as the
     # eval registry in leg 3.
     4:
@@ -461,6 +463,9 @@ packages/envoy:
       - internal/dispatch/store/storetest       # 18 s
       - internal/dispatch/delivery/measures     # 1 s
       - internal/dispatch/delivery/citebody     # 1 s
+      - internal/dispatch/delivery/survival     # 5 s in an issue pod; no CI time yet
+      - internal/dispatch/delivery/survival/fold
+      - internal/dispatch/delivery/survival/survivaltest
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest
