@@ -110,8 +110,15 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		pidFile, termed := filepath.Join(dir, "claude.pid"), filepath.Join(dir, "termed")
+		// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=trap stalls the first run's answer to SIGTERM by 4 s,
+		// before the trap writes its mark.
+		stall := ""
+		if runs == 1 && os.Getenv("LEGION_TEST_CONTROL_STALL") == "trap" {
+			stall = "sleep 4; "
+			t.Logf("control: LEGION_TEST_CONTROL_STALL=trap: run 1's stand-in sleeps 4 s in its SIGTERM trap")
+		}
 		p := startClaudeBridge(t, "echo $$ >"+shellprefix.Literal(pidFile)+"\nTOOL_CALL="+shellprefix.Literal(toolCall)+
-			"\nTERMED="+shellprefix.Literal(termed)+"\ntrap ': >\"$TERMED\"; kill $!; cat \"$TOOL_CALL\"; exit 0' TERM\n"+
+			"\nTERMED="+shellprefix.Literal(termed)+"\ntrap '"+stall+": >\"$TERMED\"; kill $!; cat \"$TOOL_CALL\"; exit 0' TERM\n"+
 			"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 		// The stand-in writes its pid before it marks itself ready, which startClaudeBridge awaits.
 		raw, err := os.ReadFile(pidFile)
