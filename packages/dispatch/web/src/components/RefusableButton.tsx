@@ -5,6 +5,7 @@ import {
   pageLineBorder,
   pageMutedText,
   pagePaperBg,
+  pageSend,
   primaryButton,
   secondaryButtonCompact,
 } from "../theme/classes";
@@ -13,6 +14,7 @@ import { useTooltips } from "./tooltips";
 /** Each look whole, refused or not: the `refused:` variant (`styles.css`) paints `disabled` and
  *  `aria-disabled` alike, so a look states its cannot-press state once. */
 const LOOKS = {
+  "page-send": pageSend,
   primary: primaryButton,
   "secondary-compact": secondaryButtonCompact,
 } as const;
@@ -20,8 +22,10 @@ const LOOKS = {
 /** Each look inside `NoTooltips`, in the new issue page's colours, on the same shape as
  *  `LOOKS`: the primary is filled with the page's ink, and refused is the page's own refused
  *  send, muted words on the hairline grey; the compact secondary is the page's header control,
- *  its rule and muted words on the paper, with quiet words while refused. */
+ *  its rule and muted words on the paper, with quiet words while refused. The issue page's own
+ *  send is drawn in its colours already, so it reads the same inside it. */
 const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
+  "page-send": pageSend,
   primary: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   "secondary-compact": `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
 };

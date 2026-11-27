@@ -186,11 +186,10 @@ export function issueHeader(page: Page): Locator {
   return page.locator("[data-issue-page] header[data-issue-header]");
 }
 
-/** The title's control in `header`: the button inside its heading, named by the title, which
- *  takes the title's Tab stop, its keys and the focus an edit gives back (`IssueTitleRow`). The
- *  heading itself takes no Tab stop. */
-export function titleControl(header: Locator): Locator {
-  return header.getByRole("heading", { level: 1 }).getByRole("button");
+/** The header's Edit title: the button laid over the title's heading that opens its editor
+ *  (`IssueTitleRow.tsx`), drawn while the issue is open and its title is not being edited. */
+export function editTitleButton(page: Page): Locator {
+  return issueHeader(page).getByRole("button", { exact: true, name: CONTROL_LABELS.edit_title });
 }
 
 /** The part of the header that stays at the top of the screen from 761 px up: the key's row

@@ -21,8 +21,9 @@ import {
 } from "../../theme/classes";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "./composer-words";
 import { useHeldSend, useHeldSends } from "./held-sends";
-import { GoneReply } from "./KeptReply";
+import { GoneReply, type GoneReplyWords } from "./KeptReply";
 import type { MentionFieldHandle } from "./MentionField";
 import type { SentDraft } from "./send-request";
 import { useUnsentDrafts } from "./unsent-drafts";
@@ -241,12 +242,13 @@ export function KeptReplyToDeleted({
  * edit written over a body the comment no longer holds (`changed`), a draft a margin compose
  * kept for other words of its document (`offered`), and each reply it keeps whose comment or
  * message its host no longer lists, or lists deleted (`gone`). Each waits with the words that say
- * why, and with the reader's presses for it: one takes it into the field, where the composer can
- * send it, and the other drops it. Either press hands the focus to the field (`field`). Nothing
- * is saved or sent meanwhile. The edit and the offered draft each hold the field read only while
- * they wait, so the one that does gives its words the id the field names as its description
- * (`heldId`), and once a key was typed in the field (`typedOver`) says after them what the field
- * waits for.
+ * why - a host's own sentences for the edit and the replies where it has them (`words`, the issue
+ * page's box) - and with the reader's presses for it: one takes it into the field, where the
+ * composer can send it, and the other drops it. Either press hands the focus to the field
+ * (`field`). Nothing is saved or sent meanwhile. The edit and the offered draft each hold the
+ * field read only while they wait, so the one that does gives its words the id the field names
+ * as its description (`heldId`), and once a key was typed in the field (`typedOver`) says after
+ * them what the field waits for.
  */
 export function KeptDraftOffers({
   changed,
@@ -263,6 +265,7 @@ export function KeptDraftOffers({
   onTakeGone,
   onTakeOffered,
   typedOver,
+  words,
 }: {
   readonly changed: SentDraft | undefined;
   /** The composer's body field, whose text box each press of an offer here hands the focus to
@@ -291,6 +294,9 @@ export function KeptDraftOffers({
   /** Whether the reader typed a key in the field while an offer here held it read only, which
    *  wrote nothing there. */
   readonly typedOver: boolean;
+  /** The host's own sentence before an edit that waits beside a newer comment (`changedLead`),
+   *  and for a reply whose post is gone (`goneReply`); with none, the composer's own. */
+  readonly words?: { readonly changedLead: string; readonly goneReply: GoneReplyWords };
 }): ReactNode {
   /** Each press below takes its offer away, and the field takes the focus it leaves
    *  (`handFocusOn`). A host that moved the focus itself, or took the composer away with Discard
@@ -306,10 +312,10 @@ export function KeptDraftOffers({
       {changed === undefined ? null : (
         <DraftOffer
           body={changed.body}
-          drop={{ label: "Discard my edit", press: intoField(onDiscardChanged) }}
+          drop={{ label: OFFER_LABELS.dropEdit, press: intoField(onDiscardChanged) }}
           id={heldId}
-          lead="This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:"
-          take={{ label: "Use my edit", press: intoField(onTakeChanged) }}
+          lead={words?.changedLead ?? CHANGED_EDIT_LEAD}
+          take={{ label: OFFER_LABELS.takeEdit, press: intoField(onTakeChanged) }}
           typed={typedOver ? "Use or discard your kept edit first." : undefined}
         />
       )}
@@ -358,7 +364,7 @@ export function KeptDraftOffers({
       {gone.map((away) => (
         <DraftOffer
           body={away.draft.body}
-          drop={{ label: "Discard my draft", press: intoField(() => onDropGone(away)) }}
+          drop={{ label: OFFER_LABELS.dropDraft, press: intoField(() => onDropGone(away)) }}
           key={away.replyTo.id}
           lead={
             <GoneReply
@@ -366,12 +372,13 @@ export function KeptDraftOffers({
               deleted={away.listing === "deleted"}
               parentKind={away.replyTo.parentKind}
               waits={goneTakes === "once empty"}
+              words={words?.goneReply}
             />
           }
           replacement={away.draft.replacement}
           take={
             goneTakes === "here"
-              ? { label: "Use it here", press: intoField(() => onTakeGone(away)) }
+              ? { label: OFFER_LABELS.takeHere, press: intoField(() => onTakeGone(away)) }
               : undefined
           }
         />

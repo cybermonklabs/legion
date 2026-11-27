@@ -1,5 +1,5 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 import { useFocusBack } from "../../hooks/useFocusBack";
 import { inputMethodKey } from "../../lib/input-method-key";
@@ -8,21 +8,35 @@ import {
   borderStrongHover,
   borderTransparent,
   focusBorder,
+  focusVisibleRing,
   pageInkText,
 } from "../../theme/classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 
-/** The title's control: the button inside the heading that opens the editor (`IssueTitleRow`),
- *  drawn while the issue is open, which the header's `e` key presses (`useHeaderKeys.ts`). */
-export const TITLE_CONTROL = "h1 > button[data-title-control]";
+/** Edit title, the button laid over the title's heading (`IssueTitleRow`), as the header finds
+ *  it: the control its keeper falls back on and the one its `e` key clicks. */
+export const EDIT_TITLE_BUTTON = `button[aria-label="${CONTROL_LABELS.edit_title}"]`;
 
 /**
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
- * editor it becomes when the reader presses it: a click on the heading, Enter or Space on the
- * button that holds its words, or the header's `e` key, which clicks that button
+ * editor it becomes when the reader asks for it: Edit title, a button laid over the heading,
+ * pressed by a click, Enter or Space, or the header's `e` key, which clicks that button
  * (`useHeaderKeys.ts`).
+ *
+ * The heading holds the title and takes no Tab stop and no press. The button laid over its box
+ * is the control, and a screen reader reads it as "Edit title, button", with the title as its
+ * description. A heading that took a Tab stop and opened the editor would be a control with no
+ * role and no name (WCAG 2.2, 4.1.2), so the heading takes neither. The button shows no text of
+ * its own, since a button that showed the title under the name "Edit title" would leave its
+ * visible words out of its name (WCAG 2.5.3, Label in Name). It stands beside the heading in the
+ * row's one cell and not inside it, since a heading's name is computed from what it holds, a
+ * button's `aria-label` included. It takes the heading's whole box and draws what the heading
+ * drew there - the hover rule and the text cursor - and the page's focus ring, so the row looks
+ * as the prototype draws it and the heading keeps its box and its type to the pixel. A closed
+ * issue's title edits nothing, so it is the heading alone.
  *
  * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
  * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it. It keeps that
@@ -39,18 +53,12 @@ export const TITLE_CONTROL = "h1 > button[data-title-control]";
  * the read view keeps that height until the press that ended the edit has been delivered, and
  * only then clamps it again.
  *
- * Escape and Enter end the edit from the keyboard, and give the focus back to the title's button
- * the reader opened the editor from, so the keyboard reader is where they were. A focus alone
- * never opens the editor: the page gives the focus back to that button on its own - Details
- * closing onto the control that opened it, a return to the window - and an editor opened then
- * would take the next shortcut key as text of the title.
- *
- * The heading keeps its role and takes no Tab stop of its own: the control is a real button
- * inside it, named by the title it holds, which Tab reaches and a screen reader names a button.
- * The button holds the title's words in a box of their own, which the clamp holds to two lines
- * from 761 px up as the heading's would: a button is drawn as a box of its own, so the
- * heading's clamp, which the heading keeps, counts it as one line. A closed issue's title takes
- * no edit, so it draws no button, and the heading holds the words itself.
+ * Escape and Enter end the edit from the keyboard, and give the focus back to Edit title, the
+ * button the reader opened the editor from, so the keyboard reader is where they were. A focus
+ * alone never opens the editor, only the button's own activation does: the page gives the focus
+ * back to the button on its own - Details closing onto the control that opened it, a return to
+ * the window - and an editor opened then would change the page on a focus (WCAG 2.2, 3.2.1 On
+ * Focus) and take the next shortcut key as text of the title.
  */
 export function IssueTitleRow({
   drafts,
@@ -79,10 +87,11 @@ export function IssueTitleRow({
   // as that press ends.
   const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
-  // The title's button (`control`), which a key that ends the edit gives the focus back to once
-  // the heading is drawn again (`useFocusBack`).
+  // Edit title, drawn while the issue is open and its title is not being edited, which a key
+  // that ends the edit gives the focus back to once it is drawn again (`useFocusBack`).
   const focusBack = useFocusBack(editing);
-  const control = focusBack.opener;
+  // The heading's `id`, which Edit title is described by.
+  const headingId = useId();
   const editor = useRef<HTMLTextAreaElement | null>(null);
   // The draft a switch or a hide of this edit sent or queued since the reader last changed it,
   // trimmed as it went, or null: a change the reader makes clears it (the editor's `onChange`),
@@ -204,55 +213,41 @@ export function IssueTitleRow({
 
   const type = "text-xl leading-[26px] min-[761px]:text-[22px] min-[761px]:leading-[29px]";
   // The box both views share, to the pixel: the font, the wrapping and the rule the editor
-  // draws on focus, which the heading keeps transparent. The rule and the padding inside it
-  // are 5 px on each side and 1 px above and below, which the wrapper's negative margins take
-  // back, so the words have the header's whole column - 362 px at 390 px, the prototype's own -
-  // and the row is the prototype's height: 2 px above the words and none below.
+  // draws on focus, which the heading keeps transparent and Edit title, laid over the heading's
+  // box, draws on hover. The rule and the padding inside it are 5 px on each side and 1 px above
+  // and below, which the wrapper's negative margins take back, so the words have the header's
+  // whole column - 362 px at 390 px, the prototype's own - and the row is the prototype's
+  // height: 2 px above the words and none below.
   const box = `[grid-area:1/1] min-w-0 rounded-md border px-1 font-semibold tracking-[-0.012em] whitespace-pre-wrap [overflow-wrap:anywhere] ${type} ${pageInkText}`;
   const whole = editing || held;
 
-  // A trailing space or an empty draft still holds a line, as the editor does.
-  const words = shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown;
-  const clamp = whole ? "" : "min-[761px]:line-clamp-2";
-
   return (
     <div className="-mx-[5px] mt-px -mb-px grid min-w-0">
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: the heading's click takes a press on its
-          rule and its padding as on its words; the button inside it is the control, which takes
-          the keys and whose click reaches this one. */}
       <h1
         aria-hidden={editing ? true : undefined}
-        className={`${box} ${borderTransparent} ${clamp} ${
-          editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
+        className={`${box} ${borderTransparent} ${whole ? "" : "min-[761px]:line-clamp-2"} ${
+          editing ? "invisible" : ""
         }`}
-        onClick={() => {
-          if (!isClosed) openEdit();
-        }}
+        id={headingId}
         ref={heading}
         {...authorText}
       >
-        {isClosed ? (
-          words
-        ) : (
-          <button
-            className="block w-full cursor-text text-left"
-            data-title-control=""
-            onKeyDown={(event) => {
-              // The edit opens at the key itself, and the key does nothing else: no click of the
-              // button's own after it, and no scroll of the page by Space.
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                openEdit();
-              }
-            }}
-            ref={control}
-            tabIndex={editing ? -1 : undefined}
-            type="button"
-          >
-            <span className={`block ${clamp}`}>{words}</span>
-          </button>
-        )}
+        {/* A trailing space or an empty draft still holds a line, as the editor does. */}
+        {shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown}
       </h1>
+      {isClosed || editing ? null : (
+        // Edit title, in the heading's cell after it, so it takes the heading's whole box and a
+        // press anywhere on the title lands on it. It holds no words: its name is its label and
+        // the heading's words are its description.
+        <button
+          aria-describedby={headingId}
+          aria-label={CONTROL_LABELS.edit_title}
+          className={`[grid-area:1/1] min-w-0 cursor-text rounded-md border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
+          onClick={openEdit}
+          ref={focusBack.opener}
+          type="button"
+        />
+      )}
       {editing ? (
         // One line of text that holds no markup, so this box takes no reference picker:
         // `issue-title` in `DISPATCH_WRITING_BOXES` says why.
@@ -289,7 +284,7 @@ export function IssueTitleRow({
               // The press is the editor's: marked taken, so Details' own Escape and the key
               // registry pass over it (`shell/keymap.ts`). Puts back the issue's title, or while a
               // write is out the title it carries, which the issue is about to hold (decision
-              // 316). The focus goes back to the title's button (`useFocusBack`).
+              // 316). The focus goes back to Edit title (`useFocusBack`).
               event.preventDefault();
               drafts.discardTitle();
               focusBack.handBack();

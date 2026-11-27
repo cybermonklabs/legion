@@ -5,7 +5,7 @@ import { STATUS_TRIGGER_SELECTOR } from "../issue/status-pick";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
-import { TITLE_CONTROL } from "./IssueTitleRow";
+import { EDIT_TITLE_BUTTON } from "./IssueTitleRow";
 import { usableControl } from "./usable-control";
 
 /**
@@ -158,14 +158,13 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
-      // The title's button opens the editor at a click, and a focus does not, so the key clicks
-      // it: a button that already holds the focus - where Escape and Enter leave it - takes no
-      // new focus. The button is drawn only while the issue is open, and while the title is
-      // edited it stands in a heading that is unseen and `aria-hidden`, which takes no press
-      // (`usableControl`), so the key is offered exactly while a click opens the editor.
+      // Edit title's click opens the editor, and a focus does not, so the key clicks it: a
+      // button that already holds the focus - where Escape and Enter leave it - takes no new
+      // focus. The title row draws the button only while the issue is open and its title not
+      // edited (`IssueTitleRow.tsx`), so the key is offered exactly while a click opens it.
       action: "issue.title",
-      run: () => headerControl(TITLE_CONTROL)?.click(),
-      when: () => headerControl(TITLE_CONTROL) !== null,
+      run: () => headerControl(EDIT_TITLE_BUTTON)?.click(),
+      when: () => headerControl(EDIT_TITLE_BUTTON) !== null,
     },
     {
       // Held while its write is out (`heldPress`), when it takes no press, and so no key.

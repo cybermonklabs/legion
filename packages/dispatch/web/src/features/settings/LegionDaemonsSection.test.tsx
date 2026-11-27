@@ -174,6 +174,18 @@ test("a deployment where no project names a daemon says so", async () => {
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
 
+// The section says when Dispatch reads a daemon's whole state: to start the project's record or to
+// check it, and not on a timer (the Legion state intake, packages/envoy/cmd/dispatch/README.md).
+test("the section says Dispatch reads a daemon whole only to start or check its record", async () => {
+  const section = await renderSection(legionServer([]));
+
+  expect(
+    await section.findByText(
+      /Dispatch reads the daemon's whole state only to start that record or to check what it recorded; it does not poll the daemon on a timer\./
+    )
+  ).toBeDefined();
+});
+
 // No route lists every daemon, so one project's read can fail while the others answer: the
 // section says it could not load them rather than drawing a table that leaves that project out.
 test("a project whose daemon cannot be read fails the list rather than dropping out of it", async () => {

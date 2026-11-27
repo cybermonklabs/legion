@@ -33,13 +33,14 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * The controls a row draws are worked by keys too, and for the same reason the moves are: the
  * tree is one tab stop, so the only tab stops inside a row are the focused row's scrolling
  * blocks, and Tab from a row leaves the tree past them. The arrows press the fold control, `o`
- * the one that pins the body open, `r` and `a` Reply and Answer - the line `a` sets draws an open
- * question's options as chips of its own - `Shift+K` presses Keep, `Shift+C` presses Change and
- * puts the caret in the form it opens, and `f` steps through the row's links and then through
- * every other control no key presses - Copy reference, Change answer, a command's Copy - where
- * Enter follows or presses the one it stopped on. So every control of the focused row is
- * reachable from the keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by
- * what it does, as it names every other.
+ * the one that pins the body open, `r` and `a` Reply and Answer - `a` sets the writer's answer
+ * (`OutlineWriter.answer`) and picks no option - `Shift+K` presses Keep, `Shift+C` presses
+ * Change and puts the caret in the form it opens, and `f` steps through the row's links and then
+ * through every other control no key presses - Copy reference, Change answer, a command's Copy,
+ * an open question's options, which its own row draws as controls (`NodeRow.tsx`'s
+ * `NodeOptions`) - where Enter follows the link it stopped on, presses the control or picks the
+ * option. So every control of the focused row is reachable from the keyboard without a second
+ * tab stop (WCAG 2.1.1), and `?` names each key by what it does, as it names every other.
  *
  * Every block of the focused row's words whose content runs past its box - a code block, a
  * table, a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can
@@ -131,16 +132,16 @@ const SCROLL_KEYS: Record<string, true> = {
 };
 
 /** The marks of the controls a row draws that a key of this keymap presses, which `f` leaves to
- *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), Reply and
- *  Answer (`r`, `a`), and an open question's options, which the line `a` sets draws as chips of
- *  its own (`NodeRow.tsx`'s `NodeOptions`). */
+ *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), and Reply
+ *  and Answer (`r`, `a`). An open question's options are none of them: `a` sets the writer's
+ *  answer (`OutlineWriter.answer`) and picks no option, so `f` steps to each option and Enter
+ *  picks it. */
 const KEYED_CONTROLS = [
   "[data-node-bullet]",
   rowActionSelector("keep"),
   rowActionSelector("change"),
   '[data-row-act="reply"]',
   '[data-row-act="answer"]',
-  "[data-pick-option]",
 ].join(", ");
 
 /** Whether a key of this keymap presses `control`: one of `KEYED_CONTROLS`, or the control that
@@ -546,7 +547,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       },
     },
     {
-      // Answer the focused open question: the line answers it, its options its chips.
+      // The focused open question's Answer: sets the writer's answer (`OutlineWriter.answer`).
       action: "issue.tree-answer",
       run: () => {
         const node = focusedRow()?.node;

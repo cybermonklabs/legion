@@ -21,7 +21,7 @@ import type { IssueAction } from "./IssueActionsMenu";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueIdentityRow } from "./IssueIdentityRow";
 import { IssuePropertiesRow } from "./IssuePropertiesRow";
-import { IssueTitleRow, TITLE_CONTROL } from "./IssueTitleRow";
+import { EDIT_TITLE_BUTTON, IssueTitleRow } from "./IssueTitleRow";
 import { useIdentityBlock } from "./identity-block";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -37,15 +37,16 @@ import { useIssuePalette } from "./useIssuePalette";
  * the dialog shuts once its change request is read, so the reader stays on the document they
  * just reviewed rather than being sent to the top of the header. "Issue actions" comes next: the
  * header draws it in every state and no write disables it, and it opens the actions a reader
- * goes on with. The title's button comes last, as the field the issue's refusal line stands for,
- * which is the place the decision names; it stands in the same block as "Issue actions", so it
- * is reached only should that control ever be missing.
+ * goes on with. The title's Edit title button comes last, as the control of the field the
+ * issue's refusal line stands for, which is the place the decision names: the heading itself
+ * takes no focus, as it is no control (`IssueTitleRow.tsx`). It stands in the same block as
+ * "Issue actions", so it is reached only should that control ever be missing.
  */
 const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
   chipOfLostAction,
   ({ root }) =>
     root.querySelector<HTMLElement>(`button[aria-label="${CONTROL_LABELS.issue_actions}"]`),
-  ({ root }) => root.querySelector<HTMLElement>(TITLE_CONTROL),
+  ({ root }) => root.querySelector<HTMLElement>(EDIT_TITLE_BUTTON),
 ];
 
 /**

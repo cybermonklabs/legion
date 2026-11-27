@@ -10866,7 +10866,11 @@ test("k-default-keys: on the new issue page with Details open an Escape held dow
   await focusPage(page, step("the focus starts on the page"));
   await page.keyboard.press("Shift+M");
   await expect(details, step("Shift+M opens Details")).toBeVisible();
-  const title = page.locator("[data-title-control]");
+  // The title's control is Edit title, the button laid over the heading (`IssueTitleRow.tsx`),
+  // which draws no words of its own: the title is read from the heading.
+  const header = page.getByTestId("issue-header");
+  const title = header.getByRole("button", { exact: true, name: "Edit title" });
+  const heading = header.getByRole("heading", { level: 1 });
   const editor = page.getByRole("textbox", { name: "Issue title" });
   // The row's control: one press of Escape in the editor ends the edit and leaves Details open.
   await title.focus();
@@ -10884,7 +10888,7 @@ test("k-default-keys: on the new issue page with Details open an Escape held dow
   // A repeat that acted would have closed Details within this second and a half.
   await page.waitForTimeout(1_500);
   await expect(editor, step("the held Escape ends the edit")).toHaveCount(0);
-  await expect(title, step("the title is put back")).toHaveText("Ledger rollout");
+  await expect(heading, step("the title is put back")).toHaveText("Ledger rollout");
   await expect(details, step("the held Escape leaves Details open")).toBeVisible();
   expect(writes, step("nothing is written")).toEqual([]);
 });
