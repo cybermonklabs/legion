@@ -43,12 +43,13 @@ const (
 // A call that needs no connection lock answers within the attempt held when it began, and
 // AnswersWithinAttempt passes it: the lock is taken once the call has answered, nats.go did not let
 // it go, and no later attempt reached the hold. The client's connect timeout is what is left until
-// the test's waits give up (left), the one HoldReconnect gives it again (OwnConnectTimeout), so no
-// span of the attempt ends the row; the cleanup's Release ends the attempt.
+// the test's waits give up (left), the one HoldReconnectUntilEnded gives it again
+// (OwnConnectTimeout), so no span of the attempt ends the row; the cleanup's Release ends the
+// attempt.
 func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
 	hold := StartHandshakeHold(t, URL(t))
 	conn := heldAttemptConn(t, hold, left(t))
-	hold.HoldReconnect(t, conn)
+	hold.HoldReconnectUntilEnded(t, conn)
 	hold.AnswersWithinAttempt(t, conn, "a call that needs no lock", func() error { return nil })
 }
 
@@ -56,7 +57,7 @@ func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
 // skips in an ordinary run.
 const attemptChildEnv = "TESTNATS_ATTEMPT_CHILD"
 
-// attemptHeld is the line the child logs once its attempt is held (AwaitAttempt), before it measures.
+// attemptHeld is the line the child logs once HoldReconnect has returned, before it measures.
 const attemptHeld = "the child's handshake attempt is held"
 
 // AnswersWithinAttempt fails a call that waits out the attempt held when it began. The child's call
@@ -102,9 +103,8 @@ func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
 
 // TestAnswersWithinAttemptChild is the child of
 // TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt: it measures a call that waits for nats.go's
-// lock. It holds the attempt with Hold and AwaitAttempt rather than HoldReconnect, which would give
-// the client a connect timeout of the test's own (OwnConnectTimeout), so the client keeps its own,
-// heldAttemptTimeout, and the held attempt ends at it. It runs only when the parent re-executes this
+// lock. It holds the attempt with HoldReconnect, which leaves the client its own connect timeout,
+// heldAttemptTimeout, so the held attempt ends at it. It runs only when the parent re-executes this
 // binary.
 func TestAnswersWithinAttemptChild(t *testing.T) {
 	if os.Getenv(attemptChildEnv) == "" {
@@ -112,9 +112,7 @@ func TestAnswersWithinAttemptChild(t *testing.T) {
 	}
 	hold := StartHandshakeHold(t, URL(t))
 	conn := heldAttemptConn(t, hold, heldAttemptTimeout)
-	before := hold.Attempts()
-	hold.Hold()
-	hold.AwaitAttempt(t, conn, before)
+	hold.HoldReconnect(t, conn)
 	t.Log(attemptHeld)
 	hold.AnswersWithinAttempt(t, conn, "a status read that waits for the lock", func() error {
 		conn.Status()

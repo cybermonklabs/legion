@@ -1049,15 +1049,21 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 }
 
 // ConnectSeed connects to uri as the nkey user whose seed is seed, or with no credential when seed
-// is "", with no reconnect, then opts, and returns the connection or the server's answer: a test
-// that expects a refusal reads it from the error. It makes one try, whose dial and handshake
-// nats.go bounds at its default timeout, which a caller may replace by passing natsgo.Timeout among
-// opts; a test whose verdict needs the server's answer connects through AwaitConnectSeed instead.
+// is "", with main's one-second connect timeout (connectSeedTimeout) and no reconnect, then opts,
+// and returns the connection or the server's answer: a test that expects a refusal reads it from
+// the error. It makes one try, whose dial and handshake that timeout bounds, which a caller may
+// replace by passing natsgo.Timeout among opts; a test whose verdict needs the server's answer
+// connects through AwaitConnectSeed instead.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
-	options := append([]natsgo.Option{natsgo.NoReconnect()}, seedOptions(t, seed)...)
+	options := append([]natsgo.Option{natsgo.Timeout(connectSeedTimeout), natsgo.NoReconnect()}, seedOptions(t, seed)...)
 	return natsgo.Connect(uri, append(options, opts...)...)
 }
+
+// connectSeedTimeout is ConnectSeed's connect timeout (natsgo.Timeout), main's one second: it
+// bounds the try's dial through nats.go's own dialer and its handshake (nats.go v1.55.0
+// nats.go:2017-2021, 2944).
+const connectSeedTimeout = time.Second
 
 // seedOptions is the option that signs a connect as the nkey user whose seed is seed, or none when
 // seed is "".
@@ -1079,21 +1085,22 @@ func seedOptions(t testing.TB, seed string) []natsgo.Option {
 
 // AwaitConnectSeed is ConnectSeed made through the shared wait, for a test whose verdict needs the
 // server's answer to the connect: the connection, or the server's refusal, which it returns as
-// ConnectSeed returns them. nats.go bounds each try's handshake at its default timeout (2 s,
-// processConnectInit, nats.go v1.55.0 nats.go:2944), and the try's dial at the same (giveUpDial),
-// and on a loaded machine a server that answers can answer later than that. So a try that ends on
-// a timeout (timedOut) is made again, and a slow answer costs the test time and not its result; a
-// server that never answers fails the test at the shared wait's give-up, naming the wait and its
-// last try's timeout. Each try's dial carries the wait's give-up (giveUpDial). Any other answer
-// ends the wait at once and is returned: a refusal, which a test that expects one reads from the
-// error, and any other failure, which the test reports. A try that timed out may have reached the
-// server, which then acted on it as on any connect. opts are applied anew at each try, on the
-// goroutine that called AwaitConnectSeed, as natsgo.Connect applies each option once (nats.go
-// v1.55.0 nats.go:1147-1153), so a test that counts what the server did per try can count and
-// name the tries through an option of its own.
+// ConnectSeed returns them. Each try sets nats.go's default timeout (2 s) in place of ConnectSeed's
+// second: it bounds the try's handshake (processConnectInit, nats.go v1.55.0 nats.go:2944), and the
+// try's dial takes the same (giveUpDial). On a loaded machine a server that answers can answer
+// later than that. So a try that ends on a timeout (timedOut) is made again, and a slow answer
+// costs the test time and not its result; a server that never answers fails the test at the shared
+// wait's give-up, naming the wait and its last try's timeout. Each try's dial carries the wait's
+// give-up (giveUpDial). Any other answer ends the wait at once and is returned: a refusal, which a
+// test that expects one reads from the error, and any other failure, which the test reports. A try
+// that timed out may have reached the server, which then acted on it as on any connect. opts come
+// after that timeout, so a natsgo.Timeout among them replaces it, and are applied anew at each try,
+// on the goroutine that called AwaitConnectSeed, as natsgo.Connect applies each option once
+// (nats.go v1.55.0 nats.go:1147-1153), so a test that counts what the server did per try can count
+// and name the tries through an option of its own.
 func AwaitConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
-	opts = append([]natsgo.Option{giveUpDial(t)}, opts...)
+	opts = append([]natsgo.Option{natsgo.Timeout(natsgo.DefaultTimeout), giveUpDial(t)}, opts...)
 	dial := testwait.Until(t, fmt.Sprintf("an answer of the NATS server at %s to a connect, a connection or a refusal rather than a timeout", uri), func() (dialAttempt, bool) {
 		conn, err := ConnectSeed(t, uri, seed, opts...)
 		return dialAttempt{conn: conn, err: err}, !timedOut(err)
