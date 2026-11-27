@@ -178,9 +178,14 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
 }
 
 /** The opening of the sentence below, which the skill-scenario rig reads a stopped half's own
- * output for (`scripts/skill-scenarios/score.ts`'s `unscored`, telling an agent that was stopped
- * from one that chose). The rig imports this constant rather than writing the words again: a
- * rewording here would otherwise turn that reading off with no test failing anywhere. */
+ * output for (`scripts/skill-scenarios/boot-refusal.ts`'s `claimBootFailure`, telling an agent
+ * that was stopped from one that chose). Only the rig's tests import this constant. At run time
+ * the rig reads each checkout's copy of this file as text and takes the opening out of it with
+ * the regex `/\bCLAIM_BOOT_FAILED_OPENING\s*=\s*"([^"]+)"/` (`boot-refusal.ts`'s
+ * `claimBootOpening`), since a base checkout's opening can differ from this one's. So this
+ * declaration must stay one `const NAME = "..."` line, its value one double-quoted string, or
+ * that reading no longer finds it; and no line above it may hold the name followed by `=` and a
+ * quote, which the regex would read first. */
 export const CLAIM_BOOT_FAILED_OPENING = "claim boot failed at ";
 
 /** `endpoint` with nothing of a credential in it: its scheme, its host and its port, and no

@@ -30,3 +30,18 @@ export const Opened = z.looseObject({ at: z.string(), opened: z.string() });
  * `rig.sh health`, `rig.sh score` and judge.ts each name the cause and exit 2, and none counts or
  * replaces the run. */
 export class Refused extends Error {}
+
+/** `read`, run at its first call alone, and its answer kept for every later one: a read of a
+ * run's record or remote that several answers need, read once. A leaf of this module, so every
+ * program of the run reads it from one place: completion-answers.ts (the daemon's reads), the gh
+ * stand-in (facts of the pull request), and score.ts (its lazy judge readings). It lives here and
+ * not in completion-answers.ts since that module imports run-names.ts, whose words the bundle a
+ * run's PATH resolves `gh` to may not hold (gh-standin.test.ts's row "the gh a run's PATH resolves
+ * to names none of the rig's words"), and this module is in that bundle already. */
+export function once<T>(read: () => T): () => T {
+  let kept: { readonly value: T } | undefined;
+  return () => {
+    kept ??= { value: read() };
+    return kept.value;
+  };
+}

@@ -21,6 +21,7 @@ import {
   FILE_FIELD_FLAGS,
   flagValue,
   isPost,
+  isPrReview,
   mergeStateOn,
   type Route,
   reviewsRoute,
@@ -326,12 +327,15 @@ export function threadState(at: ThreadWorld, calls: readonly Recorded[]): Thread
   for (const call of calls) threadCall(at, state, call);
   return state;
 }
-/** Whether `call` created a review on `repo`'s pull request: a POST of its reviews route
- * (gh-call.ts's `reviewsRoute`) the gh stand-in answered with a review (the record's `review`). A
- * create GitHub refuses left none, and a submit is no create. */
+/** Whether `call` created a review on `repo`'s pull request, which the gh stand-in answered with a
+ * review (the record's `review`): a POST of its reviews route (gh-call.ts's `reviewsRoute`), or a
+ * `gh pr review` (`isPrReview`), which GitHub takes as a review of its own, so the id it is given
+ * is one no create after it takes again (`createdReviewId`). A create GitHub refuses left none,
+ * and a submit is no create. */
 export function createsReview(call: Recorded, repo: string): boolean {
+  if (call.review === undefined) return false;
+  if (isPrReview(call.argv)) return true;
   return (
-    call.review !== undefined &&
     isPost(call.argv) &&
     call.argv.some((arg) => reviewsRoute(arg, repo)) &&
     !call.argv.some((arg) => submitsReview(arg, repo) !== undefined)
@@ -342,7 +346,10 @@ export function createsReview(call: Recorded, repo: string): boolean {
  * counted on by one for each review the run created before, since GitHub gives every review an id
  * of its own. Every create once took the route's one id, so a second create replaced the first in
  * every read by id, in the REST list and in `gh pr view`, while the review decision counted both
- * (INFRA-764's class search of writes, 2026-11-18). Undefined where the route answers no id. */
+ * (INFRA-764's class search of writes, 2026-11-18). Undefined where the route answers no id. A
+ * `gh pr review` is recorded with the world's create route as its own (gh-standin.ts's `route`),
+ * which is the world's answer to a review made on the pull request, so it is numbered the same
+ * way. */
 export function createdReviewId(
   at: ThreadWorld,
   call: Pick<Recorded, "route">,
@@ -488,7 +495,9 @@ export type ThreadAnswer =
  * writes no thread (and for every call of a run with no world). Each call is read as GitHub
  * takes it:
  *   - a review create the world answered with a review (the record's `review`): each inline
- *     comment it sent opens a thread, the review's own, pending while the review is;
+ *     comment it sent opens a thread, the review's own, pending while the review is; a
+ *     `gh pr review` the world answered with one is a review too, counted (`createsReview`),
+ *     which carries no inline comment;
  *   - the submit of that review: its pending comments are submitted;
  *   - `POST …/pulls/<n>/comments`: a reply where it names `in_reply_to`, and a thread of its own
  *     otherwise, which takes a `commit_id`, a `path` and a `line` (or `subject_type: file`, or a
@@ -506,7 +515,11 @@ export function threadCall(
   call: Recorded
 ): ThreadAnswer | undefined {
   const { world } = at;
-  if (world === undefined || (call.as ?? "gh") !== "gh" || call.argv[0] !== "api") return undefined;
+  if (world === undefined || (call.as ?? "gh") !== "gh") return undefined;
+  if (call.argv[0] !== "api") {
+    if (createsReview(call, world.repo)) state.reviews++;
+    return undefined;
+  }
   const { argv } = call;
   const { repo, pr } = world;
   const made = call.at ?? "";

@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { identityOf, recordFile } from "./run-names";
-import { Opened } from "./run-records";
+import { Opened, once } from "./run-records";
 
 /** The daemon stand-in's log, under the run directory, which every stand-in of the run appends
  * to (rig.sh's worker_boot). */
@@ -397,16 +397,6 @@ function answered(
       `a daemon of the shape \`${shape}\` (its engine's late role, then its route's record) has no answers for ${scenario}'s completions (completion-answers.ts's ANSWERS)`
     );
   return allows(byRole[role] ?? [], lines, index);
-}
-
-/** `read`, run at its first call alone, and its answer kept for every later one (the daemon
- * reads here; score.ts's lazy judge readings). */
-export function once<T>(read: () => T): () => T {
-  let kept: { readonly value: T } | undefined;
-  return () => {
-    kept ??= { value: read() };
-    return kept.value;
-  };
 }
 
 /** The first completion of the run that cannot be keyed to a role (`keyOf`), whatever it was

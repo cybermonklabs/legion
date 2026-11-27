@@ -105,6 +105,38 @@ export function submitsReview(arg: string, repo: string): string | undefined {
   return named?.[1] === repo ? named[2] : undefined;
 }
 
+/** Whether `argv` is a `gh pr review`: GitHub's `addPullRequestReview` of the pull request, which
+ * gh sends with the event its flag names and the body it is given and no commit, so GitHub takes
+ * the review at the pull request's head (gh 2.98.0's pkg/cmd/pr/review/review.go). */
+export function isPrReview(argv: readonly string[]): boolean {
+  return argv[0] === "pr" && argv[1] === "review";
+}
+
+/** The event each flag of `gh pr review` submits (`-a/--approve`, `-r/--request-changes` and
+ * `-c/--comment`). The gh stand-in answers the call by it and the score reads the recorded call
+ * by it (`reviewFlagEvent`). */
+const REVIEW_FLAGS: Readonly<Record<string, string>> = {
+  "-a": "APPROVE",
+  "--approve": "APPROVE",
+  "-r": "REQUEST_CHANGES",
+  "--request-changes": "REQUEST_CHANGES",
+  "-c": "COMMENT",
+  "--comment": "COMMENT",
+};
+
+/** The event `arg`, a word of a `gh pr review`, submits as one of its flags (REVIEW_FLAGS), or
+ * undefined where it is none of them. An own property alone, so a word `toString` is no flag. */
+export function reviewFlagEvent(arg: string): string | undefined {
+  return Object.hasOwn(REVIEW_FLAGS, arg) ? REVIEW_FLAGS[arg] : undefined;
+}
+
+/** What the gh stand-in's record names a `gh pr review` it refused as gh refuses one whose flags
+ * make no one review: no event flag, two of them, a change request or a comment with no body, a
+ * body and a body file both, or `-R` with no pull request named (gh-standin.ts's
+ * `reviewPullRequest`). The record keeps no refusal's text, so `rig.sh health` reads the refusal
+ * by this name (health.ts's REVIEW_USAGE). */
+export const REVIEW_FLAGS_REFUSED = "pr review flags refused";
+
 /** The value `flag` carries in `arg` as gh's flag parser (spf13/pflag's `parseLongArg` and
  * `parseSingleShortArg`) reads it: `null` where the flag stands alone and takes the argument after
  * it, the text after `=` for a long flag (`--body=` is the empty value), and for a short flag the

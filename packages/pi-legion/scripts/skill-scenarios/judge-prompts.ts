@@ -521,22 +521,6 @@ export const testingPrompt: JudgePrompt<z.infer<typeof TestingOutput>> = {
     ].join("\n"),
 };
 
-/** The nine prompts `judge.ts run` asks for each spec run, in the order it writes their files; a
- * worker run is asked at most the three worker prompts instead, those its case reads (accepts,
- * names and testing: judge.ts's `judgeWorker`). The tenth, `answer`, runs during the conversation
- * (`judge.ts answer`). */
-export const RUN_PROMPTS = [
-  faultsPrompt,
-  decisionsPrompt,
-  findingsPrompt,
-  checkablePrompt,
-  questionsPrompt,
-  numbersPrompt,
-  preamblePrompt,
-  proposalPrompt,
-  sharedRunPrompt,
-] as const;
-
 /** checkable.json in the run directory: the judge's rows and the approved version it read (null
  * when the run ended with no approval, and then the judge did not run). */
 export const CheckableFile = CheckableOutput.extend({ version: z.number().int().nullable() });

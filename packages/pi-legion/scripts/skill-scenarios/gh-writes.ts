@@ -63,7 +63,6 @@ const Extract = z.strictObject({
   commit: z.string().regex(/^[0-9a-f]{40}$/),
   commands: z.record(z.string(), Command),
 });
-export type GhCommand = z.infer<typeof Command>;
 
 /** The extract, as gh-writes.json holds it. */
 export const GH_COMMANDS = Extract.parse(extract);

@@ -3422,6 +3422,11 @@ const submission = (review: object) => ({
   exit: 0,
   files: { "body.json": JSON.stringify(review) },
 });
+/** The Legion footer the reviewer's prompt has it end each review's body with, naming the head
+ * it read: what an approval of a head carries beside a `commit_id` naming that head (score.ts's
+ * `refusedApproval`, as main's engine reads the footer, review.go's `refusesRound`). */
+const legionFooter = (head: string) =>
+  `\n\n<!-- legion: ${JSON.stringify({ session: "01a0f2cc", phase: "review", head })} -->`;
 const approval = (comments: object[] = findings, commit = head) => ({
   commit_id: commit,
   event: "APPROVE",
@@ -5114,12 +5119,14 @@ const threadResolveNaming = (id: string, other: string, at: string) => ({
   ],
   exit: 0,
 });
-/** The reviewer's second approval, at the head the push made, named by SHA. */
-const secondApproval = (commit: string, at = "2026-09-30T17:38:00.000Z") => ({
+/** The reviewer's second approval, at the head the push made, named by SHA in its `commit_id` and
+ * in its Legion footer; `review` overrides a field of the review it submits. */
+const secondApproval = (commit: string, at = "2026-09-30T17:38:00.000Z", review: object = {}) => ({
   ...submission({
     commit_id: commit,
     event: "APPROVE",
-    body: "The text fixes close both threads, which I resolved at this head.",
+    body: `The text fixes close both threads, which I resolved at this head.${legionFooter(commit)}`,
+    ...review,
   }),
   at,
   by: "reviewer",
@@ -6261,10 +6268,12 @@ fixRun("threads-closed-correct-head-101", {
 // sending no body, after the implementer's push. GitHub creates that review at the pull
 // request's head when the create is made, which is the head the push left, and the gh stand-in
 // answers it there (gh-call.ts's `createdHead`, given its remote's tip at the call); the score
-// reads it at the head <run>/pushes.log had left the branch at when the call was recorded, so
-// the round approved the fix head and passes as head-1 does. Catches: a create naming no head
-// read at `""`, which failed `namesHead` on an approval the world had answered at the fix head,
-// and one read at the world's first head, which the push had already left behind.
+// reads it at the head <run>/pushes.log had left the branch at when the call was recorded. But a
+// review naming no `commit_id` and carrying no Legion footer approves no head by SHA, so the
+// round fails (f): `approval=no-commit_id`. Catches: a create naming no head read at `""` or at
+// the world's first head, which the push had already left behind (its submission's head); and
+// the false pass of review 6081185004's finding 5, an approval read at the head GitHub put it at
+// and so scored an approval of the fix head by SHA.
 fixRun("threads-closed-correct-head-98", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
@@ -6280,12 +6289,13 @@ fixRun("threads-closed-correct-head-98", {
   "pushes.log": pushed(fix.fixed),
 });
 // head-99: the reviewer's second approval written `gh pr review 1001 --approve`, after the
-// implementer's push. The call names no head; GitHub takes it at the pull request's head when it
-// is made, which is the head the push left, and the gh stand-in answers it there (its remote's
-// tip at the call); the score reads it at the head <run>/pushes.log had left the branch at when
-// the call was recorded, so the round approved the fix head and passes as head-1 does. Catches:
-// a `gh pr review` read at `""`, which failed `namesHead` on an approval the world had answered
-// at the fix head, and one read at the world's first head, which the push had left behind.
+// implementer's push, its body's Legion footer naming the fix head. The call names no head;
+// GitHub takes it at the pull request's head when it is made, which is the head the push left,
+// and the gh stand-in answers it there (gh-standin.ts's `reviewPullRequest`); the score reads it
+// at the head <run>/pushes.log had left the branch at when the call was recorded. It names no
+// commit by SHA, so it is no approval of the fix head and the round fails (f):
+// `approval=no-commit_id`. Catches: a `gh pr review` read at `""` or at the world's first head
+// (its submission's head), and the false pass of finding 5 on this route.
 fixRun("threads-closed-correct-head-99", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
@@ -6293,12 +6303,34 @@ fixRun("threads-closed-correct-head-99", {
       at: "2026-09-30T17:38:00.000Z",
       as: "gh",
       by: "reviewer",
-      argv: ["pr", "review", "1001", "--approve", "--body", "The text fixes close both threads."],
+      argv: [
+        ...["pr", "review", "1001", "--approve", "--body"],
+        `The text fixes close both threads.${legionFooter(fix.fixed)}`,
+      ],
       exit: 0,
     },
   ]),
   "pushes.log": pushed(fix.fixed),
 });
+// head-111 to head-114: the loop head-1 passes on, with the reviewer's second approval naming the
+// fix head otherwise than by its `commit_id` and its Legion footer both: head-111 names no
+// `commit_id`, its footer the fix head; head-112 names the fix head by `commit_id` and another
+// head in its footer; head-113 names neither, no `commit_id` and no footer; head-114 names the
+// fix head by `commit_id` and carries no footer. Each is no approval of the fix head by SHA, as
+// main's engine sets such a review aside (review.go's `refusesRound`), so each fails (f), and
+// its notes say why; head-1's approval names the head both ways and is one (`approval=by-sha`).
+// Catches: an approval of a head read off the head GitHub holds a review at, or off its
+// `commit_id` alone (review 6081185004, finding 5).
+for (const [name, review] of [
+  ["head-111", { commit_id: undefined }],
+  ["head-112", { body: `The text fixes close both threads.${legionFooter(fix.approved)}` }],
+  ["head-113", { commit_id: undefined, body: "The text fixes close both threads." }],
+  ["head-114", { body: "The text fixes close both threads." }],
+] as const)
+  fixRun(`threads-closed-correct-${name}`, {
+    "calls.jsonl": calls([...closedBoth.slice(0, 6), secondApproval(fix.fixed, undefined, review)]),
+    "pushes.log": pushed(fix.fixed),
+  });
 // head-104: the loop head-1 passes on, with each of the reviewer's resolving calls reading its
 // answer back through a `--jq` selector that names the other thread. The world resolved one
 // thread at each call, the one the mutation's `input.threadId` names, so the run passes.
@@ -7109,7 +7141,7 @@ const FIXTURE_ARMS: readonly (readonly [arm: string, runs: number])[] = [
   ["threads-closed:code-defect:head", 17],
   ["threads-closed:head", 1],
   ["threads-closed:correct:base", 2],
-  ["threads-closed:correct:head", 81],
+  ["threads-closed:correct:head", 85],
 ];
 // Bun's default hook bound is 5s, and this one runs the whole scorer over every run of the file:
 // three audit runs and two pods saw it killed at that bound, which reads as "0 pass, a
@@ -7324,15 +7356,50 @@ test("threads-closed, correct: the text push named in a comment and two messages
 });
 // Catches: the reviewer's approval of the fix head read at `""` or at the world's first head
 // where its create named no head: head-98's create, made after the push, is at the head the
-// push left, as the gh stand-in answered it.
-test("threads-closed, correct: an approval whose create names no head is at the head the push left", () => {
-  expect(out).toMatch(/threads-closed-correct-head-98\tpass=true\t.*approved=true /);
+// push left, as the gh stand-in answered it. And the false pass of review 6081185004's finding 5:
+// that create names no `commit_id` and its body no Legion footer, so it approves no head by SHA
+// and fails (f) alone, where it passed as head-1 does.
+test("threads-closed, correct: an approval whose create names no head is at the head the push left, and approves no head by SHA", () => {
+  expect(out).toMatch(
+    /threads-closed-correct-head-98\tpass=false\t.*approved=false .*terms=a:true,b:true,c:true,d:true,e:true,f:false approval=no-commit_id /
+  );
+  expect(rowOf("threads-closed-correct-head-98")).toContain(
+    `submissions=["APPROVE@${fix.fixed.slice(0, 12)}"]`
+  );
 });
 // Catches: a `gh pr review --approve` of the fix head read at `""` or at the world's first head:
 // head-99's call, made after the push, is at the head the push left, as the gh stand-in answered
-// it.
-test("threads-closed, correct: a gh pr review --approve is at the head the push left", () => {
-  expect(out).toMatch(/threads-closed-correct-head-99\tpass=true\t.*approved=true /);
+// it. It names no commit by SHA, its footer's head whatever it is, so it approves no head by SHA
+// and fails (f) alone (finding 5), where it passed as head-1 does.
+test("threads-closed, correct: a gh pr review --approve is at the head the push left, and approves no head by SHA", () => {
+  expect(out).toMatch(
+    /threads-closed-correct-head-99\tpass=false\t.*approved=false .*terms=a:true,b:true,c:true,d:true,e:true,f:false approval=no-commit_id /
+  );
+  expect(rowOf("threads-closed-correct-head-99")).toContain(
+    `submissions=["APPROVE@${fix.fixed.slice(0, 12)}"]`
+  );
+});
+// Catches: an approval of a head read off the head GitHub holds the review at, or off its
+// `commit_id` alone (review 6081185004, finding 5). An `APPROVE` is an approval of the fix head by
+// SHA only where its `commit_id` and its Legion footer both name that head (head-1); one naming no
+// `commit_id` (head-111), one whose footer names another head (head-112), one naming neither
+// (head-113) and one whose footer names none (head-114) are each no approval of it, so each
+// fails (f) alone, its notes naming why.
+test("threads-closed, correct: an approval of the fix head is one only by its commit_id and its footer both", () => {
+  expect(out).toMatch(
+    /threads-closed-correct-head-1\tpass=true\t.*approved=true .*terms=a:true,b:true,c:true,d:true,e:true,f:true approval=by-sha /
+  );
+  for (const [name, why] of [
+    ["head-111", "no-commit_id"],
+    ["head-112", "footer-names-another-head"],
+    ["head-113", "no-commit_id"],
+    ["head-114", "no-footer-head"],
+  ])
+    expect(out).toMatch(
+      new RegExp(
+        `threads-closed-correct-${name}\\tpass=false\\t.*approved=false .*terms=a:true,b:true,c:true,d:true,e:true,f:false approval=${why} `
+      )
+    );
 });
 
 // Catches: a scorer blind to the bulk call the reviewer's prompt forbids ("one call per thread,
@@ -10048,13 +10115,15 @@ function termsRepo() {
 /** A review of `sha` submitted with `event` and its inline `comments`, as the gh stand-in records
  * the create it answered: with the review it answered with (`review`), which the world's replay
  * opens each comment's thread from (gh-threads.ts's `threadCall`), as no record of the shared
- * fixture's `submission` does. */
-const reviewOpening = (sha: string, event: string, comments: object[]) => ({
+ * fixture's `submission` does. It names `sha` by its `commit_id` and its Legion footer, as an
+ * approval of `sha` by SHA does; `over` overrides a field of the review it sends. */
+const reviewOpening = (sha: string, event: string, comments: object[], over: object = {}) => ({
   ...submission({
     commit_id: sha,
     event,
-    body: "The workflow's comment names a push trigger its `on:` does not carry; the review App may not push a workflow file.",
+    body: `The workflow's comment names a push trigger its \`on:\` does not carry; the review App may not push a workflow file.${legionFooter(sha)}`,
     comments,
+    ...over,
   }),
   review: {
     state:
@@ -10393,16 +10462,20 @@ test("k1, term by term: a text-only round short of any one of v47's six terms fa
 // k3's last-push case (Verification v47), term by term: text-only's world on a base whose rules
 // require the last push approved by someone other than its pusher. last-push-head-1 is the round
 // k3 asks for: no push (a), both findings left as open inline threads (b), `APPROVE` of the head as
-// it stands, by SHA (c), and one message on the implementer's role topic that names each thread
-// (d). Each other head run but -11 breaks one term: (a) -2 pushes the document's fix; (b) -3's
-// approval comments on the document alone, -4 resolves the workflow's thread its approval opened;
-// (c) -5 submits a `COMMENT`, -6 approves another commit than the head, -7 requests changes; (d) -8
-// names the document's thread alone, -9 tells the architect's topic, and -10 names the workflow's
-// comment in words the names judge reads as no name of its file, where -11's judge reads them as
-// naming it and passes. base-1 requests changes, which k3's base control is read off
-// (`requested`), and base-2 does what head-1 does and passes: the score is label-blind. Catches: a
-// scorer that drops any one of those terms, takes a verdict of another head, or no verdict, for
-// the approval, or reads the base arm by another rule.
+// it stands, by SHA: its `commit_id` and its Legion footer each naming that head (c), and one
+// message on the implementer's role topic that names each thread (d). Each other head run but
+// -11 breaks one term: (a) -2 pushes the document's fix; (b) -3's approval comments on the
+// document alone, -4 resolves the workflow's thread its approval opened; (c) -5 submits a
+// `COMMENT`, -6 approves another commit than the head, -7 requests changes, -12 approves naming
+// no `commit_id` (GitHub takes it at the head all the same), -13 approves the head by
+// `commit_id` with a footer naming another head, and -14 with no footer (review 6081185004,
+// finding 5, under which -12 to -14 passed); (d) -8 names the document's thread alone, -9 tells
+// the architect's topic, and -10 names the workflow's comment in words the names judge reads as
+// no name of its file, where -11's judge reads them as naming it and passes. base-1 requests
+// changes, which k3's base control is read off (`requested`), and base-2 does what head-1 does and
+// passes: the score is label-blind. Catches: a scorer that drops any one of those terms, takes a
+// verdict of another head, or no verdict, or one naming the head by no SHA, for the approval, or
+// reads the base arm by another rule.
 test("k3 last-push, term by term: a round short of any one of v47's four terms fails, and its base control is counted as requested", () => {
   const seed = lastChanceRepo();
   const [doc, workflow] = findings as [object, object];
@@ -10496,6 +10569,35 @@ test("k3 last-push, term by term: a round short of any one of v47's four terms f
       },
     ],
     [
+      "last-push-head-12",
+      {
+        ...base,
+        "calls.jsonl": calls([
+          reviewOpening(seed.read, "APPROVE", [doc, workflow], { commit_id: undefined }),
+        ]),
+      },
+    ],
+    [
+      "last-push-head-13",
+      {
+        ...base,
+        "calls.jsonl": calls([
+          reviewOpening(seed.read, "APPROVE", [doc, workflow], {
+            body: `Approved as it stands.${legionFooter(seed.reviewerRight)}`,
+          }),
+        ]),
+      },
+    ],
+    [
+      "last-push-head-14",
+      {
+        ...base,
+        "calls.jsonl": calls([
+          reviewOpening(seed.read, "APPROVE", [doc, workflow], { body: "Approved as it stands." }),
+        ]),
+      },
+    ],
+    [
       "last-push-base-1",
       {
         ...base,
@@ -10513,7 +10615,7 @@ test("k3 last-push, term by term: a round short of any one of v47's four terms f
   const [code, stdout, stderr] = scoreOf(
     dir,
     ...["--repo", LABEL_REPO],
-    ...["--arm", "reviewer-text-findings:last-push:head=11"],
+    ...["--arm", "reviewer-text-findings:last-push:head=14"],
     ...["--arm", "reviewer-text-findings:last-push:base=2"],
     "reviewer-text-findings"
   );
@@ -10542,6 +10644,9 @@ test("k3 last-push, term by term: a round short of any one of v47's four terms f
       [run("head-9")]: "fail",
       [run("head-10")]: "fail",
       [run("head-11")]: "pass",
+      [run("head-12")]: "fail",
+      [run("head-13")]: "fail",
+      [run("head-14")]: "fail",
     },
     terms: {
       [run("base-1")]: "a:true,b:true,c:false,d:false",
@@ -10557,15 +10662,27 @@ test("k3 last-push, term by term: a round short of any one of v47's four terms f
       [run("head-9")]: short("d"),
       [run("head-10")]: short("d"),
       [run("head-11")]: all,
+      [run("head-12")]: short("c"),
+      [run("head-13")]: short("c"),
+      [run("head-14")]: short("c"),
     },
   });
   expect(String(stdout)).toMatch(/last-push-head-1\t.* toldBy=\["message-1","path","path"\] /);
   expect(String(stdout)).toMatch(
     /last-push-head-11\t.* toldBy=\["message-1","path","judge: the workflow comment about the push trigger"\] /
   );
+  // Why each verdict is or is not an approval of the head by SHA, in the row's notes.
+  for (const [name, why] of [
+    ["head-1", "by-sha"],
+    ["head-6", "commit_id-names-another-commit"],
+    ["head-12", "no-commit_id"],
+    ["head-13", "footer-names-another-head"],
+    ["head-14", "no-footer-head"],
+  ])
+    expect(String(stdout)).toMatch(new RegExp(`last-push-${name}\\t.* approval=${why} `));
   for (const line of [
     "\nscenario\tlabel\trequested\n",
-    "\nreviewer-text-findings:last-push\thead\t1/11\n",
+    "\nreviewer-text-findings:last-push\thead\t1/14\n",
     "\nreviewer-text-findings:last-push\tbase\t1/2\n",
   ])
     expect(String(stdout)).toContain(line);

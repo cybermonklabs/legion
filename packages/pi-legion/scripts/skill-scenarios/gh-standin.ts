@@ -21,7 +21,9 @@
 // `reviewDecisionOf`, `mergeStateOf`, `mergeableOf`). The rest of a review's life is this
 // file's own and no world's, since GitHub answers it from what the run has done: the create of a
 // review, refused 422 where GitHub refuses it and otherwise answered with the state, head and
-// body the call gives it (`reviewCreate`); the submit of a review (`…/reviews/<id>/events`), answered
+// body the call gives it (`reviewCreate`); a `gh pr review`, refused where gh refuses its flags
+// and otherwise a review at the pull request's head with the event and body it names
+// (`reviewPullRequest`); the submit of a review (`…/reviews/<id>/events`), answered
 // from the review's own state (`reviewSubmission`); and the read of one review this run created
 // (`reviewRead`). A route that names an `answer` is answered from what the run did — the reviews
 // it created and their inline comments, the comments it posted, a ref or a commit's combined
@@ -78,7 +80,10 @@ import {
   FILE_FIELD_FLAGS,
   flagValue,
   isPost,
+  isPrReview,
   methodOf,
+  REVIEW_FLAGS_REFUSED,
+  reviewFlagEvent,
   reviewsRoute,
   routeFor,
   runNamed,
@@ -168,7 +173,9 @@ import {
   roleApp,
   userJson,
 } from "./rest-objects";
-import { CALLS, openingLine } from "./run-records";
+// The calls record's name, the line it is opened with, and a read kept once (`once`): a fact of
+// the world that several of the pull request's fields read, each a read of the record or remote.
+import { CALLS, once, openingLine } from "./run-records";
 
 /** rig.sh's worker_fixture writes each route as {match, methods?, endpoint?, stdout?, stderr?,
  * exit?, answer?, graph?}.
@@ -293,6 +300,10 @@ const prEdit = as === "gh" && args[0] === "pr" && args[1] === "edit";
 /** A `gh pr comment`, whose `-F/--body-file` names the file of the comment it posts, which the
  * record keeps so the conversation it leaves can be read back (`conversation`). */
 const prComment = as === "gh" && args[0] === "pr" && args[1] === "comment";
+/** A `gh pr review`, whose `-F/--body-file` names the file of the review's body, which the record
+ * keeps so the review it leaves is read with its body (`reviewPullRequest`, score.ts's
+ * `reviewOf`). */
+const prReview = as === "gh" && isPrReview(args);
 const prPatch =
   as === "gh" &&
   args[0] === "api" &&
@@ -313,7 +324,7 @@ const INPUT_FLAGS = ["--input", "--body-file"];
 for (const index of args.keys()) {
   const edited = prEdit ? valueAt(args, index, PR_BODY_FLAGS) : undefined;
   const bodyFile = prEdit ? valueAt(args, index, PR_BODY_FILE_FLAGS) : undefined;
-  const commentFile = prComment ? valueAt(args, index, PR_BODY_FILE_FLAGS) : undefined;
+  const commentFile = prComment || prReview ? valueAt(args, index, PR_BODY_FILE_FLAGS) : undefined;
   const source = valueAt(args, index, INPUT_FLAGS);
   const field = valueAt(args, index, FIELD_FLAGS);
   // A flag with nothing after it, and one written against an empty value, names no file and no
@@ -430,13 +441,71 @@ function unmodelledWrite(): boolean {
   }
   return false;
 }
+/** A `gh pr review` as gh's flag parser reads it (gh 2.98.0's pkg/cmd/pr/review/review.go): the
+ * events its flags name (gh-call.ts's `reviewFlagEvent`), each once, as a flag written twice is
+ * set once; whether it names a body (`-b/--body`, the empty one too, as gh's `Flags().Changed`
+ * reads it) and the last it names; the last body file it names (`-F/--body-file`, the empty value
+ * naming none, as gh reads it); the last repository it names (`-R/--repo`); and the pull requests
+ * it names. */
+type ReviewCall = {
+  events: Set<string>;
+  bodied: boolean;
+  body: string;
+  file: string;
+  repo: string;
+  named: string[];
+};
+/** This call read as a `gh pr review` of a run with a world (ReviewCall), or undefined for every
+ * other call, and for a `gh pr review` naming anything else — a flag gh takes and the world does
+ * not model (`--help`, `--approve=false`, `-ab`), a flag with no value after it, or a second pull
+ * request, each of which gh refuses in words not measured here — which is refused as a call the
+ * world does not model (`unrouted`). */
+function reviewCall(): ReviewCall | undefined {
+  if (!prReview || world === undefined) return undefined;
+  const read: ReviewCall = {
+    events: new Set(),
+    bodied: false,
+    body: "",
+    file: "",
+    repo: "",
+    named: [],
+  };
+  for (let index = 2; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const event = reviewFlagEvent(arg);
+    const body = valueAt(args, index, PR_BODY_FLAGS);
+    const file = valueAt(args, index, PR_BODY_FILE_FLAGS);
+    const repo = valueAt(args, index, REPO_FLAGS);
+    if (event !== undefined) read.events.add(event);
+    else if (body !== undefined) {
+      read.bodied = true;
+      read.body = body;
+    } else if (file !== undefined) read.file = file;
+    else if (repo !== undefined) read.repo = repo;
+    else if (arg.startsWith("-")) return undefined;
+    else read.named.push(arg);
+    if ([...PR_BODY_FLAGS, ...PR_BODY_FILE_FLAGS, ...REPO_FLAGS].includes(arg)) index++;
+  }
+  return read.named.length > 1 ? undefined : read;
+}
+/** This call as a `gh pr review` the world models (`reviewCall`), undefined for every other. */
+const reviewed = reviewCall();
 /** The route that answers this call: the one chosen, except for a write the world does not model
  * on it (`unmodelledWrite`). GitHub answers such a write and the world does not, so it is refused
- * as every call the world has no answer for is, and `rig.sh health` names it. */
-const route = unmodelledWrite() ? undefined : matched;
+ * as every call the world has no answer for is, and `rig.sh health` names it. A `gh pr review`
+ * the world models is answered by the world's create of a review, its route of `POST
+ * …/pulls/<n>/reviews`, whose answer is the review GitHub makes on the pull request
+ * (`reviewPullRequest`): no route's regex reads the call, which gh sends as GraphQL of its own. */
+const route =
+  reviewed !== undefined && world !== undefined
+    ? routeFor(routes, ["api", "--method", "POST", `repos/${world.repo}/pulls/${world.pr}/reviews`])
+    : unmodelledWrite()
+      ? undefined
+      : matched;
 /** The review this call left on the pull request, as this stand-in answered it: its state, the
- * head it stands at and the body it carries. Set for a create the world answered with a review
- * and for a submit of the pending one; undefined for every other call. The daemon stand-in reads
+ * head it stands at and the body it carries. Set for a create the world answered with a review,
+ * for a `gh pr review` it took (`reviewPullRequest`) and for a submit of the pending one;
+ * undefined for every other call. The daemon stand-in reads
  * the run's reviews from these and from nothing else (daemon-standin.ts's `roundOutcome`), so the
  * approval the record moves on is the one the world answered the agent with, read once, here,
  * and its body is the one whose Legion footer the daemon reads (intake's `LegionSession`). */
@@ -444,9 +513,11 @@ let answered: { state: string; head: string; body: string } | undefined;
 /** What answered this call, which the record keeps (`handler`): `route`, the route the record
  * names, with its own answer; the name of a reading of the run that route names (its `answer`,
  * `fromRun`) or of this file's own answer (`comparison`, `pr view`, `pr list`, `pr diff`, `pr
- * checks`, `review submit`, `review create`, `review read`, `thread`, `graph`, `pinned read`);
- * gh's own refusal of a read of the pull request (gh-view.ts's PULL_NOT_FOUND and FIELD_REFUSED),
- * which `rig.sh health` declares for every role; `wrapper`, the Legion gh wrapper's refusal; or
+ * checks`, `pr review`, `review submit`, `review create`, `review read`, `thread`, `graph`,
+ * `pinned read`); gh's own refusal of a read of the pull request (gh-view.ts's PULL_NOT_FOUND and
+ * FIELD_REFUSED), which `rig.sh health` declares for every role, and of a `gh pr review` whose
+ * flags make no one review (gh-call.ts's REVIEW_FLAGS_REFUSED), which it declares for the
+ * reviewer; `wrapper`, the Legion gh wrapper's refusal; or
  * `unrouted`, the 404 of a call nothing of the world models, which `rig.sh health` names when
  * that call is a write (its unmodelled-write rule). Each answer sets it where it is decided,
  * before anything there can refuse the call. */
@@ -1169,7 +1240,8 @@ function shown(review: OwnReview): boolean {
  * out again from the call: a create is a review where it was answered with one — a create GitHub
  * refuses, and one this world has no head for, recorded none — and its state and head are the
  * ones its answer carried, which is the head the pull request was at when it was made and not
- * the head it is at now. A submit is the submit of the pending review where it was answered with
+ * the head it is at now. A `gh pr review` the world took is such a create, its body the one it
+ * was answered with. A submit is the submit of the pending review where it was answered with
  * the review: the id was the pending one's and the event one GitHub takes. The status a call was
  * recorded with says nothing about either — a submit answered 200 whose `--jq` then failed is
  * recorded with exit 1, and GitHub has submitted the review all the same — so a reader of the
@@ -1201,8 +1273,11 @@ function ownReviews(repo: string): {
   let created = 0;
   for (const call of recordedCalls(RECORD)) {
     const { argv } = call;
-    if (argv[0] !== "api") continue;
-    const sent = sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {};
+    const prReviewed = isPrReview(argv) && createsReview(call, repo);
+    if (argv[0] !== "api" && !prReviewed) continue;
+    const sent = prReviewed
+      ? { body: call.review?.body }
+      : (sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {});
     const text = typeof sent.body === "string" && sent.body !== "" ? sent.body : undefined;
     if (call.handler === "review-update") {
       const id = /\/reviews\/(\d+)$/.exec(endpointPath(argv))?.[1] ?? "";
@@ -1619,8 +1694,8 @@ function prChecks(): { text: string; status: number } | undefined {
   };
 }
 const checked = prChecks();
-/** The flags of `gh pr view`, `gh pr diff` and `gh pr list` that take a value, as gh 2.98.0's
- * `--help` of each names them; every other flag of the three takes none. */
+/** The flags of `gh pr view`, `gh pr diff`, `gh pr list` and `gh pr review` that take a value, as
+ * gh 2.98.0's `--help` of each names them; every other flag of the four takes none. */
 const PR_VALUE_FLAGS: Readonly<Record<string, readonly string[]>> = {
   view: ["-R", "--repo", "--json", "-q", "--jq", "-t", "--template"],
   diff: ["-R", "--repo", "--color", "-e", "--exclude"],
@@ -1629,6 +1704,7 @@ const PR_VALUE_FLAGS: Readonly<Record<string, readonly string[]>> = {
     ...["-A", "--author", "-B", "--base", "-H", "--head", "-l", "--label", "-L", "--limit"],
     ...["-S", "--search", "-s", "--state"],
   ],
+  review: ["-R", "--repo", "-b", "--body", "-F", "--body-file"],
 };
 /** A pull request's web page, which gh takes as the pull request it names, and its repository. */
 const PULL_URL = /^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
@@ -1645,7 +1721,8 @@ const repositoryRefusal = (repo: string) =>
  * nothing-here` printed `no pull requests found for branch "nothing-here"`, and `--repo
  * <owner>/<no such repository>` printed `GraphQL: Could not resolve to a Repository with the name
  * '<owner>/<no such repository>'. (repository)`. The world's routes answered every one of these
- * with the world's pull request. */
+ * with the world's pull request. `gh pr review` finds the pull request it names by the same
+ * finder (pkg/cmd/pr/shared's `PRFinder`), so it is refused the same way (`reviewPullRequest`). */
 function pullRefusal(command: string, at: NonNullable<typeof world>): string | undefined {
   const flags = PR_VALUE_FLAGS[command] ?? [];
   const named: string[] = [];
@@ -1668,15 +1745,6 @@ function pullRefusal(command: string, at: NonNullable<typeof world>): string | u
   return Number(number) === at.pr
     ? undefined
     : `GraphQL: Could not resolve to a PullRequest with the number of ${Number(number)}. (repository.pullRequest)\n`;
-}
-/** `read`'s value, read the first time it is asked for: a fact of the world that several of the
- * pull request's fields read, each of which is a read of the run's record or remote. */
-function once<T>(read: () => T): () => T {
-  let held: { value: T } | undefined;
-  return () => {
-    held ??= { value: read() };
-    return held.value;
-  };
 }
 /** The pull request as GitHub's REST API lists one, at the head the run's remote is at
  * (rest-objects.ts's `pullRequestJson`): what `gh pr view`'s author, times, ids and test merge are
@@ -2022,6 +2090,67 @@ function prRead(): { text: string } | { json: unknown } | undefined {
   return { text: pulls.map((pull) => `${listLine(pull)}\n`).join("") };
 }
 const viewed = prRead();
+/** gh's usage of `gh pr review`, which it prints after its refusal of a call whose flags make no
+ * one review (a FlagError): the refusal's line, a blank line and this, on stderr with nothing on
+ * stdout, exit 1. Measured on 2026-11-27 with gh 2.98.0, run where it could reach no network, for
+ * each refusal `reviewPullRequest` gives. */
+const REVIEW_USAGE = `Usage:  gh pr review [<number> | <url> | <branch>] [flags]
+
+Flags:
+  -a, --approve           Approve pull request
+  -b, --body string       Specify the body of a review
+  -F, --body-file file    Read body text from file (use "-" to read from standard input)
+  -c, --comment           Comment on a pull request
+  -r, --request-changes   Request changes on a pull request
+  
+`;
+/** `gh pr review` of the world's pull request (`reviewed`, the call as gh reads its flags) as gh
+ * 2.98.0 makes it (pkg/cmd/pr/review/review.go) and GitHub answers it. Before it reaches GitHub,
+ * gh refuses, in this order: `-R` naming a repository where the call names no pull request; a
+ * body and a body file both; a change request, then a comment, with no body; no event flag and no
+ * body, which a terminal would prompt for and a pipe cannot; no event flag with a body; and two
+ * event flags — each with its line and its usage (REVIEW_USAGE), recorded as gh-call.ts's
+ * REVIEW_FLAGS_REFUSED. It then finds the pull request the call names, refused as `gh pr view`
+ * refuses one (`pullRefusal`), and sends `addPullRequestReview` with the event and the body and no
+ * commit, so GitHub makes a review of the pull request at the head it is at, the tip of the run's
+ * remote at the call, carrying no SHA the caller chose, by the bot of the App the call's token
+ * acts as; to a pipe gh prints nothing and exits 0. The review is the call's own (`answered`), so
+ * every later read of the record reads it: the reviews list and `gh pr view`'s reviews
+ * (`ownReviews`, with the id the world's create route numbers it by, `route`), the review
+ * decision (gh-threads.ts's `submittedReviews`), the daemon stand-in and the score (score.ts's
+ * `reviewOf`). Not modelled, since no measurement says what GitHub answers: a review made this
+ * way while the same App has one pending. Before this, the world refused every `gh pr review` as
+ * a write it does not model, 404, and `rig.sh health` voided the run (its rule 20). */
+function reviewPullRequest(call: ReviewCall, at: NonNullable<typeof world>): never {
+  handler = REVIEW_FLAGS_REFUSED;
+  const usage = (refusal: string): never =>
+    refuseWith(undefined, `${refusal}\n\n${REVIEW_USAGE}`, 1);
+  if (call.repo !== "" && call.named.length === 0)
+    usage("argument required when using the --repo flag");
+  if (call.bodied && call.file !== "") usage("specify only one of `--body` or `--body-file`");
+  const body = call.file === "" ? call.body : (files[call.file] ?? "");
+  if (call.events.has("REQUEST_CHANGES") && body === "")
+    usage("body cannot be blank for request-changes review");
+  if (call.events.has("COMMENT") && body === "") usage("body cannot be blank for comment review");
+  if (call.events.size === 0)
+    usage(
+      body === ""
+        ? "--approve, --request-changes, or --comment required when not running interactively"
+        : "--body unsupported without --approve, --request-changes, or --comment"
+    );
+  if (call.events.size > 1) usage("need exactly one of --approve, --request-changes, or --comment");
+  handler = "pr review";
+  const refused = pullRefusal("review", at);
+  if (refused !== undefined) {
+    handler = PULL_NOT_FOUND;
+    refuse(refused);
+  }
+  const [event = ""] = call.events;
+  answered = { state: submittedState(event) ?? "", head: branchTip() ?? at.head, body };
+  exit(0);
+}
+if (reviewed !== undefined && world !== undefined && route !== undefined)
+  reviewPullRequest(reviewed, world);
 if (
   !route &&
   pinned === undefined &&

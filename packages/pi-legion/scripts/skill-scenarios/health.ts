@@ -336,6 +336,7 @@ import {
   endpointPath,
   isPost,
   methodOf,
+  REVIEW_FLAGS_REFUSED,
   readWorld,
   reviewsRoute,
   runNamed,
@@ -748,10 +749,17 @@ const USER = /^\/?user(?:[/?].*)?$/;
  * a pull request or a branch GitHub has not got, or any of `gh pr view`, `list` and `diff` naming
  * a repository it has not got (`GraphQL: Could not resolve to …`, `no pull requests found for
  * branch …`), and a `--json` naming a field gh does not take (`Unknown JSON field: …`), each exit 1
- * as measured on 2026-11-17 against cybermonklabs/legion. */
+ * as measured on 2026-11-17 against cybermonklabs/legion; and a `gh pr review` naming either,
+ * which finds its pull request by the same finder (gh-standin.ts's `reviewPullRequest`). */
 const PULL_MISSING =
   "GraphQL: Could not resolve to a PullRequest or a Repository, or no pull requests found for branch (gh's refusal of one GitHub has not got)";
 const FIELD_UNKNOWN = "Unknown JSON field (gh's refusal of a --json field it does not take)";
+/** gh's refusal of a `gh pr review` whose flags make no one review — no event flag, two of them,
+ * a change request or a comment with no body, a body and a body file both, or `-R` with no pull
+ * request named — which the world gives as gh 2.98.0 does, its line and its usage, exit 1, before
+ * any call reaches GitHub, and records by name (gh-call.ts's REVIEW_FLAGS_REFUSED). */
+const REVIEW_USAGE =
+  "gh's refusal of a gh pr review whose flags make no one review (no event flag, two, or no body where its event takes one)";
 /** The refusals every role of every scenario may meet, since production refuses each so for every
  * role: USER_403, since any role may ask GitHub who its token is; and PULL_MISSING and
  * FIELD_UNKNOWN, since any role may read a pull request, and production gives every role that
@@ -765,20 +773,24 @@ const GH_DECLARED_EVERY_ROLE: readonly string[] = [USER_403, PULL_MISSING, FIELD
  *   - the reviewer's PROTECTION_403, in both scenarios: the merge gate has the reviewer read the
  *     base branch's protection (skills/legion-worker/references/merge-gate.md), a reviewer reaches
  *     for the protection endpoint too, and GitHub answers a role App's read of it 403;
- *   - the reviewer's CREATE_422 and SUBMIT_422, in both scenarios: the create and the submit of a
- *     review are the reviewer's own step in both worlds, and the stand-in refuses one exactly
- *     where GitHub refuses it, so a reviewer that met one met GitHub;
+ *   - the reviewer's CREATE_422, SUBMIT_422 and REVIEW_USAGE, in both scenarios: the create and
+ *     the submit of a review, and a `gh pr review`, are the reviewer's own step in both worlds,
+ *     and the stand-in refuses one exactly where GitHub, or gh before it, refuses it, so a
+ *     reviewer that met one met GitHub;
  *   - NO_RUN, for every role of both scenarios: the merge gate has the reviewer find a check's
  *     run and its jobs, and pr-body.md has a role watch CI with `gh run watch` and `gh run view`;
  *     in a world that holds no workflow run those reads get production's own refusals, so a role
  *     that met one met production.
- * Not declared: the implementer's PROTECTION_403 and 422s, since it reads no protection and makes
- * no review in threads-closed; any UNROUTED, which is the world missing an answer; and any other
- * refusal of a route the worlds add later, until a row here says why a correct agent meets it. */
+ * Not declared: the implementer's PROTECTION_403, 422s and REVIEW_USAGE, since it reads no
+ * protection and makes no review in threads-closed; any UNROUTED, which is the world missing an
+ * answer; and any other refusal of a route the worlds add later, until a row here says why a
+ * correct agent meets it. */
 const GH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
-  "reviewer-text-findings": { reviewer: [PROTECTION_403, CREATE_422, SUBMIT_422, ...NO_RUN] },
+  "reviewer-text-findings": {
+    reviewer: [PROTECTION_403, CREATE_422, SUBMIT_422, REVIEW_USAGE, ...NO_RUN],
+  },
   "threads-closed": {
-    reviewer: [PROTECTION_403, CREATE_422, SUBMIT_422, ...NO_RUN],
+    reviewer: [PROTECTION_403, CREATE_422, SUBMIT_422, REVIEW_USAGE, ...NO_RUN],
     implementer: NO_RUN,
   },
 };
@@ -849,6 +861,9 @@ function outsideAnswer(
  *     repository GitHub has not got, or a `--json` field gh does not take) is the refusal the
  *     record names it by (PULL_MISSING, FIELD_UNKNOWN); another such read that exited non-zero
  *     was answered, its status its `--jq`'s;
+ *   - a `gh pr review` gh refused for its flags is the refusal the record names it by
+ *     (REVIEW_USAGE); one naming a pull request or a repository GitHub has not got is
+ *     PULL_MISSING, as above, and one the world took exited 0;
  *   - the submit of a review (`reviewSubmission`) that left no review on the record was refused
  *     422 (SUBMIT_422); one that left a review was taken, and its status is its own `--jq`'s;
  *   - the create of a review (`reviewCreate`) a route matched that left no review was refused 422
@@ -877,9 +892,11 @@ function ghRefusal(
   repo: string | undefined
 ): string | undefined {
   const argv = call.argv ?? [];
-  // gh's own refusals of a read of the pull request, which the record names (gh-view.ts).
+  // gh's own refusals of a read of the pull request, which the record names (gh-view.ts), and of a
+  // `gh pr review` whose flags make no one review (gh-call.ts).
   if (call.handler === PULL_NOT_FOUND) return PULL_MISSING;
   if (call.handler === FIELD_REFUSED) return FIELD_UNKNOWN;
+  if (call.handler === REVIEW_FLAGS_REFUSED) return REVIEW_USAGE;
   if (repo !== undefined && argv[0] === "api" && isPost(argv)) {
     if (argv.some((arg) => submitsReview(arg, repo) !== undefined))
       return call.review === undefined ? SUBMIT_422 : undefined;

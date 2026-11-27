@@ -16,7 +16,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, labelGhSelectors, labelGhTable, RIG_GH_TOKEN } from "./daemon-pane";
-import { readWorld, sentBody } from "./gh-call";
+import { REVIEW_FLAGS_REFUSED, readWorld, sentBody } from "./gh-call";
 import { ROUTE_EVIDENCE } from "./gh-route-evidence";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { type GhSelectors, type GhTable, ghTargetOf, MODELLED, optionLines } from "./gh-selectors";
@@ -35,6 +35,7 @@ import {
   offWorldAllowed,
   offWorldReach,
   unmergedHead,
+  unmodelledWrite,
   workflowUses,
 } from "./health";
 import {
@@ -878,7 +879,8 @@ test("every body edit gh takes leaves the pull request that body, and the record
 // request's body or its reviews runs in a run of its own: the body edit in each form the stand-in
 // models (`gh pr edit` with a body or a body file, and a PATCH of the pull request with a `-f`
 // field, an `@file` field or an `--input` body), the GraphQL `updatePullRequest`, which no world
-// models, a review's create through the REST route, and `gh pr review`, which the world refuses.
+// models, a review's create through the REST route, and `gh pr review`, which the world models
+// as a review it keeps in the record and not in fixtures.json.
 // Every string of fixtures.json after the call, each value and each key, is one the file held
 // before it or one the call gave: an argument, the part of one after an `=`, a file an argument
 // names (as `@<file>` or whole) and each string of the JSON such a file holds. Catches: a
@@ -3263,10 +3265,10 @@ test("the wrapper's owner refusal a tool result shows is no push-guard refusal, 
 // review of the review App by the session its body's Legion footer names (`takenForRound`), and
 // reading the calls again itself would be a third reader of one call beside this stand-in and
 // the score; so each call that left a review records the state, the head and the body this
-// stand-in answered it with — a create and the submit of a pending one, whose body is the
-// pending review's where the submit sends none — and no other call records one: a
-// `gh pr review`, which the world does not model and refuses (gh's 404, no review on GitHub), on
-// the world's pull request or on another repository's, among them.
+// stand-in answered it with — a create, a `gh pr review` of the world's pull request, and the
+// submit of a pending one, whose body is the pending review's where the submit sends none — and no
+// other call records one: a `gh pr review` of another repository's pull request, which GitHub
+// cannot find, among them.
 test("each call that leaves a review records the state, head and body it was answered with, and no other call does", () => {
   const { dir, first } = runDir({ fixture: true });
   answer(dir, ["pr", "review", "1001", "--approve"]);
@@ -3274,22 +3276,147 @@ test("each call that leaves a review records the state, head and body it was ans
   writeFileSync(body, JSON.stringify({ commit_id: first, event: "APPROVE", body: "approved" }));
   expect(apiPost(dir, REVIEWS, "--input", body).exitCode).toBe(0);
   createPending(dir, { commit_id: first, body: "two findings" });
-  // The run's second review, which GitHub gives the id after the first's.
-  expect(apiPost(dir, `${REVIEWS}/6002/events`, "-f", "event=REQUEST_CHANGES").exitCode).toBe(0);
+  // The run's third review: GitHub gave the `gh pr review` and the create before it the ids
+  // before its own.
+  expect(apiPost(dir, `${REVIEWS}/6003/events`, "-f", "event=REQUEST_CHANGES").exitCode).toBe(0);
   answer(dir, ["pr", "review", "1001", "--approve"]);
   answer(dir, ["pr", "review", "1001", "-R", "other/widgets", "--approve"]);
   answer(dir, ["pr", "view", "1001"]);
   expect(recordedCalls(dir).map((call) => call.review)).toEqual([
-    undefined,
+    { state: "APPROVED", head: first, body: "" },
     { state: "APPROVED", head: first, body: "approved" },
     { state: "PENDING", head: first, body: "two findings" },
     { state: "CHANGES_REQUESTED", head: first, body: "two findings" },
-    undefined,
+    { state: "APPROVED", head: first, body: "" },
     undefined,
     undefined,
   ]);
 });
 
+// Catches: a world that refuses `gh pr review` as a write it does not model, which `rig.sh
+// health` then voids (its rule 20), dropping a reviewer that failed from its arm where it counts
+// as a fail (review 6081185004, finding 6); and one that answers it and keeps no review. gh sends
+// `addPullRequestReview` with the event its flag names and the body it is given and no commit
+// (gh 2.98.0's pkg/cmd/pr/review/review.go), so GitHub makes a review of the pull request at the
+// head it is at, carrying no SHA the caller chose, and to a pipe gh prints nothing and exits 0.
+// Every later read holds the review, by the bot of the caller's App: the REST list, `gh pr
+// view`'s reviews and the review decision. Each takes an id of its own, so the REST create after
+// two of them is given the third id, where both a `gh pr review` and a create numbering from the
+// world's create route would take one id twice; and health reads neither call as a write the
+// world does not model, nor as a refusal.
+test("a gh pr review is a review of the pull request at its head, with an id of its own, that every later read holds", () => {
+  const { dir, second } = runDir({ fixture: true });
+  git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
+  const changes = path.join(dir, "changes.md");
+  writeFileSync(changes, "One finding stands.");
+  expect([
+    asked(dir, "reviewer", [
+      "pr",
+      "review",
+      "1001",
+      "--approve",
+      "--body",
+      "Approved at this head.",
+    ]),
+    asked(dir, "reviewer", ["pr", "review", "--request-changes", "-F", changes]),
+  ]).toEqual([
+    [0, "", ""],
+    [0, "", ""],
+  ]);
+  const created = apiPost(
+    dir,
+    REVIEWS,
+    ...["-f", `commit_id=${second}`, "-f", "event=COMMENT", "-f", "body=A note.", "--jq", ".id"]
+  );
+  expect(created.stdout.toString().trim()).toBe("6003");
+  expect(recordedCalls(dir).map((call) => [call.exit, call.review])).toEqual([
+    [0, { state: "APPROVED", head: second, body: "Approved at this head." }],
+    [0, { state: "CHANGES_REQUESTED", head: second, body: "One finding stands." }],
+    [0, { state: "COMMENTED", head: second, body: "A note." }],
+  ]);
+  expect(
+    recordedCalls(dir)
+      .map((call) => call.handler)
+      .slice(0, 2)
+  ).toEqual(["pr review", "pr review"]);
+  const bot = JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")).logins.review;
+  const listed = ghCall(
+    dir,
+    "api",
+    REVIEWS,
+    "--jq",
+    "[.[] | [.id, .state, .commit_id, .user.login]]"
+  );
+  expect(JSON.parse(listed.out).slice(0, 2)).toEqual([
+    [6001, "APPROVED", second, bot],
+    [6002, "CHANGES_REQUESTED", second, bot],
+  ]);
+  expect(JSON.parse(listed.out).map((review: unknown[]) => review[0])).toEqual([6001, 6002, 6003]);
+  const viewed = ghCall(
+    dir,
+    "pr",
+    "view",
+    "1001",
+    "--json",
+    "reviews,reviewDecision",
+    "--jq",
+    "[.reviewDecision, [.reviews[].state]]"
+  );
+  expect(JSON.parse(viewed.out)).toEqual([
+    "CHANGES_REQUESTED",
+    ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"],
+  ]);
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBeUndefined();
+  expect(unmodelledWrite({ dir })).toBeUndefined();
+}, 60_000);
+
+/** gh's usage of `gh pr review`, which it prints after the line of each refusal of a call whose
+ * flags make no one review, as gh 2.98.0 printed it on 2026-11-27, run where it could reach no
+ * network. */
+const REVIEW_USAGE = `Usage:  gh pr review [<number> | <url> | <branch>] [flags]
+
+Flags:
+  -a, --approve           Approve pull request
+  -b, --body string       Specify the body of a review
+  -F, --body-file file    Read body text from file (use "-" to read from standard input)
+  -c, --comment           Comment on a pull request
+  -r, --request-changes   Request changes on a pull request
+  
+`;
+// Catches: a world that answers a `gh pr review` gh refuses before it reaches GitHub — no event
+// flag, which a pipe cannot prompt for, two of them, and a change request with no body — and one
+// that refuses it in other words than gh's. gh prints its line and the command's usage on stderr,
+// nothing on stdout, and exits 1, and GitHub holds no review. The record names the refusal
+// (gh-call.ts's REVIEW_FLAGS_REFUSED), which health declares for the reviewer, whose step a
+// review is, and for no other role.
+test("a gh pr review whose flags make no one review is refused as gh refuses it, and leaves no review", () => {
+  const { dir } = runDir({ fixture: true });
+  expect([
+    asked(dir, "reviewer", ["pr", "review", "1001"]),
+    asked(dir, "reviewer", ["pr", "review", "1001", "--approve", "--request-changes", "-b", "x"]),
+    asked(dir, "reviewer", ["pr", "review", "1001", "-r"]),
+  ]).toEqual([
+    [
+      1,
+      "",
+      `--approve, --request-changes, or --comment required when not running interactively\n\n${REVIEW_USAGE}`,
+    ],
+    [1, "", `need exactly one of --approve, --request-changes, or --comment\n\n${REVIEW_USAGE}`],
+    [1, "", `body cannot be blank for request-changes review\n\n${REVIEW_USAGE}`],
+  ]);
+  expect(recordedCalls(dir).map((call) => [call.handler, call.exit, call.review])).toEqual([
+    [REVIEW_FLAGS_REFUSED, 1, undefined],
+    [REVIEW_FLAGS_REFUSED, 1, undefined],
+    [REVIEW_FLAGS_REFUSED, 1, undefined],
+  ]);
+  expect(JSON.parse(ghCall(dir, "api", REVIEWS).out)).toEqual([]);
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBeUndefined();
+  expect(unmodelledWrite({ dir })).toBeUndefined();
+  asked(dir, "implementer", ["pr", "review", "1001"]);
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    "gh refusal: calls.jsonl:6, `gh pr review 1001` of the implementer, exited 1: gh's refusal of a gh pr review whose flags make no one review (no event flag, two, or no body where its event takes one), which threads-closed does not declare for that role"
+  );
+}, 60_000);
 // Catches: checks frozen into the world, which read green on a head whose check the world's
 // check-runs route says is still running, and a running check that follows the pull request
 // onto the next head. Every reader of the head's checks is answered from the world's check-runs
@@ -5466,7 +5593,8 @@ test("a REST reply to a reply is filed in its thread, replying to the thread's f
 // with the catch-all gone, POST; the PATCH route, which took a PATCH of the state as an edit of
 // the body; a write route reading another repository's pull request of the same number; a
 // mutation the world's graph holds no answer for; and `gh pr merge`, `close`, `create` and
-// `ready`, which the world never modelled.
+// `ready`, which the world never modelled. `gh pr review` is a write the world now models
+// (gh-standin.ts's `reviewPullRequest`, its rows above), so it is no row here.
 test("every write the world does not model is refused 404, changes nothing, and is recorded unrouted", () => {
   const dir = worldDir("review_world");
   const prBody = () => ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out;
@@ -5474,8 +5602,6 @@ test("every write the world does not model is refused 404, changes nothing, and 
   const unmodelled: [string[], string][] = [
     [["pr", "comment", "999", "--body", "a note"], ""],
     [["pr", "comment", "1001", "--edit-last", "--body", "a note"], ""],
-    [["pr", "review", "1001", "--approve"], ""],
-    [["pr", "review", "1001", "--comment", "--body", "a note"], ""],
     [["pr", "ready", "1001"], ""],
     [["pr", "merge", "1001", "--squash"], ""],
     [["pr", "close", "1001"], ""],

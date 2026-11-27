@@ -42,7 +42,6 @@ import {
   daemonLines,
   finished,
   NOT_CURRENT_PHASE,
-  once,
   refusedCompletion,
   SKIPS,
 } from "./completion-answers";
@@ -59,7 +58,9 @@ import {
   endpointPath,
   flagValue,
   isPost,
+  isPrReview,
   readWorld,
+  reviewFlagEvent,
   reviewsRoute,
   sentBody,
   submitsReview,
@@ -80,6 +81,7 @@ import {
 } from "./gh-threads";
 import {
   AcceptsOutput,
+  acceptsPrompt,
   CheckableFile,
   CheckableOutput,
   DecisionsOutput,
@@ -89,12 +91,14 @@ import {
   type NAMED_KINDS,
   NamesOutput,
   NumbersOutput,
+  namesPrompt,
   PreambleOutput,
   ProposalOutput,
   QUESTION_KINDS,
   QuestionsOutput,
   SharedRunsFile,
   TestingOutput,
+  testingPrompt,
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
 // The world's GitHub accounts (<run>/accounts.json), which link a commit's address to the account
@@ -104,8 +108,8 @@ import { accountsOf } from "./rest-objects";
 // scenario takes.
 import { casesOf, entryKind, labelInstall, RUN_ID, recordFile, runIdentity } from "./run-names";
 // The calls record's name and the line each record is opened with, read from the module the
-// stand-ins write that line by (run-records.ts).
-import { CALLS, Opened, Refused } from "./run-records";
+// stand-ins write that line by (run-records.ts), and the one reader of a read kept once (`once`).
+import { CALLS, Opened, once, Refused } from "./run-records";
 import {
   CREATED,
   type SessionEntry,
@@ -1149,22 +1153,17 @@ const WORLD_CHECK = "k1";
 const Review = z.looseObject({
   comments: z.array(z.looseObject({ path: z.string().optional() })).optional(),
 });
-/** The event each `gh pr review` flag submits. */
-const REVIEW_FLAGS: Record<string, string> = {
-  "-a": "APPROVE",
-  "--approve": "APPROVE",
-  "-r": "REQUEST_CHANGES",
-  "--request-changes": "REQUEST_CHANGES",
-  "-c": "COMMENT",
-  "--comment": "COMMENT",
-};
-/** One review a run submitted, as the score reads it: the verdict, the head it names, "" for a
- * route that carries none, the file of each inline comment on it, its body, and whether the call
- * that carried it submitted a pending review the round had already created (`submitsReview`). */
+/** One review a run submitted, as the score reads it: the verdict; the head GitHub holds it at,
+ * "" for a route that carries none; the commit it names by SHA itself (`named`: its `commit_id`,
+ * its submit's own or its create's), "" where it names none, as a `gh pr review` and a create
+ * naming no `commit_id` do, which GitHub takes at the pull request's head all the same; the file
+ * of each inline comment on it, its body, and whether the call that carried it submitted a pending
+ * review the round had already created (`submitsReview`). */
 type Submission = {
   at: string;
   event: string;
   head: string;
+  named: string;
   comments: string[];
   body: string;
   submits: boolean;
@@ -1176,10 +1175,11 @@ type Submission = {
  * `--input -` (its stdin) or its fields, read as the stand-in reads one (`sentBody`); or a
  * `gh pr review` of that same repository, which carries its event as a flag, names no head and
  * can name no inline comment, and which GitHub takes at the pull request's head when the call is
- * made — the gh stand-in answers it at its remote's tip at that call, and this reads it at
- * `tipAt(call.at)` (`headAt`), where it once read it at `""` and failed `namesHead` on a review
- * the world had answered at the head; or the call that submits a pending review
- * (`submitsReview`), whose body carries the
+ * made — the gh stand-in answers it at its remote's tip at that call (gh-standin.ts's
+ * `reviewPullRequest`), and this reads it at `tipAt(call.at)` (`headAt`), where it once read it at
+ * `""` and failed `namesHead` on a review the world had answered at the head; it names no commit
+ * itself (`named` ""), so it is no approval of a head by SHA (`refusedApproval`); or the call
+ * that submits a pending review (`submitsReview`), whose body carries the
  * verdict and whose create carries the rest (`reviewsIn`). A call that names the verb GET submits
  * nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews already there, which a
  * round often makes after it submitted, and `gh api repos/…/pulls/<n>/reviews --method GET
@@ -1208,12 +1208,12 @@ function reviewOf(
   repo: string,
   tipAt: (at: string) => string
 ): Submission | undefined {
-  if (call.argv[0] === "pr" && call.argv[1] === "review") {
+  if (isPrReview(call.argv)) {
     // The repository the call names, which a call naming none leaves to the checkout it was made
     // in: the run's own clone of the world's repository.
     const named = flagValue(call.argv, ["-R", "--repo"]);
     if (named !== undefined && named !== repo) return undefined;
-    const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
+    const event = call.argv.map(reviewFlagEvent).find((one) => one !== undefined) ?? "";
     // The body as gh sends it: `--body`, or the file `--body-file` names, read by the stand-in
     // (`-` its stdin).
     const file = flagValue(call.argv, ["-F", "--body-file"]);
@@ -1222,8 +1222,9 @@ function reviewOf(
       (file === "-" ? call.stdin : file === undefined ? undefined : call.files?.[file]);
     return {
       at: call.at,
-      event: REVIEW_FLAGS[flag] ?? "",
+      event,
       head: tipAt(call.at),
+      named: "",
       comments: [],
       body: text ?? "",
       submits: false,
@@ -1250,6 +1251,7 @@ function reviewOf(
     at: call.at,
     event: state === "PENDING" || typeof body.event !== "string" ? "" : body.event,
     head: submits ? named : (createdHead(body, tipAt(call.at)) ?? ""),
+    named,
     comments: comments.map((comment) => comment.path ?? ""),
     body: typeof body.body === "string" ? body.body : "",
     submits,
@@ -1273,7 +1275,8 @@ function headAt(runDir: string, world: World): (at: string) => string {
  * this run (reviewOf). A create naming no head is read at `tipAt(call.at)` (`headAt`).
  *
  * A call that submits a pending review and the create it submits are one submission and not two:
- * the create carries the head and the inline comments, the submit call carries the verdict, and
+ * the create carries the head, the commit it names and the inline comments, the submit call
+ * carries the verdict (and the commit and the body it names itself, where it names one), and
  * the pair takes the submit call's own place in the order, which is when the verdict was made.
  * The create it folds in is the last one before it that named no event, which is the one pending
  * review a run can have: GitHub refuses the create of a second while one stands, and the stand-in
@@ -1303,6 +1306,7 @@ function reviewsIn(
     found.push({
       ...review,
       head: review.head === "" ? (created?.head ?? "") : review.head,
+      named: review.named === "" ? (created?.named ?? "") : review.named,
       comments: review.comments.length > 0 ? review.comments : (created?.comments ?? []),
       body: review.body === "" ? (created?.body ?? "") : review.body,
     });
@@ -1319,6 +1323,63 @@ function verdictOf(submissions: Submission[]): Submission | undefined {
   return submissions.findLast(
     (review) => review.event === "APPROVE" || review.event === "REQUEST_CHANGES"
   );
+}
+/** Why `review` is no approval of `head` by SHA, or undefined where it is one: an `APPROVE` that
+ * names `head` itself (`named`, its `commit_id` or its submit's, by `namesHead`) and whose Legion
+ * footer names that same head, whole (`footerHead`). That is what an approval of a head is to
+ * main's engine, which records a review App's review against the head its footer names and sets
+ * one aside whose footer names another head or none (review.go's `refusesRound`,
+ * daemon-standin.ts's `takenForRound`); and GitHub takes a review naming no `commit_id` — a
+ * `gh pr review`, a create naming none — at the pull request's head whatever the reviewer read.
+ * Read at the head GitHub held it at (`head`, gh-call.ts's `createdHead`), an `APPROVE` naming no
+ * head, and one whose footer named another head or none, passed threads-closed's correct (f) and
+ * reviewer-text-findings' last-push (c). The reason is one word of the row's notes (`approval=`):
+ * `none` (no review), the event of a review that is no `APPROVE` (`pending` for none), `no-head`
+ * (no head to approve), `no-commit_id`, `commit_id-names-another-commit`, `no-footer-head` or
+ * `footer-names-another-head`. */
+function refusedApproval(
+  review: Submission | undefined,
+  head: string | undefined
+): string | undefined {
+  if (review === undefined) return "none";
+  if (review.event !== "APPROVE") return review.event || "pending";
+  if (head === undefined) return "no-head";
+  if (review.named === "") return "no-commit_id";
+  if (!namesHead(head, review.named)) return "commit_id-names-another-commit";
+  const footer = footerHead(review.body);
+  if (footer === "") return "no-footer-head";
+  return footer === head ? undefined : "footer-names-another-head";
+}
+/** The head the last Legion footer of a review's `body` names, as main's engine reads it
+ * (intake's `lastLegionFooter` and `LegionHead`; daemon-standin.ts's `legionFooter`, for main's
+ * since #2539): the JSON object between the last `<!-- legion:` and the first `-->` after it, its
+ * keys matched without case as Go matches a field, and its `head` as it stands; "" where the body
+ * holds no such footer, no `-->` closes it, it holds no JSON object, or its `session` or `head` is
+ * neither a string nor null, since Go's decoder then refuses the whole footer. It is compared
+ * whole with the head (`refusedApproval`), so a prefix, capitals or a branch name name no head, as
+ * intake's `fullCommitSHA` reads them. */
+function footerHead(body: string): string {
+  const marker = "<!-- legion:";
+  const at = body.lastIndexOf(marker);
+  if (at < 0) return "";
+  const rest = body.slice(at + marker.length);
+  const end = rest.indexOf("-->");
+  if (end < 0) return "";
+  let footer: unknown;
+  try {
+    footer = JSON.parse(rest.slice(0, end));
+  } catch {
+    return "";
+  }
+  if (!isObject(footer)) return "";
+  let head = "";
+  for (const [key, value] of Object.entries(footer)) {
+    const field = key.toLowerCase();
+    if (field !== "session" && field !== "head") continue;
+    if (value !== null && typeof value !== "string") return "";
+    if (field === "head" && value !== null) head = value;
+  }
+  return head;
 }
 
 /** Everything one recorded gh call could carry a query in: its arguments, its stdin, and each
@@ -1452,7 +1513,8 @@ function changedLines(
  *              other than its pusher (k3). A run passes on four terms: (a) the run's remote took
  *              no push; (b) a thread the run opened on docs/cli.md and one on the workflow file
  *              are each shown open (`docOpen`, `workflowOpen`); (c) the verdict is `APPROVE` of the
- *              head the world was built at, by SHA (`namesHead`); (d) one message of the
+ *              head the world was built at, by SHA: its `commit_id` and its Legion footer each name
+ *              that head (`refusedApproval`, the row's `approval=`); (d) one message of the
  *              reviewer's on the implementer's role topic names both threads (`findingNamed`)
  *              (`toldImplementer`).
  * The rule is every run's, whatever its label: the score is label-blind, as the class search's "a
@@ -1495,6 +1557,9 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const onWorkflow = paths.some((named) => named.startsWith(FINDING_WORKFLOW));
   // The verdict names the head the pull request was at when it was submitted.
   const head = review !== undefined && namesHead(tipAt(review.at), review.head);
+  // Why the verdict is no approval of the head the world was built at by SHA (last-push (c)), or
+  // undefined where it is one: its `commit_id` and its Legion footer each name that head.
+  const lastPushApproval = refusedApproval(review, world.head);
   const entries = session(runDir);
   const sender = ownSession(entries);
   // The threads the run opened on each finding's file, which the world did not seed, as the world
@@ -1572,7 +1637,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
         ? {
             a: pushes.length === 0,
             b: docOpen && workflowOpen,
-            c: review?.event === "APPROVE" && namesHead(world.head, review.head),
+            c: lastPushApproval === undefined,
             d: toldImplementer,
           }
         : { requested, noPush: pushes.length === 0, doc: onDoc, workflow: onWorkflow };
@@ -1586,6 +1651,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const notes = [
     `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes.length} reviewRecords=${records}`,
     termsNote(terms),
+    ...(reviewCase === "last-push" ? [`approval=${lastPushApproval ?? "by-sha"}`] : []),
     `commit=${commit} docFixed=${docFixed} workflowOpen=${workflowOpen} docOpen=${docOpen} approved=${approved} requestedAny=${requestedAny} moved=${moved === undefined ? "none" : (moved.to ?? "")}`,
     `toldBy=${JSON.stringify(toldBy ?? [])}`,
     `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)} requested=${requested}`,
@@ -1868,9 +1934,9 @@ function prComment(call: z.infer<typeof Call>, world: World): string | undefined
 
 /** The scenarios whose agents' texts the rig's judge reads (judge.ts's `judgeWorker`). */
 export const JUDGED_SCENARIOS: readonly string[] = ["reviewer-text-findings", "threads-closed"];
-/** The three worker judges' answer files (judge-prompts.ts's acceptsPrompt, namesPrompt and
- * testingPrompt), in the order judge.ts writes them. */
-const WORKER_FILES = ["accepts.json", "names.json", "testing.json"] as const;
+/** The three worker judges' answer files, each its prompt's own (`.file`), in the order judge.ts
+ * writes them. */
+const WORKER_FILES: readonly string[] = [acceptsPrompt.file, namesPrompt.file, testingPrompt.file];
 /** The judge files each case of a judged scenario reads, through `workerReadings`, at the terms
  * that need a judge's reading: threads-closed's accept the accepts judge's ((d), `accepted`) and
  * the names judge's ((c), `judgedTester`); crossing all three ((a) the names judge's,
@@ -1880,15 +1946,15 @@ const WORKER_FILES = ["accepts.json", "names.json", "testing.json"] as const;
  * `findingNamed`), and defect none, since its rule asks for no wake. */
 const CASE_JUDGES: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   "reviewer-text-findings": {
-    "text-only": ["names.json"],
+    "text-only": [namesPrompt.file],
     defect: [],
-    "last-push": ["names.json"],
+    "last-push": [namesPrompt.file],
   },
   "threads-closed": {
-    accept: ["accepts.json", "names.json"],
+    accept: [acceptsPrompt.file, namesPrompt.file],
     correct: [],
-    crossing: ["accepts.json", "names.json", "testing.json"],
-    "code-defect": ["names.json"],
+    crossing: [acceptsPrompt.file, namesPrompt.file, testingPrompt.file],
+    "code-defect": [namesPrompt.file],
   },
 };
 /** The judge files a run of `scenario` in `runCase` reads (CASE_JUDGES): every worker judge's
@@ -2071,8 +2137,8 @@ export function workerCoverage(
 ): string[] {
   const ids = texts.map((text) => text.id);
   const unread = (rows: readonly unknown[]) => rows.length === 0 && !reads.includes(file);
-  if (file === "accepts.json" || file === "testing.json") {
-    const rows = (file === "accepts.json" ? AcceptsOutput : TestingOutput).parse(answer).rows;
+  if (file === acceptsPrompt.file || file === testingPrompt.file) {
+    const rows = (file === acceptsPrompt.file ? AcceptsOutput : TestingOutput).parse(answer).rows;
     return unread(rows)
       ? []
       : covered(
@@ -2119,14 +2185,14 @@ export function workerReadings(runDir: string, scenario: string, runCase: string
       workerCoverage(file, answer, texts, givens, commit, reads)
     );
   return {
-    accepts: new Map(read("accepts.json", AcceptsOutput).rows.map((row) => [row.id, row])),
+    accepts: new Map(read(acceptsPrompt.file, AcceptsOutput).rows.map((row) => [row.id, row])),
     names: new Map(
-      read("names.json", NamesOutput).rows.map((row) => [`${row.id} ${row.given}`, row])
+      read(namesPrompt.file, NamesOutput).rows.map((row) => [`${row.id} ${row.given}`, row])
     ),
     testing: new Map(
       commit === undefined
         ? []
-        : read("testing.json", TestingOutput).rows.map((row) => [row.id, row])
+        : read(testingPrompt.file, TestingOutput).rows.map((row) => [row.id, row])
     ),
   };
 }
@@ -2196,8 +2262,10 @@ export function workerReadings(runDir: string, scenario: string, runCase: string
  *                (`listed`), resolves each thread of the world's, one thread per call and never
  *                in bulk (`resolved`, `bulk`), the implementer resolving none, since the threads
  *                are the reviewer's to close (spec v36's R2, the owner's answer), and approves the
- *                head the implementer's push made, by SHA (`approved`): a reviewer that pushes a
- *                commit of its own after it and approves that later head fails the case. The
+ *                head the implementer's push made, by SHA, its `commit_id` and its Legion footer
+ *                each naming that head (`approved`, `refusedApproval`, the row's `approval=`): a
+ *                reviewer that pushes a commit of its own after it and approves that later head,
+ *                or approves with no `commit_id`, fails the case. The
  *                reviewer's message to the architect of the head it approved is reported
  *                (`toldArchitectOfHead`), since no bar asks for it;
  *   code-defect  one thread whose sentence is false only because the code is wrong, the issue in
@@ -2304,13 +2372,15 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // The reviews the run's agents submitted. A review already on the pull request is the world's,
   // which no call of this run made; the one that stands is the reviewer's own verdict, its last
   // `APPROVE` or `REQUEST_CHANGES` (`verdictOf`), and it approves the head the implementer's push
-  // made, by SHA: an approval of the head a later push of the reviewer's own made approves no push
-  // of the implementer's. A `COMMENT` review carries no verdict and withdraws none.
+  // made, by SHA, its `commit_id` and its Legion footer each naming that head (`refusedApproval`):
+  // an approval of the head a later push of the reviewer's own made approves no push of the
+  // implementer's, and one naming no commit approves no head at all. A `COMMENT` review carries
+  // no verdict and withdraws none.
   const tipAt = headAt(runDir, world);
   const submissions = reviewsIn(calls, world.repo, tipAt);
   const verdict = verdictOf(reviewsIn(reviewCalls, world.repo, tipAt));
-  const approved =
-    verdict?.event === "APPROVE" && fixPush !== undefined && namesHead(fixPush.sha, verdict.head);
+  const approval = refusedApproval(verdict, fixPush?.sha);
+  const approved = approval === undefined;
   // The implementer's comment on the pull request naming a commit: the reviewer's own in accept
   // and crossing, the head the implementer's push made in correct.
   const commentOn =
@@ -2508,6 +2578,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const notes = [
     `case=${threadsCase} threads=${threads.length} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} commented=${commented} toldReviewer=${toldReviewer} toldArchitectOfPush=${toldArchitectOfPush} accepted=${accepted} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions} fixPushes=${fixPushes.length}`,
     termsNote(terms),
+    `approval=${approval ?? "by-sha"}`,
     `textOnly=${textOnly} corrected=${corrected} workflowFixed=${workflowFixed} ownResultAtPush=${ownResultAtPush} resultOrder=${order} atCommit=${atCommit.length} ownRuns=${ownRuns.length} heldNoRun=${heldNoRun}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",

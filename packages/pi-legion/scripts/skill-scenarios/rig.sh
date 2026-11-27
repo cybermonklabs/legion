@@ -4264,12 +4264,16 @@ $2
 # the review (id 6001 for the run's first, where a world names no create route of its own, and
 # the next id for each create after it; its URL; the bot of the App the call's role acts as),
 # whose state, head and body the stand-in adds from the call (`reviewCreate`, `reviewRead`); the
-# PATCH with the pull request carrying the body it left. Every
+# PATCH with the pull request carrying the body it left. `gh pr review`, which gh sends as GraphQL
+# of its own and no route's regex reads, is answered by the create route too, as the review GitHub
+# makes at the pull request's head with the event and the body the call names, and refused where
+# gh refuses its flags (gh-standin.ts's `reviewPullRequest`). Every
 # other write — another path, another verb on a read's path (each read route takes GET alone), a
-# mutation the graph holds no answer for, `gh pr review`, `ready`, `merge`, `close`, `create` and
-# an edit of anything but the body — matches no route and is refused as GitHub refuses an
-# endpoint it does not serve, `gh: Not Found (HTTP 404)`, which `rig.sh health` names (its
-# unmodelled-write rule). One route answered every POST, PATCH and PUT no route above it took
+# mutation the graph holds no answer for, `gh pr ready`, `merge`, `close`, `create` and an edit
+# of anything but the body — matches no route and is refused with the 404 GitHub gives an
+# endpoint it does not serve, `gh: Not Found (HTTP 404)`, though GitHub serves each of them: the
+# world does not, and `rig.sh health` names the write (its unmodelled-write rule). One route
+# answered every POST, PATCH and PUT no route above it took
 # with `{id:6001, html_url}` and exit 0, and changed nothing: 23 recorded PATCH calls read `.body`
 # back from it as null (review 5887659447, finding 6), and in INFRA-764 round 25 a reviewer's
 # update of its review's body (`PUT …/reviews/5002`, runs/1e2a0aeced4b, calls.jsonl:23) was

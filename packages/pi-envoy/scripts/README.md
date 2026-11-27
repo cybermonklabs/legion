@@ -827,7 +827,8 @@ and gh's for `gh run view` and `gh run watch`, are, for every role, and so are g
 pull request, a branch, a repository or a `--json` field GitHub or gh has not got, the
 Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner is outside the
 project, and the world's 404 to a read of such an owner's repository that the label's wrapper runs
-on the pane's own token (`OWNER_UNHELD`, below); the world answers
+on the pane's own token (`OWNER_UNHELD`, below), and for the reviewer gh's refusal of a `gh pr
+review` whose flags make no one review (`REVIEW_USAGE`); the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists, each
 route no text names with its evidence in `gh-route-evidence.ts`); no `gh` write (a GraphQL mutation,
 a `gh api` call sent
@@ -1151,9 +1152,12 @@ where `last-push` asks it to approve, and leave the rest to be scored
   (`gh-threads.ts`'s `reviewDecisionOf`, with `rest-objects.ts`'s `pusherOf`). A run passes on
   Verification v47's four terms: (a) the run's remote took no push; (b) a thread the run opened on
   `docs/cli.md` and one on the workflow file are each open as GitHub shows it; (c) the verdict is
-  `APPROVE` of the head the world was built at, by SHA; (d) one message of the reviewer's on the
-  implementer's role topic names both threads. k3 asks this of at least 4 of the 5 `head` runs,
-  and its first control is its `base` arm's `requested` count.
+  `APPROVE` of the head the world was built at, by SHA: its `commit_id` names that head and its
+  Legion footer names that same head, as main's engine reads an approval of a head (`refusesRound`),
+  so an `APPROVE` with no `commit_id` (a `gh pr review --approve` among them), or whose footer names
+  another head or none, is none, the row's `approval=` saying which; (d) one message of the
+  reviewer's on the implementer's role topic names both threads. k3 asks this of at least 4 of the
+  5 `head` runs, and its first control is its `base` arm's `requested` count.
 
 **`threads-closed` (k2, and k3's `crossing`)** boots the implementer at its last chance
 (`approved_world`), then, where the case has one, the reviewer, woken by the implementer's own
@@ -1232,9 +1236,10 @@ judge's.
   pass recorded as holding with a reason, the row reporting where it stands against the reviewer's
   approval (`resultOrder`); (f) the reviewer lists the pull request's threads in `gh api graphql`,
   resolves each of the world's threads with a call that resolves that one thread, and approves the
-  head the push made, by SHA, and the implementer resolves no thread: the threads are the
-  reviewer's to close (spec v36's R2, the owner's answer). k2 asks this of at least 4 of the 5
-  `head` runs and of at most 1 of the 5 `base` runs.
+  head the push made, by SHA, as last-push's (c) reads an approval of a head (`approval=`), and the
+  implementer resolves no thread: the threads are the reviewer's to close (spec v36's R2, the
+  owner's answer). k2 asks this of at least 4 of the 5 `head` runs and of at most 1 of the 5
+  `base` runs.
 - `code-defect` (k2's negative control): the change with the blank-name guard dropped, an honest
   workflow comment, no commit of the reviewer's, its approval of `C1`, and one thread on the
   sentence of `docs/cli.md` that says a blank name exits 2, which is false only because the code is
@@ -2243,12 +2248,19 @@ that review shows, for a review the world held and one the run made alike); the 
 body (a PATCH sending the body alone, or `gh pr edit` with the body alone); an inline review
 comment and the REST reply under one, a reply to a reply filed in its thread and replying to the
 thread's first comment, as GitHub files it; a comment on the conversation (the REST POST, or `gh
-pr comment`, which prints the comment's URL, its id the conversation's, from 8001); and the two
-GraphQL mutations the graph holds. Every other write — another path, a verb a read's path does
-not take (each read route takes GET alone), a mutation the graph holds no answer for, `gh pr
-review`, `ready`, `merge`, `close`, `create`, an edit of anything but the body — is refused as
-GitHub refuses an endpoint it does not serve: `gh: Not Found (HTTP 404)` on stderr, GitHub's error
-body on stdout as gh prints it, exit 1, and nothing changed; `calls.jsonl` records it `unrouted`,
+pr comment`, which prints the comment's URL, its id the conversation's, from 8001); `gh pr
+review` with `--approve`, `--request-changes` or `--comment`, a body by `-b` or `-F` and a pull
+request named or not, which GitHub takes as a review of the pull request at its head, carrying no
+SHA the caller chose: it prints nothing to a pipe and exits 0, and every later read holds the
+review, by the bot of the calling role's App, with the next id (as gh 2.98.0's
+`pkg/cmd/pr/review/review.go` reads), while a call whose flags make no one review gets gh's own
+line and usage, exit 1, before it reaches GitHub (measured on 2026-11-27 with gh 2.98.0, run where
+it could reach no network); and the two GraphQL mutations the graph holds. Every other write —
+another path, a verb a read's path does not take (each read route takes GET alone), a mutation
+the graph holds no answer for, `gh pr ready`, `merge`, `close`, `create`, an edit of anything but
+the body — is refused with the 404 GitHub gives an endpoint it does not serve, though GitHub
+serves each: `gh: Not Found (HTTP 404)` on stderr, GitHub's error body on stdout as gh prints it,
+exit 1, and nothing changed; `calls.jsonl` records it `unrouted`,
 which `rig.sh health` names. Until INFRA-764 round 25, one route answered every POST, PATCH and PUT
 no route above it took with `{id:6001}` and exit 0 and changed nothing, and a reviewer's update of
 its review's body read back unchanged with no rule seeing it. Each create of a review is a review
