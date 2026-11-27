@@ -2,7 +2,6 @@ package roles
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -110,10 +109,17 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 
 // within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
 // read that did not answer in time is named by what.
+//
+// read starts at once: within passes bus.Bounded no connection to wait for. With the connection
+// passed, a read made while nats.go reconnects would wait for the connection first, during a
+// handshake too, and a read whose bound ends in that wait would never begin its bucket's open.
+// Started at once, a read while nats.go reconnects begins its bucket's open with b.mu released
+// (bucket) and answers at its bound, and a request nats.go refuses meanwhile fails as
+// bus.ErrReconnecting.
 func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
+	value, answered, err := bus.Bounded(ctx, nil, read)
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}
@@ -152,8 +158,11 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // Holder reads sessionID's record from the session bucket, whatever state that record is in:
 // judging it is Windows.EntryState's, so a record the bucket still holds past its maximum age is
 // answered here and judged by its own last registration. A key the bucket does not hold, one no
-// read may name (bus.ErrRefused) and a value that does not decode are nats.ErrKeyNotFound: no
-// record stands for the session. Any other error is a read that did not answer.
+// read may name (bus.ErrRefused), a value that does not decode and one that is not sessionID's
+// registration (session.DecodeEntry: another session's record copied under the key, a JetStream
+// answer) are nats.ErrKeyNotFound: no record stands for the session. A record an earlier build
+// wrote, naming no key, is read as sessionID's, as every listener but the edge reads it. Any
+// other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
 	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
 		kv, err := b.bucket(ctx, bus.SessionBucket)
@@ -168,9 +177,9 @@ func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.Session
 	if err != nil {
 		return session.SessionEntry{}, err
 	}
-	var holder session.SessionEntry
-	if err := json.Unmarshal(entry.Value(), &holder); err != nil {
-		return session.SessionEntry{}, fmt.Errorf("%w: session %s does not decode: %w", nats.ErrKeyNotFound, sessionID, err)
+	holder, err := session.DecodeEntry(sessionID, entry.Value())
+	if err != nil {
+		return session.SessionEntry{}, fmt.Errorf("%w: session %s's record is not read as its registration: %w", nats.ErrKeyNotFound, sessionID, err)
 	}
 	return holder, nil
 }

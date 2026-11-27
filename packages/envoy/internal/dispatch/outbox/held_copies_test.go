@@ -12,6 +12,7 @@ import (
 // that holds a copy, with no scrape of the gauges: reading them changes nothing, and the record
 // keeps only what this process's passes last found waiting.
 func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
+	t.Parallel()
 	held := newHeldCopies()
 	issue := "A-1"
 	event := model.Event{IssueKey: &issue}

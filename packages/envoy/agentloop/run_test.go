@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The prices the fixture's models charge, in USD per million tokens.
@@ -98,24 +100,18 @@ func newFixture(t *testing.T, s *standIn, kind Kind, calls int) *fixture {
 }
 
 // runnerTime is the time bound of a fixture's run or decision, whose subject is not the time
-// bound: what the test binary's deadline (go test's -timeout) leaves, less runnerMargin. A call
-// that is merely slow on a loaded machine is then no time fault, and one that never answers still
-// ends, as a fault the test reports by name, before go test's alarm panics the binary. Under
-// -timeout 0 the binary has no deadline and the bound is runnerTimeCap. A row whose subject is the
-// time bound sets a short bound of its own (TestARunPastItsTimeBoundIsAFault). A deadline that
-// leaves no more than runnerMargin fails the test at once, by name: that reads like a
-// misconfigured run.
+// bound: what the test binary's deadline (go test's -timeout) leaves, less runnerMargin
+// (testwait.Remaining), and never more than runnerTimeCap. A call that is merely slow on a loaded
+// machine is then no time fault, and one that never answers still ends, as a fault the test
+// reports by name, before go test's alarm panics the binary. Under -timeout 0 the binary has no
+// deadline and the bound is runnerTimeCap. A row whose subject is the time bound sets a short
+// bound of its own (TestARunPastItsTimeBoundIsAFault). A deadline that leaves no more than
+// runnerMargin fails the test at once with Remaining's line, which names the cause: a -timeout no
+// longer than runnerMargin, or what ran before this row, such as an earlier row whose run waited
+// out its own bound, using the deadline up.
 func runnerTime(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
-		return runnerTimeCap
-	}
-	left := time.Until(deadline)
-	if left <= runnerMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than runnerMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), runnerMargin)
-	}
-	return left - runnerMargin
+	return min(runnerTimeCap, testwait.Remaining(t, runnerMargin))
 }
 
 const (
@@ -123,8 +119,8 @@ const (
 	// bound to end, its test to report the fault and its stand-ins to close: a run past its
 	// bound ends within milliseconds of it (TestARunPastItsTimeBoundIsAFault).
 	runnerMargin = 30 * time.Second
-	// runnerTimeCap is the bound under -timeout 0, where the binary has no deadline to derive one
-	// from: a day, far past any run against a stand-in.
+	// runnerTimeCap is the most runnerTime gives: the bound under -timeout 0, where the binary
+	// has no deadline to derive one from, a day, far past any run against a stand-in.
 	runnerTimeCap = 24 * time.Hour
 )
 
@@ -671,6 +667,32 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	}
 	if n := len(bad.attempts()); n != 1 {
 		t.Errorf("a 400 took %d requests, want 1: a request error is not retried", n)
+	}
+}
+
+// Every outage status is retried once, as a 500 is: a 408 the endpoint (or a proxy in front of it)
+// did not take in time, a 429, a 501 and a 505 (RFC 9110 sections 15.5.9 and 15.6, RFC 6585
+// section 4), and the retry's reply is the answer. This transport is the run's one retry: the SDK's
+// own retries are off (languageModel).
+func TestEveryOutageStatusIsRetriedOnce(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusNotImplemented, http.StatusHTTPVersionNotSupported} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			outage := reply{
+				status: status, headers: map[string]string{"Retry-After": "0"},
+				body: []byte(`{"type":"error","error":{"type":"api_error","message":"not now"}}`),
+			}
+			answered := anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText("The note says plum."))
+			s := newStandIn(t, outage, answered)
+			result, err := Run(context.Background(), newFixture(t, s, AnthropicMessages, 1).req)
+			if err != nil || result.Fault != "" || result.Text != "The note says plum." {
+				t.Fatalf("after a %d: result %+v, %v; want the retry's reply", status, result, err)
+			}
+			if n := len(s.attempts()); n != 2 {
+				t.Errorf("a %d then a reply took %d requests, want 2", status, n)
+			}
+		})
 	}
 }
 

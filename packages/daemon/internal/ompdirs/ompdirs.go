@@ -45,9 +45,11 @@ var (
 //     here in its words (resolveProfileEnv, normalizeProfileName);
 //   - the config root is OMP_CONFIG_ROOT when, trimmed and with a leading `~` expanded against the
 //     home directory, it is an absolute path, cleaned; a relative, empty or blank one is ignored
-//     (getConfigRootOverride, resolveAbsoluteDir). Else it is PI_CONFIG_DIR, else `.omp`, under the
-//     home directory — HOME, else the account's, as `os.homedir()` answers (getConfigDirName,
-//     getBaseConfigRoot). A named profile's is `profiles/<name>` under it (getProfileConfigRoot);
+//     (getConfigRootOverride, and resolveAbsoluteDir, which @oh-my-pi/pi-natives'
+//     native/natives-dir.js holds at the pinned tag, its rule unchanged). Else it is PI_CONFIG_DIR,
+//     else `.omp`, under the home directory — HOME, else the account's, as `os.homedir()` answers
+//     (getConfigDirName, getBaseConfigRoot). A named profile's is `profiles/<name>` under it
+//     (getProfileConfigRoot);
 //   - the agent directory is PI_CODING_AGENT_DIR, resolved against workDir as `path.resolve`
 //     resolves it against Oh My Pi's own, under the default profile only, and
 //     only when it is not the agent directory of the profile PI_PROFILE names, which an Oh My Pi

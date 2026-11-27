@@ -21,8 +21,8 @@
 # builds nothing: it makes the same refusals and prints the full sha it would build, so a caller
 # can key a cache of <dir> by it before the build (CI's dispatch-two-builds job).
 #
-# <dir> then holds:
-#   src/                              the commit's archive, where the parts were built
+# It builds in <dir>/src, the commit's archive, and removes that directory once it has copied the
+# parts out of it, so a cache of <dir> holds the build alone. <dir> then holds:
 #   envoy-dispatch                    the server, built with -X main.buildCommit=<sha>
 #   web/                              the web app (packages/dispatch/web/dist), DISPATCH_WEB_DIST
 #   dispatch.js                       the `dispatch` command bundle, run as `bun dispatch.js`
@@ -158,6 +158,11 @@ mkdir -p -- "$out/pmdoc/testdata" "$out/pmdoc/schema" "$out/text"
 cp -R -- "$dispatch_dir/pmdoc/testdata/corpus" "$out/pmdoc/testdata/corpus"
 cp -- "$dispatch_dir/pmdoc/schema/blocks.json" "$out/pmdoc/schema/blocks.json"
 cp -R -- "$dispatch_dir/text/testdata" "$out/text/testdata"
+
+# The archive was only where the parts were built, and bun's install fills most of it. Every part
+# above is a copy out of it, so it goes before COMMIT marks the directory complete, and a cache of
+# <dir> carries the parts alone.
+rm -rf -- "$src" || fail "could not remove $src, the archive the parts of $sha were built in."
 
 printf '%s\n' "$sha" >"$out/COMMIT"
 note "built $commit ($sha) in $out"

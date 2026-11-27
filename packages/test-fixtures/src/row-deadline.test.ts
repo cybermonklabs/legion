@@ -4,18 +4,21 @@ import { join } from "node:path";
 import { temporaryDirectories } from "./temporary-directories";
 
 // Where a wait ends against the guard of the row it runs in. Each row below runs test files of its
-// own in a `bun test` of its own, under a guard of 2400 ms: the row-deadline preload sets each
-// wait's deadline 1000 ms (the least margin) before the guard, 1400 ms after the newest mark. A
-// file spends more than that margin before its wait starts, so a wait that counted from its own
-// start would outlast the guard and leave only Bun's "timed out" to read. Each verdict is what the
-// child printed, and in which order its own message and Bun's came: none reads a clock.
+// own in a `bun test` of its own, under a guard of 8000 ms: the row-deadline preload sets each
+// wait's deadline 1000 ms (the least margin) before the guard, 7000 ms after the newest mark. A
+// file spends 4500 ms, more than that margin, before its wait starts, so a wait that counted from
+// its own start would outlast the guard and leave only Bun's "timed out" to read. Each span leaves
+// seconds on both sides: 3500 ms over the margin, 2500 ms under the deadline, and where two spans
+// add up against one deadline, 2000 ms over it, so a child that a loaded host stalls for a second
+// still reads the same. Each verdict is what the child printed, and in which order its own message
+// and Bun's came: none reads a clock.
 
 const makeDirectory = temporaryDirectories("test-fixtures-row-deadline");
 
 const PRELOAD = join(import.meta.dir, "row-deadline.ts");
 const WAIT = JSON.stringify(join(import.meta.dir, "wait.ts"));
-const GUARD = "--timeout=2400";
-const BEFORE_THE_GUARD = "1000 ms before the row's guard of 2400 ms (bun test --timeout)";
+const GUARD = "--timeout=8000";
+const BEFORE_THE_GUARD = "1000 ms before the row's guard of 8000 ms (bun test --timeout)";
 
 /** Bun's own words for a row or hook its guard ended. */
 const BUN_TIMED_OUT = "timed out";
@@ -74,14 +77,14 @@ function expectGaveUpBeforeTheGuard(run: Run, what: string): void {
 
 const ROW = `
 test("a row with two waits", async () => {
-  await span(1_100, "the row's first wait, which the second must not be given back");
+  await span(4_500, "the row's first wait, which the second must not be given back");
   await until("the row's second fact", () => false);
 });
 `;
 
 const FILE_HOOK = `
 beforeAll(async () => {
-  await span(1_100, "the hook's first wait, which the second must not be given back");
+  await span(4_500, "the hook's first wait, which the second must not be given back");
   await until("the file's fixture", () => false);
 });
 test("a row the file's hook serves", () => {});
@@ -101,17 +104,17 @@ test("a wait ends at the deadline of the file's beforeAll", () => {
   );
 });
 
-// The row before the describe spends half the hook's budget: counted from that row's start, the
+// The row before the describe spends most of the hook's budget: counted from that row's start, the
 // hook's span would be refused, so the wait reaching its own deadline shows the count began when
 // the row ended.
 test("a wait ends at the deadline of a describe's beforeAll that follows a row", () => {
   const file = `
 test("a row before the describe", async () => {
-  await span(700, "the row's own work");
+  await span(4_500, "the row's own work");
 });
 describe("a describe", () => {
   beforeAll(async () => {
-    await span(1_000, "the hook's first wait");
+    await span(4_500, "the hook's first wait");
     await until("the describe's fixture", () => false);
   });
   test("a row the describe's hook serves", () => {});
@@ -131,11 +134,11 @@ test("a wait ends at the deadline of a file's afterEach that follows a row", () 
   const file = `
 describe("a describe", () => {
   afterEach(async () => {
-    await span(700, "the hook's first wait, more than the row left of its time");
+    await span(4_500, "the hook's first wait, more than the row left of its time");
     await until("the hook's fact", () => false);
   });
   test("a row that spends most of its time", async () => {
-    await span(1_100, "the row's own work");
+    await span(4_500, "the row's own work");
   });
 });
 `;
@@ -191,7 +194,7 @@ describe.concurrent("a concurrent row that waits", () => {
 test("a wait ends at the deadline of a later file's beforeAll in the same process", () => {
   const first = `
 test("the first file's row", async () => {
-  await span(700, "the row's own work");
+  await span(4_500, "the row's own work");
 });
 `;
   const run = runBunTest({ "a.test.ts": first, "b.test.ts": FILE_HOOK }, [
@@ -221,18 +224,18 @@ test("a wait ends at its row's deadline in a --parallel worker", () => {
 test("the preload takes no mark while a test holds the fake clock", () => {
   const file = `
 test("a row that leaves the fake clock held", async () => {
-  await span(700, "the row's own work");
+  await span(4_500, "the row's own work");
   jest.useFakeTimers();
   jest.advanceTimersByTime(60_000);
 });
 test("the row after it", async () => {
   jest.useRealTimers();
-  await span(1_000, "longer than the deadline of the last real mark leaves");
+  await span(4_500, "longer than the deadline of the last real mark leaves");
 });
 `;
   const run = runBunTest({ "fake.test.ts": file }, [GUARD, "--preload", PRELOAD]);
   expect(run.output).toContain(
-    "span: a span of 1000 ms (longer than the deadline of the last real mark leaves) would end " +
+    "span: a span of 4500 ms (longer than the deadline of the last real mark leaves) would end " +
       `after the deadline, ${BEFORE_THE_GUARD}`
   );
   expect(run.output).not.toContain(BUN_TIMED_OUT);

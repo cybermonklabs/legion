@@ -24,6 +24,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # The Playwright the fixture tree agrees on, and the one a drift case moves a single side to.
 # Neither is the release the repository itself resolves, so a case that read the real tree
 # instead of its fixture would fail rather than pass by accident.
@@ -96,7 +101,7 @@ check "names both versions and says they agree" \
 check "names the row it read the image's version from" \
   "$(contains "$out" "the copy of mcr.microsoft.com/playwright:v$FIXTURE_VERSION-noble")"
 check "and the base FROM it read, not the stage above it" \
-  "$(contains "$out" '.github/docker/browser.Dockerfile:3')"
+  "$(contains "$out" ".github/docker/browser.Dockerfile${colon}3")"
 
 echo "case: the repository's own tree"
 set +e
@@ -113,9 +118,9 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names what the lockfile resolves" "$(contains "$out" "bun.lock resolves playwright@$OTHER_VERSION")"
 check "and what the image carries" "$(contains "$out" "the browser image carries Playwright $FIXTURE_VERSION")"
-check "reported at the lockfile's own entry" "$(contains "$out" '^::error file=bun.lock,line=5::bun.lock:5:')"
+check "reported at the lockfile's own entry" "$(contains "$out" "^::error file=bun.lock,line=5::bun.lock${colon}5:")"
 check "and names the row the image's version came from" \
-  "$(contains "$out" ".github/ci-images.yaml:6 says the base FROM at .github/docker/browser.Dockerfile:3")"
+  "$(contains "$out" ".github/ci-images.yaml${colon}6 says the base FROM at .github/docker/browser.Dockerfile${colon}3")"
 
 echo "case: the row moved to another Playwright and bun.lock left behind"
 root=$(fixture row-drift)
@@ -185,7 +190,7 @@ check "names the row's kind" \
 check "and says why no release can be read from it" \
   "$(contains "$out" 'an image this repository builds is a copy of no published Playwright')"
 check "reported at the row's built: key" \
-  "$(contains "$out" '^::error file=.github/ci-images.yaml,line=6::.github/ci-images.yaml:6:')"
+  "$(contains "$out" "^::error file=.github/ci-images.yaml,line=6::.github/ci-images.yaml${colon}6:")"
 
 echo "case: a row whose upstream tag carries no Playwright release"
 root=$(fixture tag-without-release)
@@ -197,6 +202,6 @@ check "names the tag it could not read a release out of" \
 check "and says how Playwright publishes its image" \
   "$(contains "$out" 'Playwright publishes its image as v<X.Y.Z>-<variant>')"
 check "reported at the row's upstream: key" \
-  "$(contains "$out" '^::error file=.github/ci-images.yaml,line=6::.github/ci-images.yaml:6:')"
+  "$(contains "$out" "^::error file=.github/ci-images.yaml,line=6::.github/ci-images.yaml${colon}6:")"
 
 summary "check-playwright-version.sh"

@@ -326,7 +326,7 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // Each row reads its slot as well, because two of the four it passes over are answered by the
 // pass before the repair ever reads them: no slot of a member of a lingering tree survives the
 // pass's own release of the slots an issue no longer needs (record.NeedsSlot), and no slot of
-// an issue standing in accepting survives it either, since an issue past its review keeps none
+// an issue standing in accepting survives it either, since accepting keeps none
 // (record.KeepsSlot). Each row's guard stands behind the release, so what those two read is
 // the pass's answer rather than the guard; the architect's row is passed over by the repair's
 // own skip of the role whatever its slot says.
@@ -368,7 +368,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			{name: "an architect's role", root: "LEGION-560", key: "LEGION-561", stands: phase.Accepting,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,
-				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member stands past its review there, so the release takes its row back (record.KeepsSlot) and the repair reaches it on no row at all; the skip of the role is what answers it"},
+				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. Accepting keeps no row, so the release takes the member's row back (record.KeepsSlot) and the repair reaches it on no row at all; the skip of the role is what answers it"},
 			{name: "a slot whose root lingers", root: "LEGION-570", key: "LEGION-571", stands: phase.Testing,
 				generation: 1, lingers: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,
@@ -400,7 +400,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				if held := holdsSlot(t, pool, row.key); held == row.slotGivenBack {
-					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue holds its row from the moment the daemon starts it until its work is past its review, except while it waits on another issue before then, and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
+					t.Fatalf("after the pass %s holds one of the cap's rows = %t, want %t: an issue holds its row from the moment the daemon starts it while it stands in a phase that keeps one, except while it waits on another issue there; accepting, retro and merging keep none (record.KeepsSlot), and the pass deletes it when the tree it belongs to has left (record.NeedsSlot), which the repair neither does nor undoes: %s",
 						row.key, held, !row.slotGivenBack, row.why)
 				}
 				got := startsOf(t, pool, row.key)
@@ -418,7 +418,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				tasked := got
 				role := phase.RoleFor(row.stands)
 				if tasked[0].role != role || !tasked[0].needsSlot {
-					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot as every phase worker's start does",
+					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot, as the start of a worker in a phase that keeps one does (record.PhaseKeepsSlot)",
 						row.key, tasked[0], role)
 				}
 				if want := seededEntryTask(row.key); tasked[0].task != want {

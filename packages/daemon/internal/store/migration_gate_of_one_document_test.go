@@ -28,6 +28,7 @@ import (
 // closed. So the open gate read above is the gate's own answer and not a read that cannot see a
 // closed one.
 func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designNewsVersion-1)
@@ -52,7 +53,7 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepSpec}
 	records := record.NewStore()
 	var facts record.NewsFacts
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		facts, err = record.TreeNewsFacts(ctx, records, tx, steps, root)
 		return err
@@ -83,7 +84,7 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 	}
 
 	// The negative control: a new version of the spec closes the gate.
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		closed := classify.ApplyDesignGateEvent(gates[record.DesignStepSpec], classify.DesignGateVersion, 4, record.EventMark{})
 		if err := records.PutGate(ctx, tx, closed); err != nil {
 			return err

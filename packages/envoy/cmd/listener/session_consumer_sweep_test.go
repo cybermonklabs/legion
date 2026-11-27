@@ -95,6 +95,7 @@ func (coldSessions) CacheReady() bool { return false }
 // the server's inactivity threshold used to free. One pass after the registry reads it gone, the
 // sweep deletes it.
 func TestTheSweepDeletesTheConsumerOfASessionThatEndedWithoutDeregistering(t *testing.T) {
+	t.Parallel()
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_ended"
 	rig.register(t, sessionID)
@@ -110,6 +111,7 @@ func TestTheSweepDeletesTheConsumerOfASessionThatEndedWithoutDeregistering(t *te
 // stored messages, and a sweep that took it would leave the session reading nothing until its
 // next registration created it again.
 func TestTheSweepKeepsTheConsumerOfALiveSession(t *testing.T) {
+	t.Parallel()
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_live"
 	rig.register(t, sessionID)
@@ -125,6 +127,7 @@ func TestTheSweepKeepsTheConsumerOfALiveSession(t *testing.T) {
 // any other, so its consumer stays. The sweep deletes only where the shared bucket holds no
 // record at all, which is why a listener may delete a consumer it never created.
 func TestTheSweepKeepsTheConsumerOfASessionOnAnotherMachine(t *testing.T) {
+	t.Parallel()
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_other_machine"
 	rig.register(t, sessionID)
@@ -146,6 +149,7 @@ func TestTheSweepKeepsTheConsumerOfASessionOnAnotherMachine(t *testing.T) {
 // other row of this file holds the binding, so without this one the whole cmd/listener suite
 // passes with that gate taken out of sessionConsumerSweep.trusted (measured at 726f91df8).
 func TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding(t *testing.T) {
+	t.Parallel()
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_unbound_task"
 	rig.register(t, sessionID)
@@ -164,6 +168,7 @@ func TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding(t *testing
 // the fleet gone and delete every consumer on the stream. A pass over such a copy deletes
 // nothing, however plainly the copy says the session has ended.
 func TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady(t *testing.T) {
+	t.Parallel()
 	rig := newSweepRig(t)
 	const sessionID = "ses_sweep_cold_cache"
 	rig.register(t, sessionID)
@@ -183,6 +188,7 @@ func TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady(t *testing.T) {
 // bucket answers, so a session another listener registered keeps the consumer that delivers
 // its messages.
 func TestTheSweepKeepsTheConsumerOfASessionTheBucketStillHolds(t *testing.T) {
+	t.Parallel()
 	// The bucket keeps its records for an hour, past the lapse below, so the record stands while
 	// the windows the registry judges age by have long passed.
 	rig := newSweepRigKeeping(t, time.Hour)

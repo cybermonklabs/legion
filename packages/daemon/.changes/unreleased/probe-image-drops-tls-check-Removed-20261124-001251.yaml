@@ -1,0 +1,5 @@
+kind: Removed
+body: '`legion probe-image` no longer checks the image''s TLS clients: it prints no `probe-image: TLS` or `probe-image: UNKNOWN` line, serves no chain, and an image no longer fails its build or the daemon''s boot probe for what a client trusts. A `runtime.kubernetes.pod.env` trust override, such as `NODE_TLS_REJECT_UNAUTHORIZED=0`, `GIT_SSL_NO_VERIFY` or a CA bundle that holds a distrusted root, no longer fails the daemon''s boot either. Each client''s own verification of a connection is the evidence that it verifies TLS. The image''s trust settings stay. An image whose curl verifies a chain only after the handshake, as curl 8.17.0 to 8.23.0 on OpenSSL do, now passes the probe.'
+time: 2026-11-24T00:12:51Z
+custom:
+    Issue: probe-image-drops-tls-check

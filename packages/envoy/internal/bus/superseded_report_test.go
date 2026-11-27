@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,7 @@ func (c *steppedClock) Advance(d time.Duration) {
 // reconnect (afterReconnect) and the recovery's (recoverUntilHealthy). The clock is the client's
 // own (WithReconnectErrClock), which the hook moves past the grace while its run is under way.
 func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
+	t.Parallel()
 	const (
 		supersededLine = "envoy nats reconnect hooks superseded by a newer connection event"
 		warnLine       = "envoy nats reconnect hook failed; it is retried"
@@ -76,14 +78,15 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 			{name: "past the grace", past: true},
 		} {
 			t.Run(caller.name+"/"+grace.name, func(t *testing.T) {
+				t.Parallel()
 				srv, uri := testnats.Start(t)
 				clock := &steppedClock{now: time.Now()}
-				client, err := Connect([]string{uri}, WithName(t.Name()), WithReconnectErrClock(clock.Now))
+				logs := captureLogs()
+				client, err := Connect([]string{uri}, WithName(t.Name()), WithReconnectErrClock(clock.Now), WithLogger(logs.logger))
 				if err != nil {
 					t.Fatalf("connect: %v", err)
 				}
 				t.Cleanup(client.Close)
-				logs := captureLogs(t)
 				var calls atomic.Int32
 				client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
 					if calls.Add(1) > 1 {
@@ -98,8 +101,9 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 				caller.run(t, srv, client)
 				// The superseded run ends in one of its report's lines, and the wait takes whichever
 				// comes.
-				testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the report of the superseded run", func() bool {
-					return calls.Load() >= 1 && logs.Lines(supersededLine)+logs.Lines(warnLine)+logs.Lines(errorLine) != ""
+				testwait.UntilPolling(t, 20*time.Millisecond, "the report of the superseded run (the last read is how many times the hook was called)", func() (int32, bool) {
+					called := calls.Load()
+					return called, called >= 1 && logs.Lines(supersededLine)+logs.Lines(warnLine)+logs.Lines(errorLine) != ""
 				})
 				if calls.Load() != 1 {
 					t.Fatalf("the hook ran %d times before the report, want the one superseded run", calls.Load())
@@ -127,8 +131,9 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 				}
 
 				srv.Start(t)
-				testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "a run that covers the reconnect", func() bool {
-					return calls.Load() >= 2 && !client.hooksDue()
+				testwait.Until(t, "a run that covers the reconnect", func() (string, bool) {
+					called, due := calls.Load(), client.hooksDue()
+					return fmt.Sprintf("hook calls %d, hooks due %t", called, due), called >= 2 && !due
 				})
 			})
 		}
@@ -141,6 +146,7 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 // so a hook that failed at once on the connection's loss returns while the context still reads
 // live: the status is what makes that run superseded rather than failed.
 func TestARunWhoseConnectionLeftConnectedIsSuperseded(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
@@ -158,9 +164,10 @@ func TestARunWhoseConnectionLeftConnectedIsSuperseded(t *testing.T) {
 	}
 
 	srv.Stop(t)
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return conn.Status() == nats.RECONNECTING }) {
-		t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", conn.Status())
-	}
+	testwait.Until(t, "the connection to read RECONNECTING once its server stopped", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.RECONNECTING
+	})
 	err = runSuperseded(context.Background(), conn)
 	if !errors.Is(err, errRunSuperseded) || !errors.Is(err, errRunConnectionLost) {
 		t.Fatalf("a live run on a RECONNECTING connection reads %v, want errRunSuperseded for the lost connection", err)

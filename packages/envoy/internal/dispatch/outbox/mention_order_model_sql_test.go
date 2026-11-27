@@ -26,6 +26,7 @@ import (
 // asked. A rule the model restated wrongly - a missing clause, a comparison the wrong way round, a
 // later event counted - fails here on the first row the two disagree on.
 func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
+	t.Parallel()
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	ctx := context.Background()
 	database := storetest.Open(t)

@@ -20,6 +20,7 @@ import (
 // control of each is 2147483647, the largest number the column holds, which each route takes:
 // the result is recorded (201) and the position is stored (200).
 func TestABodyNumberAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESB", "Body bounds", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)

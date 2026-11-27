@@ -6,7 +6,9 @@
 // `FakeNatsServer.closeClients` sends; the hub stops answering PINGs as the start reads the
 // listener's interests, the step before its flush, so the flush is waiting when the close lands.
 import { expect, test } from "bun:test"
+import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage"
 import { nkeys } from "nats"
+import { INBOUND_RESTORED_LINES, INBOUND_UNAVAILABLE_LINES } from "../src/inbound-outage-lines"
 import { waitFor } from "./channel-session-harness"
 import {
   codexSession,
@@ -49,6 +51,12 @@ const HOSTS: readonly Host[] = [
 const CLOSED = "envoy-channel: the NATS connection closed for good (Authorization Violation)"
 const GAVE_UP = "envoy-channel: gave up opening a new NATS connection"
 
+/** The start of the stderr line of an outage that leaves the session nothing, up to its why. */
+const nothingLine = INBOUND_UNAVAILABLE_LINES.no_relay.line("\u0000")
+const RECEIVES_NOTHING = nothingLine.slice(0, nothingLine.indexOf("\u0000"))
+/** The stderr line of a session that receives again after such an outage. */
+const RECEIVES_AGAIN = INBOUND_RESTORED_LINES.no_relay.line
+
 /**
  * `host`'s server signing in with an nkey seed, whose start's flush is left waiting: the hub
  * stops answering PINGs as the start reads the listener's interests, and resolves once the flush
@@ -85,11 +93,13 @@ async function startWithPendingFlush(host: Host): Promise<ReopenServer> {
   }
 }
 
-/** Waits for `condition`, failing at once, naming the server's end, if the server exits first. */
+/** Waits for `condition` up to `waitMs`, failing at once, naming the server's end, if the server
+ *  exits first. */
 function whileRunning(
   run: ReopenServer,
   what: string,
   condition: () => Promise<boolean>,
+  waitMs: number = PROCESS_WAIT_MS,
 ): Promise<void> {
   return waitFor(
     async () => {
@@ -100,7 +110,7 @@ function whileRunning(
     },
     what,
     run.state,
-    PROCESS_WAIT_MS,
+    waitMs,
   )
 }
 
@@ -120,32 +130,34 @@ for (const host of HOSTS) {
           async () =>
             stderr().includes(`${CLOSED}; dialing a new one`) && stderr().includes(GAVE_UP),
         )
-        // The session is told once that it receives nothing, naming why; nothing was registered.
-        await whileRunning(run, "the outage told", async () =>
-          stderr().includes("envoy-channel: this session receives nothing ("),
+        // Nothing was registered. A registration with no relay subject is refused naming why,
+        // and the session is not told that it receives nothing: until the session's first
+        // accepted registration, that is the start race, held for its bound
+        // (`INBOUND_FIRST_OPEN_BOUND_MS`).
+        await whileRunning(run, "a registration refused naming why", async () =>
+          stderr().includes(
+            "because its relay subject could not be opened: Authorization Violation",
+          ),
         )
-        expect(count(stderr(), "this session receives nothing")).toBe(1)
-        expect(stderr()).toContain(
-          "because its relay subject could not be opened: Authorization Violation",
-        )
+        expect(count(stderr(), RECEIVES_NOTHING)).toBe(0)
         expect(run.sessions).toEqual([])
 
-        // The hub admits again: the session registers with its relay on a new connection.
+        // The hub admits again: the session registers with its relay on a new connection. It was
+        // told nothing of the outage, so it is told nothing of its end.
         broker.refuseConnects = false
         broker.answerPings = true
         await whileRunning(
           run,
-          "a registration with the relay on a new connection, and the end of the outage",
+          "a registration with the relay on a new connection",
           async () =>
             run.deliveries.length > 0 &&
             run.relaySubscriptions() === 2 &&
-            broker.liveConnections === 1 &&
-            stderr().includes("envoy-channel: this session receives again"),
+            broker.liveConnections === 1,
         )
         expect(run.sessions.every((session) => session === host.sessionId)).toBe(true)
         expect(run.deliveries.at(-1)).toMatchObject({ consumer: true })
-        expect(count(stderr(), "envoy-channel: this session receives again")).toBe(1)
-        expect(count(stderr(), "this session receives nothing")).toBe(1)
+        expect(count(stderr(), RECEIVES_AGAIN)).toBe(0)
+        expect(count(stderr(), RECEIVES_NOTHING)).toBe(0)
         // The process keeps running: a heartbeat later it has not exited, and failed nothing.
         const registered = run.deliveries.length
         await whileRunning(run, "a heartbeat after the registration", async () => {
@@ -153,6 +165,26 @@ for (const host of HOSTS) {
         })
         expect(run.server.exitCode).toBeNull()
         expect(stderr()).not.toContain("channel server failed")
+
+        // The control of the counts above: the same outage after the session's first accepted
+        // registration is no start race. The hub closes the connection for good and refuses each
+        // dial for a while, so a registration finds no relay subject and the session is told at
+        // once: the row waits a quarter of the start race's bound for it, so a loss held as the
+        // start race fails here. The hub admits again, and the accepted registration tells the
+        // session that it receives again.
+        broker.refuseConnects = true
+        await broker.closeClients()
+        await whileRunning(
+          run,
+          "the lost relay told",
+          async () => count(stderr(), RECEIVES_NOTHING) === 1,
+          INBOUND_FIRST_OPEN_BOUND_MS / 4,
+        )
+        broker.refuseConnects = false
+        await whileRunning(run, "the relay's return told", async () => {
+          return count(stderr(), RECEIVES_AGAIN) === 1
+        })
+        expect(count(stderr(), RECEIVES_NOTHING)).toBe(1)
       } finally {
         await run.stop()
       }

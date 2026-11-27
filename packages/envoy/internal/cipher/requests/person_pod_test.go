@@ -133,7 +133,7 @@ func TestPersonPodIsDecidedAsItsPerson(t *testing.T) {
 		{secret: "SERVICE_KEY", state: "denied"},
 	} {
 		t.Run(want.secret, func(t *testing.T) {
-			req, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", want.secret), "", nil)
+			req, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", want.secret), "")
 			if err != nil || req.State != want.state {
 				t.Fatalf("Create(%s's pod %s, %s) = %+v, %v; want %s", samisPod.person, pod, want.secret, req, err, want.state)
 			}
@@ -145,7 +145,7 @@ func TestPersonPodIsDecidedAsItsPerson(t *testing.T) {
 				if req.GrantID == nil || req.RecordID != nil {
 					t.Fatalf("Create(%s) = %+v; want a grant that no person approved", want.secret, req)
 				}
-				released, err := m.Values(ctx, *req.GrantID, pod, nil, ReleaseCall{})
+				released, err := m.Values(ctx, *req.GrantID, pod, ReleaseCall{})
 				if err != nil || released.Values[want.secret] != want.value {
 					t.Fatalf("Values(grant %s of %s) = %v, %v; want %s", *req.GrantID, want.secret, released.Values, err, want.value)
 				}
@@ -164,11 +164,11 @@ func TestPersonPodIsDecidedAsItsPerson(t *testing.T) {
 func TestPersonPodIsOnTheListThatNamesItsPerson(t *testing.T) {
 	ctx := context.Background()
 	m, pod, key := newPersonPodFixture(t)
-	granted, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListed), "", nil)
+	granted, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListed), "")
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(%s's pod %s, %s) = %+v, %v; want it granted at once to the person the list names", samisPod.person, pod, personPodListed, granted, err)
 	}
-	if released, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); err != nil || released.Values[personPodListed] != listedValue {
+	if released, err := m.Values(ctx, *granted.GrantID, pod, ReleaseCall{}); err != nil || released.Values[personPodListed] != listedValue {
 		t.Fatalf("Values(grant %s) = %v, %v; want %s", *granted.GrantID, released.Values, err, listedValue)
 	}
 
@@ -183,7 +183,7 @@ func TestPersonPodIsOnTheListThatNamesItsPerson(t *testing.T) {
 	} {
 		t.Run(who.name, func(t *testing.T) {
 			const want = personPodListed + ": " + policy.ReasonRequesterNotListed
-			denied, err := m.Create(ctx, who.enrollment, signRequestFor(t, m, who.key, anHour, personPodListed), "", nil)
+			denied, err := m.Create(ctx, who.enrollment, signRequestFor(t, m, who.key, anHour, personPodListed), "")
 			if err != nil || denied.State != "denied" || denied.GrantID != nil {
 				t.Fatalf("Create(%s %s, %s) = %+v, %v; want it denied with no grant", who.name, who.enrollment, personPodListed, denied, err)
 			}
@@ -225,27 +225,27 @@ func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
 			ctx := context.Background()
 			m, pod, key := newPersonPodFixture(t)
 
-			auto, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
+			auto, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
 			if err != nil || auto.State != "granted" || auto.GrantID == nil || auto.RecordID != nil {
 				t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want an automatic grant to %s's pod %s", auto, err, samisPod.person, pod)
 			}
 			autoGrant := *auto.GrantID
-			asked, err := m.Create(ctx, pod, signRequest(t, m, key, "ship it", "DEEL_API_KEY"), "", nil)
+			asked, err := m.Create(ctx, pod, signRequest(t, m, key, "ship it", "DEEL_API_KEY"), "")
 			if err != nil {
 				t.Fatalf("Create(DEEL_API_KEY): %v", err)
 			}
 			approvedGrant := approveAsPerson(t, m, asked)
-			listedAuto, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListed), "", nil)
+			listedAuto, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListed), "")
 			if err != nil || listedAuto.State != "granted" || listedAuto.GrantID == nil {
 				t.Fatalf("Create(%s) = %+v, %v; want an automatic grant to the person the list names", personPodListed, listedAuto, err)
 			}
-			listedAsked, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListedHuman), "", nil)
+			listedAsked, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListedHuman), "")
 			if err != nil {
 				t.Fatalf("Create(%s): %v", personPodListedHuman, err)
 			}
 			listedApproved := approveAsPerson(t, m, listedAsked)
 
-			reused, err := m.Create(ctx, pod, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "", nil)
+			reused, err := m.Create(ctx, pod, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "")
 			if err != nil || reused.ID != auto.ID || reused.GrantID == nil || *reused.GrantID != autoGrant {
 				t.Fatalf("Create(AUTO_TOKEN) again before the change = %+v, %v; want request %s's live grant %s reused", reused, err, auto.ID, autoGrant)
 			}
@@ -256,14 +256,14 @@ func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
 				t.Fatalf("the policy moved from version %s to %s; this case turns on the version standing still, so that the setting alone opens the re-check", version, now)
 			}
 
-			again, err := m.Create(ctx, pod, signRequest(t, m, key, "need it after the change", "AUTO_TOKEN"), "", nil)
+			again, err := m.Create(ctx, pod, signRequest(t, m, key, "need it after the change", "AUTO_TOKEN"), "")
 			if err != nil || again.State != "pending" || again.ID == auto.ID || again.GrantID != nil || again.Approver == nil || *again.Approver != samisPod.person {
 				t.Fatalf("Create(AUTO_TOKEN) after the change = %+v, %v; want a new request pending for %s, not request %s's grant %s reused", again, err, samisPod.person, auto.ID, autoGrant)
 			}
 			if _, person, _ := createdAudit(t, m, again.ID); person != "" {
 				t.Fatalf("the request.created audit row of %s names person %q; want none, as the pod acts for no person now", again.ID, person)
 			}
-			if released, err := m.Values(ctx, autoGrant, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+			if released, err := m.Values(ctx, autoGrant, pod, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 				t.Fatalf("Values(automatic grant %s of AUTO_TOKEN) after the change = %v, %v; want ErrGrantNotLive", autoGrant, released.Values, err)
 			}
 			if values, _, err := m.AirlockValues(ctx, autoGrant); !errors.Is(err, ErrGrantNotLive) {
@@ -273,15 +273,15 @@ func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
 				t.Fatalf("automatic grant %s: revoked_by %q with %d grant.revoked rows; want it refused but not ended", autoGrant, by, audits)
 			}
 
-			shared, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", personPodShared), "", nil)
+			shared, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", personPodShared), "")
 			if err != nil || shared.State != "granted" || shared.GrantID == nil {
 				t.Fatalf("Create(%s) after the change = %+v, %v; want it granted at once", personPodShared, shared, err)
 			}
-			if released, err := m.Values(ctx, *shared.GrantID, pod, nil, ReleaseCall{}); err != nil || released.Values[personPodShared] != personPodSharedValue {
+			if released, err := m.Values(ctx, *shared.GrantID, pod, ReleaseCall{}); err != nil || released.Values[personPodShared] != personPodSharedValue {
 				t.Fatalf("Values(grant %s of %s) after the change = %v, %v; want %s", *shared.GrantID, personPodShared, released.Values, err, personPodSharedValue)
 			}
 
-			if released, err := m.Values(ctx, approvedGrant, pod, nil, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
+			if released, err := m.Values(ctx, approvedGrant, pod, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
 				t.Fatalf("Values(grant %s of DEEL_API_KEY, which %s approved) after the change = %v, %v; want deel-v1", approvedGrant, samisPod.person, released.Values, err)
 			}
 			if !listsGrant(t, m, samisPod.person, approvedGrant) {
@@ -292,7 +292,7 @@ func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
 			}
 
 			for name, grant := range map[string]string{personPodListed: *listedAuto.GrantID, personPodListedHuman: listedApproved} {
-				if released, err := m.Values(ctx, grant, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+				if released, err := m.Values(ctx, grant, pod, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 					t.Fatalf("Values(grant %s of %s) after the change = %v, %v; want ErrGrantNotLive", grant, name, released.Values, err)
 				}
 				if by, audits := endedForGood(t, m, grant); by != GrantEndedActor || audits != 1 {
@@ -301,21 +301,21 @@ func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
 			}
 
 			if tc.moved {
-				alices, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", "ALICE_KEY"), "", nil)
+				alices, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
 				if err != nil || alices.State != "pending" || alices.GrantID != nil {
 					t.Fatalf("Create(ALICE_KEY) after the move to %s = %+v, %v; want it pending with no grant, as the pod does not act for %s", otherPerson, alices, err, otherPerson)
 				}
 			}
 
 			m.PodOperators[samisPod.account] = samisPod.person
-			if released, err := m.Values(ctx, autoGrant, pod, nil, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] != "auto-v1" {
+			if released, err := m.Values(ctx, autoGrant, pod, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] != "auto-v1" {
 				t.Fatalf("Values(automatic grant %s of AUTO_TOKEN) once the entry is back = %v, %v; want auto-v1", autoGrant, released.Values, err)
 			}
 			if _, _, err := m.AirlockValues(ctx, autoGrant); err != nil {
 				t.Fatalf("AirlockValues(automatic grant %s of AUTO_TOKEN) once the entry is back = %v; want no refusal", autoGrant, err)
 			}
 			for name, grant := range map[string]string{personPodListed: *listedAuto.GrantID, personPodListedHuman: listedApproved} {
-				if released, err := m.Values(ctx, grant, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+				if released, err := m.Values(ctx, grant, pod, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 					t.Fatalf("Values(grant %s of %s) once the entry is back = %v, %v; want the grant still ended", grant, name, released.Values, err)
 				}
 				if by, audits := endedForGood(t, m, grant); by != GrantEndedActor || audits != 1 {
@@ -336,11 +336,11 @@ func TestPersonPodGrantsAreThePersonsToSee(t *testing.T) {
 	m, pod, key := newPersonPodFixture(t)
 	since := time.Now().Add(-time.Hour)
 
-	auto, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
+	auto, err := m.Create(ctx, pod, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
 	if err != nil || auto.State != "granted" || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want an automatic grant", auto, err)
 	}
-	asked, err := m.Create(ctx, pod, signRequest(t, m, key, "ship it", "DEEL_API_KEY"), "", nil)
+	asked, err := m.Create(ctx, pod, signRequest(t, m, key, "ship it", "DEEL_API_KEY"), "")
 	if err != nil {
 		t.Fatalf("Create(DEEL_API_KEY): %v", err)
 	}
@@ -356,7 +356,7 @@ func TestPersonPodGrantsAreThePersonsToSee(t *testing.T) {
 	}
 
 	delete(m.PodOperators, samisPod.account)
-	after, err := m.Create(ctx, pod, signRequest(t, m, key, "need it after the change", "AUTO_TOKEN"), "", nil)
+	after, err := m.Create(ctx, pod, signRequest(t, m, key, "need it after the change", "AUTO_TOKEN"), "")
 	if err != nil || after.State != "pending" || after.ID == auto.ID || after.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) after the setting drops the account = %+v, %v; want a new request pending for %s, not request %s reused", after, err, samisPod.person, auto.ID)
 	}

@@ -27,9 +27,13 @@ writer's next operation and version. Go cannot stop that, so:
   version capture, the margin write and `docTree` had grown separate copies of the check.
 - Leave reads whose callers are outside the writer's transaction returning copies (`heldTree`
   still reads the fork; its readers own their tree).
-- Add a test hook at each reuse site and at publish (`checkRendering(at, write)`) that compares the
-  object with a fresh read, both by deep equality and by its serialized form, so a caller that
-  edits it fails the next comparison.
+- Add a test hook at each reuse site and where the writer's commit hands its fork on
+  (`checkRendering(at, write)`) that compares the object with a fresh read, both by deep equality
+  and by its serialized form, so a caller that edits it fails the next comparison. Put the last
+  check where the fork is still the writer's alone: from the commit on, the fork is the room's
+  shadow, which the room's worker moves with each browser update it stores, so a check at the
+  publish compared the writer's tree with a fork another goroutine had moved and failed at random
+  (envoy-go-race-docs job 138988277423).
 - Write the unenforced contract into the PR body's risk line.
 
 ## Evidence

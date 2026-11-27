@@ -1,0 +1,41 @@
+kind: Fixed
+body: |-
+  A role publish through `POST /v1/messages/publish` that names no `source_session`, to a role no
+  live session holds, is refused `404` and nothing is kept. It was answered `202 kept`, and when no
+  session took the copy within its hour the listener dropped it with no dead letter, since a dead
+  letter goes to the publish's source session alone, so the sender was never told the copy had
+  expired. The 404 carries the same `reason` (`unclaimed`, or `holder_lapsed` with `holder_state`)
+  and holder fields as a `keep: false` publish's, and the same refusal exception; its `error` names
+  the role and says that nothing was kept and why. The request's log line names the outcome
+  `role_no_source_session`. For such a publish, whether a live session holds the role is read from
+  the role bucket stream's leader and the holder's registration from the session bucket stream's
+  leader, never from the cache or a copy, so neither refuses a message a live holder can take. A
+  publish that names a session, and one to a role a live session holds, are unchanged. A publish
+  whose forward the stream stores for its holder later than `roles.ForwardFenceAge` and the route's
+  3.5 s budget after the listener read that holder was answered `200`, though the holder may have
+  lost the role and a takeover could copy the forward to the next holder beside the sender's own
+  retry. The listener now reads the role's claim from the leader first. When the claim still names
+  that holder, the holder reads the forward from its own subject and the send is answered `200`.
+  When it names another session or none, the listener withdraws the forward: it publishes a
+  withdrawal mark to the role's kept lane under the message id a takeover's copy of the forward
+  takes, and the stream's duplicate window decides which landed first. The send is answered
+  `504 delivery_failed`, wrapping `roles.ErrForwardStoredTooLate`, when the mark landed first, so
+  the sender's retry resolves the holder again; `200` when a copy landed first and is on its way;
+  and `503 maybe_stored` when the claim cannot be read or no mark can be published, which can give
+  the holder a second copy under a new event id if a later pass copies the forward and the sender
+  retries. The kept lane's walk ends a mark and forwards it to no one. A mark is told by the
+  takeover-copy message id that only the listener sets, so no dedupe key a sender chooses makes
+  one. One loss remains: a retry under the same key that resolves the withdrawn forward's holder
+  again meets the withdrawn frame as a duplicate and is answered `200`, and if that holder's relay
+  acknowledged the frame while another session, or none, held the role, no session receives the
+  message. A later change closes that.
+  Ship order: the Legion daemon's hook prompts and phase-ended messages name no source session,
+  and a daemon before this change ends such a row at this listener's 404, so the message is lost.
+  Run this listener only
+  after every Legion daemon that publishes to it runs this change's daemon part. Before a listener
+  pin moves, run
+  `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>`
+  with the commit that carries that daemon, and move the pin only when it prints `GATE OPEN`.
+time: 2026-11-24T17:39:19Z
+custom:
+    Issue: pr5412

@@ -18,6 +18,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # fixture <name>: a tree that passes — the root and two workspaces on zod 4.3.6 (one of them as a
 # devDependency), and a workspace that declares no zod. Echoes its root.
 fixture() {
@@ -86,7 +91,7 @@ for index in "${!ranges[@]}"; do
   run_check "$root"
   check "$range fails" "$(is "$status" 1)"
   check "$range is named at its manifest and line" \
-    "$(contains "$out" "packages/pi-envoy/package.json:4: devDependencies name zod $range, which is a range")"
+    "$(contains "$out" "packages/pi-envoy/package.json${colon}4: devDependencies name zod $range, which is a range")"
 done
 
 echo "case: one manifest pinned to another exact zod"
@@ -95,10 +100,10 @@ set_zod "$root/packages/contracts/package.json" "4.4.0"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the manifest that drifted" \
-  "$(contains "$out" 'packages/contracts/package.json:4: names zod 4.4.0, where the manifests disagree')"
+  "$(contains "$out" "packages/contracts/package.json${colon}4: names zod 4.4.0, where the manifests disagree")"
 check "names every version and where each is declared" \
-  "$(contains "$out" '4.3.6 in package.json:4, packages/pi-envoy/package.json:4; 4.4.0 in packages/contracts/package.json:4')"
-check "does not blame the manifests that agree" "$(is "$(contains "$out" 'package.json:4: names zod 4.3.6')" false)"
+  "$(contains "$out" "4.3.6 in package.json${colon}4, packages/pi-envoy/package.json${colon}4; 4.4.0 in packages/contracts/package.json${colon}4")"
+check "does not blame the manifests that agree" "$(is "$(contains "$out" "package.json${colon}4: names zod 4.3.6")" false)"
 
 echo "case: a tie names every declaration"
 root=$(fixture tie)
@@ -106,9 +111,9 @@ set_zod "$root/packages/contracts/package.json" "4.4.0"
 set_zod "$root/packages/pi-envoy/package.json" "4.5.0"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the root" "$(contains "$out" '^::error file=package.json::package.json:4: names zod 4.3.6')"
-check "names contracts" "$(contains "$out" 'packages/contracts/package.json:4: names zod 4.4.0')"
-check "names pi-envoy" "$(contains "$out" 'packages/pi-envoy/package.json:4: names zod 4.5.0')"
+check "names the root" "$(contains "$out" "^::error file=package.json::package.json${colon}4: names zod 4.3.6")"
+check "names contracts" "$(contains "$out" "packages/contracts/package.json${colon}4: names zod 4.4.0")"
+check "names pi-envoy" "$(contains "$out" "packages/pi-envoy/package.json${colon}4: names zod 4.5.0")"
 
 echo "case: two sections of one manifest disagree"
 root=$(fixture two-sections)
@@ -125,7 +130,7 @@ cat > "$root/packages/contracts/package.json" <<'JSON'
 JSON
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the peer declaration" "$(contains "$out" 'packages/contracts/package.json:7: names zod 4.4.0')"
+check "names the peer declaration" "$(contains "$out" "packages/contracts/package.json${colon}7: names zod 4.4.0")"
 
 echo "case: a root override counts as a declaration"
 root=$(fixture override)

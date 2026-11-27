@@ -10,9 +10,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The spec's rule, restored: a root enters awaiting_person only while it holds an admission
@@ -32,6 +32,7 @@ import (
 // the next pass answers the wait as an approval, because the gate is open, which clears what
 // the architect handed to the person.
 func TestARootWhoseGateHasOpenedEntersNoWaitOnAPerson(t *testing.T) {
+	t.Parallel()
 	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Phase: phase.Admitted,
 		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, DeclaredSeq: 9}
 	approved := 1
@@ -65,6 +66,7 @@ const neverStarted = "the daemon has not started it, so it holds no admission sl
 // rule 0 keeps it out of a wait on a person because its gate has opened, and says so, never
 // that the daemon has not started it. The debug log of ReconcileAwaiting prints this reason.
 func TestARootReleasedForAWaitIsNotReadAsNeverStarted(t *testing.T) {
+	t.Parallel()
 	view := awaitRootView()
 	released := time.Date(2026, 9, 22, 22, 0, 0, 0, time.UTC)
 	view.Root.Phase, view.Root.ReleasedForWaitAt = phase.Admitted, &released
@@ -89,6 +91,7 @@ func TestARootReleasedForAWaitIsNotReadAsNeverStarted(t *testing.T) {
 // no running tree and let it linger (admit's releaseUnslotted). (Round 4, the reviewer's
 // medium finding on rule 0.)
 func TestAQueuedRootWithAHandBackEntersNoWaitOnAPerson(t *testing.T) {
+	t.Parallel()
 	view := awaitRootView()
 	view.Root.Generation, view.Root.Status, view.Root.DispatchStatus = 2, "todo", "todo"
 	view.Slotted = false
@@ -108,6 +111,7 @@ func TestAQueuedRootWithAHandBackEntersNoWaitOnAPerson(t *testing.T) {
 // question to a person, it moves the one the daemon started, which holds a row, and leaves the
 // one still waiting in line, which holds none.
 func TestReconcileAwaitingMovesOnlyTheRootHoldingItsSlot(t *testing.T) {
+	t.Parallel()
 	const slottedKey, queuedKey = "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
 	slotted := askRoot()
@@ -147,12 +151,11 @@ func TestReconcileAwaitingMovesOnlyTheRootHoldingItsSlot(t *testing.T) {
 func reconcileRoots(t *testing.T, pool *pgxpool.Pool, keys ...string) []string {
 	t.Helper()
 	var entered []string
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
-		store := record.NewStore()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
 		issues := make([]record.Issue, 0, len(keys))
 		for _, key := range keys {
-			issue, err := store.Issue(ctx, tx, key)
+			issue, err := records.Issue(ctx, tx, key)
 			if err != nil {
 				return err
 			}
@@ -161,7 +164,9 @@ func reconcileRoots(t *testing.T, pool *pgxpool.Pool, keys ...string) []string {
 		var err error
 		entered, _, err = testEngine(config.DesignGateRootIssues, nil).ReconcileAwaiting(ctx, tx, "LEGION", issues, nil)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("reconcile the roots that wait: %v", err)
+	}
 	return entered
 }
 

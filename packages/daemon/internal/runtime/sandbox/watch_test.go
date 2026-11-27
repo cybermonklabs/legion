@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,9 +15,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// next is the next observation, failing the test when none arrives within a second.
+// next is the next observation, failing the test when none arrives before the test binary's
+// deadline (testwait.Context): Observe evaluates on a goroutine of its own, which a loaded machine
+// may take longer than any fixed span to run.
 func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observation {
 	t.Helper()
 	select {
@@ -25,10 +29,51 @@ func next(t *testing.T, observations <-chan runtime.Observation) runtime.Observa
 			t.Fatal("the observation channel closed")
 		}
 		return obs
-	case <-time.After(time.Second):
-		t.Fatal("no observation within a second")
+	case <-testwait.Context(t).Done():
+		t.Fatal("no observation before the test binary's deadline")
 	}
 	return runtime.Observation{}
+}
+
+// sameReport is whether b is a repeat of a: the same verdict about the same incarnation. Observe
+// evaluates a claim again whenever anything about its Sandbox or pod reaches the runtime (Observe's
+// doc), and only Gone and NotRecordedProcess take a claim out of the watch, so an Alive, an
+// Uncertain or a StaleAddress may come again at its recorded locator: before a change a test makes
+// reaches the runtime, or, since the runtime evaluates the smallest marked claim first
+// (nextDirty), before another claim's first report. A loaded machine makes a repeat more likely,
+// never wrong. nextChange, firstOfEach and the wait of TestAVerdictEvaluatedAcrossSuspendIsNotDelivered
+// skip a repeat by this rule.
+func sameReport(a, b runtime.Observation) bool { return a.Kind == b.Kind && a.Locator == b.Locator }
+
+// nextChange is the next observation that is not a repeat of seen (sameReport).
+func nextChange(t *testing.T, observations <-chan runtime.Observation, seen runtime.Observation) runtime.Observation {
+	t.Helper()
+	for {
+		if obs := next(t, observations); !sameReport(seen, obs) {
+			return obs
+		}
+	}
+}
+
+// firstOfEach is the first observation of each of claims, in the order the runtime emitted them,
+// read until every claim has one. A repeat of a claim's first observation (sameReport) is skipped,
+// and any other second observation of a claim fails the test, since a second verdict about a claim
+// is not what a first observation reads.
+func firstOfEach(t *testing.T, observations <-chan runtime.Observation, claims ...claim.Token) []runtime.Observation {
+	t.Helper()
+	var seen []runtime.Observation
+	for len(seen) < len(claims) {
+		obs := next(t, observations)
+		i := slices.IndexFunc(seen, func(earlier runtime.Observation) bool { return earlier.Locator.Claim == obs.Locator.Claim })
+		switch {
+		case i < 0 && slices.Contains(claims, obs.Locator.Claim):
+			seen = append(seen, obs)
+		case i >= 0 && sameReport(seen[i], obs):
+		default:
+			t.Fatalf("%s of %s at %+v after %+v, want one first observation of each of %v", obs.Kind, obs.Locator.Claim, obs.Locator, seen, claims)
+		}
+	}
+	return seen
 }
 
 // quiet fails the test when an observation arrives within the window.
@@ -53,6 +98,7 @@ func runningSandbox(t *testing.T, token claim.Token, role claim.Role) k8sruntime
 // the supervisor fences on that incarnation, so a death stamped with any other would never reach
 // the machine (B3). Once Gone or NotRecordedProcess is delivered the claim leaves the watch.
 func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
+	t.Parallel()
 	t.Run("gone", func(t *testing.T) {
 		g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
 			withoutController())
@@ -65,13 +111,14 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 		if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		if obs := next(t, observations); obs.Kind != runtime.Alive || obs.Locator != loc {
-			t.Fatalf("%s at %+v, want Alive at the recorded locator", obs.Kind, obs.Locator)
+		first := next(t, observations)
+		if first.Kind != runtime.Alive || first.Locator != loc {
+			t.Fatalf("%s at %+v, want Alive at the recorded locator", first.Kind, first.Locator)
 		}
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 137, "Error")}}
 		})
-		if obs := next(t, observations); obs.Kind != runtime.Gone || obs.Locator != loc {
+		if obs := nextChange(t, observations, first); obs.Kind != runtime.Gone || obs.Locator != loc {
 			t.Fatalf("%s at %+v, want Gone at the recorded locator", obs.Kind, obs.Locator)
 		}
 		g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Labels["touched"] = "yes" })
@@ -89,13 +136,13 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 		if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		next(t, observations)
+		first := next(t, observations)
 		// One write that swaps the pod under the name, as a store sees a delete and a create it
 		// caught up on at once.
 		if err := g.kube.Tracker().Update(podsGVR, runningPod(workerToken, "uid-pod-recreated", claim.RoleTester), testNamespace); err != nil {
 			t.Fatal(err)
 		}
-		obs := next(t, observations)
+		obs := nextChange(t, observations, first)
 		if obs.Kind != runtime.NotRecordedProcess || obs.Locator != loc {
 			t.Fatalf("%s at %+v, want NotRecordedProcess at the recorded locator", obs.Kind, obs.Locator)
 		}
@@ -106,6 +153,7 @@ func TestAnObservationCarriesTheRecordedIncarnation(t *testing.T) {
 // its claim, stamped with the incarnation recorded before, and nothing is relaunched; a claim in
 // another issue pod that lived through it is Alive at its recorded incarnation (B3, re-adoption).
 func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
+	t.Parallel()
 	killed := podObject(SandboxName(childToken), "uid-pod-child", "uid-sandbox-implementer", claimLabels(claim.RoleImplementer), corev1.PodStatus{
 		Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(string(claim.RoleImplementer), 137, "Error")},
 	})
@@ -122,15 +170,11 @@ func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
 	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: childToken, Locator: &child}, {Claim: rootToken, Locator: &root}}, 0); err != nil {
 		t.Fatal(err)
 	}
-	seen := map[claim.Token]runtime.Observation{}
-	for range 2 {
-		obs := next(t, observations)
-		seen[obs.Locator.Claim] = obs
-	}
-	if obs := seen[childToken]; obs.Kind != runtime.Gone || obs.Locator != child {
+	seen := firstOfEach(t, observations, childToken, rootToken)
+	if obs := observationOf(t, seen, child); obs.Kind != runtime.Gone || obs.Locator != child {
 		t.Errorf("the killed child issue's role: %s at %+v, want Gone at %s", obs.Kind, obs.Locator, child.Incarnation)
 	}
-	if obs := seen[rootToken]; obs.Kind != runtime.Alive || obs.Locator != root {
+	if obs := observationOf(t, seen, root); obs.Kind != runtime.Alive || obs.Locator != root {
 		t.Errorf("the living root: %s at %+v, want Alive at %s", obs.Kind, obs.Locator, root.Incarnation)
 	}
 	if writes := g.writes(); len(writes) > 0 {
@@ -148,6 +192,7 @@ func TestAPodKilledWhileNoRuntimeRanIsGoneAtReadoption(t *testing.T) {
 // the very next evaluation is Alive at that same locator, with no write in between: the stage 4a
 // live re-adopt check hit exactly this ordering (LEGION-462).
 func TestADisconnectedLauncherAtReadoptionIsUncertainThenAliveNeverRelaunched(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{runningSandbox(t, rootToken, claim.RoleArchitect), runningPod(rootToken, "uid-pod-root", claim.RoleArchitect)},
 		withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
 	loc := sandboxLocator(rootToken, "uid-pod-root")
@@ -192,6 +237,7 @@ func TestADisconnectedLauncherAtReadoptionIsUncertainThenAliveNeverRelaunched(t 
 // which other roles share, stays. The live suspend check in live_lifecycle_test.go applies the
 // same rule.
 func TestSuspendTakesTheClaimOutOfTheWatch(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	observations, err := g.r.Observe(g.ctx)
 	if err != nil {
@@ -242,6 +288,7 @@ func TestSuspendTakesTheClaimOutOfTheWatch(t *testing.T) {
 // run on production hit it: Suspend's shutdown frame ended the pod, Observe began evaluating the
 // death — the log read is its slow step — and Suspend returned before the Gone was sent.
 func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
 		withoutController())
 	g.reportLauncher(workerToken, shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 1, PID: 42}})
@@ -253,8 +300,9 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 	if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if obs := next(t, observations); obs.Kind != runtime.Alive {
-		t.Fatalf("%s, want Alive", obs.Kind)
+	first := next(t, observations)
+	if first.Kind != runtime.Alive {
+		t.Fatalf("%s, want Alive", first.Kind)
 	}
 	reading, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -269,10 +317,21 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 	g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) {
 		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{terminated(workerContainer, 143, "Error")}}
 	})
-	select {
-	case <-reading:
-	case <-time.After(time.Second):
-		t.Fatal("Observe never began evaluating the ended pod")
+	// Observe sends on an unbuffered channel and evaluates one claim at a time, so a repeat of the
+	// first Alive (sameReport) waits on this test to be read before the ended pod is evaluated:
+	// the wait reads it, and fails on anything else.
+	ended := testwait.Context(t)
+	for evaluating := false; !evaluating; {
+		select {
+		case <-reading:
+			evaluating = true
+		case obs, ok := <-observations:
+			if !ok || !sameReport(first, obs) {
+				t.Fatalf("%s at %+v (open %t) before Observe began evaluating the ended pod, want only a repeat of the first Alive", obs.Kind, obs.Locator, ok)
+			}
+		case <-ended.Done():
+			t.Fatal("Observe never began evaluating the ended pod before the test binary's deadline")
+		}
 	}
 	if err := g.r.Suspend(g.ctx, loc); err != nil {
 		t.Fatal(err)
@@ -284,6 +343,7 @@ func TestAVerdictEvaluatedAcrossSuspendIsNotDelivered(t *testing.T) {
 // Every watched claim is evaluated again each probe interval, with no change to its objects: the
 // supervisor retries a waiting delivery on an Alive, as it does at each tmux sweep.
 func TestEveryWatchedClaimIsEvaluatedEachProbeInterval(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), runningPod(workerToken, recorded, claim.RoleTester)},
 		withoutController(), withOptions(func(o *Options) { o.ProbeInterval = 50 * time.Millisecond }))
 	loc := sandboxLocator(workerToken, recorded)
@@ -311,6 +371,7 @@ func TestEveryWatchedClaimIsEvaluatedEachProbeInterval(t *testing.T) {
 // the claim, leaving the live pod unwatched, and a stale Suspend then stops the newer relaunch
 // (decision 3d).
 func TestAStaleKnownLocatorNeverDisplacesANewerIncarnation(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	stale := g.spawn(spec)
@@ -340,6 +401,7 @@ func TestAStaleKnownLocatorNeverDisplacesANewerIncarnation(t *testing.T) {
 // image. A warning alone: the drifted pod's claim is adopted as any other and nothing is written.
 // Every later sweep warns again until the pod is replaced, and not after.
 func TestTheBootReconciliationWarnsOfEachPodRunningAnotherImage(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	issue, controller := g.spawn(spec), g.spawn(controllerSpec(t))

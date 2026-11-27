@@ -111,16 +111,18 @@ func clusteredHubListenerName(release string) string {
 // clusteredHubListenerStartupProbe is the session listener's startup probe: /bin/sh -c of a scrape
 // of the listener's /metrics on the container's loopback port, which passes only when the scrape
 // holds the sample line of clusteredHubListenerServedGauge, so only once /v1 serves. The probe
-// holds no bearer, and a listener that requires one (clusteredHubListenerEnv) refuses /v1 to it
-// in apiAuth before the gate, while every listener serves /metrics to any caller (main's mux, and
-// isAPIAuthExemptPath in packages/envoy/cmd/listener/apiauth.go). The pattern is anchored and ends
-// in the space before the value, so it matches the sample line and never the gauge's "# HELP" or
-// "# TYPE" line. With -f curl prints nothing for an HTTP error, and a pipeline's status is its
-// last command's, grep's, in a POSIX shell without pipefail, which dash, the listener image's
-// /bin/sh, is; TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample runs the rendered
-// script under the package's test shell (shellCommand: /bin/sh, or the shell ENVOY_TEST_SHELL
-// names). --max-time 5 makes curl give up inside the probe's 6 s timeout. 60 failures 10 s apart
-// give /v1 ten minutes to open, after which the kubelet restarts the container.
+// holds no bearer, and a listener that requires one (clusteredHubListenerEnv) answers /v1 to it
+// 503 from its starting gate while /v1 has not opened (startingGate, ahead of apiAuth) and 401
+// from apiAuth once it has, so the probe reads /metrics, which every listener serves to any caller
+// (main's mux, and isAPIAuthExemptPath in packages/envoy/cmd/listener/apiauth.go). The pattern is
+// anchored and ends in the space before the value, so it matches the sample line and never the
+// gauge's "# HELP" or "# TYPE" line. With -f curl prints nothing for an HTTP error, and a
+// pipeline's status is its last command's, grep's, in a POSIX shell without pipefail, which dash,
+// the listener image's /bin/sh, is; TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample
+// runs the rendered script under the package's test shell (shellCommand: /bin/sh, or the shell
+// ENVOY_TEST_SHELL names). --max-time 5 makes curl give up inside the probe's 6 s timeout. 60
+// failures 10 s apart give /v1 ten minutes to open, after which the kubelet restarts the
+// container.
 func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
 	script := "curl -fsS --max-time 5 http://127.0.0.1:" + strconv.Itoa(port) + "/metrics | grep -q '^" + clusteredHubListenerServedGauge + " '"
 	return &corev1.ProbeArgs{
@@ -262,7 +264,7 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	if namespaces := s.listener.clientNamespaces; len(namespaces) > 0 {
 		ingress = append(ingress, ingressFrom(core.DefaultListenerPort, namespacePeers(namespaces)))
 	}
-	if err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
+	if _, err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
 		return err
 	}
 	// The workload is one pod, so a budget of one unavailable allows its eviction: a node drain

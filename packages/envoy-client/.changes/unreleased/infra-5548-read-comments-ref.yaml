@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `dispatch read dispatch://KEY/comments` lists every comment on an issue, each with its author,
+  its time, its anchor, the head of its thread (`Reply to:`), the comment it answers where that is
+  another (`Answers:`), the ask it replies to (`Ask:`) and its body. A key no issue carries is
+  refused, as `dispatch://KEY/log` and `dispatch://KEY/children` refuse it.

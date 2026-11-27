@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The controller's skill gets `references/operations.md`, the operations of its own work, each
+  with when to use it, the exact command and what to read to know it worked: the six actions on
+  an agent (stop, retry, suspend, resume_agent, compact and fresh session of one agent, named by
+  its issue and role) of the `legion` tool, `replace_pod`, which opens the daemon's update round on
+  one issue's pod, a restart of the project's daemon, a re-run of a CI run's failed jobs for an
+  infrastructure failure with the implement App token the secrets broker lends, and a
+  `dispatch ask` to lift the operator's suspension of an agent. The controller has no exec into a
+  pod and deletes no issue pod itself: the round asks each role in the pod to push and replaces
+  the pod at its end or its bound. Before any `kubectl` operation it reads `kubectl auth can-i`
+  for pod delete, and it names an operation it lacks in its daily report rather than ask another
+  session. It pushes no commit, and it sends a request another tree owns to that tree's
+  architect by a mention.

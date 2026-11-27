@@ -11,7 +11,9 @@ import (
 
 // fullPrefixStoredOrder is the reference replay: every omitted row is judged by replaying its
 // entire prefix. Keep it independent of the optimized prefix reuse so that a bad copy cannot
-// validate itself. Classification, pending payload comparison, and version checks are unchanged.
+// validate itself. Classification and pending payload comparison are foldStoredOrder's. Its
+// version check compares md5 and length alone and reads no version another renderer version
+// wrote (judgeRespelledVersions). Its one caller passes it no versions.
 func fullPrefixStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since time.Time, at map[int64][]storedVersion, report *StoredOrderReport) error {
 	rows, err := tx.Query(ctx, `
 		select version, update, content_changed, created_at from doc_updates where artifact_id = $1 order by version

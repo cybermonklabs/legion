@@ -18,17 +18,18 @@ import (
 // blocks are owed: its state row is missing (an older build wrote it before the state existed),
 // owed (owed_at set by an older build's write, or by rebuild-refs), or indexed from another text
 // than the stored one. It indexes as ReindexOwed does: the blocks and the mentions each
-// holds, and for a comment or an issue message its own refs, at the time its text was written; a
-// direct message writes no mention, and an ask's own refs are its question's, which the grammar
-// reconciliation owns (ReindexOwed). The block-index reconciliation drains owed items
-// through it (IndexOwedItemBlocks); a reply that names a block of an owed item plans the same
-// index (PlanItemIfOwed) and writes it before its own writes, so the block it names is one the
-// item holds now. The caller holds the item's owner, the reconciliation included, and a reply
-// holds the message row it answers; the index takes the state row after them. It reports whether
-// the item was owed and so indexed. It is PlanItemIfOwed and ItemRepair.Write back to back, the
-// repair's statements run at once as a batch of their own; a transaction that decides before it
-// writes plans the repair and queues it in its write phase, reading the blocks it leaves from
-// the plan (ItemRepair.Block).
+// holds, and for a comment or an issue message its own refs, at the time its text was written,
+// after the blocks, so their settle of the forms queue comes after both deletes
+// (Replacement.SettlingForms); a direct message writes no mention, and an ask's repair reconciles
+// its question's refs after its parts, settling the forms queue there (planAskIfOwed). The
+// block-index reconciliation drains owed items through it (IndexOwedItemBlocks); a reply that
+// names a block of an owed item plans the same index (PlanItemIfOwed) and writes it before its
+// own writes, so the block it names is one the item holds now. The caller holds the item's
+// owner, the reconciliation included, and a reply holds the message row it answers; the index
+// takes the state row after them. It reports whether the item was owed and so indexed. It is
+// PlanItemIfOwed and ItemRepair.Write back to back, the repair's statements run at once as a
+// batch of their own; a transaction that decides before it writes plans the repair and queues it
+// in its write phase, reading the blocks it leaves from the plan (ItemRepair.Block).
 func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serverURL string) (bool, error) {
 	repair, err := PlanItemIfOwed(ctx, tx, kind, itemID, serverURL)
 	if err != nil {
@@ -57,7 +58,8 @@ type ItemRepair struct {
 }
 
 // PlanItemIfOwed plans the index comment, message or ask itemID is owed, read and planned from
-// its stored text as IndexItemIfOwed indexes it; an item that owes none plans nothing.
+// its stored text as IndexItemIfOwed indexes it, its short ids resolved for the author its row
+// records (NewReader); an item that owes none plans nothing.
 func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serverURL string) (ItemRepair, error) {
 	var query string
 	switch kind {
@@ -67,13 +69,13 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 	case ItemComment:
 		query = `
 			select c.body, coalesce(c.edited_at, c.created_at), true,
-			       s.comment_id is not null, s.owed_at is not null, s.body_sha256
+			       s.comment_id is not null, s.owed_at is not null, s.body_sha256, c.author
 			from comments c left join comment_block_state s on s.comment_id = c.id
 			where c.id = $1::uuid`
 	case ItemMessage:
 		query = `
-			select m.body, m.created_at, m.issue_key is not null,
-			       s.message_id is not null, s.owed_at is not null, s.body_sha256
+			select m.body, coalesce(m.edited_at, m.created_at), m.issue_key is not null,
+			       s.message_id is not null, s.owed_at is not null, s.body_sha256, m.author
 			from messages m left join message_block_state s on s.message_id = m.id
 			where m.id = $1::uuid`
 	default:
@@ -83,7 +85,8 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 	var writtenAt time.Time
 	var mentions, stated, owed bool
 	var sum *string
-	if err := q.QueryRow(ctx, query, itemID).Scan(&body, &writtenAt, &mentions, &stated, &owed, &sum); err != nil {
+	var author []byte
+	if err := q.QueryRow(ctx, query, itemID).Scan(&body, &writtenAt, &mentions, &stated, &owed, &sum, &author); err != nil {
 		return ItemRepair{}, fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)
 	}
 	if stated && !owed && sum != nil && *sum == itemblocks.BodySHA256(body) {
@@ -92,13 +95,17 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 	repair := ItemRepair{kind: kind, itemID: itemID, owed: true, mentions: mentions}
 	var located []text.Located
 	if mentions {
-		located = NewReader(ctx, q, string(kind), itemID, serverURL).Mentions(body)
+		writer, err := writerOf(author)
+		if err != nil {
+			return ItemRepair{}, fmt.Errorf("read the author of %s %s: %w", kind, itemID, err)
+		}
+		located = NewReader(ctx, q, writer, string(kind), itemID, serverURL).Mentions(body)
 	}
 	index, err := ReadItemIndex(ctx, q, kind, itemID)
 	if err != nil {
 		return ItemRepair{}, fmt.Errorf("index the blocks of %s %s: %w", kind, itemID, err)
 	}
-	if repair.indexing, err = PlanItemIndex(index, kind, itemID, body, writtenAt, located, nil); err != nil {
+	if repair.indexing, err = PlanItemIndex(index, kind, itemID, body, serverURL, writtenAt, located, nil); err != nil {
 		return ItemRepair{}, fmt.Errorf("index the blocks of %s %s: %w", kind, itemID, err)
 	}
 	if !mentions {
@@ -107,6 +114,7 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID, serve
 	if repair.refs, err = PlanReplace(ctx, q, string(kind), itemID, text.Refs(located), &writtenAt); err != nil {
 		return ItemRepair{}, fmt.Errorf("index %s %s: %w", kind, itemID, err)
 	}
+	repair.refs = repair.refs.SettlingForms()
 	return repair, nil
 }
 
@@ -116,7 +124,8 @@ func (r ItemRepair) Owed() bool {
 }
 
 // Queue queues the repair's writes on a write phase's batch: the item's blocks and their
-// mentions, then, for a comment or an issue message, its own references.
+// mentions, then, for a comment, an issue message or an ask, its own references, whose settle of
+// the queues follows both deletes.
 func (r ItemRepair) Queue(b *store.WriteBatch) {
 	if !r.owed {
 		return
@@ -151,18 +160,33 @@ func (r ItemRepair) Block(blockID string) (nodeID, excerpt string, found bool) {
 	return r.indexing.Block(blockID)
 }
 
+// BlockText is the whole text of block blockID of the item as the repair leaves it, where Block
+// gives its excerpt: the text a reply's quote of that block is checked against, in place of the
+// one the index recorded (CurrentItemBlockText). found is false when the repaired body holds no
+// such block.
+func (r ItemRepair) BlockText(blockID string) (text string, found bool) {
+	return r.indexing.BlockText(blockID)
+}
+
 // CurrentItemBlock is block blockID of comment, message or ask itemID while a current revision of
 // the item holds it: its node id and stored excerpt. found is false when the item holds no such
-// block now, a removed one included.
-func CurrentItemBlock(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID string) (nodeID, excerpt string, found bool, err error) {
+// block now, a removed one included, and when who may not see the item the block is part of,
+// which is then answered as a block the item does not hold.
+//
+// The visibility read is of the item's own node - the comment, the message or the ask - and not
+// of a node of the block's own kind: a block's text is its item's text, and the store holds a
+// node for the item (graphstore.KindComment), where no writer makes a `comment_block`,
+// `message_block` or `ask_block` node, so a test over one of those always passed.
+func CurrentItemBlock(ctx context.Context, q Queryer, who model.Actor, kind ItemKind, itemID, blockID string) (nodeID, excerpt string, found bool, err error) {
 	tables, err := kind.tables()
 	if err != nil {
 		return "", "", false, err
 	}
 	err = q.QueryRow(ctx, `
-		select node_id, excerpt from `+tables.blocks+`
-		where `+tables.item+` = $1::uuid and block_id = $2 and position is not null
-	`, itemID, blockID).Scan(&nodeID, &excerpt)
+		select b.node_id, b.excerpt from `+tables.blocks+` b
+		where b.`+tables.item+` = $1::uuid and b.block_id = $2 and b.position is not null
+		  and `+VisibleKind(string(kind), "b."+tables.item+"::text", "$3")+`
+	`, itemID, blockID, VisibilityArg(who)).Scan(&nodeID, &excerpt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", false, nil
 	}
@@ -190,8 +214,22 @@ func ItemBlockRef(kind ItemKind, issueKey *string, project, slug, itemID, blockI
 // reply's owner (as itemBlockParent addresses the reply's parent); a message is owned by its
 // issue alone, so a message reply needs neither project nor slug, and a direct message's block
 // has no reference. Text is the block's stored excerpt, which a removal keeps, so a removed
-// block reads the last text it held.
-func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []string) (map[string]*model.ReplyBlock, error) {
+// block reads the last text it held. A block of a comment or a message carries the post's
+// EditedAt, read from the item row the block belongs to, so a read of the reply alone says its
+// parent was edited. A block of a post its author deleted reads removed with no text, since the
+// delete clears every excerpt (TombstoneItem), and carries the post's delete mark, read from the
+// same row.
+//
+// Quote and Occurrence are the words of the block the reply quotes, as its row stores them
+// (replies_to_quote, replies_to_occurrence), and are left out of the block of a post its author
+// deleted: they are words of that post, which no read gives once it is deleted. The row keeps
+// them, and the delete writes nothing to its replies, so the store still holds what the reply
+// quoted, and the event log the payloads written before the delete.
+//
+// It answers for who: a block of an item who may not see is answered as no block, so the reply
+// that names it reads as one that names none, and neither the block's id nor its text nor its
+// post's marks are answered. That test is of the item's own node, as CurrentItemBlock's is.
+func ReplyBlocks(ctx context.Context, q Queryer, who model.Actor, kind ItemKind, replyIDs []string) (map[string]*model.ReplyBlock, error) {
 	blocks := make(map[string]*model.ReplyBlock)
 	if len(replyIDs) == 0 {
 		return blocks, nil
@@ -209,22 +247,33 @@ func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []strin
 	}
 	query := `
 		select r.id::text, b.node_id, b.block_id, b.excerpt, b.position is null, b.` + tables.item + `::text,
-		       r.issue_key, ` + owner + `
+		       r.issue_key, ` + owner + `, r.replies_to_quote, r.replies_to_occurrence, ` + kind.postMarkColumns("post") + `
 		from ` + replies.items + ` r
-		join ` + tables.blocks + ` b on b.node_id = r.replies_to_block` + joins + `
-		where r.id = any($1::uuid[]) and r.replies_to_block is not null`
-	rows, err := q.Query(ctx, query, replyIDs)
+		join ` + tables.blocks + ` b on b.node_id = r.replies_to_block
+		join ` + tables.items + ` post on post.id = b.` + tables.item + joins + `
+		where r.id = any($1::uuid[]) and r.replies_to_block is not null
+		  and ` + VisibleKind(string(kind), "b."+tables.item+"::text", "$2")
+	rows, err := q.Query(ctx, query, replyIDs, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks %s replies name: %w", kind, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var replyID, itemID, project, slug string
-		var issueKey *string
+		var issueKey, quote *string
+		var occurrence *int
+		var marks postMarks
 		block := model.ReplyBlock{}
-		if err := rows.Scan(&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug); err != nil {
+		if err := rows.Scan(append([]any{&replyID, &block.Node, &block.BlockID, &block.Text, &block.Removed, &itemID, &issueKey, &project, &slug, &quote, &occurrence}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the block a %s reply names: %w", kind, err)
 		}
+		if block.DeletedAt, block.DeletedBy, err = marks.deleted(); err != nil {
+			return nil, fmt.Errorf("the %s block %s: %w", kind, block.Node, err)
+		}
+		if block.DeletedAt == nil {
+			block.Quote, block.Occurrence = quote, occurrence
+		}
+		block.EditedAt = marks.editedAt
 		block.Ref = BlockRef(itemRef(string(kind), issueKey, project, slug, itemID), block.BlockID)
 		blocks[replyID] = &block
 	}

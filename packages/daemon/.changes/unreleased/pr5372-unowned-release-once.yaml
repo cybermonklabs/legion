@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The release of a pod no claim owns no longer releases the same pod twice. The pass after a release could still read the Sandbox as it was before the release's last write, because the daemon's store of Sandboxes hears of a write only when the watch delivers it; it then released the pod again, and that second teardown logged `outbox: released the pod of an issue no role can use` and recorded a second release.
+  The runtime now answers a Sandbox it has deleted, a kept Sandbox it has just marked released, and one carrying a `deletionTimestamp` as gone. A teardown of that release that finds no Sandbox to release records no release and logs `outbox: the release found no Sandbox of the issue to release and released nothing` instead.
+  Whether that release took the pod is decided for the release, not for one attempt of its teardown: the teardown notes `reached` on the release's mark (`issue_releases.teardown`, added by migration 20261124143026) just before the runtime's first write to the Sandbox, so a retry of a teardown whose earlier attempt took the pod and then failed, or whose daemon stopped, still records the release once. The column defaults to `reached` and only this release's own marks start with no note, so a mark standing at the migration, or one that a daemon still on an earlier release writes after it, is recorded as that daemon recorded it.
+  Every release, the idle release's too, is recorded once: its record names the release's mark (`pod_releases.issue_release_id`, one record per mark, added by the same migration), so a teardown that recorded its release and then failed, or whose daemon stopped, before it cleared the mark no longer records the release a second time, or logs its release line a second time, when it runs again.
+time: 2026-11-24T13:24:35Z
+custom:
+    Issue: pr5372

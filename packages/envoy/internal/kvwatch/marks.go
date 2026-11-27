@@ -9,8 +9,12 @@ package kvwatch
 //
 // Marks are collected only while a read is under way: between a completed read and the next
 // BeginRead nothing reads them, so mark records nothing then, and a copy that follows its bucket
-// keeps no set of every key it has seen. A read that times out or ends before its end marker never
-// ends its marks, which stay collected until the next read begins.
+// keeps no set of every key it has seen. Evidence a write site applied in the gap between the
+// stream read that starts a read and its BeginRead (a write-through, a read-through, a delete) is
+// kept with the watcher's stream-read count at the take, and BeginRead marks it when its revision
+// is past that read's Read.LastSeq (Copy.BeginRead); a take the fence dropped is no evidence. A
+// read that times out or ends before its end marker never ends its marks, which stay collected
+// until the next read begins.
 //
 // The zero value is an empty set that collects nothing. It has no lock of its own: Copy uses it
 // under the mutex of the cache that keeps the copy.

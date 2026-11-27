@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dispatch:spec-node",
+  "title": "One node of The Spec: the data of one YAML document of a file of .dispatch/spec",
+  "type": "object",
+  "required": ["type", "id"],
+  "properties": {
+    "type": { "enum": ["requirement", "check", "component", "term"] },
+    "id": { "$ref": "#/$defs/id" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "const": "requirement" } }
+      },
+      "then": { "$ref": "#/$defs/requirement" }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "const": "check" } }
+      },
+      "then": { "$ref": "#/$defs/check" }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "const": "component" } }
+      },
+      "then": { "$ref": "#/$defs/component" }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "const": "term" } }
+      },
+      "then": { "$ref": "#/$defs/term" }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "ids": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "line": { "type": "string", "pattern": "^[^\\x00\\n\\r]+$" },
+    "lines": { "type": "array", "items": { "$ref": "#/$defs/line" }, "minItems": 1 },
+    "requirement": {
+      "type": "object",
+      "required": ["kind", "text"],
+      "properties": {
+        "type": true,
+        "id": true,
+        "kind": { "enum": ["behavior", "structure", "property"] },
+        "parent": { "$ref": "#/$defs/id" },
+        "serves": { "$ref": "#/$defs/ids" },
+        "about": { "$ref": "#/$defs/ids" },
+        "text": { "$ref": "#/$defs/lines" }
+      },
+      "additionalProperties": false,
+      "if": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": { "kind": { "const": "structure" } }
+      },
+      "then": { "type": "object", "required": ["about"], "properties": { "about": true } }
+    },
+    "test": {
+      "type": "object",
+      "required": ["runner", "selector", "job"],
+      "properties": {
+        "runner": { "$ref": "#/$defs/line" },
+        "selector": { "$ref": "#/$defs/line" },
+        "job": { "$ref": "#/$defs/line" }
+      },
+      "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "required": ["serves", "subject", "procedure", "claim", "procedure_text", "failing_example"],
+      "properties": {
+        "type": true,
+        "id": true,
+        "serves": { "$ref": "#/$defs/id" },
+        "subject": { "enum": ["code", "production", "graph"] },
+        "procedure": { "enum": ["program", "query", "agent"] },
+        "test": { "$ref": "#/$defs/test" },
+        "time_limit": { "$ref": "#/$defs/line" },
+        "claim": { "$ref": "#/$defs/line" },
+        "procedure_text": { "$ref": "#/$defs/lines" },
+        "failing_example": { "$ref": "#/$defs/lines" }
+      },
+      "additionalProperties": false,
+      "if": {
+        "type": "object",
+        "required": ["procedure"],
+        "properties": { "procedure": { "const": "program" } }
+      },
+      "then": { "type": "object", "required": ["test"], "properties": { "test": true } },
+      "else": { "type": "object", "properties": { "test": false } }
+    },
+    "component": {
+      "type": "object",
+      "required": ["name", "kind", "purpose"],
+      "properties": {
+        "type": true,
+        "id": true,
+        "name": { "$ref": "#/$defs/line" },
+        "kind": { "enum": ["component", "interface"] },
+        "parent": { "$ref": "#/$defs/id" },
+        "joins": { "$ref": "#/$defs/ids" },
+        "purpose": { "$ref": "#/$defs/lines" }
+      },
+      "additionalProperties": false,
+      "if": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": { "kind": { "const": "interface" } }
+      },
+      "then": {
+        "type": "object",
+        "required": ["joins"],
+        "properties": { "joins": { "type": "array", "minItems": 2 } }
+      },
+      "else": { "type": "object", "properties": { "joins": false } }
+    },
+    "term": {
+      "type": "object",
+      "required": ["name", "definition"],
+      "properties": {
+        "type": true,
+        "id": true,
+        "name": { "$ref": "#/$defs/line" },
+        "definition": { "$ref": "#/$defs/lines" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -35,9 +35,9 @@ func newSessionRegistry(t *testing.T) *session.SessionRegistry {
 	return sessions
 }
 
-// deliverThroughEntry resolves the way the listener's core path does: the caller reads the
+// deliverThroughEntry resolves the way the listener's topic fan-out does: the caller reads the
 // target's record (resolvedEntry) and hands it to session.Resolve, which reads no registry of its
-// own, under the core path's stream sequence of 0. Every topic these rows deliver is a session's
+// own, under the core path's stream sequence of 0. Every topic these rows resolve is a session's
 // agent subject, which the stream captures.
 func deliverThroughEntry(t *testing.T, sessions *session.SessionRegistry, item contracts.Envelope, interest store.Interest) error {
 	t.Helper()
@@ -57,13 +57,13 @@ func TestDeliver_NoRegistryEntry(t *testing.T) {
 
 // An entry the previous build wrote for a self-subscribed session names a session on the core
 // path: it holds no consumer of its own, and no subscription of its own takes its messages any
-// more. The resolution fails, which raises a delivery exception, rather than making the silent
-// skip that rule once made.
+// more. The resolution fails, which the fan-out counts as a failed delivery, rather than making
+// the silent skip that rule once made.
 func TestDeliver_NoSessionRecord_whenSessionIsOnlySelfSubscribed(t *testing.T) {
 	// Given
 	sessions := newSessionRegistry(t)
 	var entry session.SessionEntry
-	if err := json.Unmarshal([]byte(`{"self_subscribed":true}`), &entry); err != nil {
+	if err := json.Unmarshal([]byte(`{"machine_id":"test-machine","self_subscribed":true}`), &entry); err != nil {
 		t.Fatalf("decode self-subscribed session entry: %v", err)
 	}
 	if err := sessions.Put("ses_omp", entry); err != nil {
@@ -88,7 +88,7 @@ func TestDeliver_SkipsStoredTopics_whenSessionIsOnConsumerDelivery(t *testing.T)
 	// Given
 	sessions := newSessionRegistry(t)
 	var entry session.SessionEntry
-	if err := json.Unmarshal([]byte(`{"delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
+	if err := json.Unmarshal([]byte(`{"machine_id":"test-machine","delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
 		t.Fatalf("decode consumer-delivery session entry: %v", err)
 	}
 	if err := sessions.Put("ses_consumer", entry); err != nil {
@@ -116,7 +116,7 @@ func TestDeliver_SkipsStoredTopics_whenSessionIsOnConsumerDelivery(t *testing.T)
 func TestResolve_JudgesTheCaptureItsCallerHandsIt(t *testing.T) {
 	sessions := newSessionRegistry(t)
 	var entry session.SessionEntry
-	if err := json.Unmarshal([]byte(`{"delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
+	if err := json.Unmarshal([]byte(`{"machine_id":"test-machine","delivery":"consumer","epoch":"e1"}`), &entry); err != nil {
 		t.Fatalf("decode consumer-delivery session entry: %v", err)
 	}
 	if err := sessions.Put("ses_deployed", entry); err != nil {

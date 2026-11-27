@@ -1,6 +1,7 @@
 import type {
   Agent,
   ClaimHolderLiveness,
+  CommentEventPayload,
   DispatchEvent,
   GraphEdgeKind,
   GraphReferences,
@@ -13,6 +14,7 @@ import type {
   IssueProgress,
   IssueReferencesAnswer,
   IssueRouteStatus,
+  MessageEventPayload,
   ReferenceLink,
 } from "@legion/contracts";
 import {
@@ -23,7 +25,7 @@ import {
   ISSUE_ROUTE_STATUSES,
   issueReferenceSections,
 } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
@@ -58,16 +60,25 @@ export function advanceText(advance: IssueAdvance): string {
 }
 
 /** The Advances line of an issue read: each priority the issue serves, marked own where the
- *  issue states it and inherited where an issue above it does. A Dispatch server from before
+ *  issue states it and inherited where an issue above it does, then the revision of the issue's
+ *  own set. An update that changes two or more priorities sends that revision as
+ *  `advances_revision` (`--advances-revision` on the command line). A Dispatch server from before
  *  priorities sends no `advances`, and its answer is unknown, never none: none means the issue
- *  advances no priority. */
-function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | null }): string {
+ *  advances no priority. Such a server sends no revision either. A read that carries `advances`
+ *  and no `advances_revision` prints the priorities with no revision, never a number the issue
+ *  does not hold. */
+function advancesLine(issue: {
+  readonly advances?: readonly IssueAdvance[] | null;
+  readonly advances_revision?: number;
+}): string {
   if (issue.advances === undefined) {
     return "Advances: unknown (this Dispatch server predates priorities; upgrade it)";
   }
   const advances = issue.advances ?? [];
-  if (advances.length === 0) return "Advances: no priority";
-  return `Advances: ${advances.map(advanceText).join(", ")}`;
+  const set = advances.length === 0 ? "no priority" : advances.map(advanceText).join(", ");
+  const revision =
+    issue.advances_revision === undefined ? "" : `; revision ${issue.advances_revision}`;
+  return `Advances: ${set}${revision}`;
 }
 
 /**
@@ -87,11 +98,15 @@ function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | nul
  * "· unresponsive since <last seen>, takeable at <time>". An agent deciding whether to take the
  * issue reads exactly that - wait until the second time, or pick it up now - so both times are
  * named, and the second is `claimTakeableAt`, the moment the server's own refusal names.
+ *
+ * `name` prints the holder's label: a one-line row passes the guard it prints a title through,
+ * since an agent writes a session's title and the label is that title.
  */
 export function claimText(
   claim: IssueClaim,
   agents: LiveAgents | undefined,
-  read: ClaimHolderLiveness = {}
+  read: ClaimHolderLiveness = {},
+  name: (label: string) => string = (label) => label
 ): string {
   const titles = agents?.titles;
   const liveness = holderLiveness(claim, agents, read);
@@ -109,7 +124,7 @@ export function claimText(
         : holding === "unresponsive"
           ? unresponsive
           : "";
-  return `${actorLabel(claim.actor, titles)} since ${claim.at}${marker}`;
+  return `${name(actorLabel(claim.actor, titles))} since ${claim.at}${marker}`;
 }
 
 /**
@@ -222,18 +237,20 @@ export function routeHeldBySession(issue: RoutedIssue): boolean {
  * - so it names the state rather than reading as unreachable. An `unknown` route says why from
  * `route_status_reason`: a listener whose agent list is refilling did answer and will judge it
  * in a moment, while one that is unreachable (or a server too old to give a reason) did not
- * answer at all.
+ * answer at all. `name` prints the holder's label, as `claimText`'s does.
  */
-export function routeText(issue: RoutedIssue, titles?: ReadonlyMap<string, string>): string {
+export function routeText(
+  issue: RoutedIssue,
+  titles?: ReadonlyMap<string, string>,
+  name: (label: string) => string = (label) => label
+): string {
   if (issue.route === null) return "none";
   const holder = issue.route_holder ?? null;
+  const holderLabel = holder === null ? null : name(titles?.get(holder) ?? holder);
   const reach: Record<IssueRouteStatus, string> = {
-    live:
-      routeHeldBySession(issue) && holder !== null
-        ? ` (held by ${titles?.get(holder) ?? holder})`
-        : "",
+    live: routeHeldBySession(issue) && holder !== null ? ` (held by ${holderLabel})` : "",
     holder_unresponsive: issue.route.startsWith("role:")
-      ? ` (its holder${holder === null ? "" : ` ${titles?.get(holder) ?? holder}`} is unresponsive: messages wait for it)`
+      ? ` (its holder${holderLabel === null ? "" : ` ${holderLabel}`} is unresponsive: messages wait for it)`
       : " (that session is unresponsive: messages wait for it)",
     no_holder: issue.route.startsWith("role:")
       ? " (nobody holds it right now)"
@@ -263,9 +280,9 @@ export function progressText(progress: IssueProgress | undefined, sep: string): 
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
- *  parent chain and the project's default mapping. A Dispatch server from before the repository
- *  fields sends neither field, and its answer is unknown, never none: none means the server
- *  resolved no repository. */
+ *  parent chain and the project's default repository. A Dispatch server from before the
+ *  repository fields sends neither field, and its answer is unknown, never none: none means the
+ *  server resolved no repository. */
 function repositoryLine(issue: {
   readonly repo?: string | null;
   readonly resolved_repo?: string | null;
@@ -310,9 +327,16 @@ const STRUCTURAL_EDGES_IN: readonly GraphEdgeKind[] = ["child_of", "blocked_by"]
 
 /** One row of the references read: the kinds of its links, the node at the far end, and the
  *  issue's node at the near end, which a row of `links` links from (`via`) and a row of
- *  `linked_from` links to (`to`). */
+ *  `linked_from` links to (`to`). A comment or message, or a block of one, carries its post's
+ *  marks after its address, as a graph row does (`edgeLine`): `deletedMark` for a deleted one, and
+ *  `editedMark` for an edited one. */
 function referenceLinkLine({ kinds, node, via }: ReferenceLink, near: "via" | "to"): string {
-  return `- ${(kinds ?? []).join(",")} ${node.kind} ${node.ref ?? node.id} · ${near} ${via.kind} ${via.id}`;
+  const address = node.ref ?? node.id;
+  const target =
+    node.deleted_at == null
+      ? withEditedMark(address, node.edited_at)
+      : `${address} · ${deletedMark(node.deleted_at, node.deleted_by)}`;
+  return `- ${(kinds ?? []).join(",")} ${node.kind} ${target} · ${near} ${via.kind} ${via.id}`;
 }
 
 /** The `References:` lines of an answer from a build before the one-hop read, which answers its
@@ -470,6 +494,30 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
   ].join("\n");
 }
 
+/**
+ * The head an event of a comment or an issue message reads with: the head of the body it
+ * carries, or, on a post its author deleted, the mark the read of the event carries in place of
+ * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
+ * every earlier event of a post once it is deleted, which is why the body is read for absence.
+ * An event of a post its author edited carries the words that event carried, which a later edit
+ * may have replaced: the post's own `created` event and every `edited` event but the last one
+ * carry words that are gone, and the newest `edited` event carries the words the post holds now.
+ * The read of the event stamps every event of such a post with the time of its last edit
+ * (`attachPostMarks`, `api/events.go`), so the line names that time and a reader can tell which
+ * it is meeting. A reader given stale words with no mark is the fault dispatch://INFRA-1523
+ * exists for.
+ *
+ * The payload is named in the reading a `DispatchEvent` carries, the one Dispatch writes, so
+ * its `deleted_by` is a `WrittenActor` and not the served row's `Actor`: a build with
+ * `exactOptionalPropertyTypes` takes neither reading for the other
+ * (`dispatch-api-spellings.test.ts`).
+ */
+function postEventHead(payload: CommentEventPayload | MessageEventPayload): string | undefined {
+  if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
+  if (payload.body === undefined) return undefined;
+  return withEditedMark(textHead(payload.body), payload.edited_at);
+}
+
 /** The head of the text an event carries, so a log reads without opening each item. */
 function eventHead(event: DispatchEvent): string | undefined {
   switch (event.type) {
@@ -493,11 +541,14 @@ function eventHead(event: DispatchEvent): string | undefined {
     case "comment.edited":
     case "comment.resolved":
     case "comment.reopened":
+    case "comment.deleted":
     case "suggestion.accepted":
     case "suggestion.rejected":
     case "message.created":
     case "message.answered":
-      return textHead(event.payload.body);
+    case "message.edited":
+    case "message.deleted":
+      return postEventHead(event.payload);
     case "artifact.version":
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`

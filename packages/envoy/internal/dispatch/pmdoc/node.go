@@ -167,8 +167,9 @@ func validateNode(n *Node, depth int) error {
 	if err := treeDepthError(depth); err != nil {
 		return err
 	}
-	if !active.nodes[n.Type] {
-		if _, typed := typedBlock(n.Type); !typed {
+	manifest := active.Load()
+	if !manifest.nodes[n.Type] {
+		if _, typed := manifest.types[n.Type]; !typed {
 			return unknownElement(fmt.Errorf("%w: node %q", ErrSchema, n.Type), n.Type)
 		}
 	}
@@ -176,7 +177,7 @@ func validateNode(n *Node, depth int) error {
 		return fmt.Errorf("%w: node %q cannot have marks", ErrSchema, n.Type)
 	}
 	for _, m := range n.Marks {
-		if !active.marks[m.Type] {
+		if !manifest.marks[m.Type] {
 			return unknownElement(fmt.Errorf("%w: mark %q", ErrSchema, m.Type), m.Type)
 		}
 		if err := attrNestingError("mark", m.Type, m.Attrs, maxMarkAttrNesting); err != nil {

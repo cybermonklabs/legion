@@ -2,14 +2,17 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { LISTENER_CALL_ATTEMPTS, LISTENER_CALL_TIMEOUT_MS } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   deliveryFor,
   isSummarization,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -19,15 +22,8 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { settled, until as waitUntil } from "@legion/test-fixtures/wait";
-import {
-  connect,
-  createInbox,
-  headers,
-  type MsgHdrs,
-  type NatsConnection,
-  StringCodec,
-} from "nats";
+import { settled, timeLeft, until as waitUntil } from "@legion/test-fixtures/wait";
+import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { readCardLines } from "../test/card-entries";
 
@@ -55,6 +51,14 @@ const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
 const RELAY_STREAM = "card-delivery-stream";
 
+/** One answer the test holds: what `Promise.withResolvers` returns, named here because the
+ *  package's `lib` (ES2023) has no `PromiseWithResolvers`. */
+interface HeldAnswer<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason?: unknown): void;
+}
+
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
@@ -63,12 +67,6 @@ afterEach(async () => {
 /** A Messages request's conversation, as one string to find texts and their order in. */
 function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** The text of a Messages request's last message: what the turn it answers was started on. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 function text(reply: string): Block {
@@ -182,8 +180,12 @@ interface CardSession {
   cardEntries(): Promise<string[]>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
-  /** Answers the registration a session started with `holdStartup` holds; a no-op otherwise. */
+  /** Answers every registration a session started with `holdStartup` holds; a no-op otherwise. */
   releaseStartup(): void;
+  /** How a startup held by `holdStartup` ended, once it has: the first of the row's release, the
+   *  client giving up its whole registration call, or a model turn reaching the stand-in while
+   *  the hold stands. undefined while the startup is held, and for a session not started so. */
+  startupEnded(): string | undefined;
   /** Resolves once the open-asks read a session started with `holdSetup` holds has reached the
    *  stand-in: the host is setting the prompt up, inside `before_agent_start`. */
   setupHeld(): Promise<void>;
@@ -212,15 +214,16 @@ async function until<T>(
  * model gateway, the Envoy listener and Dispatch, and the NATS server `setup` names. `config` lines
  * go into the profile's config.yml. Resolves once the session has registered its id with the
  * listener and the test holds a NATS connection. With `holdStartup` the stand-in holds its answer
- * to that first registration until `releaseStartup`: envoy.ts's `session_start` awaits it
+ * to every registration until `releaseStartup`: envoy.ts's `session_start` awaits the first
  * (`reconcileNow` registers once the relay subject is open), so the host is still inside its
  * startup, before it starts any extension send; on the pinned build it reads RPC input then and
  * answers a command that starts no turn, and holds one that starts a turn until startup is over
- * (`rpc-mode.ts` `waitsForStartup`). With `holdSetup` it holds
- * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
- * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
- * configured, neither a Legion pane nor a subagent), so the host is setting the first prompt up,
- * busy with no run, until the read is answered or `OPEN_ASKS_TIMEOUT_MS` (3 s) runs out.
+ * (`rpc-mode.ts` `waitsForStartup`). The registration is one listener call, which the client
+ * gives up after LISTENER_CALL_ATTEMPTS attempts of LISTENER_CALL_TIMEOUT_MS each, and the pass
+ * does not send it again, so a held startup lasts until the row's release or about 10.25 s,
+ * whichever comes first, or less where the host's 30 s session_start cap comes first
+ * (`startupEnded` names which). The pass's own deadline is set to the row's time left, so it is
+ * never the bound. With `holdSetup` it holds
  */
 async function startSession(
   options: {
@@ -233,13 +236,27 @@ async function startSession(
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(binary, "card-delivery-omp-", cleanup);
 
-  let startupHold = holdStartup ? Promise.withResolvers<void>() : undefined;
-  const releaseStartup = startupHold?.resolve ?? (() => undefined);
+  const startupHold = holdStartup ? Promise.withResolvers<void>() : undefined;
+  let startupEnd: string | undefined;
+  const endStartup = (how: string): void => {
+    if (startupHold !== undefined) startupEnd ??= how;
+  };
+  const releaseStartup = (): void => {
+    endStartup("the row released it");
+    startupHold?.resolve();
+  };
+  /** The held registration's attempts the client has given up. */
+  let abandonedAttempts = 0;
   let setupHold = holdSetup ? Promise.withResolvers<void>() : undefined;
   const releaseSetup = setupHold?.resolve ?? (() => undefined);
   const turns: Turn[] = [];
-  const { requests, base } = serveStandin(cleanup, async (url, body) => {
+  const { requests, base } = serveStandin(cleanup, async (url, body, request) => {
     if (url.pathname === "/anthropic/v1/messages") {
+      endStartup(
+        "a model turn reached the stand-in while it still held the startup's registration: a " +
+          "turn started inside the host's startup, or the host ended its startup at its " +
+          "session_start cap (EXTENSION_HANDLER_TIMEOUT_MS, 30 s, Oh My Pi runner.ts:152)"
+      );
       const index = turns.length;
       const answer = Promise.withResolvers<string>();
       turns.push({
@@ -289,14 +306,24 @@ async function startSession(
       return Response.json({}, { status: 201 });
     }
     // The Envoy listener: registration and any read answer with an interest. A held startup
-    // holds the first registration.
+    // holds every registration until the row releases it, and notes each attempt the client gives
+    // up: the second ends the client's registration call, so `session_start` returns.
     const id = typeof body.session_id === "string" ? body.session_id : "";
     const interest = { session_id: id, machine_id: "card-delivery-machine", dir: workspace };
     if (url.pathname === "/v1/interests/subscribe") {
-      if (startupHold !== undefined) {
-        const held = startupHold.promise;
-        startupHold = undefined;
-        await held;
+      if (startupHold !== undefined && startupEnd === undefined) {
+        request.signal.addEventListener("abort", () => {
+          abandonedAttempts += 1;
+          if (abandonedAttempts >= LISTENER_CALL_ATTEMPTS) {
+            endStartup(
+              `the client gave up its registration call, all ${LISTENER_CALL_ATTEMPTS} of its ` +
+                `attempts of ${LISTENER_CALL_TIMEOUT_MS} ms (LISTENER_CALL_ATTEMPTS and ` +
+                "LISTENER_CALL_TIMEOUT_MS, contracts/src/envoy-session.ts), so session_start " +
+                "returned"
+            );
+          }
+        });
+        await startupHold.promise;
       }
       // Every registration the listener accepts is answered the consumer it gave the session,
       // and one it can give none is refused (INFRA-771): a session receives only what its own
@@ -321,7 +348,7 @@ async function startSession(
   await writeStandinProfile(home, base, config);
 
   const frames: object[] = [];
-  const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
+  const responses = new Map<string, HeldAnswer<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
   const rpc = spawnRpc(
     binary,
@@ -335,6 +362,9 @@ async function startSession(
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
         DISPATCH_TOKEN,
+        // A held startup's registration pass gets the row's time left as its deadline, so the
+        // pass never ends the hold, only the bounds `startupEnded` names.
+        ...(holdStartup ? { ENVOY_PASS_DEADLINE_MS: String(Math.floor(timeLeft())) } : {}),
       },
       onFrame: (frame) => {
         frames.push(frame);
@@ -367,6 +397,9 @@ async function startSession(
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   // The subject the stream stored a message on, which every frame carries: the session's own
   // inbox, where the listener's role lane forwards a role card and Dispatch addresses a Send. A
@@ -375,22 +408,30 @@ async function startSession(
 
   // Sends one frame as the listener's relay sends it (`sendRelayFrame`), under the sequence
   // after the last: one stream for the whole case. A run whose binary died fails the wait at
-  // once rather than at the frame's own deadline.
+  // once rather than at the frame's own deadline. The sends end at the row's deadline, as every
+  // other wait of the row does, rather than a fixed span after they start (the helper's own
+  // default); `timeLeft()` reads a fraction of a millisecond, and the helper's refusal names the
+  // bound it kept, so it is floored.
   let streamSeq = 0;
   const relayFrame = async (what: string, envelope: string): Promise<void> => {
     streamSeq += 1;
+    const within = Math.floor(timeLeft());
     try {
-      await sendRelayFrame<MsgHdrs>({
+      await sendRelayFrame({
         connection,
         newHeaders: headers,
         sessionID: sid,
         subject: stored,
         payload: codec.encode(envelope),
         seq: streamSeq,
+        withinMs: within,
         stopped: closed,
       });
     } catch (error) {
-      throw new Error(`${what} failed: ${String(error)}`);
+      throw new Error(
+        `${what} failed (its sends were bounded by the row's deadline, ${within} ms after they ` +
+          `began): ${String(error)}`
+      );
     }
   };
 
@@ -515,6 +556,7 @@ async function startSession(
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
+    startupEnded: () => startupEnd,
     async setupHeld() {
       await until(
         "the open-asks read the prompt's setup awaits",
@@ -538,7 +580,7 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
     const extra = session.turns[expected];
     if (extra !== undefined) {
       throw new Error(
-        `Messages request ${expected} came before the probe, on ${lastMessage(extra.request)}`
+        `Messages request ${expected} came before the probe, on ${newestMessage(extra.request.body)}`
       );
     }
     return (await session.state()).isSettled ? true : undefined;
@@ -548,25 +590,11 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
   await session.command({ type: "prompt", message: prompt });
   const turn = await session.nextTurn("the probe's model request");
   expect(turn.index).toBe(expected);
-  expect(lastMessage(turn.request)).toContain(prompt);
+  expect(newestMessage(turn.request.body)).toContain(prompt);
   turn.reply([text("Probe answered.")]);
   await session.settled();
   expect(session.turns.length).toBe(expected + 1);
   return turn.request;
-}
-
-/**
- * Resolves as `promise` does, or fails on `what` once `ms` have passed without it settling. A
- * real timer, as what it bounds is the real binary's answer time; a passing case never waits on it.
- */
-async function within<T>(what: string, ms: number, promise: Promise<T>): Promise<T> {
-  const late = Promise.withResolvers<never>();
-  const timer = setTimeout(() => late.reject(new Error(`${what}: no answer within ${ms} ms`)), ms);
-  try {
-    return await Promise.race([promise, late.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // A card queued while a turn runs used to be a steer, and the host drains its steering queue one
@@ -726,7 +754,7 @@ test.skipIf(skip)(
     const first = await session.card("c1");
     const cardTurn = await session.nextTurn("the turn the idle card's wake started");
     expect(conversation(cardTurn.request)).toContain(first);
-    expect(lastMessage(cardTurn.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(cardTurn.request.body)).toMatch(WAKE_TEXT);
     cardTurn.reply([text("Read the first card.")], 150_000);
 
     const summary = await session.nextTurn("the automatic compaction's summary request");
@@ -743,7 +771,7 @@ test.skipIf(skip)(
       woken = await session.nextTurn("the turn the folded card got");
     }
     expect(conversation(woken.request)).toContain(late);
-    const startedBy = lastMessage(woken.request);
+    const startedBy = newestMessage(woken.request.body);
     expect(WAKE_TEXT.test(startedBy) || startedBy.includes(late)).toBe(true);
     // The card-started run ended with a continuation still owed: the late aside.
     const agentEndsSince = (from: number): object[] =>
@@ -793,13 +821,13 @@ test.skipIf(skip)(
     const first = await session.card("d1");
     const woken = await session.nextTurn("the turn the first idle card's wake started");
     expect(conversation(woken.request)).toContain(first);
-    expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
     woken.reply([text("Read the first card.")]);
     await session.settled();
 
     const card = await session.card("d2");
     const turn = await session.nextTurn("the turn the idle card started");
-    expect(lastMessage(turn.request)).toContain(card);
+    expect(newestMessage(turn.request.body)).toContain(card);
     turn.reply([text("Read the card.")]);
     await probe(session, turn.index + 1);
 
@@ -896,13 +924,18 @@ test.skipIf(skip)(
 // A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
 // stand-in holds the registration envoy.ts's `session_start` awaits, with the relay subject
 // already open (it is opened before the registration that asks for the consumer), so both cards
-// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261122-091943) reads
+// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261127-055727) reads
 // RPC input while its startup runs (`rpc-mode.ts` `runRpcMode`): it answers at once a command
 // that starts no turn, as `get_state`, holds one that starts a turn or changes the session
 // (`waitsForStartup`) until its startup is over, and calls `initializeExtensions` with
 // `drainSends: false`, so that startup waits on no extension send. So the `get_state` written
-// once both cards are in is answered while the startup is still held. 18.16.0 held every RPC
-// command but `set_ask_dialog`, in arrival order, until its startup was over, after
+// once both cards are in is answered while the startup is still held. The row reads that from the
+// order of events, not a clock: `get_state`'s answer must come before whatever ended the held
+// startup, which the stand-in names (`startupEnded`), and a failure says which bound it was: the
+// row's own release, the client giving up its registration call (two attempts of 5 s plus the
+// delay between them, about 10.25 s), or a turn that reached the model while the registration was
+// still held (a turn inside the startup, or the host's 30 s session_start cap). 18.16.0 held every
+// RPC command but `set_ask_dialog`, in arrival order, until its startup was over, after
 // `initializeExtensions` had returned, and this test then held that the `get_state` written during
 // startup went unanswered until the startup was released. On 18.12.2, when this test was written,
 // RPC mode also drained every startup send first (`runner.sends.drain()`), so a card's own turn
@@ -910,18 +943,40 @@ test.skipIf(skip)(
 test.skipIf(skip)("a card that arrives while the session starts holds no RPC input", async () => {
   const session = await startSession({ holdStartup: true });
   const cards = [await session.card("s1"), await session.card("s2")];
-  await within("get_state written while the startup is held", 5_000, session.state());
-  // The cards wait for the startup: neither has started a turn while it is held.
+  // How the startup stood when `get_state`'s answer arrived: read in the turn the answer settles
+  // in, before any later event of the stand-in's can run.
+  const endedBeforeTheAnswer = await settled(
+    "get_state written while the startup is held",
+    session.state().then(() => session.startupEnded())
+  );
+  if (endedBeforeTheAnswer !== undefined) {
+    throw new Error(
+      `get_state was answered only once the held startup had ended: ${endedBeforeTheAnswer}`
+    );
+  }
+  // The cards wait for the startup: neither has started a turn while it is held. A turn that
+  // reached the model first would have ended the hold's reading, so the reading says why.
+  expect(session.startupEnded(), "the held startup ended before the row released it").toBe(
+    undefined
+  );
   expect(session.turns).toHaveLength(0);
   session.releaseStartup();
 
   // The cards' turn is held at its model request, and the host still answers RPC commands.
   const woken = await session.nextTurn("the turn the startup cards' wake started");
-  await within("get_state written while the turn is held", 5_000, session.state());
+  expect(session.startupEnded(), "what ended the held startup").toBe("the row released it");
+  await settled("get_state written while the turn is held", session.state());
 
   const messages = conversation(woken.request);
-  for (const card of cards) expect(messages).toContain(card);
-  expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+  // Both cards were taken before the row released the startup, and a held startup starts no turn
+  // before that release, so the wake's turn reads both. One that misses a card started before
+  // that card arrived: the host's startup had ended inside the row's hold.
+  expect(
+    cards.filter((card) => !messages.includes(card)),
+    "the startup cards the wake's turn did not read: a turn that misses one started before it " +
+      "arrived, so the host's startup ended before the row released it"
+  ).toEqual([]);
+  expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
   woken.reply([text("Read the startup cards.")]);
   await probe(session, woken.index + 1);
 });

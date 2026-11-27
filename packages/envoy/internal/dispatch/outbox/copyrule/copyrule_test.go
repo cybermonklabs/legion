@@ -1,5 +1,7 @@
 package copyrule
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go walks packages/envoy (../../../..) and TestOnlyHolderReadsTheCopyRule reads every .go file it finds but the test files and node_modules, to hold every reader of the mention copy rule to copyrule.Holder
+
 import (
 	"go/ast"
 	"go/parser"

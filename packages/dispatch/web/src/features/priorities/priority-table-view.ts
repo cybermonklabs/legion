@@ -8,7 +8,7 @@ import { useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { capSearchQuery } from "../../lib/query-param";
 import { PAGE_SIZES } from "../project/issues-table-model";
-import type { TableColumn } from "./priority-table-model";
+import { hasFilter, type TableColumn } from "./priority-table-model";
 
 /** What the reader is viewing in one of these tables, as the address carries it. */
 export interface TableView {
@@ -24,12 +24,13 @@ const DEFAULT_PAGE_SIZE = 50;
 
 /** The address key one control of the table with this prefix is written under: `p.sort` for
  *  the priorities table, `f.` before a column's own filter so no column can take a control's
- *  name. Every table of this page carries a prefix, since the page draws three at once. */
+ *  name. Every table of this page carries a prefix, since the page keeps the view of each of
+ *  its tables in the one address, whichever tab draws it. */
 const viewKey = (prefix: string, name: string) => `${prefix}.${name}`;
 
 /** The view `params` carries for the table with this prefix, over these columns. A filter of a
  *  column the table does not have is left where it is: it is another table's, or an older
- *  link's. */
+ *  link's. One of a column that has no filter (`hasFilter`), an older link's, filters nothing. */
 export function readTableView<Row>(
   params: URLSearchParams,
   prefix: string,
@@ -45,7 +46,7 @@ export function readTableView<Row>(
     .filter(({ id }) => ids.includes(id));
   const filters = columns.flatMap((column) => {
     const values = params.getAll(key(`f.${column.id}`));
-    if (values.length === 0) return [];
+    if (values.length === 0 || !hasFilter(column)) return [];
     return [{ id: column.id, value: column.text === undefined ? values : (values[0] ?? "") }];
   });
   const group = params.get(key("group")) ?? "";

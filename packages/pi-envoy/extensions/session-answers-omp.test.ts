@@ -17,6 +17,7 @@ import {
   deliveryFor,
   messageStream,
   ompRoot,
+  ownMessages,
   type Request,
   resumeId,
   serveStandin,
@@ -184,8 +185,10 @@ function isMainTurn(request: Request): boolean {
   );
 }
 
+/** A request's own messages: what the session sent, without the host's date/cwd reminders, which
+ *  it sends as messages of their own once the local date has changed (`ownMessages`). */
 function messagesOf(request: Request): unknown[] {
-  return Array.isArray(request.body.messages) ? request.body.messages : [];
+  return ownMessages(request.body);
 }
 
 /** The text of a message as the binary sent it: string content, or its text blocks joined. */
@@ -1008,16 +1011,33 @@ test.skipIf(skipped)(
       olderList,
       sentList(renderSessionAnswers([newer, older], { now: Date.now() })),
     ]);
-    // N's messages through its last cache_control-bearing one are N+1's first, byte for byte.
+    // N's messages through its last cache_control-bearing one are N+1's first, the same content
+    // once the anchors are set aside (`bare`), as in (o): that is the prefix N+1 reads from the
+    // cache. The anchor itself need not come back. The pinned build sends a per-call message that
+    // repeats at its place in the request before as history (`RepeatedPerCallMessages`,
+    // packages/agent/src/repeated-per-call-messages.ts at the pinned tag), so N's list no longer
+    // holds N+1's anchor on "First question.", and N+1 anchors its own last message. Measured
+    // through the model gateway on 2026-11-25 with claude-sonnet-5-5 and claude-opus-5-5, in this
+    // test's shapes: N+1 read every token N wrote at N's anchor (9,976 of 9,976 and 9,977 of 9,977)
+    // with "First question." sent as a string and no anchor, as it did with the anchor kept; with
+    // one character of "First question." changed it read 0.
     const messages = messagesOf(n);
     const anchor = messages.findLastIndex((message) =>
       JSON.stringify(message).includes("cache_control")
     );
     expect(anchor).toBeGreaterThanOrEqual(0);
     expect(anchor).toBeLessThan(messages.length - 1);
-    expect(JSON.stringify(messagesOf(next).slice(0, anchor + 1))).toBe(
-      JSON.stringify(messages.slice(0, anchor + 1))
+    const cached = bare(messages.slice(0, anchor + 1));
+    const kept = messagesOf(next).slice(0, anchor + 1);
+    expect(bare(kept)).toBe(cached);
+    // The control: the same comparison fails for a prefix one character away, as the provider's
+    // cache did in the measurement above, so setting the anchors aside cannot pass a broken prefix.
+    const keptText = JSON.stringify(kept);
+    expect(keptText).toContain('"First question."');
+    const broken: unknown[] = JSON.parse(
+      keptText.replace('"First question."', '"First question!"')
     );
+    expect(bare(broken)).not.toBe(cached);
     console.log(
       `(h) request N+1's last two messages: ${JSON.stringify(messagesOf(next).slice(-2))}`
     );

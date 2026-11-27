@@ -2,13 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   deliveryFor,
+  isSelfCheck,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -17,15 +19,21 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
+  markIndex,
+  markRecord,
+  stampAfter,
+  stepsOf,
+  TIMER_APIS,
   TIMER_RECORD_FILE,
   TIMER_RECORD_ROOTS,
   type TimerStep,
   timersBetween,
 } from "@legion/test-fixtures/timer-record";
 import { completeLines } from "@legion/test-fixtures/transcript-lines";
-import { until } from "@legion/test-fixtures/wait";
+import { timeLeft, until } from "@legion/test-fixtures/wait";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
 // `task` call back while the subagent is still running, reads a message that arrives in the
@@ -47,7 +55,7 @@ import { until } from "@legion/test-fixtures/wait";
 // keeps this case green in a run that loads them.
 const { skip, setup } = ompNatsGuard();
 
-/** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
+/** The pane's role, tree and issue; the stand-in daemon answers that this claim owes nothing. */
 const ROLE = "implementer";
 const TREE = "BGSUB-1";
 const ISSUE = "BGSUB-2";
@@ -92,20 +100,22 @@ const SUBAGENT_REPORT = "BGSUB-SUBAGENT-REPORT: the scratch check passed.";
 /** What the message published while the subagent runs says. */
 const MESSAGE_SUMMARY = "BGSUB-MESSAGE: answer the reviewer's question about the retry bound.";
 
+// The one row of this file starts a cold role pane (a pinned Oh My Pi binary spawning and
+// registering over NATS), which reads 5-6 s, more than Bun's 5000 ms default. It takes a guard of
+// its own, in every mode (`bun test`, `--parallel`, `bun run test`): the row body calls
+// `useRowGuard` for the shared wait's deadline and passes the same value as `test`'s third argument
+// for Bun's row kill, and the afterEach passes it as its own hook timeout, because the cleanup's
+// raw awaits (killing omp, stopping the stub server) also outlast 5000 ms under load. See
+// packages/pi-legion/package.json's "//" note for the reading and its run.
+const COLD_PANE_GUARD_MS = 300_000;
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** A Messages request's last message, which is what started the turn it answers. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 /** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
@@ -115,13 +125,12 @@ function isSubagentRequest(request: Request): boolean {
 
 /**
  * Whether a Messages request is a turn of the role's own conversation: it carries the daemon's
- * assignment and is not a side turn. A side turn (pi-envoy's run-end self-check) is an ordinary
- * Messages request over a snapshot of that same conversation whose last message is the `<btw>`
- * block, so the assignment alone would take it for a turn.
+ * assignment and is not a side turn. A side turn (pi-envoy's run-end self-check, `isSelfCheck`)
+ * is an ordinary Messages request over a snapshot of that same conversation, so the assignment
+ * alone would take it for a turn.
  */
 function isRoleTurn(request: Request): boolean {
-  if (isSubagentRequest(request)) return false;
-  if (lastMessage(request).includes("<btw>")) return false;
+  if (isSubagentRequest(request) || isSelfCheck(request)) return false;
   return conversation(request).includes("BGSUB-ROLE-ASSIGNMENT");
 }
 
@@ -282,11 +291,13 @@ async function natsRelay(
     request(
       subject: string,
       payload: Uint8Array,
-      options: { readonly timeout: number; readonly headers: FrameHeaders }
+      options: { readonly timeout: number; readonly headers?: FrameHeaders }
     ): Promise<{ readonly data: Uint8Array }> {
       requests += 1;
       const reply = `${inbox}.${requests}`;
-      const headers = options.headers.block();
+      // A request with no header set, as `deleteRelayCapturingStreams` sends to the JetStream
+      // API, goes out with an empty header block.
+      const headers = (options.headers ?? newHeaders()).block();
       const headerBytes = Buffer.byteLength(headers);
       const total = headerBytes + payload.byteLength;
       const answered = Promise.withResolvers<{ readonly data: Uint8Array }>();
@@ -299,7 +310,9 @@ async function natsRelay(
       waiting.set(reply, ({ word, noResponders }) => {
         clearTimeout(timer);
         if (noResponders) {
-          answered.reject(new Error(`no responder on ${subject}`));
+          // The code nats.js gives the same answer, which `deleteRelayCapturingStreams` reads as a
+          // server with no JetStream.
+          answered.reject(Object.assign(new Error(`no responder on ${subject}`), { code: "503" }));
           return;
         }
         answered.resolve({ data: new TextEncoder().encode(word) });
@@ -311,9 +324,15 @@ async function natsRelay(
       return answered.promise;
     },
   });
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connectionStamping(() => {}));
   return async (sessionID, payload, seq) => {
     // The moment of the send the session answered: the helper resends until one is answered, and
-    // each request of this send writes its own moment here as it goes out.
+    // each request of this send writes its own moment here as it goes out. The sends end at the
+    // row's deadline, as every other wait of the row does, rather than a fixed span after they
+    // start (the helper's own default); `timeLeft()` is floored, as the helper's refusal names the
+    // bound it kept.
     let sent = moment();
     await sendRelayFrame({
       connection: connectionStamping((at) => {
@@ -324,6 +343,7 @@ async function natsRelay(
       subject: `notifications.agent.${sessionID}`,
       payload: new TextEncoder().encode(payload),
       seq,
+      withinMs: Math.floor(timeLeft()),
       stopped,
     });
     return sent;
@@ -348,17 +368,27 @@ interface RolePane {
   /** Every timer the pane's own plugin code armed and fired so far, in the pane process's order
    *  (`@legion/test-fixtures/timer-record`, loaded into the pane as one more extension). */
   timerRecord(): Promise<readonly TimerStep[]>;
+  /** Writes a mark named `mark` into the timer record, from the test's process. */
+  markRecord(mark: string): void;
+  /**
+   * Waits until a read of the timer record holds the mark `mark` and a stamp of its writer past
+   * it, and returns that read: the record was still being written, and its reads see the writes,
+   * after the mark. A writer that stopped, or a read that returns an old copy, fails the wait by
+   * name at the row's deadline. A stamp whose canary misses a timer call the record wraps fails
+   * at once: the record could not see that call's timers.
+   */
+  recordThrough(mark: string): Promise<readonly TimerStep[]>;
 }
 
 /**
  * Starts one Legion role pane on the real Oh My Pi: pi-envoy's extension and this package's root,
  * the role's LEGION_* environment against a stand-in that is the model gateway, the daemon's
- * claim, grant and state routes and the Envoy listener, and the real NATS server. The daemon's
- * state reports the issue past this role's phase, so the phase-stall follow-up (src/phase-stall.ts)
- * puts no reminder in front of the pane and adds no turn of its own. Every Messages request is
- * held for the case except a side request — the task label, a self-check, a skill's routing-hint
- * compression — which is answered at once with one word, since none of them is a turn and a held
- * one would stall the host inside the work the case is timing.
+ * claim and grant routes and the Envoy listener, and the real NATS server. The daemon answers that
+ * the claim owes nothing (`POST /legion/v1/claims/owed`), so the phase reminder
+ * (src/phase-reminder.ts) puts no reminder in front of the pane and adds no turn of its own. Every
+ * Messages request is held for the case except a side request — the task label, a self-check, a
+ * skill's routing-hint compression — which is answered at once with one word, since none of them
+ * is a turn and a held one would stall the host inside the work the case is timing.
  */
 async function startRolePane(): Promise<RolePane> {
   const { binary, nats } = setup();
@@ -420,10 +450,7 @@ async function startRolePane(): Promise<RolePane> {
         expiresAt: "2099-01-01T00:00:00Z",
       });
     }
-    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
-    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
-      return Response.json(MOVED_ON.issues[ISSUE]);
-    }
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
@@ -456,13 +483,23 @@ async function startRolePane(): Promise<RolePane> {
   const agentEnds: Moment[] = [];
   const closed: { error?: unknown } = {};
   const timerRecordFile = path.join(home, "timer-record.jsonl");
+  // The tests' record of the plugins' own timers, as a preload of the pane's process (the pinned
+  // binary is a compiled Bun executable, which reads `BUN_OPTIONS`), so it is installed before the
+  // host or any extension loads `node:timers/promises`, which keeps the `setTimeout` it finds when
+  // it first loads: loaded as an extension, the record came after the host had loaded it, and a
+  // plugin's timer armed through it never reached the record. A module of no effect but the
+  // record, which only this case hands the pane.
+  const timerRecordPreload = Bun.resolveSync(
+    "@legion/test-fixtures/timer-record-preload",
+    import.meta.dir
+  );
+  if (/\s/.test(timerRecordPreload)) {
+    throw new Error(`BUN_OPTIONS cannot carry the preload's path ${timerRecordPreload}`);
+  }
   const rpc = spawnRpc(
     binary,
     {
       extensions: [
-        // The tests' record of the plugins' own timers, first, so it holds every one they arm:
-        // a module of no effect but the record, which only this case hands the pane.
-        Bun.resolveSync("@legion/test-fixtures/timer-record-preload", import.meta.dir),
         path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
         // The package root, not its extension file: Oh My Pi discovers an extension package's
         // `agents/` from its root, and `deep-worker` lives there.
@@ -485,6 +522,7 @@ async function startRolePane(): Promise<RolePane> {
         LEGION_WORKSPACE: workspace,
         [TIMER_RECORD_FILE]: timerRecordFile,
         [TIMER_RECORD_ROOTS]: PANE_ROOTS.join(":"),
+        BUN_OPTIONS: `--preload ${timerRecordPreload}`,
       },
       onFrame: (frame) => {
         frames.push(frame);
@@ -522,6 +560,25 @@ async function startRolePane(): Promise<RolePane> {
   let seq = 1;
 
   const taken = new Set<Held>();
+  const timerRecord = async (): Promise<readonly TimerStep[]> => {
+    // A record that is missing or cannot be read fails the row, never reads as empty: an empty
+    // record sums to 0 ms and would pass the bound below whatever the plugins did.
+    let text: string;
+    try {
+      text = await readFile(timerRecordFile, "utf8");
+    } catch (error) {
+      throw new Error(
+        `the pane's timer record ${timerRecordFile} could not be read: ${String(error)}`
+      );
+    }
+    // Only the pane's own steps, and the case's marks: a child of the pane that writes into the
+    // same file (the record hands its variables to none, but a child given them anyway would)
+    // writes under its own process id, and is no witness of the pane's timers or of its writer.
+    return stepsOf(
+      completeLines(text).map((line) => JSON.parse(line) as unknown),
+      rpc.pid
+    ) as TimerStep[];
+  };
   return {
     held,
     sessionId,
@@ -535,54 +592,37 @@ async function startRolePane(): Promise<RolePane> {
     },
     publish: (payload) => relay(sessionId, payload, seq++),
     until: waitFor,
-    timerRecord: async () => {
-      const text = await readFile(timerRecordFile, "utf8").catch(() => "");
-      return completeLines(text).map((line) => JSON.parse(line) as TimerStep);
+    timerRecord,
+    markRecord: (mark) => markRecord(timerRecordFile, mark),
+    async recordThrough(mark) {
+      const { steps, stamp } = await until(
+        `the pane's timer record to be written after the mark ${JSON.stringify(mark)} (a ` +
+          "record whose writer stopped, or a read that returns an old copy, never is)",
+        async () => {
+          if (closed.error !== undefined) throw closed.error;
+          const read = await timerRecord();
+          const after = stampAfter(read, markIndex(read, mark));
+          return markIndex(read, mark) >= 0 && after !== undefined
+            ? { steps: read, stamp: after }
+            : undefined;
+        }
+      );
+      const unseen = TIMER_APIS.filter((api) => !stamp.canary.includes(api));
+      if (unseen.length > 0) {
+        throw new Error(
+          "the pane's timer record holds no canary, so its timer wrapping is not installed: " +
+            `the stamp after ${JSON.stringify(mark)} saw no canary through ${unseen.join(", ")}`
+        );
+      }
+      return steps;
     },
   };
 }
 
-/**
- * The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up has no reminder for this role and the case's turns are its own.
- */
-const MOVED_ON = {
-  daemon: {
-    project: "BGSUB",
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], trees: [TREE], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  wakesWaiting: [],
-  capabilities: [],
-  repositories: {
-    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-} satisfies LegionState;
-
 test.skipIf(skip)(
   "a role's deep-worker runs in the background: the task call returns before it ends, a message sent meanwhile is read, and the job's result wakes the role",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await startRolePane();
 
     // The assignment's turn dispatches the worker. `solutionSpace` rides the child's first prompt
@@ -621,15 +661,34 @@ test.skipIf(skip)(
     // which are a millisecond apart at best and tie whenever the host does this work fast.
     expect(subagent.arrived.order).toBeLessThan(ended.order);
 
-    // How far the pane's timer record ran before the frame was sent: each later step came after.
+    // The pane's timer record holds steps before the frame was sent.
     const beforePublish = (await pane.timerRecord()).length;
+    // The preload's writer stamps the record every `TIMER_RECORD_ALIVE_MS`, and the pane arms its
+    // Envoy heartbeat as its session starts (`context.setInterval` in
+    // packages/pi-envoy/extensions/envoy.ts), so by now the record holds steps. One that holds none
+    // is a record the pane's preload never wrote, which could show no plugin's timer either.
+    expect(
+      beforePublish,
+      "the pane's timer record holds none of its timers before the frame was sent"
+    ).toBeGreaterThan(0);
+    // The window runs between two marks the case writes into the record itself, and is read from
+    // the one read that shows the record still written after the second: no earlier read, which
+    // could be an old copy, supplies it.
+    const sentMark = `the frame is sent (${randomUUID()})`;
+    pane.markRecord(sentMark);
     const published = await pane.publish(
       forwardedRoleEnvelope(MESSAGE_SUMMARY, `bgsub-${randomUUID()}`)
     );
     const read = await pane.next("the role's turn carrying the message", (request) =>
       isRoleTurn(request) ? conversation(request).includes(MESSAGE_SUMMARY) : false
     );
-    const recordAtRead = await pane.timerRecord();
+    const turnMark = `the turn that read it is seen (${randomUUID()})`;
+    pane.markRecord(turnMark);
+    const record = await pane.recordThrough(turnMark);
+    const sentAt = markIndex(record, sentMark);
+    expect(sentAt, "the pane's timer record holds no mark of the frame being sent").toBeGreaterThan(
+      -1
+    );
     // The message is in the role's context at its next model turn: no turn of the role came
     // between the frame's arrival and the turn that read it.
     expect(published.order).toBeLessThan(read.arrived.order);
@@ -648,7 +707,7 @@ test.skipIf(skip)(
     // with that timer's delay, however the pane's load stretched the time either side of it: one
     // it armed through the host (`activeSessionContext.setTimeout`, whose frames are the host's
     // compiled bundle) included, and the read refuses a timer whose arming named no file at all.
-    const waits = timersBetween(recordAtRead, beforePublish - 1, recordAtRead.length);
+    const waits = timersBetween(record, sentAt, markIndex(record, turnMark));
     expect(
       waits.reduce((sum, wait) => sum + wait.delayMs, 0),
       `the plugins' own timers between the frame and the turn that read it: ${JSON.stringify(waits)}`
@@ -665,7 +724,7 @@ test.skipIf(skip)(
     const woken = await pane.next("the role's turn woken by the finished job", (request) =>
       isRoleTurn(request) ? conversation(request).includes(SUBAGENT_REPORT) : false
     );
-    expect(lastMessage(woken.request)).toMatch(/[Bb]ackground job/);
+    expect(newestMessage(woken.request.body)).toMatch(/[Bb]ackground job/);
     expect(woken.arrived.order).toBeGreaterThan(released.order);
     woken.reply([{ type: "text", text: "The worker is done." }]);
 
@@ -675,5 +734,6 @@ test.skipIf(skip)(
         `the message was read ${read.arrived.at - published.at} ms after it was published; ` +
         `the job woke the role ${woken.arrived.at - released.at} ms after the release`
     );
-  }
+  },
+  COLD_PANE_GUARD_MS
 );

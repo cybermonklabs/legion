@@ -251,7 +251,8 @@ func (m *newsModel) rootTaskEnabled() bool {
 	return hears
 }
 
-// do runs the step name.
+// do runs the step name, and then waits for the machines (wait): a step ends once every send it
+// started has had its outcome handled.
 func (m *newsModel) do(name string) {
 	m.t.Helper()
 	rev := m.reviewer
@@ -288,11 +289,6 @@ func (m *newsModel) do(name string) {
 		m.providerError(m.tester)
 	case "ladder":
 		m.clock.fireLadder()
-		for _, a := range m.agents() {
-			if a.machine != nil {
-				a.machine.Wait()
-			}
-		}
 	case "supersede":
 		// A newer task of the phase, as an operator's or a repair's: it carries no entry, so the
 		// claim's given entry stays the one its phases row names, and a news-only start still
@@ -330,6 +326,22 @@ func (m *newsModel) do(name string) {
 		m.result(m.architect)
 	default:
 		m.fail("no step %q", name)
+	}
+	m.wait()
+}
+
+// wait waits until every send a machine of the model's claims started has had its outcome handled
+// (supervise's Machine.Wait). A step that runs an outbox row, such as the reviewer's starts, hands a
+// machine its task and returns while the task's send still runs on its own goroutine. The send's
+// acknowledgement sets the task's copy of its news and writes the task to the claim store in one
+// decision, under the machine's lock, so once that write succeeds the store holds the delivery the
+// machine holds. A check that read the store before that decision and the machine after it would
+// see a lag that no refused write made.
+func (m *newsModel) wait() {
+	for _, a := range m.agents() {
+		if a.machine != nil {
+			a.machine.Wait()
+		}
 	}
 }
 

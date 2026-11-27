@@ -1,0 +1,34 @@
+kind: Changed
+body: |-
+  The worker image pins the shared public leak check at `leak-check-v33` (`ARG LEAK_CHECK_TAG`),
+  in place of `leak-check-v31`. From `leak-check-v33` the check refuses, with exit 2, a call of
+  exactly two arguments whose first is a mode word, which is how a pre-push hook calls it, with a
+  remote's name and its URL. So a push to a remote named `gh-guard`, `check-public-text`,
+  `--commits`, `--tree`, `--help` or `-h` is refused; up to `leak-check-v32` such a push ran that
+  mode in place of the push check. The leak guard now calls the check as `gh-guard -- <the gh
+  call>`, `gh-guard` alone for a gh call of no words, and `check-public-text -- -` for a text; the
+  pre-push call does not change. `legion gh`'s list of reads is proven against `leak-check-v33`
+  (`ghReadsProvenCheck`), so a call that writes nothing still skips the visibility read in a pod
+  on the new pin.
+
+  These call forms need `leak-check-v33` or later, and the release before this one does not work
+  under `leak-check-v33`. A pod gets the check and the binary from one image. A tmux pane runs the
+  operator's own check. Under `leak-check-v32` or older, this release refuses every gh call that
+  writes, `gh secret` aside, and every `gh api` call, reads included, with exit 3 and "its options
+  come before the command", which blames the call and not the check's version, and every text
+  check exits 2 (the
+  check reads `--` as a file). Under `leak-check-v33`, the release before this one fails a gh call
+  of one word and every text check with exit 2, refused as a call of two arguments: between a
+  machine's install of `leak-check-v33` and this release reaching it, `legion leak-check text` there
+  is refused with exit 2. So on a machine that runs Legion's panes against its installed check, move
+  the check to `leak-check-v33` and the daemon to this release in one step: neither order is safe
+  alone.
+
+  A deployment that names the check's manifest digest (`leak_check.manifest_sha256` in
+  `legion.yaml`, or `LEGION_LEAK_CHECK_MANIFEST_SHA256`) sets it to `leak-check-v33`'s digest,
+  `15a07d05851d726888615a25b35b94bc1908457b688c79e9b678c5de935fde43`, in the same change as the
+  image. Under the old digest, a pod on this image starts no role agent. The release restarts every
+  pod that moves to it.
+time: 2026-11-22T16:48:32.864193276Z
+custom:
+    Issue: pr5037

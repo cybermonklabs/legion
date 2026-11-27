@@ -13,16 +13,24 @@ import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { DeviceLoginIdentity } from "../device-login";
 import { newDpopKey } from "../dpop";
+import { githubActionsIdentity } from "../github-actions-identity";
 import { metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
 import type { SubjectToken, TokenSource } from "../source";
 import { type BrokerToken, BrokerTokenClient } from "../token-client";
 import { BrokerRefusedError } from "../token-errors";
-import { FORM_LAUNCHER_CREDENTIAL, FORM_LAUNCHER_CREDENTIAL_DECLINED, TOKEN_PATH } from "../wire";
+import {
+  FORM_AS_OF,
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_SCOPE,
+  TOKEN_PATH,
+} from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-client");
 
@@ -167,12 +175,42 @@ function metadataSource(token: string): TokenSource {
 }
 
 /**
+ * GitHub's OIDC token endpoint answering `token`, and the identity of the run that reads it. It
+ * refuses a request that does not ask the way the contract says: the request token as its bearer
+ * and the audience in its query.
+ */
+function githubActionsSource(token: string): TokenSource {
+  const audience = "https://cipher.example";
+  const requestToken = fixtureSecret("actions");
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (request) => {
+      if (request.headers.get("Authorization") !== `bearer ${requestToken}`) {
+        return new Response("another request token", { status: 401 });
+      }
+      if (new URL(request.url).searchParams.get("audience") !== audience) {
+        return new Response("another audience", { status: 400 });
+      }
+      return Response.json({ value: token });
+    },
+  });
+  servers.push(server);
+  return githubActionsIdentity({
+    requestUrl: `http://127.0.0.1:${server.port}/idtoken`,
+    requestToken,
+    audience,
+  });
+}
+
+/**
  * The identity an entry's subject names, built from the real reader wherever one exists: a
  * projected token is read from a file this test writes, a machine's Google identity token from a
- * metadata server this test serves, and a machine login's access token from the device login file
- * this test writes for `brokerUrl`, holding that token live, so the trade spends it with no
- * refresh. A person's sign-in is scripted here, its own reader being the device grant, which
- * `agent-secrets login` runs through the Go client.
+ * metadata server this test serves, a GitHub Actions run's token from a GitHub endpoint this test
+ * serves, and a machine login's access token from the device login file this test writes for
+ * `brokerUrl`, holding that token live, so the trade spends it with no refresh. A person's sign-in
+ * is scripted here, its own reader being the device grant, which `agent-secrets login` runs
+ * through the Go client.
  */
 async function corpusSource(spec: CorpusToken, brokerUrl: string): Promise<TokenSource> {
   switch (spec.kind) {
@@ -183,6 +221,8 @@ async function corpusSource(spec: CorpusToken, brokerUrl: string): Promise<Token
     }
     case "google-metadata":
       return metadataSource(spec.token);
+    case "github-actions-run":
+      return githubActionsSource(spec.token);
     case "person-device-sign-in":
       return {
         read: async (): Promise<SubjectToken> => ({
@@ -352,10 +392,13 @@ test("the wire corpus holds this client", async () => {
         : { actor: await corpusSource(exchange.actor, broker.url) }),
       session: exchange.session,
       projects: exchange.projects,
-      // The entry's own form says whether this trade declines the launcher credential, so the
-      // one place the corpus states it is the form it asserts.
+      // The entry's own form says whether this trade declines the launcher credential, and the
+      // scope and the cut it asks for, so the one place the corpus states them is the form it
+      // asserts.
       launcherCredential:
         exchange.form[FORM_LAUNCHER_CREDENTIAL] !== FORM_LAUNCHER_CREDENTIAL_DECLINED,
+      scope: exchange.form[FORM_SCOPE],
+      asOf: exchange.form[FORM_AS_OF],
       sleep: (_ms: number, signal?: AbortSignal) => {
         caller.abort();
         const { promise, resolve } = Promise.withResolvers<void>();
@@ -398,7 +441,7 @@ test("the wire corpus holds this client", async () => {
     expect((refusal as Error).message).toContain(exchange.expect.error_contains as string);
     expect(
       refusal instanceof BrokerRefusedError && refusal.permanent,
-      `${exchange.name}: only a refusal no later trade can cure stops a renewal loop, and the broker's 429 is not one`
+      `${exchange.name}: only a refusal no later trade can cure stops a renewal loop, and an outage (a 408 or a 429) is not one`
     ).toBe(exchange.expect.permanent as boolean);
   }
 });

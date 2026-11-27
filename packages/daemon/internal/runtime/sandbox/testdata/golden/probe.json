@@ -87,9 +87,6 @@
           }
         ],
         "enableServiceLinks": false,
-        "nodeSelector": {
-          "legion.dev/pool": "legion"
-        },
         "priorityClassName": "legion",
         "restartPolicy": "Never",
         "runtimeClassName": "gvisor",
@@ -100,14 +97,6 @@
           "runAsUser": 1000
         },
         "terminationGracePeriodSeconds": 5,
-        "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          }
-        ],
         "volumes": [
           {
             "emptyDir": {},
