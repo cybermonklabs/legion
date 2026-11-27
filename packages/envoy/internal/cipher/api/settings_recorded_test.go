@@ -16,9 +16,10 @@ package api_test
 // adds or changes is recorded again by the commands above at that commit of main, and the change
 // that does so names the commit here and says which lines of the records moved and which change of
 // main moved them. A change that means to move a field changes the settings every deployed CLI
-// reads: it edits the record by hand, where its review shows it.
+// reads: it edits the record in the form -record writes, which the test holds the file to.
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"io"
@@ -104,6 +105,9 @@ func TestSettingsRecordedOnMain(t *testing.T) {
 			}
 			if len(want) == 0 {
 				t.Fatalf("UNKNOWN: %s records no field, so the check compares nothing", record)
+			}
+			if again, err := json.MarshalIndent(want, "", "  "); err != nil || !bytes.Equal(append(again, '\n'), raw) {
+				t.Fatalf("%s holds an entry or a form -record does not write (a repeated field, or one written by hand), which the comparison would not read; write it as -record does", record)
 			}
 			var keys []string
 			for key := range got {

@@ -18,9 +18,10 @@ package secrets_test
 // changes is recorded again by the commands above at that commit of main, and the change that does
 // so names the commit here and says which lines of the records moved and which change of main moved
 // them. A change that means to move a source of either store ends the grants that hold it: it edits
-// the record by hand, where its review shows it.
+// the record in the form -record writes, which the test holds the file to.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -157,6 +158,9 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			}
 			if len(want) == 0 {
 				t.Fatalf("UNKNOWN: %s records no secret, so the check compares nothing", record)
+			}
+			if again, err := json.MarshalIndent(want, "", "  "); err != nil || !bytes.Equal(append(again, '\n'), raw) {
+				t.Fatalf("%s holds an entry or a form -record does not write (a repeated secret, or one written by hand), which the comparison would not read; write it as -record does", record)
 			}
 			compareSources(t, "List", "Load", got, want)
 			compareSources(t, "Describe, a reread", "LoadOne, a reread", reread, want)

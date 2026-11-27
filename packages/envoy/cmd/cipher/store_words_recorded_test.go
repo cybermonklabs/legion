@@ -18,11 +18,12 @@
 // changes is recorded again by the commands above at that commit of main, and the change that does
 // so names the commit here and says which lines of the records moved and which change of main moved
 // them. A change that means to move one of these texts for the AWS or the GCP store changes what a
-// deployment's CLI prints: it edits the record by hand, where its review shows it. The usage record
-// holds every row from AWS_PROFILE to the blank line above "exit codes:", and the refusal record the
-// whole refusal, so a later store that adds its own row or clause changes them too: that change may
-// write them again with -record, and its review must then find, in the records' diff, only that
-// store's lines added and every AWS and GCP line as it was.
+// deployment's CLI prints: it edits the record in the form -record writes, which the test holds
+// source-words.json to. The usage record holds every row from AWS_PROFILE to the blank line above
+// "exit codes:", and the refusal record the whole refusal, so a later store that adds its own row
+// or clause changes them too: that change may write them again with -record, and its review must
+// then find, in the records' diff, only that store's lines added and every AWS and GCP line as it
+// was.
 package main
 
 import (
@@ -116,7 +117,7 @@ func firstDifference(got, want string) string {
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
 // byte, the refusal main printed, which names the variables each store's own tools read.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
-	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:120); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:121); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
 	var stdout, stderr bytes.Buffer
@@ -233,23 +234,35 @@ func TestSourceWordsRecordedOnMain(t *testing.T) {
 		writeRecord(t, "source-words.json", append(raw, '\n'))
 		return
 	}
+	raw := readRecord(t, "source-words.json")
 	var want []sourceWords
-	if err := json.Unmarshal(readRecord(t, "source-words.json"), &want); err != nil {
+	if err := json.Unmarshal(raw, &want); err != nil {
 		t.Fatalf("decode source-words.json: %v", err)
 	}
 	if len(want) == 0 {
 		t.Fatal("UNKNOWN: source-words.json records no row, so the check compares nothing")
 	}
+	if again, err := json.MarshalIndent(want, "", "  "); err != nil || !bytes.Equal(append(again, '\n'), raw) {
+		t.Fatal("source-words.json holds an entry or a form -record does not write (a field written by hand), which the comparison would not read; write it as -record does")
+	}
 	type key struct {
 		row   string
 		clean bool
 	}
+	read := map[key]bool{}
+	for _, g := range got {
+		read[key{g.Row, g.Clean}] = true
+	}
 	recorded := map[key]sourceWords{}
 	for _, w := range want {
-		recorded[key{w.Row, w.Clean}] = w
-	}
-	if len(recorded) != len(got) {
-		t.Errorf("source-words.json records %d rows, want the %d this test reads", len(recorded), len(got))
+		k := key{w.Row, w.Clean}
+		if _, twice := recorded[k]; twice {
+			t.Errorf("%s (clean %t): source-words.json records this row more than once, and the comparison reads one of them", w.Row, w.Clean)
+		}
+		if !read[k] {
+			t.Errorf("%s (clean %t): source-words.json records this row, and the test reads no such row", w.Row, w.Clean)
+		}
+		recorded[k] = w
 	}
 	for _, g := range got {
 		w, ok := recorded[key{g.Row, g.Clean}]

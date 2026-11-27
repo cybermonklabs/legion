@@ -62,7 +62,7 @@ func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
 }
 
 func TestAVariableWinsOverTheConfigFile(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_test.go:66); it sets a package variable the package's other tests read (main.loadClientConfig, clientConfig set at config.go:98).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_test.go:67); it sets a package variable the package's other tests read (main.loadClientConfig, clientConfig set at config.go:98).
 	writeClientConfig(t, "AGENT_SECRETS_URL=https://from-the-file.example\n")
 	t.Setenv("AGENT_SECRETS_URL", "https://from-the-environment.example")
 	if err := loadClientConfig(); err != nil {
@@ -74,7 +74,7 @@ func TestAVariableWinsOverTheConfigFile(t *testing.T) {
 }
 
 func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_test.go:78); it sets a package variable the package's other tests read (main.loadClientConfig, clientConfig set at config.go:98).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_test.go:79); it sets a package variable the package's other tests read (main.loadClientConfig, clientConfig set at config.go:98).
 	writeClientConfig(t, "AGENT_SECRETS_URL=https://from-the-file.example\n")
 	t.Setenv("AGENT_SECRETS_URL", "")
 	if err := loadClientConfig(); err != nil {
@@ -148,7 +148,7 @@ func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
 // owner whatever its mode, so it is a usage error naming the file and its owner, and nothing in it
 // is read. A file root owns is taken, as OpenSSH takes one: root can change any file anyway.
 func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.unsetenv, t.Setenv at config_test.go:38); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (fileOwner set at config_test.go:154).
+	// Not parallel: it sets environment variables of the whole process (main.unsetenv, t.Setenv at config_test.go:38); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (fileOwner set at config_test.go:155).
 	owner := func(t *testing.T, uid int) {
 		t.Helper()
 		original := fileOwner
@@ -181,7 +181,7 @@ func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
 }
 
 func TestNoConfigFileIsNoError(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_test.go:184); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (clientConfig set at config_test.go:186).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_test.go:185); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (clientConfig set at config_test.go:187).
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_SECRETS_URL", "https://secrets.example")
 	t.Cleanup(func() { clientConfig = nil })
