@@ -22,7 +22,13 @@ const (
 	closeWaitEditReplaced = "outbox close-wait.md changed since its token was read; the daemon's version replaced it"
 	closeWaitRefused      = "outbox close-wait.md write refused by Dispatch; the row finishes and the record keeps the wait"
 	closeWaitNoneStored   = "outbox close-wait.md row found no stored wait to write; the row finishes"
+	closeWaitUnwritable   = "outbox close-wait.md cannot be written by its slug; the row finishes and the record keeps the wait"
 )
+
+// closeWaitStaleAttempts is how many runs a row of close-wait.md makes against a stale refusal
+// that names no current version before it finishes: such a refusal can be a move the next run's
+// fresh read sees, so it runs again, but not without end.
+const closeWaitStaleAttempts = 5
 
 // closeWaitPublish writes the stored wait of the row's issue onto its Dispatch document
 // close-wait.md (record.CloseWaitPublish). It renders the wait the issue's row holds when the row

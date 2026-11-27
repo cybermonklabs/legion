@@ -30,8 +30,10 @@ import (
 // counted in unguarded, as Dispatch counts each unguarded replacement. editsAfterRead is how many
 // of the next token reads are each followed by a person's edit of the document, which moves its
 // token before the upload that read meant to name it. tokenErr and uploadErr are what a read of
-// the token and an upload answer in place of all that. onUpload, where set, runs after each version
-// the board writes, as a change of the record made while that upload ran.
+// the token and an upload answer in place of all that. filedAs, where set, is the slug an upload
+// answers in place of close-wait.md's, as Dispatch answers a document it filed under another.
+// onUpload, where set, runs after each version the board writes, as a change of the record made
+// while that upload ran.
 type closeWaitBoard struct {
 	*outboxDispatch
 	mu             sync.Mutex
@@ -41,6 +43,7 @@ type closeWaitBoard struct {
 	editsAfterRead int
 	tokenErr       error
 	uploadErr      error
+	filedAs        string
 	onUpload       func()
 }
 
@@ -98,6 +101,9 @@ func (d *closeWaitBoard) UploadArtifactOver(_ context.Context, key, name, conten
 	d.versions = append(d.versions, content)
 	if d.onUpload != nil {
 		d.onUpload()
+	}
+	if d.filedAs != "" {
+		return d.filedAs, nil
 	}
 	return record.CloseWaitDocumentSlug, nil
 }
@@ -221,6 +227,57 @@ func TestTheCloseWaitDocumentIsWrittenOverItsToken(t *testing.T) {
 	}
 	if board.unguarded != 0 {
 		t.Fatalf("%d uploads replaced the document unguarded, want none: each later write names the token it read", board.unguarded)
+	}
+}
+
+// A write of close-wait.md that retrying cannot fix finishes the row, so it no longer holds the
+// issue's status writes behind it — the close's done among them, which waits for the version of
+// the close. An upload Dispatch files under another slug is filed so on every attempt, and the
+// next token read by close-wait.md's slug finds nothing, so it finishes at the first attempt. A
+// stale refusal that names no version may be a move a fresh read sees, so it runs again until
+// closeWaitStaleAttempts and finishes there. Each finish logs one line naming the issue. The
+// control is the same stale refusal on an earlier attempt, which the row runs again on.
+func TestACloseWaitWriteThatRetryingCannotFixFinishesTheRow(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	since := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	putOutboxIssue(t, pool, records, waitingIssue(t, since, record.StoredWait{Entered: since.Add(time.Minute)}))
+	staleNamingNone := &dispatch.StaleDocument{Err: &dispatch.Error{Status: http.StatusConflict, Code: "PRECONDITION_FAILED", Message: "document upload precondition failed"}}
+	for _, tc := range []struct {
+		name     string
+		board    func() *closeWaitBoard
+		attempts int
+		finishes bool
+	}{
+		{name: "filed under another slug", board: func() *closeWaitBoard {
+			return &closeWaitBoard{outboxDispatch: &outboxDispatch{}, filedAs: "close-wait-md-2"}
+		}, finishes: true},
+		{name: "a stale refusal naming no version, at the bound", board: func() *closeWaitBoard {
+			return &closeWaitBoard{outboxDispatch: &outboxDispatch{}, uploadErr: staleNamingNone}
+		}, attempts: closeWaitStaleAttempts, finishes: true},
+		{name: "control: the same refusal before the bound", board: func() *closeWaitBoard {
+			return &closeWaitBoard{outboxDispatch: &outboxDispatch{}, uploadErr: staleNamingNone}
+		}, attempts: closeWaitStaleAttempts - 1},
+	} {
+		var logs bytes.Buffer
+		runner := &outbox{log: slog.New(slog.NewJSONHandler(&logs, nil)), pool: pool, records: records, dispatch: tc.board()}
+		row := mustOutboxRow(t, "LEGION-208", record.CloseWaitPublish{Generation: 3}, time.Now())
+		row.ID, row.Attempts = 81, tc.attempts
+		err := runner.execute(context.Background(), row)
+		lines := loggedLines(t, logs.String(), closeWaitUnwritable)
+		if !tc.finishes {
+			if err == nil || len(lines) != 0 {
+				t.Fatalf("%s = %v with %v logged, want a failure the row runs again on and nothing logged", tc.name, err, lines)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s = %v, want the row finished: retrying cannot write the document", tc.name, err)
+		}
+		if len(lines) != 1 || lines[0]["issue"] != "LEGION-208" {
+			t.Fatalf("%s logged %v, want one line naming the issue:\n%s", tc.name, lines, logs.String())
+		}
 	}
 }
 
