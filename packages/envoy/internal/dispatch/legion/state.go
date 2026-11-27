@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"time"
 )
 
 // The Go mirror of the part of a Legion daemon's `GET /legion/v1/state` Dispatch records. The
@@ -100,6 +101,36 @@ type Admission struct {
 	Trees []string `json:"trees,omitempty"`
 	// Blocked is each issue a blocker link holds, with the issues it waits on.
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
+	// CapChanges is the daemon's record of the changes of its admission cap, newest first
+	// (`capChanges`, dispatch://INFRA-5616), and SignalChanges its record of the changes of
+	// admission by signals, newest first (`signalChanges`, dispatch://INFRA-5899): the records the
+	// project's admission eval is read from (dispatch://INFRA-2918). A daemon that keeps a record
+	// serves its list, `[]` before the first change, so each is served where the block carries its
+	// list and not where the block leaves it out or sends `null` (served). UnmarshalJSON reads
+	// both, and no marshal of the block writes either (`json:"-"`): the `admission` observation
+	// (admissionValue) records the block's other members alone, in the shape it had before a
+	// daemon kept either record, which the Legion board reads.
+	CapChanges    served[CapChange]    `json:"-"`
+	SignalChanges served[SignalChange] `json:"-"`
+}
+
+// UnmarshalJSON decodes the block's members as encoding/json decodes them, and its two records of
+// changes beside them in the same pass: their `json:"-"`, which keeps them out of every marshal of
+// the block, keeps them out of encoding/json's decode of it too.
+func (a *Admission) UnmarshalJSON(data []byte) error {
+	// members is Admission without its methods, so decoding into it is encoding/json's own decode
+	// of the block's members rather than this method again.
+	type members Admission
+	block := struct {
+		*members
+		CapChanges    served[CapChange]    `json:"capChanges"`
+		SignalChanges served[SignalChange] `json:"signalChanges"`
+	}{members: (*members)(a)}
+	if err := json.Unmarshal(data, &block); err != nil {
+		return err
+	}
+	a.CapChanges, a.SignalChanges = block.CapChanges, block.SignalChanges
+	return nil
 }
 
 // BlockedIssue is one entry of `admission.blocked`: the issue, and the issues nobody has finished
@@ -107,6 +138,74 @@ type Admission struct {
 type BlockedIssue struct {
 	Issue     string   `json:"issue"`
 	BlockedBy []string `json:"blockedBy,omitempty"`
+}
+
+// served is a list the daemon serves in some documents and leaves out of others: Served is
+// whether the document carries it, empty or not, and Entries what it holds. A member the document
+// leaves out or sends as `null` is not served, so a daemon that keeps a record with nothing in it
+// yet, which serves `[]`, stands apart from one that keeps none.
+type served[T any] struct {
+	Served  bool
+	Entries []T
+}
+
+// UnmarshalJSON reads a list, empty or not, as served, and `null` as not served. A member the
+// document leaves out never reaches it, and stays not served.
+func (s *served[T]) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*s = served[T]{}
+		return nil
+	}
+	var entries []T
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return err
+	}
+	*s = served[T]{Served: true, Entries: entries}
+	return nil
+}
+
+// CapChange is one entry of `admission.capChanges`, a change of the admission cap the controller
+// or the operator made while the daemon runs (the daemon's api.AdmissionCapChangeView): its own id,
+// rising; the cap it set, nil for a clear, whose entry carries no `cap`; the caps the daemon
+// admitted under before it and from it on; the deployment's ceiling then; who made it, when, and
+// why. A member of the entry not named here is ignored.
+type CapChange struct {
+	ID        int64     `json:"id"`
+	Cap       *int      `json:"cap,omitempty"`
+	CapBefore int       `json:"capBefore"`
+	CapAfter  int       `json:"capAfter"`
+	Ceiling   int       `json:"ceiling"`
+	SetBy     Actor     `json:"setBy"`
+	SetAt     time.Time `json:"setAt"`
+	Reason    string    `json:"reason"`
+}
+
+// SignalChange is one entry of `admission.signalChanges`, a change of admission by signals (the
+// daemon's store.SignalChange, dispatch://INFRA-5899's S6): its own id, rising, and when it was
+// made; the signal it is of (`idle`, `queue`, `provider`, `kills` or `approvals`), nil for the
+// switch, and the signal's part (`headroom` of `provider`), nil for every other; what changed
+// (`value`, `limit`, `holds` or `switch`) and its new value, nil for a cleared limit and for a
+// value the daemon cannot compute, where Absent says why; and who changed a limit or the switch,
+// and why, nil in every other entry. A hold and the switch are 1 or 0. Each member the daemon
+// sends as `null` is a pointer here, so a null stays apart from a 0 or an empty string. A member of
+// the entry not named here is ignored.
+type SignalChange struct {
+	ID     int64     `json:"id"`
+	At     time.Time `json:"at"`
+	Signal *string   `json:"signal"`
+	Part   *string   `json:"part"`
+	What   string    `json:"what"`
+	Value  *float64  `json:"value"`
+	Absent *string   `json:"absent"`
+	SetBy  *Actor    `json:"setBy"`
+	Reason *string   `json:"reason"`
+}
+
+// Actor is who made a change the daemon records: the controller, with its session, or the
+// operator, with none (the daemon's PauseActor).
+type Actor struct {
+	Kind    string `json:"kind"`
+	Session string `json:"session,omitempty"`
 }
 
 // Issue is one issue of the daemon's record, in the fields Dispatch observes.
@@ -296,8 +395,8 @@ func waitingOnValue(waitingOn json.RawMessage) json.RawMessage {
 // claimValue is one role's claim state, `null` for a claim that names none.
 func claimValue(state string) json.RawMessage { return encodeValue(optional(state)) }
 
-// admissionValue is the admission block in the members Dispatch records (Admission), `null` for
-// none.
+// admissionValue is the admission block in the members Dispatch records (Admission) but its two
+// records of changes, which no marshal of the block writes, `null` for none.
 func admissionValue(admission *Admission) json.RawMessage { return encodeValue(admission) }
 
 // settingsValue is the settings the daemon reports, `null` for none.
