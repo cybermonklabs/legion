@@ -72,6 +72,8 @@ function Facet({
     <div>
       <span className={facetLabelClass}>{label}</span>
       <MultiSelect
+        // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
+        chevron={false}
         emptyMessage="No matches."
         label={label}
         onChange={onChange}

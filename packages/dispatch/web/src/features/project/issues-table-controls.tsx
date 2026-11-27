@@ -112,6 +112,8 @@ export function ColumnFilter<TData>({
   const show = meta?.show ?? ((value: string) => value);
   return (
     <MultiSelect
+      // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
+      chevron={false}
       emptyMessage="No matching value."
       label={name}
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
