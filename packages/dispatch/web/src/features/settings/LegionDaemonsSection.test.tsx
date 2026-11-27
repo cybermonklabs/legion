@@ -203,36 +203,35 @@ test.each([
     role: "button",
     start: "Remove the Legion daemon of ACME",
   },
-] as const)("$label, held while a write of the section is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-  start,
-}) => {
-  const user = userEvent.setup();
-  // The writes' answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const writes = [
-    spyOn(api, "putLegionDaemon").mockReturnValue(answer.promise),
-    spyOn(api, "deleteLegionDaemon").mockReturnValue(answer.promise),
-  ];
-  spies.push(...writes);
-  const section = await renderSection(
-    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
-  );
-  try {
-    await section.findByRole("cell", { name: "CORE" });
-    await pickFromLabelled(user, "Legion project", "ACME · ACME");
-    await user.click(section.getByLabelText("Legion daemon state URL"));
-    await user.paste("http://127.0.0.1:9731");
-    await pressHeld(user, section.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
-      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+] as const)(
+  "$label, held while a write of the section is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role, start }) => {
+    const user = userEvent.setup();
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      spyOn(api, "putLegionDaemon").mockReturnValue(answer.promise),
+      spyOn(api, "deleteLegionDaemon").mockReturnValue(answer.promise),
+    ];
+    spies.push(...writes);
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
+    );
+    try {
+      await section.findByRole("cell", { name: "CORE" });
+      await pickFromLabelled(user, "Legion project", "ACME · ACME");
+      await user.click(section.getByLabelText("Legion daemon state URL"));
+      await user.paste("http://127.0.0.1:9731");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    }
   }
-});
+);
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
   const user = userEvent.setup();
@@ -410,6 +409,27 @@ test("a reader who is not a person is shown the daemons and offered no control",
   expect(section.queryByLabelText("Legion project")).toBeNull();
   expect(section.queryByRole("button", { name: "Save Legion daemon" })).toBeNull();
   expect(section.queryByRole("button", { name: "Remove the Legion daemon of ACME" })).toBeNull();
+});
+
+// A person's row draws its Remove, so the daemons' table box takes no Tab stop of its own
+// (`TableShell`'s `holdsControls`). A reader who is not a person is offered no Remove, and with no
+// daemon there is no row: either way the box holds no control and keeps the browser's default.
+test("the daemons' box takes tabindex -1 while a person's row draws Remove", async () => {
+  const section = await renderSection(legionServer([setting]));
+  const remove = await section.findByRole("button", { name: "Remove the Legion daemon of ACME" });
+  expect(remove.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+});
+
+test("the daemons' box takes no tabindex for a reader who is not a person", async () => {
+  const reader = await renderSection(legionServer([setting]), false);
+  const url = await reader.findByRole("cell", { name: "http://127.0.0.1:9731" });
+  expect(url.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+});
+
+test("the daemons' box takes no tabindex while no project names a daemon", async () => {
+  const section = await renderSection(legionServer([]));
+  const empty = await section.findByText("No project names a Legion daemon yet.");
+  expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
 });
 
 /** `server` with every read it is asked recorded by project, in order, and every write held

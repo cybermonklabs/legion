@@ -209,20 +209,17 @@ describe("the box-login model route installer", () => {
     expect(existsSync(r.agent)).toBe(false);
   });
 
-  test.each([
-    "../../escape",
-    "x/../../../escape",
-    "nested/name",
-    ".hidden",
-    "a..b",
-  ])("refuses the profile name %p, which is not one plain path segment, and writes nothing", (profile) => {
-    const r = install({ profile });
-    expect(r.code).toBe(2);
-    expect(r.stderr).toContain(`--profile '${profile}' is not one plain name`);
-    expect(existsSync(join(r.home, "escape"))).toBe(false);
-    expect(existsSync(join(r.run, "escape"))).toBe(false);
-    expect(existsSync(join(r.home, ".omp", "profiles"))).toBe(false);
-  });
+  test.each(["../../escape", "x/../../../escape", "nested/name", ".hidden", "a..b"])(
+    "refuses the profile name %p, which is not one plain path segment, and writes nothing",
+    (profile) => {
+      const r = install({ profile });
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain(`--profile '${profile}' is not one plain name`);
+      expect(existsSync(join(r.home, "escape"))).toBe(false);
+      expect(existsSync(join(r.run, "escape"))).toBe(false);
+      expect(existsSync(join(r.home, ".omp", "profiles"))).toBe(false);
+    }
+  );
 
   test("refuses a profiles directory that is a symlink out of the run's home, and writes nothing there", () => {
     const r = install({
@@ -238,18 +235,16 @@ describe("the box-login model route installer", () => {
     expect(readdirSync(join(r.run, "elsewhere"))).toEqual([]);
   });
 
-  test.each([
-    "--profile",
-    "--home",
-    "--dest",
-    "--operator-home",
-  ])("refuses %s with no value as an argument error (exit 2), not an unbound variable", (flag) => {
-    const result = Bun.spawnSync(["bash", join(lib, "install-box-login-route.sh"), flag], {
-      env: { PATH: process.env.PATH ?? "", HOME: callerHome },
-    });
-    expect(result.exitCode).toBe(2);
-    expect(result.stderr.toString()).toContain(`${flag} needs a value`);
-  });
+  test.each(["--profile", "--home", "--dest", "--operator-home"])(
+    "refuses %s with no value as an argument error (exit 2), not an unbound variable",
+    (flag) => {
+      const result = Bun.spawnSync(["bash", join(lib, "install-box-login-route.sh"), flag], {
+        env: { PATH: process.env.PATH ?? "", HOME: callerHome },
+      });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr.toString()).toContain(`${flag} needs a value`);
+    }
+  );
 });
 
 // A shell with lib/box-login.sh sourced, the lock moved to FILE when one is given.

@@ -427,6 +427,9 @@ export const coverage: readonly CoverageEntry[] = [
     "InboxBody | - | form | (id === barOpenRow && view?.dataset.inboxReadingRow === id) ? …",
     { reason: REASONS[13] }
   ),
+  // The names' effect keeps the open row named past its press's own name until the selection is
+  // handed on from it (`openRowTaken`), for that hand-off alone: it draws nothing either.
+  ...answers("InboxBody | - | form | (taken) ? …", { reason: REASONS[13] }),
   ...answers(
     'InboxBody | - | form | if (mode === "list" && inHand(COPY_REF_SELECTOR) === null) return …',
     { reason: REASONS[13] }

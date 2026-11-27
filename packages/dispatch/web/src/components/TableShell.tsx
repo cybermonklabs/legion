@@ -171,6 +171,13 @@ export interface TableShellProps {
    *  edge, so a cut column reads as more to scroll rather than as clipped text
    *  (`useScrollEnds`). */
   readonly fadeTrailing?: boolean;
+  /** Whether the rows the caller draws now hold a control a reader reaches by Tab: a link, a
+   *  button, a box. Then the box takes `tabIndex={-1}`, since Firefox makes a box that scrolls and
+   *  holds controls a Tab stop of its own, which Chromium and WebKit do not, and a control in it
+   *  still takes the focus by Tab and is scrolled into view. Rows with no control leave the box
+   *  the browser's default, where the browser can make it a Tab stop that a reader scrolls by
+   *  keys. */
+  readonly holdsControls?: boolean;
 }
 
 /**
@@ -180,11 +187,11 @@ export interface TableShellProps {
  * builds one out of `<table>` markup of its own.
  *
  * A caller decides where the box sits (`className`, its own outer placement), what the table is
- * called (`label`), how much room a row takes (`size`) and whether the head stays put while the
- * rows scroll under it (`stickyHead`). Every colour, border, padding, radius and font class is
- * this file's, keyed by the density, which is why no part of it takes a `className`: a cell says
- * what its text *is* - a key, a figure, a count nobody needs to read first - and the shell says
- * what that looks like.
+ * called (`label`), how much room a row takes (`size`), whether the head stays put while the
+ * rows scroll under it (`stickyHead`) and whether its rows hold a control (`holdsControls`).
+ * Every colour, border, padding, radius and font class is this file's, keyed by the density,
+ * which is why no part of it takes a `className`: a cell says what its text *is* - a key, a
+ * figure, a count nobody needs to read first - and the shell says what that looks like.
  *
  * Not to be confused with `DataTable.tsx`'s `TableHeaderCell`, which is the sorting, filtering,
  * resizable header cell `DataTable` draws.
@@ -193,6 +200,7 @@ export function TableShell({
   children,
   className,
   fadeTrailing = false,
+  holdsControls = false,
   label,
   size = "comfortable",
   stickyHead = false,
@@ -205,6 +213,7 @@ export function TableShell({
       className={joined(recipe.wrapper, className ?? "", fadeTrailing ? ends.fade : "")}
       data-control={CONTROL.tableShell}
       ref={fadeTrailing ? ends.ref : undefined}
+      tabIndex={holdsControls ? -1 : undefined}
     >
       <table aria-label={label} className={recipe.table}>
         <TableStyleContext value={style}>{children}</TableStyleContext>

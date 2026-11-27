@@ -13,7 +13,9 @@ import {
   capSearchQuery,
   choiceParam,
   commaListParam,
+  commaListText,
   copyAddress,
+  fieldsAddress,
   flagParam,
   numberParam,
   repeatedParam,
@@ -161,6 +163,56 @@ test("a comma list round-trips and leaves the address when it is emptied", () =>
   }
 });
 
+/** What `MACHINES` reads out of a `?machine=` holding `text` as it stands. */
+function readMachines(text: string): readonly string[] {
+  const params = copyAddress();
+  params.set("machine", text);
+  return MACHINES.read(params, "machine");
+}
+
+// Only `\,` and `\\` are escapes, so an address holding neither reads as it always has: a lone
+// backslash is itself, wherever it stands, and an empty item is dropped.
+test.each([
+  ["a,b", ["a", "b"]],
+  ["a,,b", ["a", "b"]],
+  ["a\\b", ["a\\b"]],
+  ["a\\", ["a\\"]],
+  [",a", ["a"]],
+  ["", []],
+])("a comma list written %p reads as it always has", (text, values) => {
+  expect(readMachines(text)).toEqual(values);
+});
+
+// A comma or a backslash inside a value is written escaped, so the value reads back whole rather
+// than splitting in two or losing the backslash before a comma.
+test("a value holding a comma, and one holding a backslash, round-trip through the address", () => {
+  const values = ["relay,1", "C:\\hosts\\", "a\\,b", "plain"];
+  const params = copyAddress();
+  MACHINES.write(params, "machine", values);
+  expect(params.get("machine")).toBe("relay\\,1,C:\\\\hosts\\\\,a\\\\\\,b,plain");
+  expect(params.get("machine")).toBe(commaListText(values));
+  expect(MACHINES.read(params, "machine")).toEqual(values);
+});
+
+// Nothing is cut: a list past `SEARCH_QUERY_MAX` a link carried is written back whole, and a
+// link to a page names such a list whole too. Only an empty item, which the read drops, has none.
+test("a comma list past the cap is written whole, and a link carries it", () => {
+  const values = Array.from({ length: 150 }, (_, index) => `host-${index}`);
+  expect(commaListText(values).length).toBeGreaterThan(SEARCH_QUERY_MAX);
+  const params = copyAddress();
+  MACHINES.write(params, "machine", values);
+  expect(MACHINES.read(params, "machine")).toEqual(values);
+
+  const spec = { machine: MACHINES };
+  expect(fieldsAddress("/agents", spec, { machine: values })).toBe(
+    `/agents?${new URLSearchParams({ machine: values.join(",") })}`
+  );
+  expect(fieldsAddress("/agents", spec, { machine: ["relay,1"] })).toBe(
+    "/agents?machine=relay%5C%2C1"
+  );
+  expect(fieldsAddress("/agents", spec, { machine: ["relay-1", ""] })).toBeNull();
+});
+
 const PAGE_FIELDS = {
   label: repeatedParam(),
   "needs-you": flagParam(),
@@ -272,18 +324,21 @@ test.each([
     "?ask=1234abcd",
     "#b-1",
   ],
-])("a redirect to %s lands on exactly that address, dropping the page's own query and hash", (to, pathname, search, hash) => {
-  const hook = renderRedirect({ to }, "/projects/CORE?label=a&q=ship#top");
-  try {
-    expect(hook.result.current.location.pathname).toBe(pathname);
-    expect(hook.result.current.location.search).toBe(search);
-    expect(hook.result.current.location.hash).toBe(hash);
-    act(() => hook.result.current.back(-1));
-    expect(hook.result.current.location.pathname).toBe("/elsewhere");
-  } finally {
-    hook.unmount();
+])(
+  "a redirect to %s lands on exactly that address, dropping the page's own query and hash",
+  (to, pathname, search, hash) => {
+    const hook = renderRedirect({ to }, "/projects/CORE?label=a&q=ship#top");
+    try {
+      expect(hook.result.current.location.pathname).toBe(pathname);
+      expect(hook.result.current.location.search).toBe(search);
+      expect(hook.result.current.location.hash).toBe(hash);
+      act(() => hook.result.current.back(-1));
+      expect(hook.result.current.location.pathname).toBe("/elsewhere");
+    } finally {
+      hook.unmount();
+    }
   }
-});
+);
 
 const PLAIN_TABLE = tableAddressGrammar();
 const LEFT_TABLE = tableAddressGrammar({ prefix: "left", pageSize: 50 });

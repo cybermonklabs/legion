@@ -6,7 +6,8 @@
  * moves the window (`movableReadingPaneWidth`). The column beside the list is `Inbox.test.tsx`'s.
  */
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { act, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: this file keeps the motion hold's bare pointermove over the hidden list and its pointerleave, which user-event has no form for: its hover sends a fixed mouse sequence to a row, which the list's hand would hold.
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { afterFrameAndTasks } from "../../__tests__/frames";
@@ -18,7 +19,8 @@ import {
   answerIssuePatches,
 } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { InboxRow, Issue } from "../../api/types";
+import { myRepliesKey } from "../../api/queries";
+import type { InboxRow, Issue, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { replyRow } from "../threads/replies-fixture";
@@ -537,47 +539,47 @@ test("at 390 px the bar's Snooze of the open row lands on the next row's own mar
 // row is leaving, so the landing is owed again. The apply then takes the row away and its view
 // with it, which drops the focus onto the body, and the landing is made on the next row's own mark
 // in its view.
-test.each([
-  "a wheel",
-  "a key",
-] as const)("at 390 px, with the landing of the bar's Dismiss of the open row owed, %s in the row's reading view owes it again, made on the next row's mark once the row goes", async (reader) => {
-  const user = userEvent.setup();
-  const width = movableReadingPaneWidth(390);
-  const threads = serveThreads();
-  const { queryClient, unmount } = renderInbox("/?group=none");
-  try {
-    const mark = await markOpenThread(user);
-    const apply = Promise.withResolvers<void>();
-    const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+test.each(["a wheel", "a key"] as const)(
+  "at 390 px, with the landing of the bar's Dismiss of the open row owed, %s in the row's reading view owes it again, made on the next row's mark once the row goes",
+  async (reader) => {
+    const user = userEvent.setup();
+    const width = movableReadingPaneWidth(390);
+    const threads = serveThreads();
+    const { queryClient, unmount } = renderInbox("/?group=none");
     try {
-      await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
-      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
-      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
-      if (reader === "a wheel") {
-        mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
-      } else {
-        await user.keyboard("{ArrowDown}");
+      const mark = await markOpenThread(user);
+      const apply = Promise.withResolvers<void>();
+      const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+      try {
+        await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+        await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+        if (reader === "a wheel") {
+          mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        } else {
+          await user.keyboard("{ArrowDown}");
+        }
+        // Read once the act has been answered: the focus is still on the mark, in the leaving row.
+        await afterFrameAndTasks();
+        expect(placeOf(document.activeElement)).toBe(placeOf(mark));
+        expect(viewRow()).toBe("reply:c2");
+      } finally {
+        cancel.mockRestore();
       }
-      // Read once the act has been answered: the focus is still on the mark, in the leaving row.
-      await afterFrameAndTasks();
-      expect(placeOf(document.activeElement)).toBe(placeOf(mark));
-      expect(viewRow()).toBe("reply:c2");
-    } finally {
-      cancel.mockRestore();
-    }
 
-    await act(async () => {
-      apply.resolve();
-      await apply.promise;
-    });
-    await waitFor(() => expect(viewRow()).toBe("reply:c3"));
-    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
-  } finally {
-    await threads.restore();
-    unmount();
-    width.restore();
+      await act(async () => {
+        apply.resolve();
+        await apply.promise;
+      });
+      await waitFor(() => expect(viewRow()).toBe("reply:c3"));
+      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
+    } finally {
+      await threads.restore();
+      unmount();
+      width.restore();
+    }
   }
-});
+);
 
 // The bar's Snooze of the open row keeps the bar up while its write is out, with the row still
 // drawn in its reading view. The reader unticks the row's own mark there with a click, which
@@ -606,6 +608,234 @@ test("at 390 px, with the bar's Snooze of the open row out, an untick of the row
     unmount();
     width.restore();
     snoozes.restore();
+  }
+});
+
+/** Serves the three threads `serveThreads` lists as Dispatch holds them, each read of the Inbox's
+ *  threads answering with what it holds then, and holds the Dismiss written over them until
+ *  `land`, which takes the threads it names out of the Inbox and answers, or `refuse`, which
+ *  answers Dispatch's refusal. `takeAway` takes one thread out as another device's Dismiss does:
+ *  the Inbox's next read answers without it. */
+function serveHeldDismiss() {
+  let inbox: MyReplyRow[] = ["c1", "c2", "c3"].map((id) => replyRow(id));
+  const read = (rows: readonly MyReplyRow[]): MyRepliesResponse => ({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [...rows],
+    total: rows.length,
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    read(page.state === "inbox" ? inbox : [])
+  );
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockImplementation(async (body) => {
+    const taken = await answer.promise;
+    const named = new Set(body.threads);
+    inbox = inbox.filter((row) => !named.has(`reply:${row.thread_id}`));
+    return taken;
+  });
+  return {
+    land: () =>
+      act(async () => {
+        answer.resolve({ dismissed: 2 });
+        await answer.promise;
+      }),
+    refuse: () =>
+      act(async () => {
+        answer.reject(new ApiError(409, { error: "conflict" }));
+        await answer.promise.catch(() => undefined);
+      }),
+    restore: () => {
+      listComments.mockRestore();
+      getIssue.mockRestore();
+      listMyReplies.mockRestore();
+      getInbox.mockRestore();
+    },
+    takeAway: (threadId: string) => {
+      inbox = inbox.filter((row) => row.thread_id !== threadId);
+    },
+  };
+}
+
+/** Marks the first thread `serveHeldDismiss` lists in the list, then opens the middle one and
+ *  marks it in its reading view, last. Answers its mark there. */
+async function markTwoThreads(user: UserEvent): Promise<HTMLElement> {
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c2", "reply:c3"]));
+  await user.click(within(shortRow("reply:c1")).getByRole("checkbox"));
+  await screen.findByText("1 selected");
+  await user.click(shortRow("reply:c2"));
+  await screen.findByTestId("inbox-reading-view");
+  expect(viewRow()).toBe("reply:c2");
+  const mark = viewMark();
+  await user.click(mark);
+  await screen.findByText("2 selected");
+  return mark;
+}
+
+/** The pointer travelling on over the list the reading view hides, as its motion hold hears it
+ *  (`useMotionHold`): a move over the list of its rows, on no row. */
+function travel(): void {
+  const items = screen.getByTestId("inbox-list").querySelector("ul");
+  if (items === null) throw new Error("the list draws no rows");
+  fireEvent.pointerMove(items);
+}
+
+/** The pointer leaving that list, so its motion hold adopts the read it was holding back. */
+function rest(): void {
+  const root = screen.getByTestId("inbox-list").firstElementChild;
+  if (root === null) throw new Error("the list has no rows' root");
+  fireEvent.pointerLeave(root);
+}
+
+// The bar's Dismiss of the open row and of another marked row, while the pointer travels over the
+// list the reading view hides: the list keeps the read it drew while the pointer moves
+// (`useMotionHold`), so both rows stay drawn, the open one in its view, while the write is out and
+// after it lands. The bar's going parks the focus on the open row's own mark and owes the landing,
+// and the reader's wheel or key there owes it again. Dispatch takes the write, and the Dismiss
+// names its rows until the page no longer draws them (`forgetDismissed`). The pointer rests, the
+// list lets both rows go, and the selection is handed on to the next row only in the commit after
+// that one. The open row stays named leaving until then, so the landing waits for the next row's
+// view and is made on that row's own mark, and the focus is never left on the page's body.
+test.each(["no act", "a wheel", "a key"] as const)(
+  "at 390 px, with the bar's Dismiss of the open row and another row out while the pointer travels, %s, the write landing and the rows going lands the focus on the next row's own mark in its reading view, never on the body",
+  async (reader) => {
+    const user = userEvent.setup();
+    const width = movableReadingPaneWidth(390);
+    const threads = serveHeldDismiss();
+    const { unmount } = renderInbox("/?group=none");
+    const focus = recordFocus();
+    try {
+      const mark = await markTwoThreads(user);
+      travel();
+      await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+      travel();
+      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+      travel();
+      if (reader === "a wheel") {
+        mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      } else if (reader === "a key") {
+        await user.keyboard("{ArrowDown}");
+      }
+      travel();
+      // Read once the act has been answered: the focus is still on the mark, in the leaving row.
+      await afterFrameAndTasks();
+      travel();
+      expect(placeOf(document.activeElement)).toBe(placeOf(mark));
+      expect(viewRow()).toBe("reply:c2");
+
+      // Dispatch takes the write while the list still draws both rows.
+      await threads.land();
+      travel();
+      await afterFrameAndTasks();
+      travel();
+      expect(rowIds()).toEqual(["reply:c1", "reply:c2", "reply:c3"]);
+      expect(viewRow()).toBe("reply:c2");
+      const from = focus.landed.length;
+
+      // The pointer rests, and the rows go.
+      rest();
+      await waitFor(() => expect(viewRow()).toBe("reply:c3"));
+      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
+      // Still there once every frame and task the going asked for has run.
+      await afterFrameAndTasks();
+      expect(placeOf(document.activeElement)).toBe(placeOf(viewMark()));
+      expect(rowIds()).toEqual(["reply:c3"]);
+      expect(focus.landed.slice(from).filter((place) => place.startsWith("the list"))).toEqual([]);
+    } finally {
+      focus.stop();
+      await threads.land();
+      unmount();
+      width.restore();
+      threads.restore();
+    }
+  }
+);
+
+// The open row taken away by another device's Dismiss, with the bar up over it and another marked
+// row: no press of the reader's here names it, so the bar's hand-off never names it leaving and
+// owes nothing. The view gives way to the list at the row's place, saying the row left, as for any
+// row that leaves on its own, and the hand-off lands nothing: the focus stays on the list's row the
+// page put it on, and no mark takes it.
+test("at 390 px the open row another device dismissed is named leaving by nothing: the view gives way to the list at its place, and the bar's hand-off lands nothing", async () => {
+  const user = userEvent.setup();
+  const width = movableReadingPaneWidth(390);
+  const threads = serveHeldDismiss();
+  const { queryClient, unmount } = renderInbox("/?group=none");
+  const focus = recordFocus();
+  try {
+    await markTwoThreads(user);
+    const from = focus.landed.length;
+
+    threads.takeAway("c2");
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: myRepliesKey });
+    });
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(screen.getByText("This item left your Inbox.").getAttribute("role")).toBe("status");
+    await waitFor(() => expect(shortRow("reply:c3")).toHaveFocus());
+    // Still there once every frame and task the going asked for has run, with the bar still up
+    // over the other marked row.
+    await afterFrameAndTasks();
+    expect(shortRow("reply:c3")).toHaveFocus();
+    expect(rowIds()).toEqual(["reply:c1", "reply:c3"]);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(focus.landed.slice(from).filter((place) => place.includes(": Select "))).toEqual([]);
+  } finally {
+    focus.stop();
+    unmount();
+    width.restore();
+    threads.restore();
+  }
+});
+
+// A refused Dismiss of the open row ends the row's name at the refusal: the rollback puts the rows
+// back, the reading view still shows the row, and the landing the bar's going owed is made then,
+// on the row's own mark there. Nothing is owed after it: a focus the page drops onto the body is
+// left there by the commits that follow, where a landing still owed would park it on the mark
+// again.
+test("at 390 px a refused Dismiss of the open row ends its name at the refusal: the landing is made on the row's own mark in its reading view, and nothing is owed after it", async () => {
+  const user = userEvent.setup();
+  const width = movableReadingPaneWidth(390);
+  const threads = serveHeldDismiss();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    const mark = await markTwoThreads(user);
+    travel();
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    travel();
+    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+    travel();
+
+    await threads.refuse();
+    travel();
+    await screen.findByText(/^Could not dismiss 2 threads: /);
+    travel();
+    await afterFrameAndTasks();
+    travel();
+    expect(viewRow()).toBe("reply:c2");
+    expect(placeOf(document.activeElement)).toBe(placeOf(mark));
+    // The pointer rests, and the read the list adopts holds every row again.
+    rest();
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c2", "reply:c3"]));
+    expect(viewRow()).toBe("reply:c2");
+
+    // The page drops the focus onto the body, and the list's next commits leave it there.
+    act(() => mark.blur());
+    expect(document.activeElement).toBe(document.body);
+    travel();
+    rest();
+    await afterFrameAndTasks();
+    expect(placeOf(document.activeElement)).toBe("the body");
+    expect(viewRow()).toBe("reply:c2");
+  } finally {
+    unmount();
+    width.restore();
+    threads.restore();
   }
 });
 

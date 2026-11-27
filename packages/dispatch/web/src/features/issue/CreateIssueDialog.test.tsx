@@ -277,35 +277,33 @@ test.each([
   { label: "Title", name: "Title", press: "{Enter}", role: "textbox" },
   { label: /^Spec/, name: "Spec", press: "{Control>}{Enter}{/Control}", role: "textbox" },
   { label: "Create", name: "Create", press: "{Enter}", role: "button" },
-] as const)("$name, held while the create is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  name,
-  press,
-  role,
-}) => {
-  const calls: CreateIssueInput[] = [];
-  // The create's answer, held until the case gives it inside `act`.
-  const answer = Promise.withResolvers<Issue>();
-  const view = renderDialog(userEvent.setup(), (input) => {
-    calls.push(input);
-    return answer.promise;
-  });
-  try {
-    await projectPicked();
-    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
-    await view.user.paste("Held create");
-    await pressHeld(view.user, screen.getByRole(role, { name: label }), {
-      name,
-      press,
-      sent: () => calls.length,
+] as const)(
+  "$name, held while the create is out, keeps the focus, and a second press sends nothing",
+  async ({ label, name, press, role }) => {
+    const calls: CreateIssueInput[] = [];
+    // The create's answer, held until the case gives it inside `act`.
+    const answer = Promise.withResolvers<Issue>();
+    const view = renderDialog(userEvent.setup(), (input) => {
+      calls.push(input);
+      return answer.promise;
     });
-  } finally {
-    await act(async () =>
-      answer.resolve(issue(calls[0] ?? { project: "CORE", title: "Held create" }, "CORE-9"))
-    );
-    view.unmount();
+    try {
+      await projectPicked();
+      await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+      await view.user.paste("Held create");
+      await pressHeld(view.user, screen.getByRole(role, { name: label }), {
+        name,
+        press,
+        sent: () => calls.length,
+      });
+    } finally {
+      await act(async () =>
+        answer.resolve(issue(calls[0] ?? { project: "CORE", title: "Held create" }, "CORE-9"))
+      );
+      view.unmount();
+    }
   }
-});
+);
 
 // INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
 // options." The Create issue dialog's Project is such a list: its options are every project,

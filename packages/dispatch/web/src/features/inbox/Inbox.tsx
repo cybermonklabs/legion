@@ -2118,18 +2118,47 @@ function InboxBody({
   // the read that places the row.
   /** Whether a press of the reader's is taking this row off the view: a Dismiss's or a Move to
    *  Inbox's (`dismissedHere`), and a Snooze's, the bar's or a row's own, from the pick until the
-   *  first read the list adopts after its write (`snoozedHere`). The one answer the bar's hand-off
-   *  is given, the one the hand's own hold reads (`seen`, below), and the one the list's anchor
-   *  reads beside its own other reasons (`ViewportAnchor`'s `leaving`, below): the rows the
-   *  hand-off waits for are the rows the anchor lets go, so once the landing is made, their going
-   *  moves nothing. The anchor names the rows of a commit before that commit's layout effects
-   *  run (`getSnapshotBeforeUpdate`), where the Snooze names below are still the last commit's,
+   *  first read the list adopts after its write (`snoozedHere`). The answer the bar's hand-off is
+   *  given, which names the reading view's open row past it too (`openRowTaken`), the one the
+   *  hand's own hold reads (`seen`, below), and the one the list's anchor reads beside its own
+   *  other reasons (`ViewportAnchor`'s `leaving`, below): the rows the hand-off waits for are the
+   *  rows the anchor lets go, so once the landing is made, their going moves nothing. The anchor
+   *  names the rows of a commit before that commit's layout effects run
+   *  (`getSnapshotBeforeUpdate`), where the Snooze names below are still the last commit's,
    *  so a Snooze's write out (`snoozing`, `bulkSnoozing`) names its rows too: the pick's own
    *  commit is named for it. A row named here is never kept on the page for the hand in it: the
    *  hold that keeps a row under the reader's hand would keep this one for the focus the hand-off
    *  parked on it, and the write that takes it away would never land. */
   const leavingNow = (id: string): boolean =>
     dismissedHere(id) || snoozing.has(id) || bulkSnoozing.has(id) || snoozedHere.current.has(id);
+  // Below 1280 px with a row open, the page draws that row's reading view in the list's place and
+  // hides the list (`page`'s `readingView`), and a focus put in the hidden list falls to the
+  // page's body. So there the hand-off reads the open row alone, as the pane selection names it
+  // rather than as the page draws it: the commit that takes the open row off the list draws the
+  // list for that one commit, before the selection is handed on to the next row, whose view hides
+  // the list again in the commit after it. The open row is the one row; its mark is the view's
+  // own checkbox while the view is drawn for it; the view itself is that row for where the focus
+  // stands (`MarkedList`'s `row`), since it carries no row marker; and the view's scroller is the
+  // list's own stop. The open row is named as leaving only where a press of the reader's names it,
+  // as every row is (`leavingNow`), and that name stands until the selection is handed on from it
+  // (`openRowTaken`), so a landing the bar's press owes waits for the next row's view and lands on
+  // its mark, or on its scroller where no mark is in sight.
+  /** The row open in the reading view, by id, while the view stands in the list's place (`mode`
+   *  is `reading`), else undefined. */
+  const barOpenRow = mode === "reading" ? paneSelection.id : undefined;
+  /** The open row whose name a press of the reader's made (`leavingNow`) and the names' effect
+   *  below ended as the list let its row go, while the selection is still on it and the list does
+   *  not draw it; else undefined. The hand-off's one row is the open row, so its name lasts until
+   *  the selection is handed on from it (`MarkedList`'s `leaving`), and the list lets the row go
+   *  a commit before that hand-on (`usePaneSelection`'s `settleReadingView`): a Dismiss Dispatch
+   *  took names its row only until the page no longer draws it (`forgetDismissed`), and a Snooze
+   *  only until the read that moves the row out of its band. Were the name to end there, the
+   *  hand-off would find its one row named by nothing and drawn nowhere, make the owed landing on
+   *  no mark and no stop, and leave the focus on the page's body, as it did in Chromium, Firefox
+   *  and WebKit (builds Job `infra-3135-i-inboxb-npg4f`). A row no press named is never here. A
+   *  press refused or undone while the list draws its row ends its name there (`leavingNow`), and
+   *  a row the list draws again ends it here. Written by the names' effect only. */
+  const openRowTaken = useRef<string | undefined>(undefined);
   // The names the hand-off reads, kept after every commit and before it reads them in that commit
   // (`useLastMarkedPlace`, below).
   //
@@ -2154,6 +2183,10 @@ function InboxBody({
   // it - the row's own, whose refusal stays with the ask until its next press, or the bar's
   // newest pick - since the rollback has put the row's moment back and the row is staying.
   useLayoutEffect(() => {
+    const open = barOpenRow;
+    // Whether a press of the reader's names the open row as this commit begins, before the names
+    // below can end.
+    const named = open !== undefined && leavingNow(open);
     const drawn = new Set(rows().map((row) => row.dataset.inboxRow ?? ""));
     forgetDismissed((id) => drawn.has(id));
     const names = snoozedHere.current;
@@ -2165,21 +2198,15 @@ function InboxBody({
         name.from === "row" ? snoozeWrites.of(id).error !== undefined : snoozeRefused(id);
       if (refused || adoptedInbox !== name.read) names.delete(id);
     }
+    // The open row stays named past its press's own name while the list does not draw it: from
+    // the commit whose names ended here as the list let it go, until the selection is handed on
+    // from it (`openRowTaken`).
+    const taken =
+      open !== undefined &&
+      !drawn.has(open) &&
+      (openRowTaken.current === open || (named && !leavingNow(open)));
+    openRowTaken.current = taken ? open : undefined;
   });
-  // Below 1280 px with a row open, the page draws that row's reading view in the list's place and
-  // hides the list (`page`'s `readingView`), and a focus put in the hidden list falls to the
-  // page's body. So there the hand-off reads the open row alone, as the pane selection names it
-  // rather than as the page draws it: the commit that takes the open row off the list draws the
-  // list for that one commit, before the selection is handed on to the next row, whose view hides
-  // the list again in the commit after it. The open row is the one row; its mark is the view's
-  // own checkbox while the view is drawn for it; the view itself is that row for where the focus
-  // stands (`MarkedList`'s `row`), since it carries no row marker; and the view's scroller is the
-  // list's own stop. The open row is named as leaving only where a press of the reader's names it,
-  // as every row is (`leavingNow`), so a landing the bar's press owes waits for the next row's view
-  // and lands on its mark, or on its scroller where no mark is in sight.
-  /** The row open in the reading view, by id, while the view stands in the list's place (`mode`
-   *  is `reading`), else undefined. */
-  const barOpenRow = mode === "reading" ? paneSelection.id : undefined;
   /** The reading view while it is drawn for the open row `id`, else null. */
   const barReadingView = (id: string): HTMLElement | null => {
     const view = paneRef.current;
@@ -2197,7 +2224,7 @@ function InboxBody({
       return row?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null;
     },
     lastMarked,
-    leaving: leavingNow,
+    leaving: (id) => leavingNow(id) || id === openRowTaken.current,
     list: barStop,
     order: () =>
       barOpenRow === undefined ? rows().map((row) => row.dataset.inboxRow ?? "") : [barOpenRow],

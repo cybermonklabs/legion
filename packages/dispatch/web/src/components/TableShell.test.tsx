@@ -240,3 +240,74 @@ test("the tight density pads a cell half as much as the compact one, in a box wi
     }
   });
 });
+
+/** A table of `rows`, each with its Delete, whose caller says its rows hold a control exactly
+ *  while it draws one (`holdsControls`), as the Settings sections do. */
+function Removable({ rows }: { rows: readonly string[] }) {
+  return (
+    <TableShell holdsControls={rows.length > 0} label="Removable">
+      <TableHead>
+        <TableHeadCell>Key</TableHeadCell>
+        <TableHeadCell>
+          <span className="sr-only">Actions</span>
+        </TableHeadCell>
+      </TableHead>
+      <TableBody>
+        {rows.length === 0 ? (
+          <TableEmpty colSpan={2}>Nothing to remove.</TableEmpty>
+        ) : (
+          rows.map((row) => (
+            <TableRow key={row}>
+              <TableCell>{row}</TableCell>
+              <TableCell align="right">
+                <button type="button">Delete {row}</button>
+              </TableCell>
+            </TableRow>
+          ))
+        )}
+      </TableBody>
+    </TableShell>
+  );
+}
+
+// Firefox makes a box that scrolls and holds controls a Tab stop of its own, which Chromium and
+// WebKit do not. A box whose rows hold a control takes tabindex -1, so it is no stop, while each
+// control in it stays one; the same box with its rows gone, and no control left, takes none.
+test("a box whose rows hold a control takes tabindex -1, and its controls keep their Tab stops", () => {
+  const view = render(<Removable rows={["CORE"]} />);
+  try {
+    expect(shell().getAttribute("tabindex")).toBe("-1");
+    expect(screen.getByRole("button", { name: "Delete CORE" }).hasAttribute("tabindex")).toBe(
+      false
+    );
+    view.rerender(<Removable rows={[]} />);
+    expect(shell().hasAttribute("tabindex")).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A table whose rows hold no control keeps the browser's default at every density, the fading box
+// of the Steps tables included: where the browser makes such a box a Tab stop, the reader scrolls
+// it by keys from there, and -1 would take that stop away.
+test("a box whose rows hold no control takes no tabindex at any density", () => {
+  for (const size of ["comfortable", "compact", "dense", "tight"] as const) {
+    const view = render(
+      <TableShell fadeTrailing={size === "dense"} label={`Days ${size}`} size={size}>
+        <TableHead>
+          <TableHeadCell>Day</TableHeadCell>
+        </TableHead>
+        <TableBody>
+          <TableRow>
+            <TableCell>2026-11-27</TableCell>
+          </TableRow>
+        </TableBody>
+      </TableShell>
+    );
+    try {
+      expect(shell().hasAttribute("tabindex")).toBe(false);
+    } finally {
+      view.unmount();
+    }
+  }
+});

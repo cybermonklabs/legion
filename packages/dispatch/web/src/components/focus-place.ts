@@ -507,8 +507,13 @@ export function landWhole(element: HTMLElement): boolean {
 }
 
 /** Scrolls every clipping box around `element` and the window the least distance that shows
- *  `element` whole, below `head` if given, ignoring CSS scroll padding. When `origin` is given,
- *  its box moves to the closest position to `origin.top` that still fits `element`, rather than
+ *  `element` whole, below `head` if given. A box that must scroll brings `element` into its room
+ *  (`roomIn`), clear of the box's own scroll padding as well as of the head; a control that
+ *  already lies whole in a box's sight moves nothing there, even inside that padding. The window's
+ *  scroll padding is not read: the root's bottom padding keeps what the browser scrolls into view
+ *  clear of the review sheet below 1280 px, and a landing scrolls the window by the cut alone.
+ *  When `origin` is given, its box moves to `origin.top` where `element` lies whole in sight
+ *  there, else to the closest position to it that brings `element` into the room, rather than
  *  anchoring to an approximate virtual jump. */
 export function scrollToNearest(
   element: Element,
@@ -521,7 +526,7 @@ export function scrollToNearest(
     const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
     const drawn = boxOf(element);
     const from = box === origin?.box ? origin.top - box.scrollTop : 0;
-    scrollNearestIn(box, drawn, sight, from);
+    scrollNearestIn(box, drawn, sight, from, roomIn(box, sight));
   }
   scrollNearestIn(
     window,
@@ -530,9 +535,10 @@ export function scrollToNearest(
   );
 }
 
-/** Lands the selection bar's target at its nearest visible edge, ignoring CSS scroll padding.
- *  The table can supply the scroll position before it had to draw a virtual row: show the
- *  measured checkbox at the closest position to that starting point, not to the draw's jump. */
+/** Lands the selection bar's target at its nearest visible edge, inside the room of each box
+ *  that must scroll and by the cut alone in the window (`scrollToNearest`). The table can supply
+ *  the scroll position before it had to draw a virtual row: show the measured checkbox at the
+ *  closest position to that starting point, not to the draw's jump. */
 export function landNearest(
   element: HTMLElement,
   head: Element | null = null,
@@ -545,9 +551,22 @@ export function landNearest(
   });
 }
 
-/** Scrolls only the axes where the target needs to move. */
-function scrollNearestIn(scroller: Element | Window, drawn: Edges, sight: Edges, from = 0): void {
-  const top = nearestDelta(drawn.top, drawn.bottom, sight.top, sight.bottom, from);
+/** Scrolls only the axes where the target needs to move. A target that lies whole in `sight` once
+ *  scrolled by `from` moves by `from` alone, so one already whole in sight is not moved where
+ *  `from` is 0; any other moves the least distance from `from` that brings it into `room`, the
+ *  part of `sight` clear of a box's own scroll padding (`roomIn`), which is all of it for the
+ *  window. */
+function scrollNearestIn(
+  scroller: Element | Window,
+  drawn: Edges,
+  sight: Edges,
+  from = 0,
+  room = sight
+): void {
+  // Whole in `sight` once scrolled by `from`, with `nearestDelta`'s rounding.
+  const fits =
+    Math.ceil(drawn.bottom - sight.bottom) <= from && from <= Math.floor(drawn.top - sight.top);
+  const top = fits ? from : nearestDelta(drawn.top, drawn.bottom, room.top, room.bottom, from);
   const left = nearestDelta(drawn.left, drawn.right, sight.left, sight.right);
   if (left !== 0) scroller.scrollBy(top === 0 ? { left } : { left, top });
   else if (top !== 0) scroller.scrollBy({ top });
@@ -602,6 +621,32 @@ function belowHead(edges: Edges, head: Element | null): Edges {
   return head === null
     ? edges
     : { ...edges, top: Math.max(edges.top, head.getBoundingClientRect().bottom) };
+}
+
+/** The room a landing scrolls a control into in `box`, a clipping box, where `sight` is what the
+ *  box shows below its sticky head (`belowHead`): below the larger of the head's bottom and the
+ *  box's computed `scroll-padding-top`, and above the smaller of the sight's bottom and the box's
+ *  bottom less its computed `scroll-padding-bottom`, each padding measured in from its edge of the
+ *  box's scrollport. This is the one read of a scroll padding in this file, and it reads boxes
+ *  only: the window's is never read (`scrollToNearest`). The browser's own focus scroll in a box
+ *  keeps the same room. The project List's box keeps 64 px at its top (`DataTable`), its head
+ *  about 50, and in WebKit a landing flush under the head let the engine scroll the box again by
+ *  itself, with no call of the page's, until the checkbox stood below the 64 px or the box could
+ *  scroll no further. A padding of `auto`, the value of a box that sets none, keeps nothing, and
+ *  a percentage is of the scrollport's height. */
+function roomIn(box: Element, sight: Edges): Edges {
+  const port = scrollportOf(box);
+  const padding = (value: string): number => {
+    const size = Number.parseFloat(value);
+    if (!Number.isFinite(size)) return 0;
+    return value.endsWith("%") ? (size * (port.bottom - port.top)) / 100 : size;
+  };
+  const { scrollPaddingBottom, scrollPaddingTop } = getComputedStyle(box);
+  return {
+    ...sight,
+    bottom: Math.min(sight.bottom, port.bottom - padding(scrollPaddingBottom)),
+    top: Math.max(sight.top, port.top + padding(scrollPaddingTop)),
+  };
 }
 
 /** What is in the reader's sight through the boxes around an element that can hide it. */

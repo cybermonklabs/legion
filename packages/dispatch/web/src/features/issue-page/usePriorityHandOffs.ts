@@ -79,7 +79,9 @@ export function usePriorityHandOffs(
   const advancesValue = useRef<HTMLDivElement>(null);
   const addRow = useRef<HTMLDivElement>(null);
   // The line's picker trigger in `box`, found by the name it carries there: the add name beside
-  // Add (`adds`), "Edit priorities" in the Advances row. Only a hand-off reads it, so the name is
+  // Add (`adds`), "Edit priorities" in the Advances row. The line there is the one the read that
+  // moved it drew afresh, with no write of its own out, so its trigger carries the name it has
+  // with no save in flight (`priorityTriggerName`). Only a hand-off reads it, so the name is
   // escaped then rather than in every render.
   const triggerIn = (box: HTMLDivElement | null, adds: boolean) =>
     box?.querySelector<HTMLElement>(

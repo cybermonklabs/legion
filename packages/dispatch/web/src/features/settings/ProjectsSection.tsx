@@ -142,7 +142,12 @@ export function ProjectsSection(): ReactNode {
       ) : null}
       {projects.isSuccess ? (
         <>
-          <TableShell className="mt-6" label="Projects">
+          <TableShell
+            className="mt-6"
+            // Each row draws its default assignee's picker and its default repository's box.
+            holdsControls={projects.data.length > 0}
+            label="Projects"
+          >
             <TableHead>
               <TableHeadCell>Key</TableHeadCell>
               <TableHeadCell>Name</TableHeadCell>

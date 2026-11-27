@@ -423,7 +423,12 @@ export function AgentTokensSection(): ReactNode {
         </div>
       ) : null}
       {tokens.isSuccess ? (
-        <TableShell className="mt-6" label="Agent tokens">
+        <TableShell
+          className="mt-6"
+          // A token not revoked draws its Revoke; a revoked token's scope boxes are disabled.
+          holdsControls={tokens.data.some((token) => token.revoked_at === null)}
+          label="Agent tokens"
+        >
           <TableHead>
             <TableHeadCell>Name</TableHeadCell>
             <TableHeadCell>Token</TableHeadCell>

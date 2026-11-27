@@ -11,6 +11,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { correction } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { pickIn, pickRepo } from "../../__tests__/issue-picks";
@@ -38,6 +39,7 @@ import type {
   Project,
   Subscriber,
   UserIssueState,
+  Version,
 } from "../../api/types";
 import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
@@ -2732,6 +2734,75 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
     restore();
   }
 });
+
+// The Spec tab's Name version is held, not disabled, while the version its dialog names is
+// saving. The dialog gives the focus back to it as the dialog closes, in the commit before the
+// page learns that the save has ended, and a disabled Name version took no focus there, so it
+// fell to the page's body. Whether the save is answered or the reader cancels the dialog while it
+// is out, the focus is on Name version once the dialog has gone.
+test.each(["answered", "cancelled while it is out"] as const)(
+  "the Spec tab's Name version takes the focus back from its dialog, the save %s",
+  async (how) => {
+    const user = userEvent.setup();
+    const restore = stubIssuePage(issue);
+    const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({ ...issue.artifacts[0] });
+    const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Primary",
+      version: 1,
+      token: "sha256:primary",
+    });
+    const answer = Promise.withResolvers<Version>();
+    const createArtifactVersion = spyOn(api, "createArtifactVersion").mockReturnValue(
+      answer.promise
+    );
+    const view = renderIssuePage("/issues/CORE-1/spec");
+    const opener = () =>
+      within(screen.getByTestId("issue-tabs")).getByRole<HTMLButtonElement>("button", {
+        name: "Name version",
+      });
+    try {
+      await screen.findByTestId("issue-tabs");
+      await user.click(opener());
+      const dialog = await screen.findByRole("dialog", { name: "Name this version" });
+      const summary = within(dialog).getByLabelText("What changed?");
+      await waitFor(() => expect(document.activeElement === summary).toBe(true));
+      await user.paste("Settled the rollout");
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(createArtifactVersion).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(opener().getAttribute("aria-disabled")).toBe("true"));
+      expect(opener().disabled).toBe(false);
+
+      if (how === "answered") {
+        await act(async () =>
+          answer.resolve({
+            authors: [{ id: "alice", kind: "user" }],
+            created_at: "2026-09-11T00:00:00Z",
+            named: true,
+            number: 2,
+            summary: "Settled the rollout",
+          })
+        );
+      } else {
+        await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      }
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog", { name: "Name this version" })).not.toBeInTheDocument()
+      );
+      await afterFrameAndTasks();
+      // What holds the focus, as a string a failed check prints whole.
+      const active = document.activeElement;
+      expect(active === document.body ? "the body" : active?.getAttribute("aria-label")).toBe(
+        "Name version"
+      );
+    } finally {
+      view.unmount();
+      createArtifactVersion.mockRestore();
+      getArtifact.mockRestore();
+      getArtifactText.mockRestore();
+      restore();
+    }
+  }
+);
 
 test("IssuePage copies the issue key on click, its reference on a modifier click, and the Spec's reference at the shown version", async () => {
   const user = userEvent.setup();

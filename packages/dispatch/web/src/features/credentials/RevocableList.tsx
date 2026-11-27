@@ -128,7 +128,12 @@ export function RevocableList<Row>({
         </div>
       ) : null}
       {query.isSuccess ? (
-        <TableShell className="mt-6" label={heading}>
+        <TableShell
+          className="mt-6"
+          // A row's Revoke is its one control, and a row nobody may revoke draws none.
+          holdsControls={query.data.some((row) => !unrevocable?.(row))}
+          label={heading}
+        >
           <TableHead>
             {columns.map((column) => (
               <TableHeadCell key={column.header}>{column.header}</TableHeadCell>

@@ -21,6 +21,7 @@ import type {
   UserIssueState,
   UserState,
 } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { patchAnswer } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -115,12 +116,15 @@ function CachedHeader({ isClosed }: { isClosed: boolean }): ReactNode {
 
 /** The header of `details` in the main content, with the page's text after it, and the title
  *  writes it makes answered as Dispatch answers them. With `isClosed`, the issue is
- *  `closedDetails`. */
-function header(isClosed = false): { patches: Patches; unmount: () => void; user: UserEvent } {
+ *  `closedDetails`; a row about another state of the issue hands it as `drawn`. */
+function header(
+  isClosed = false,
+  drawn: IssueDetails = isClosed ? closedDetails : details
+): { patches: Patches; unmount: () => void; user: UserEvent } {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  client.setQueryData(issueQuery(base.key).queryKey, isClosed ? closedDetails : details);
+  client.setQueryData(issueQuery(base.key).queryKey, drawn);
   // The header reads the project list, the project's architecture sources and the issue's
   // subscribers at once; none of them is what these rows are about.
   const restoreReads = mockHeaderReads();
@@ -341,50 +345,53 @@ test.each([
   ["Enter", "keyCode 229"],
   ["Escape", "isComposing"],
   ["Escape", "keyCode 229"],
-] as const)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, mark) => {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
-    patchAnswer(issue, input)
-  );
-  const view = renderHeader(client, <Header state={unpinnedState} />);
-  try {
-    // The title's editor opens from its Edit title button (`IssueHeader`'s title control).
-    await view.user.click(view.q.getByRole("button", { name: "Edit title" }));
-    const title = view.q.getByRole("textbox", { name: "Issue title" });
-    await view.user.clear(title);
-    await view.user.paste("Pin it from the header");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(
-      title,
-      mark === "isComposing"
-        ? { isComposing: true, key }
-        : { isComposing: false, key, keyCode: 229 }
+] as const)(
+  "an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit",
+  async (key, mark) => {
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+      patchAnswer(issue, input)
     );
-    expect(title).toBeInTheDocument();
-    expect(title).toHaveValue("Pin it from the header");
-    expect(title).toHaveFocus();
-    expect(patchIssue).not.toHaveBeenCalled();
-
-    await view.user.keyboard(`{${key}}`);
-    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
-    if (key === "Escape") {
-      expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
-      expect(patchIssue).not.toHaveBeenCalled();
-    } else {
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      expect(patchIssue).toHaveBeenCalledWith(
-        "CORE-1",
-        { title: "Pin it from the header" },
-        keyedAttempt
+    const view = renderHeader(client, <Header state={unpinnedState} />);
+    try {
+      // The title's editor opens from its Edit title button (`IssueHeader`'s title control).
+      await view.user.click(view.q.getByRole("button", { name: "Edit title" }));
+      const title = view.q.getByRole("textbox", { name: "Issue title" });
+      await view.user.clear(title);
+      await view.user.paste("Pin it from the header");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(
+        title,
+        mark === "isComposing"
+          ? { isComposing: true, key }
+          : { isComposing: false, key, keyCode: 229 }
       );
+      expect(title).toBeInTheDocument();
+      expect(title).toHaveValue("Pin it from the header");
+      expect(title).toHaveFocus();
+      expect(patchIssue).not.toHaveBeenCalled();
+
+      await view.user.keyboard(`{${key}}`);
+      expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+      if (key === "Escape") {
+        expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
+        expect(patchIssue).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+        expect(patchIssue).toHaveBeenCalledWith(
+          "CORE-1",
+          { title: "Pin it from the header" },
+          keyedAttempt
+        );
+      }
+    } finally {
+      view.unmount();
+      patchIssue.mockRestore();
     }
-  } finally {
-    view.unmount();
-    patchIssue.mockRestore();
   }
-});
+);
 
 // The title's control is a button named for what it does, with the title it edits as its
 // description, so a screen reader reads "Edit title, button" and then the title. The heading
@@ -661,3 +668,116 @@ test("a read of the state asked while the header's pin is out waits for its answ
     stopListening();
   }
 });
+
+/** What holds the keyboard focus, as a string a failed row prints whole: the page's body, or the
+ *  focused element's tag and its accessible name, its words where it carries no `aria-label`. */
+function focusedControl(): string {
+  const active = document.activeElement;
+  if (active === null || active === document.body) return "the body";
+  const name = active.getAttribute("aria-label") ?? active.textContent?.trim();
+  return `${active.tagName.toLowerCase()} ${name}`;
+}
+
+/** `details` claimed by a person, so the header draws the claim with Release beside it. */
+const claimedDetails: IssueDetails = {
+  ...details,
+  claim: { actor: { id: "alice", kind: "user" }, at: "2026-09-24T06:00:00Z" },
+};
+
+// Release is held, not disabled, while its release is out: the pressed Release keeps the focus,
+// where a disabled one dropped it onto the page's body (Chromium's, which the row emulates).
+// Once the release lands the claim goes, and Release with it, and the header draws no Claim
+// control in their place, so the Attention group's hand-off sends the focus on: the group then
+// holds no control, and the walk over the main content lands on the control now at Release's
+// place there, the labels' control, "Edit labels".
+test.each(["click", "Enter"] as const)(
+  "Release pressed by %s keeps the focus while its release is out, and hands it to Edit labels once the claim has gone",
+  async (press) => {
+    const released = Promise.withResolvers<Issue>();
+    const release = spyOn(api, "releaseIssueClaim").mockReturnValue(released.promise);
+    const { unmount, user } = header(false, claimedDetails);
+    const stopFocusFixup = emulateChromiumFocusFixup();
+    const name = "Release the claim on CORE-1";
+    try {
+      const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+      if (press === "click") await user.click(button);
+      else {
+        act(() => button.focus());
+        await user.keyboard("{Enter}");
+      }
+      await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(button.textContent).toBe("Releasing…"));
+      expect({
+        ariaDisabled: button.getAttribute("aria-disabled"),
+        disabled: button.disabled,
+        focus: focusedControl(),
+      }).toEqual({ ariaDisabled: "true", disabled: false, focus: `button ${name}` });
+
+      await act(async () => released.resolve({ ...base, claim: null }));
+      await waitFor(() => expect(screen.queryByRole("button", { name })).toBeNull());
+      await afterFrameAndTasks();
+      expect(focusedControl()).toBe("button Edit labels");
+    } finally {
+      stopFocusFixup();
+      unmount();
+      release.mockRestore();
+    }
+  }
+);
+
+// Save route and Save parent close their editor with their own press, which takes the form away
+// with the focus inside it, and the close draws the control that opens the editor again in its
+// place: the focus goes to that control, not to the page's body, by a click on Save or by Enter
+// in the editor's field, which submits the form. It stays there while the save is out and once
+// its answer is drawn.
+test.each([
+  ["route", "click"],
+  ["route", "Enter"],
+  ["parent", "click"],
+  ["parent", "Enter"],
+] as const)(
+  "Save %s, pressed by %s, gives the focus to the control that opens its editor, drawn again as the editor closes",
+  async (field, press) => {
+    const editor =
+      field === "route"
+        ? {
+            answer: { ...base, route: "role:reviewer" },
+            box: "Message route",
+            draft: "role:reviewer",
+            drawn: details,
+            opener: "Messages default to no route",
+            openerAgain: "Messages default to role:reviewer",
+          }
+        : {
+            answer: { ...base, parent: "CORE-2" },
+            box: "Parent",
+            draft: "CORE-2",
+            drawn: { ...details, parent: "CORE-3" },
+            opener: "Edit parent issue",
+            openerAgain: "Edit parent issue",
+          };
+    const { patches, unmount, user } = header(false, editor.drawn);
+    const save = Promise.withResolvers<Issue>();
+    patches.mockImplementation(() => save.promise);
+    try {
+      // The route and the parent are rows of the header's Details, which the reader opens.
+      await openIssueDetails(user);
+      await user.click(await screen.findByRole("button", { name: editor.opener }));
+      const box = screen.getByRole("textbox", { name: editor.box });
+      await user.clear(box);
+      await user.type(box, editor.draft);
+      if (press === "click")
+        await user.click(screen.getByRole("button", { name: `Save ${field}` }));
+      else await user.keyboard("{Enter}");
+      await waitFor(() => expect(patches).toHaveBeenCalledTimes(1));
+      expect(screen.queryByRole("textbox", { name: editor.box })).toBeNull();
+      expect(focusedControl()).toBe(`button ${editor.openerAgain}`);
+
+      await act(async () => save.resolve(editor.answer));
+      await afterFrameAndTasks();
+      expect(focusedControl()).toBe(`button ${editor.openerAgain}`);
+    } finally {
+      unmount();
+    }
+  }
+);

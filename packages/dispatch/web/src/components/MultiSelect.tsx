@@ -138,7 +138,10 @@ interface SharedProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
-  /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
+  /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`, or a pick
+   *  the host refused. Its words are announced as they appear (`role="alert"`, as `QueryError`
+   *  and the selection bar say a refusal), and the text box names them as its description while
+   *  they stand. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. A
    *  single pick shows it over its `onCreate` row too: that row takes the typed value as it is,
@@ -250,6 +253,9 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * ends in a chevron, as a `<select>` ends in its arrow, unless its host draws a look of its own
  * (`chevron`).
  *
+ * A multi-select's `Clear` foot comes with the first value picked and keeps its room until the
+ * list closes: with nothing picked, its Clear is held and says that nothing is picked.
+ *
  * The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
  * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and a typed
  * character, which goes into the text box and narrows the list by it.
@@ -298,6 +304,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         ? triggerClassName
         : `${controlPadding[size]} ${triggerClassName}`;
   const listboxId = `${id}-options`;
+  const errorId = `${id}-error`;
   const nameId = `${id}-name`;
   const shownId = `${id}-shown`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
@@ -447,7 +454,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // reader's cursor puts it there, and a press of each can take that focus to the body, where
   // Escape no longer reaches the popover. A press of Clear or of the Create row that holds the
   // focus gives it to the search box at the press itself, before the press acts, so the move does
-  // not depend on when the host applies the press. Clear goes as the pick empties. A multi-select's
+  // not depend on when the host applies the press. Clear stays as the pick empties, held and saying
+  // that nothing is picked (below), with nothing more for the reader to do there. A multi-select's
   // Create row goes as its value is made and the search empties. A single pick's Create row goes
   // with the list where the host takes the value, and the focus goes on to the trigger. Where the
   // host refuses the value, the Create row stays, and the focus stays in the search box, where the
@@ -484,6 +492,17 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (pressed && focusLost()) inputRef.current?.focus();
   });
 
+  // Whether this open draws the Clear foot: a multi-select draws it once its pick holds a value,
+  // and keeps it, with its room, until the list closes. A foot drawn only while a value is picked
+  // goes with the last value unticked, the box grows shorter and the browser clamps its scroll: a
+  // pointer untick at the end of the project List's Labels filter scrolled it from 716 to 655 px,
+  // and the row under the pointer became the one above the row pressed. With nothing picked its
+  // Clear is held, `aria-disabled` and never `disabled`, so a focus on it stays, and says that
+  // nothing is picked. An open with nothing picked draws no foot. Set during render (React's
+  // pattern for state derived from props), so no commit draws the list without the foot it keeps.
+  const [footKept, setFootKept] = useState(false);
+  const drawsFoot = open && !single && (selected.length > 0 || footKept);
+  if (drawsFoot !== footKept) setFootKept(drawsFoot);
   // The text box stuck to the list's top, and the Clear foot stuck to its bottom while it is
   // drawn: the rows scroll under both.
   const headRef = useRef<HTMLDivElement>(null);
@@ -787,6 +806,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
               aria-autocomplete="list"
               aria-controls={listboxId}
+              aria-describedby={error === null ? undefined : errorId}
               aria-expanded="true"
               aria-label={searchLabel}
               {...marks?.search}
@@ -893,30 +913,37 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           {error === null ? null : (
             <p
               className={`border-t px-3 py-2 text-sm ${tooltips ? `${borderDefault} ${dangerText}` : ON_PAGE.failure}`}
+              id={errorId}
+              role="alert"
             >
               {error}
             </p>
           )}
-          {props.mode === "single" || selected.length === 0 ? null : (
+          {props.mode === "single" || !drawsFoot ? null : (
             <div
               className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}
               ref={footRef}
             >
               <button
+                aria-disabled={selected.length === 0 || undefined}
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
                 onClick={() => {
+                  // Held, with nothing picked, a press does nothing.
+                  if (selected.length === 0) return;
                   // Clear keeps active the option it finds active, which it shows whole once the
                   // host's pick holds nothing (`awaiting`).
                   if (activeRow !== undefined) setActiveValue(activeRow);
                   awaiting.current = { cleared: true };
                   props.onChange([]);
                 }}
-                onClickCapture={focusSearchFirst}
+                onClickCapture={selected.length === 0 ? undefined : focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"
               >
-                Clear {label.toLocaleLowerCase()}
+                {selected.length === 0
+                  ? `No ${label.toLocaleLowerCase()} picked`
+                  : `Clear ${label.toLocaleLowerCase()}`}
               </button>
             </div>
           )}

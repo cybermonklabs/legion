@@ -152,7 +152,7 @@ test("a facet lists each value with its count and narrows the PRs, kept in the U
   await options.filter({ hasText: "P0" }).click();
   await page.keyboard.press("Escape");
 
-  await expect(page.getByText("1 PRs in current filter/window")).toBeVisible();
+  await expect(page.getByText("1 PR in current filter/window")).toBeVisible();
   await expect(page).toHaveURL(/[?&]priority=P0(&|$)/);
   await context.close();
 });

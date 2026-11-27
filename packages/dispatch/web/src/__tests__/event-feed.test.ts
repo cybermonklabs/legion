@@ -1915,18 +1915,18 @@ const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
 // an issue row carries a priority by its id alone, so not one issue read refetches, even where
 // every row names the priority. The description autosaves as the person types, so each save
 // would otherwise refetch both fault lists on every open Priorities page.
-test.each([
-  "created",
-  "updated",
-] as const)("a priority.updated of a %s priority refreshes ['priorities'] and no issue read", (change) => {
-  const incoming = priorityWrite(change);
-  expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
-  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
-    "priorities",
-    "priorityHistory",
-    "prioritySummary",
-  ]);
-});
+test.each(["created", "updated"] as const)(
+  "a priority.updated of a %s priority refreshes ['priorities'] and no issue read",
+  (change) => {
+    const incoming = priorityWrite(change);
+    expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
+    expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+      "priorities",
+      "priorityHistory",
+      "prioritySummary",
+    ]);
+  }
+);
 
 // A delete takes the priority out of every relation and writes no issue event: the work under it
 // and the work under none read again whatever they hold, and every issue read and issue list
@@ -2136,13 +2136,16 @@ test.each(
   Object.entries(eventsByType).filter(
     ([type, incoming]) => incoming.issue_key !== null && type !== "subscription.remove_requested"
   )
-)("%s refreshes its issue's detail, its log and its project list, and no other issue's detail", (_type, incoming) => {
-  const refreshed = refreshedReads(incoming);
-  expect(refreshed).toContain("detail");
-  expect(refreshed).toContain("log");
-  expect(refreshed).toContain("projectList");
-  expect(refreshed).not.toContain("otherProjectList");
-});
+)(
+  "%s refreshes its issue's detail, its log and its project list, and no other issue's detail",
+  (_type, incoming) => {
+    const refreshed = refreshedReads(incoming);
+    expect(refreshed).toContain("detail");
+    expect(refreshed).toContain("log");
+    expect(refreshed).toContain("projectList");
+    expect(refreshed).not.toContain("otherProjectList");
+  }
+);
 
 test("a feed event prepends a newer event to the loaded log page", () => {
   const client = new QueryClient();

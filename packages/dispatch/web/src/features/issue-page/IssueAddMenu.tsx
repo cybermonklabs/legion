@@ -384,6 +384,9 @@ export function IssueAddMenu({
       });
     }
     if ((details.advances ?? []).length === 0) {
+      // The picker's trigger beside Add, by the name it has with no save in flight: a save in
+      // flight renames it ("Saving priorities of CORE-1", `priorityTriggerName`), and the busy
+      // trigger is not reached, as the components' is not.
       fields.push({
         label: PROPERTY_LABELS.advances,
         ...atControl(addPriorityControlName(details.key)),

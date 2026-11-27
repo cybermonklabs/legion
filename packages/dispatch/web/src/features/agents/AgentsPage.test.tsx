@@ -1880,94 +1880,94 @@ test.each([
     retried: "message-3",
     which: "reply's",
   },
-] as const)("offline, the $which $pressed holds its retry row with the focus on it through the write and the paused read, and lets go at the request deadline, saying why", async ({
-  drawn,
-  exchange,
-  mode,
-  pressed: pressedName,
-  retried,
-}) => {
-  const online = onlineManager.isOnline();
-  const user = userEvent.setup();
-  const page = renderAgents({
-    listedAgents: steerCapableAgents(),
-    messages: [{ message: exchange.message, replies: [...exchange.replies] }],
-    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
-  });
-  // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
-  const delivered = Promise.withResolvers<MessageDelivery>();
-  page.createMessageDelivery.mockImplementation(() => delivered.promise);
-  const stopFocusFixup = emulateChromiumFocusFixup();
+] as const)(
+  "offline, the $which $pressed holds its retry row with the focus on it through the write and the paused read, and lets go at the request deadline, saying why",
+  async ({ drawn, exchange, mode, pressed: pressedName, retried }) => {
+    const online = onlineManager.isOnline();
+    const user = userEvent.setup();
+    const page = renderAgents({
+      listedAgents: steerCapableAgents(),
+      messages: [{ message: exchange.message, replies: [...exchange.replies] }],
+      queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+    });
+    // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
+    const delivered = Promise.withResolvers<MessageDelivery>();
+    page.createMessageDelivery.mockImplementation(() => delivered.promise);
+    const stopFocusFixup = emulateChromiumFocusFixup();
 
-  try {
-    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
-    await expand(user, planner, "Planner");
-    const pressed = await within(planner).findByRole("button", { name: pressedName });
-    const row = () => ({ buttons: retryButtons(planner, drawn), focus: focusedControl() });
-    const held = { buttons: drawn.map((name) => `${name}: held`), focus: `button ${pressedName}` };
-    const reads = page.listAgentMessages.mock.calls.length;
-    jest.useFakeTimers();
-    const onClock = userOnFakeClock();
-    /** Presses the held button again, by key and by pointer, and lets what it set off run. */
-    const pressAgain = async () => {
+    try {
+      const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+      await expand(user, planner, "Planner");
+      const pressed = await within(planner).findByRole("button", { name: pressedName });
+      const row = () => ({ buttons: retryButtons(planner, drawn), focus: focusedControl() });
+      const held = {
+        buttons: drawn.map((name) => `${name}: held`),
+        focus: `button ${pressedName}`,
+      };
+      const reads = page.listAgentMessages.mock.calls.length;
+      jest.useFakeTimers();
+      const onClock = userOnFakeClock();
+      /** Presses the held button again, by key and by pointer, and lets what it set off run. */
+      const pressAgain = async () => {
+        await onClock.keyboard("{Enter}");
+        await onClock.click(pressed);
+        await tick(0);
+      };
+      onlineManager.setOnline(false);
+      act(() => pressed.focus());
       await onClock.keyboard("{Enter}");
-      await onClock.click(pressed);
       await tick(0);
-    };
-    onlineManager.setOnline(false);
-    act(() => pressed.focus());
-    await onClock.keyboard("{Enter}");
-    await tick(0);
-    expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
-    // The retry is out: the row is held, and the pressed button keeps the focus.
-    expect(row()).toEqual(held);
-    await pressAgain();
-    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+      expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
+      // The retry is out: the row is held, and the pressed button keeps the focus.
+      expect(row()).toEqual(held);
+      await pressAgain();
+      expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
 
-    delivered.resolve({
-      ...failedAttempt(retried, mode),
-      attempt: 2,
-      envelope_id: "envelope-2",
-      error: null,
-      state: "sent",
-    });
-    await tick(1_000);
-    expect(
-      page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
-    ).toBe("paused");
-    // The retry landed and its read is paused: the row is still held, with the focus.
-    expect(row()).toEqual(held);
-    await pressAgain();
-    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+      delivered.resolve({
+        ...failedAttempt(retried, mode),
+        attempt: 2,
+        envelope_id: "envelope-2",
+        error: null,
+        state: "sent",
+      });
+      await tick(1_000);
+      expect(
+        page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
+      ).toBe("paused");
+      // The retry landed and its read is paused: the row is still held, with the focus.
+      expect(row()).toEqual(held);
+      await pressAgain();
+      expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
 
-    // The retry landed within the second before, which is when the hold's timer started.
-    await tick(REQUEST_DEADLINE_MS - 2_000);
-    expect(row()).toEqual(held);
+      // The retry landed within the second before, which is when the hold's timer started.
+      await tick(REQUEST_DEADLINE_MS - 2_000);
+      expect(row()).toEqual(held);
 
-    await tick(2_000);
-    expect(row()).toEqual({
-      buttons: drawn.map((name) => `${name}: free`),
-      focus: `button ${pressedName}`,
-    });
-    expect(page.listAgentMessages.mock.calls.length).toBe(reads);
-    expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
-      "Could not load this conversation. Dispatch could not be reached."
-    );
+      await tick(2_000);
+      expect(row()).toEqual({
+        buttons: drawn.map((name) => `${name}: free`),
+        focus: `button ${pressedName}`,
+      });
+      expect(page.listAgentMessages.mock.calls.length).toBe(reads);
+      expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
+        "Could not load this conversation. Dispatch could not be reached."
+      );
 
-    act(() => onlineManager.setOnline(true));
-    await tick(0);
-    expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
-    expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
-  } finally {
-    stopFocusFixup();
-    // The page and its reads go before the network returns, so no read paused offline goes on.
-    page.view.unmount();
-    page.queryClient.clear();
-    onlineManager.setOnline(online);
-    realClock();
-    page.restore();
+      act(() => onlineManager.setOnline(true));
+      await tick(0);
+      expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
+      expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
+    } finally {
+      stopFocusFixup();
+      // The page and its reads go before the network returns, so no read paused offline goes on.
+      page.view.unmount();
+      page.queryClient.clear();
+      onlineManager.setOnline(online);
+      realClock();
+      page.restore();
+    }
   }
-});
+);
 
 test("Use Send instead is disabled when the target does not advertise steer", async () => {
   const user = userEvent.setup();
@@ -4723,6 +4723,49 @@ test("a registry refilling from the first read shows the refilling notice, not a
   }
 });
 
+// A list that has only failed goes back to pending, with no error of its own, while a poll's read
+// is out. The page keeps what the first read settled through such a poll, one that never answers
+// here: the refilling note, the header and the Agents region, and no loading skeleton.
+test("a registry refused as refilling at its first read keeps the note, the header and the region through a poll that never answers", async () => {
+  const page = renderAgents();
+  page.listAgents.mockRejectedValue(refillingError());
+
+  try {
+    await screen.findByTestId("agent-list-refilling");
+    page.listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+    act(() => {
+      void page.queryClient.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() =>
+      expect(page.queryClient.getQueryState(["agents"])?.fetchStatus).toBe("fetching")
+    );
+    expect(page.queryClient.getQueryState(["agents"])?.status).toBe("pending");
+    expect(page.queryClient.getQueryState(["agents"])?.error).toBeNull();
+    await afterFrameAndTasks();
+    expect(screen.queryByRole("status", { name: "Loading agents" })).toBeNull();
+    expect(screen.getByTestId("agent-list-refilling").textContent).toBe(AGENT_LIST_REFILLING);
+    expect(screen.getByRole("heading", { level: 1, name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Agents" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("before a first read of the agent list settles the page draws the loading skeleton", async () => {
+  const page = renderAgents();
+  page.listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+
+  try {
+    await waitFor(() => expect(page.listAgents).toHaveBeenCalled());
+    expect(await screen.findByRole("status", { name: "Loading agents" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // A row whose session leaves the registry unmounts; the send it had out is the held-send store's,
 // which holds it for the session. The row that comes back shows that send, held - its picker and
 // its draft - until it lands, and then they are the reader's.
@@ -5111,9 +5154,9 @@ test("the group and the role are written to the address, and are absent until th
   }
 });
 
-// The page cuts `q` and `machine` at 1,000 characters when it writes them. A longer value a link
-// carried stays as it came until the reader changes that field itself: ticking a group keeps the
-// whole search, and a search keeps every machine the link named.
+// The page cuts `q` at 1,000 characters when it writes it, and writes a machine list whole. A
+// longer value a link carried stays as it came until the reader changes that field itself:
+// ticking a group keeps the whole search, and a search keeps every machine the link named.
 test("a filter change leaves the longer search and machine list a link carried whole", async () => {
   const user = userEvent.setup();
   const query = "p".repeat(1200);
@@ -5138,6 +5181,46 @@ test("a filter change leaves the longer search and machine list a link carried w
     await waitFor(() => expect(address().get("q")).toBe("plan"));
     expect(address().get("machine")).toBe(machines);
     expect(address().get("group")).toBe("active");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The page writes a machine or a role list whole, so it keeps one within the 1,000 characters
+// of the address a list may take by refusing the pick that would pass them: the refusal is said
+// under the list, and the address keeps the list it had. A pick that ends exactly on the bound
+// is taken.
+test("a machine pick that would take the list past 1,000 characters is refused, in words under the list", async () => {
+  const user = userEvent.setup();
+  // Ninety-nine names of nine characters and their commas: 989 characters of the address.
+  const hosts = Array.from({ length: 99 }, (_, index) => `host-${String(index).padStart(4, "0")}`);
+  const page = renderAgents({
+    initialEntry: `/agents?machine=${hosts.join(",")}`,
+    listedAgents: [...agents, deployerAgent()],
+  });
+  const machineList = () =>
+    new URLSearchParams(screen.getByTestId("location-search").textContent ?? "").get("machine");
+  const words =
+    "Not added: the address keeps at most 1,000 characters of machines, and this pick would make 1,012.";
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const machine = await filterTrigger(user, region, "machine");
+    await user.click(machine);
+
+    // A comma and ten characters: 1,000 exactly, which the address takes.
+    await user.click(filterOption("machine", "build-host"));
+    const kept = [...hosts, "build-host"].join(",");
+    await waitFor(() => expect(machineList()).toBe(kept));
+
+    // A comma and eleven more would make 1,012: refused, and said under the list.
+    await user.click(filterOption("machine", "deploy-host"));
+    await waitFor(() =>
+      expect(within(panelOf(machine)).queryByText(words)?.textContent).toBe(words)
+    );
+    expect(machineList()).toBe(kept);
+    expect(machine.textContent).toBe("Machine · 100");
   } finally {
     page.view.unmount();
     page.restore();

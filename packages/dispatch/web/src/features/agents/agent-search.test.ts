@@ -9,7 +9,7 @@ import { agentsAddress, useAgentFilters } from "./agent-search";
 // field its control moves rather than the whole narrowing read back with one field replaced:
 // the old setter worked out what had changed by comparing each array's identity, which a caller
 // that rebuilt a field it did not change (the group multi-select already does) would defeat, and
-// a write of all four cuts `q`, `machine` and `role` at `SEARCH_QUERY_MAX`.
+// a write of all four cuts `q` at `SEARCH_QUERY_MAX`.
 test("the setter writes the field it is handed and leaves every other whole", () => {
   const machines = Array.from({ length: 120 }, (_, index) => `host-${index}`).join(",");
   const query = "p".repeat(SEARCH_QUERY_MAX + 200);
@@ -80,18 +80,34 @@ test("the link to the Agents page for a machine is the address the page's own gr
   }
 });
 
-// `?machine=` is cut at `SEARCH_QUERY_MAX`, so a link for a longer name would read back as the
-// cut: a name no session reports, or another machine's. Such a name has no link, and a name of
-// exactly the cap has one that reads back whole.
-test("a machine name past the cap has no link to the Agents page, and a name at the cap has", () => {
-  expect(agentsAddress({ machines: ["x".repeat(SEARCH_QUERY_MAX + 1)] })).toBeNull();
-
-  const atCap = "x".repeat(SEARCH_QUERY_MAX);
-  const link = `/agents?machine=${atCap}`;
-  expect(agentsAddress({ machines: [atCap] })).toBe(link);
+// `?machine=` is written whole at any length, so a name longer than `SEARCH_QUERY_MAX` has its
+// link as any other name has, and the link reads back as that whole name.
+test("a machine name past the cap has its whole link to the Agents page", () => {
+  const pastCap = "x".repeat(SEARCH_QUERY_MAX + 1);
+  const link = `/agents?machine=${pastCap}`;
+  expect(agentsAddress({ machines: [pastCap] })).toBe(link);
   const linked = renderAddress(() => useAgentFilters(), [link]);
   try {
-    expect(linked.result.current.value[0].machines).toEqual([atCap]);
+    expect(linked.result.current.value[0].machines).toEqual([pastCap]);
+  } finally {
+    linked.unmount();
+  }
+});
+
+// A name holding a comma or a backslash is written escaped (`commaListParam`), so its link
+// names it whole and reads back as that one name, as the page's own setter writes it.
+test("a machine or a role holding a comma or a backslash links whole and reads back whole", () => {
+  const narrowing = { machines: ["relay,1", "C:\\host"], roles: ["a,b\\"] };
+  const link = agentsAddress(narrowing);
+  expect(link).toBe("/agents?machine=relay%5C%2C1%2CC%3A%5C%5Chost&role=a%5C%2Cb%5C%5C");
+  const linked = renderAddress(() => useAgentFilters(), [link ?? "/agents"]);
+  try {
+    expect(linked.result.current.value[0]).toEqual({
+      groups: [],
+      machines: ["relay,1", "C:\\host"],
+      roles: ["a,b\\"],
+      search: "",
+    });
   } finally {
     linked.unmount();
   }

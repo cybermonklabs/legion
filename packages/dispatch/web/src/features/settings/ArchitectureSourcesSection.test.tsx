@@ -301,48 +301,48 @@ test.each([
   { label: "Add source", role: "button" },
   { label: "Source repository", role: "textbox" },
   { label: "Branch", role: "textbox" },
-] as const)("$label, held while its write is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-}) => {
-  const user = userEvent.setup();
-  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
-    architectureSource,
-  ]);
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
-  // The writes' answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const writes = [
-    spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
-    spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
-    spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
-  ];
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+] as const)(
+  "$label, held while its write is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role }) => {
+    const user = userEvent.setup();
+    const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+      architectureSource,
+    ]);
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
+      spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
+      spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-  try {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ArchitectureSourcesSection />
-      </QueryClientProvider>
-    );
-    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
-    await section.findByRole("cell", { name: "legion/arch" });
-    await pickFromLabelled(user, "Source project", "CORE · Core");
-    await user.click(section.getByLabelText("Source repository"));
-    await user.paste("acme/infra");
-    await pressHeld(user, section.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
-    cleanup();
-    queryClient.clear();
-    listArchitectureSources.mockRestore();
-    listProjects.mockRestore();
-    for (const write of writes) write.mockRestore();
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ArchitectureSourcesSection />
+        </QueryClientProvider>
+      );
+      const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+      await section.findByRole("cell", { name: "legion/arch" });
+      await pickFromLabelled(user, "Source project", "CORE · Core");
+      await user.click(section.getByLabelText("Source repository"));
+      await user.paste("acme/infra");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+      cleanup();
+      queryClient.clear();
+      listArchitectureSources.mockRestore();
+      listProjects.mockRestore();
+      for (const write of writes) write.mockRestore();
+    }
   }
-});
+);
 
 /** The section over CORE and OPS, with no source yet and every save answered as the server would
  *  answer it. */
@@ -539,6 +539,33 @@ test("a source removal the reader stopped says Retry sends it again, not that it
     );
   } finally {
     realClock();
+    page.restore();
+  }
+});
+
+// Each source's row draws its Refresh and Delete, so the sources' table box takes no Tab stop of
+// its own (`TableShell`'s `holdsControls`); with no source it draws no control, and its box keeps
+// the browser's default.
+test("the sources' box takes tabindex -1 while a source is listed, and none while there is none", async () => {
+  const listed = sourceServer([architectureSource]);
+  let page = await sourcesOf(listed.list, listed.put, listed.remove);
+  try {
+    await page.section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    const listedBox = page.section
+      .getByRole("table", { name: "Architecture sources" })
+      .closest('[data-control="table-shell"]');
+    expect(listedBox?.getAttribute("tabindex")).toBe("-1");
+    page.restore();
+    const none = sourceServer([]);
+    page = await sourcesOf(none.list, none.put, none.remove);
+    await page.section.findByText("No architecture sources yet.");
+    const emptyBox = page.section
+      .getByRole("table", { name: "Architecture sources" })
+      .closest('[data-control="table-shell"]');
+    expect(emptyBox?.hasAttribute("tabindex")).toBe(false);
+  } finally {
     page.restore();
   }
 });

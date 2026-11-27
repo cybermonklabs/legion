@@ -2292,49 +2292,55 @@ test("a Ctrl+Enter that ends an IME composition in Safari, at keyCode 229, sends
 test.each([
   ["isComposing", { isComposing: true }],
   ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const { view } = renderComposer({ kind: "ask" });
+] as const)(
+  "an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer({ kind: "ask" });
 
-  try {
-    const label = screen.getByLabelText<HTMLInputElement>("Option 1 label");
-    await user.click(label);
-    await user.keyboard("Yes");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(label, { ...composing, key: "Enter" });
-    expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(1);
+    try {
+      const label = screen.getByLabelText<HTMLInputElement>("Option 1 label");
+      await user.click(label);
+      await user.keyboard("Yes");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(label, { ...composing, key: "Enter" });
+      expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(1);
 
-    await user.keyboard("{Enter}");
-    expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(2);
-    expect(focusedName()).toBe("Option 2 label");
-  } finally {
-    view.unmount();
+      await user.keyboard("{Enter}");
+      expect(screen.queryAllByLabelText(/^Option \d+ label$/)).toHaveLength(2);
+      expect(focusedName()).toBe("Option 2 label");
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // The same for Escape: one that ends an input method's composition raises no `Discard draft?`
 // over the draft, and a plain Escape still does.
 test.each([
   ["isComposing", { isComposing: true }],
   ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition in the box, marked by %s, asks nothing", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const { view } = renderComposer();
+] as const)(
+  "an Escape that ends an IME composition in the box, marked by %s, asks nothing",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer();
 
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.paste("a draft");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, { ...composing, key: "Escape" });
-    expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      await user.click(field);
+      await user.paste("a draft");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, { ...composing, key: "Escape" });
+      expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
 
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: "Discard" })).toBeTruthy();
-  } finally {
-    view.unmount();
+      await user.keyboard("{Escape}");
+      expect(screen.getByRole("button", { name: "Discard" })).toBeTruthy();
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);

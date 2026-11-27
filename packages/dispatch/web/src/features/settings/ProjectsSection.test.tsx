@@ -103,43 +103,43 @@ test.each([
   { label: "Key", role: "textbox" },
   { label: "Name", role: "textbox" },
   { label: "New project", role: "button" },
-] as const)("$label, held while the create is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-}) => {
-  const user = userEvent.setup();
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
-  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
-  // The create's answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+] as const)(
+  "$label, held while the create is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role }) => {
+    const user = userEvent.setup();
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+    const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+    // The create's answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
-  try {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ProjectsSection />
-      </QueryClientProvider>
-    );
-    await screen.findByRole("cell", { name: "CORE" });
-    await user.click(screen.getByLabelText("Key"));
-    await user.paste("qa");
-    await user.click(screen.getByLabelText("Name"));
-    await user.paste("Quality");
-    await pressHeld(user, screen.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => createProject.mock.calls.length,
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
-    cleanup();
-    queryClient.clear();
-    listProjects.mockRestore();
-    listDefaults.mockRestore();
-    createProject.mockRestore();
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectsSection />
+        </QueryClientProvider>
+      );
+      await screen.findByRole("cell", { name: "CORE" });
+      await user.click(screen.getByLabelText("Key"));
+      await user.paste("qa");
+      await user.click(screen.getByLabelText("Name"));
+      await user.paste("Quality");
+      await pressHeld(user, screen.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => createProject.mock.calls.length,
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+      cleanup();
+      queryClient.clear();
+      listProjects.mockRestore();
+      listDefaults.mockRestore();
+      createProject.mockRestore();
+    }
   }
-});
+);
 
 /** The section over CORE, which names alice until a save names another, with `readUsers`
  *  answering the people list and `whoAmI` the viewer; every create and default-assignee save is
@@ -393,6 +393,26 @@ test("the default repository cell reads the project's default, and None for a pr
     ).not.toBeInTheDocument();
   } finally {
     done();
+  }
+});
+
+// Each project's row draws its default assignee's list and its default repository's box, so the
+// projects' table box takes no Tab stop of its own (`TableShell`'s `holdsControls`); with no
+// project it draws no control, and its box keeps the browser's default.
+test("the projects' box takes tabindex -1 while a project is listed, and none while there is none", async () => {
+  const listed = renderOverServer(projectServer(withDefault));
+  try {
+    const coreBox = await repositoryBox("CORE");
+    expect(coreBox.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+  } finally {
+    listed.done();
+  }
+  const none = renderOverServer(projectServer([]));
+  try {
+    const empty = await screen.findByText("No projects yet.");
+    expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+  } finally {
+    none.done();
   }
 });
 
